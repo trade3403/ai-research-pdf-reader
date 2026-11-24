@@ -5,7 +5,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     file.take((rpcore::MAX_BYTES + 1) as u64).read_to_end(&mut bytes)?;
     let doc = rpcore::Document::open(&bytes)?;
-    println!("pages={}", doc.page_count()?);
+    let pages = doc.pages()?;
+    println!("pages={}", pages.len());
+    for (i, page) in pages.iter().enumerate() {
+        println!("page={} media={:?} crop={:?} rotate={}", i+1, page.media_box, page.crop_box, page.rotation);
+    }
     Ok(())
 }
 fn main() {

@@ -16,6 +16,7 @@ pub enum Object {
     Array(Vec<Object>),
     Dict(BTreeMap<Vec<u8>, Object>),
     Ref(u32, u16),
+    Stream { dict: BTreeMap<Vec<u8>, Object>, data: Vec<u8> },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -273,7 +274,26 @@ impl<'a> Document<'a> {
         p.expect(b"obj")?;
         let value = p.object(0)?;
         p.skip();
-        if p.starts(b"stream") { return Err(Error::Unsupported("stream object")); }
+        if p.starts(b"stream") {
+            p.expect(b"stream")?;
+            let map = dict(value)?;
+            let length = match map.get(b"Length".as_slice()) {
+                Some(Object::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= MAX_BYTES as f64 => *n as usize,
+                Some(Object::Ref(_, _)) => return Err(Error::Unsupported("indirect stream length")),
+                _ => return Err(Error::Invalid("stream length")),
+            };
+            match p.bytes.get(p.pos) {
+                Some(b'\n') => p.pos += 1,
+                Some(b'\r') if p.bytes.get(p.pos + 1) == Some(&b'\n') => p.pos += 2,
+                _ => return Err(Error::Invalid("stream line ending")),
+            }
+            let end = p.pos.checked_add(length).ok_or(Error::Limit("stream"))?;
+            let data = p.bytes.get(p.pos..end).ok_or(Error::Invalid("truncated stream"))?.to_vec();
+            p.pos = end;
+            p.expect(b"endstream")?;
+            p.expect(b"endobj")?;
+            return Ok(Object::Stream { dict: map, data });
+        }
         p.expect(b"endobj")?;
         Ok(value)
     }
@@ -333,3 +353,92 @@ mod tests {
     #[test]
     fn bad_header() { assert!(Document::open(b"bad").is_err()); }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageInfo {
+    pub object_id: (u32, u16),
+    pub media_box: [f64; 4],
+    pub crop_box: [f64; 4],
+    pub rotation: i32,
+    pub resources: Option<Object>,
+}
+
+#[derive(Default, Clone)]
+struct Inherited {
+    media: Option<[f64; 4]>,
+    crop: Option<[f64; 4]>,
+    rotate: Option<i32>,
+    resources: Option<Object>,
+}
+
+impl Document<'_> {
+    fn dereference(&self, object: &Object) -> Result<Object> {
+        let mut current = object.clone();
+        let mut seen = BTreeSet::new();
+        for _ in 0..MAX_DEPTH {
+            match current {
+                Object::Ref(id, gen) => {
+                    if !seen.insert((id, gen)) { return Err(Error::Invalid("reference cycle")); }
+                    current = self.resolve(id, gen)?;
+                }
+                _ => return Ok(current),
+            }
+        }
+        Err(Error::Limit("reference depth"))
+    }
+
+    fn rectangle(&self, o: &Object) -> Result<[f64; 4]> {
+        let Object::Array(values) = self.dereference(o)? else { return Err(Error::Invalid("page box array")); };
+        if values.len() != 4 { return Err(Error::Invalid("page box size")); }
+        let mut rect = [0.0; 4];
+        for (i, v) in values.iter().enumerate() {
+            let Object::Number(n) = self.dereference(v)? else { return Err(Error::Invalid("page box coordinate")); };
+            if !n.is_finite() || n.abs() > 1e9 { return Err(Error::Limit("page coordinate")); }
+            rect[i] = n;
+        }
+        if rect[2] <= rect[0] || rect[3] <= rect[1] { return Err(Error::Invalid("page box area")); }
+        Ok(rect)
+    }
+
+    pub fn pages(&self) -> Result<Vec<PageInfo>> {
+        let catalog = dict(self.resolve(self.root.0,self.root.1)?)?;
+        if catalog.get(b"Type".as_slice()) != Some(&Object::Name(b"Catalog".to_vec())) { return Err(Error::Invalid("catalog type")); }
+        let root = reference(catalog.get(b"Pages".as_slice()))?;
+        let mut pages = Vec::new();
+        self.collect_pages(root, 0, Inherited::default(), &mut BTreeSet::new(), &mut pages)?;
+        Ok(pages)
+    }
+
+    fn collect_pages(&self, id: (u32,u16), depth: usize, mut inherited: Inherited, seen: &mut BTreeSet<(u32,u16)>, out: &mut Vec<PageInfo>) -> Result<()> {
+        if depth >= MAX_DEPTH || seen.len() >= MAX_OBJECTS { return Err(Error::Limit("page tree")); }
+        if !seen.insert(id) { return Err(Error::Invalid("page tree cycle/duplicate")); }
+        let node = dict(self.resolve(id.0,id.1)?)?;
+        if let Some(v) = node.get(b"MediaBox".as_slice()) { inherited.media = Some(self.rectangle(v)?); }
+        if let Some(v) = node.get(b"CropBox".as_slice()) { inherited.crop = Some(self.rectangle(v)?); }
+        if let Some(v) = node.get(b"Rotate".as_slice()) {
+            let Object::Number(n) = self.dereference(v)? else { return Err(Error::Invalid("rotation")); };
+            if n.fract() != 0.0 || n.abs() > i32::MAX as f64 || n % 90.0 != 0.0 { return Err(Error::Invalid("rotation")); }
+            inherited.rotate = Some((n as i32).rem_euclid(360));
+        }
+        if let Some(v) = node.get(b"Resources".as_slice()) {
+            // Keep indirect dictionaries as references, avoid expanding resource graphs.
+            if !matches!(v,Object::Ref(_,_)|Object::Dict(_)) { return Err(Error::Invalid("resources")); }
+            inherited.resources = Some(v.clone());
+        }
+        match node.get(b"Type".as_slice()) {
+            Some(Object::Name(n)) if n == b"Page" => {
+                let media = inherited.media.ok_or(Error::Invalid("missing MediaBox"))?;
+                out.push(PageInfo { object_id:id, media_box:media, crop_box:inherited.crop.unwrap_or(media), rotation:inherited.rotate.unwrap_or(0), resources:inherited.resources });
+            }
+            Some(Object::Name(n)) if n == b"Pages" => {
+                let Some(Object::Array(kids)) = node.get(b"Kids".as_slice()) else { return Err(Error::Invalid("page kids")); };
+                let start = out.len();
+                for kid in kids { self.collect_pages(reference(Some(kid))?,depth+1,inherited.clone(),seen,out)?; }
+                if node.get(b"Count".as_slice()) != Some(&Object::Number((out.len()-start) as f64)) { return Err(Error::Invalid("page count mismatch")); }
+            }
+            _ => return Err(Error::Invalid("page type")),
+        }
+        Ok(())
+    }
+}
+pub mod filters;
