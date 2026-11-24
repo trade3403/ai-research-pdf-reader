@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-24。当前工程版本 0.1.0；D1.0、D1.1 已通过 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0、D1.1 已通过 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -9,7 +9,7 @@
 | D1.1 | 已通过 | 自主 Safetensors 子集解析、参考样本及 CPU CI |
 | D1.2a | 已通过 | Unigram Viterbi 内核、identity profile、参考样本 |
 | D1.2b1 | 已通过 | SPM protobuf 读取、ID 映射与真实文件探测 |
-| D1.2b2a | 待验证 | 自主 compiled charsmap 与真实归一化对照 |
+| D1.2b2a | 已通过 | 自主 compiled charsmap 与真实归一化对照 |
 | D1.2b2b | 未开始 | Marian JSON、真实 token 对照 |
 | D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -53,7 +53,7 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 新增有界 SPM protobuf 解析、词表与特殊 ID 校验、identity profile 执行适配、独立 Marian ID 映射、实际 SentencePiece 0.2.1 生成的二进制 fixture。真实候选模型文件在当前环境下载失败，新增独立 Runner 探测（不下载权重）。CPU CI 和真实模型文件探测均已通过：[Actions 45427170950](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45427170950)，[代码提交](https://github.com/trade3403/ai-research-pdf-reader/commit/550fa0208d1f6ed8969e03f983c00e94301c1070)。实际 source/target 各 32000 pieces、Unigram、nmt_nfkc、237538 bytes charsmap。文件 SHA-256 见技术文档。完整 D1.2 仍未验收。
 
 ## 当前阶段 D1.2b2a
-实现有界 compiled charsmap 解析、最长字节前缀匹配及默认空格归一化；新增真实 SPM 官方参考归一化对照测试。待 CI 验收。D1.2 整体仍未完成。
+实现有界 compiled charsmap 解析、最长字节前缀匹配及默认空格归一化；新增真实 SPM 官方参考归一化对照测试。[代码提交 e0d7620](https://github.com/trade3403/ai-research-pdf-reader/commit/e0d76202ba43851d2432371a348dac9813ac071c)，[Actions 45508816763](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45508816763) 结论 success；CPU CI 全通过，固定版本三文件哈希一致，源模型与目标模型分别 19/19 归一化完全匹配 Python SentencePiece 0.2.1（合计 38/38）。仅验证默认归一化样本，尚未执行真实 token ID 或模型推理，D1.2 整体仍未完成。
 
 ## 下一阶段 D1.2b2b
 归一化接入 Unigram、Marian JSON、语言标记/EOS/PAD/UNK 及真实 token ID/解码对照。
