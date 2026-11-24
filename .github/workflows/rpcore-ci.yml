@@ -28,3 +28,72 @@ jobs:
             rpcore/target/release/rpcore
             rpcore/target/release/rpcore.exe
           if-no-files-found: error
+  ios-device:
+    name: iOS ARM64 device cross-build
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Verify Apple SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - name: Cross-compile Rust tests (no physical device)
+        run: cargo test --manifest-path rpcore/Cargo.toml --locked --target aarch64-apple-ios --lib --tests --no-run
+      - name: Build iOS device library
+        run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --target aarch64-apple-ios --lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-ios-arm64
+          path: rpcore/target/aarch64-apple-ios/release/librpcore.rlib
+          if-no-files-found: error
+
+  ios-simulator:
+    name: iOS ARM64 simulator tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Verify SDK and host architecture
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-path
+      - name: Select and boot available iPhone simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/rpcore-simulators.json"
+          udid="$(python3 rpcore/ci/select-ios-simulator.py "$RUNNER_TEMP/rpcore-simulators.json")"
+          echo "RPCORE_SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl list devices available
+          xcrun simctl boot "$udid" || {
+            xcrun simctl list devices booted -j | python3 -c 'import json,sys; u=sys.argv[1]; assert any(d["udid"]==u and d["state"]=="Booted" for v in json.load(sys.stdin)["devices"].values() for d in v)' "$udid"
+          }
+          xcrun simctl bootstatus "$udid" -b
+      - name: Execute Rust tests inside the iOS simulator
+        shell: bash
+        run: |
+          chmod +x rpcore/ci/ios-simulator-runner.sh
+          export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="$GITHUB_WORKSPACE/rpcore/ci/ios-simulator-runner.sh"
+          cargo test --manifest-path rpcore/Cargo.toml --locked --target aarch64-apple-ios-sim --lib --tests
+      - name: Build iOS simulator library
+        run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --target aarch64-apple-ios-sim --lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-ios-simulator-arm64
+          path: rpcore/target/aarch64-apple-ios-sim/release/librpcore.rlib
+          if-no-files-found: error
+      - name: Shut down simulator
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$RPCORE_SIMULATOR_UDID" ]; then
+            xcrun simctl shutdown "$RPCORE_SIMULATOR_UDID" || true
+          fi

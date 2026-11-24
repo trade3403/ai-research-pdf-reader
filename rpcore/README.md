@@ -21,3 +21,22 @@ The demo may use unsupported structures; failure is explicit.
 
 ## Remaining
 Flate, predictors, xref/object streams, incremental updates, encryption, font decoding/ToUnicode, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
+
+## iOS CI (B-line core only)
+GitHub Actions preserves Windows and Ubuntu tests and adds separate Apple Silicon macOS-hosted iOS jobs:
+- Device: cross-compile the test executables for `aarch64-apple-ios` (without running them), build and upload the release Rust library.
+- Simulator: boot an installed iPhone simulator, run the Rust unit/integration test executables using `xcrun simctl spawn` through Cargo's target runner, then build and upload the `aarch64-apple-ios-sim` release library.
+- Simulator startup or test failure fails its own job. Neither job implies a signed iOS app, a physical-device test, a Swift/C ABI, or App Store readiness.
+
+To run locally on Apple Silicon with Xcode and an installed iOS runtime:
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+cargo build --manifest-path rpcore/Cargo.toml --locked --release --target aarch64-apple-ios --lib
+xcrun simctl list devices available -j > /tmp/rpcore-simulators.json
+export RPCORE_SIMULATOR_UDID="$(python3 rpcore/ci/select-ios-simulator.py /tmp/rpcore-simulators.json)"
+xcrun simctl boot "$RPCORE_SIMULATOR_UDID" # skip if already booted
+xcrun simctl bootstatus "$RPCORE_SIMULATOR_UDID" -b
+chmod +x rpcore/ci/ios-simulator-runner.sh
+export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="$PWD/rpcore/ci/ios-simulator-runner.sh"
+cargo test --manifest-path rpcore/Cargo.toml --locked --target aarch64-apple-ios-sim --lib --tests
+```
