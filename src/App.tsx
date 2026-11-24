@@ -574,6 +574,22 @@ export default function App() {
     } catch (error) { notify(`备份失败：${humanError(error)}`, 'error'); }
   }, [notify]);
 
+  const incrementalBackup=useCallback(async()=>{
+    const bridge=electronBridge();if(!bridge)return;
+    if(!window.confirm('请先保存编辑内容。增量备份共享对象文件，请保留整个 research-studio-incremental 文件夹。继续？'))return;
+    try{const result=await bridge.backup('incremental');if(result)notify('增量快照已生成：新增 '+result.newObjects+' 个对象，复用 '+result.reusedObjects+' 个对象。'+result.path);}
+    catch(error){notify('增量备份失败：'+humanError(error),'error');}
+  },[notify]);
+  const exportIncremental=useCallback(async()=>{
+    const bridge=electronBridge();if(!bridge)return;
+    try{const result=await bridge.backup('materialize');if(result)notify('增量快照已导出为完整备份：'+result.path);}
+    catch(error){notify('增量导出失败：'+humanError(error),'error');}
+  },[notify]);
+  const preflightLegacy=useCallback(async()=>{
+    const bridge=electronBridge();if(!bridge)return;
+    try{const result=await bridge.legacyPreflight();if(result)window.alert('旧版数据库只读预检（未导入）：\\n'+result.present.map(x=>x.name+'：'+x.count).join('\\n')+'\\n缺失表：'+(result.missing.join(', ')||'无')+'\\n不兼容表：'+(result.incompatible.map(x=>x.name+': '+x.missing.join(', ')).join('; ')||'无')+'\\n外部 PDF 引用 '+result.externalReferences+' 条，需重新授权附件。');}
+    catch(error){notify('旧版预检失败：'+humanError(error),'error');}
+  },[notify]);
   const verifyNativeBackup = useCallback(async()=>{
     const bridge=electronBridge();if(!bridge)return;
     try{const result=await bridge.backup('verify');if(result)notify('备份校验通过：'+result.files+' 个文件，'+result.pdfs+' 个 PDF'+(result.externalReferences?'；'+result.externalReferences+' 条外部附件引用未打包':''));}
@@ -630,7 +646,7 @@ export default function App() {
           <button className={mode === 'records' ? 'active' : ''} onClick={() => setMode('records')}><NotebookPen size={16}/> 科研记录</button>
           <button className={mode === 'word' ? 'active' : ''} onClick={() => setMode('word')}><FilePenLine size={16}/> Word 论文</button>
         {mode === 'word' && <button className={wordChatOpen ? 'active' : ''} aria-pressed={wordChatOpen} title="在 Word 右侧打开或关闭 ChatGPT 侧栏" onClick={() => setWordChatOpen(v => !v)}><MessageSquareText size={16}/> {wordChatOpen ? '关闭 ChatGPT 侧栏' : '打开 ChatGPT 侧栏'}</button>}
-        </div><button className="icon-button" title={electronBridge()?"科研数据库及 PDF 文件库备份":"完整数据库备份（不包含原始 PDF）"} onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title={electronBridge()?"恢复备份（重启生效）":"从 SQLite 备份恢复（需重启）"} onClick={() => void restoreData()}><DatabaseZap size={17}/></button>{electronBridge()&&<><button className="icon-button" title="校验备份（不覆盖数据）" onClick={()=>void verifyNativeBackup()}><FileSearch2 size={17}/></button><button className="icon-button" title="回滚上一个数据版本" onClick={()=>void rollbackNativeData()}><Clock3 size={17}/></button></>}<button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
+        </div><button className="icon-button" title={electronBridge()?"科研数据库及 PDF 文件库备份":"完整数据库备份（不包含原始 PDF）"} onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title={electronBridge()?"恢复备份（重启生效）":"从 SQLite 备份恢复（需重启）"} onClick={() => void restoreData()}><DatabaseZap size={17}/></button>{electronBridge()&&<><button className="icon-button" title="校验备份（不覆盖数据）" onClick={()=>void verifyNativeBackup()}><FileSearch2 size={17}/></button><button className="icon-button" title="回滚上一个数据版本" onClick={()=>void rollbackNativeData()}><Clock3 size={17}/></button><button className="icon-button" title="创建增量备份" onClick={()=>void incrementalBackup()}><DatabaseBackup size={17}/></button><button className="icon-button" title="导出增量快照" onClick={()=>void exportIncremental()}><FolderOpen size={17}/></button><button className="icon-button" title="旧版数据库预检" onClick={()=>void preflightLegacy()}><FileSearch2 size={17}/></button></>}<button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
       </header>
       {(mode === 'reader' || mode === 'chat') && <>
       {!(mode === 'chat' && chatPdfCollapsed) && <>

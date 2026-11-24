@@ -164,6 +164,17 @@ const assert = require('node:assert/strict');
     await page.getByText('GUI post-backup change',{exact:true}).first().waitFor({timeout:30000});
     await page.screenshot({path:path.join(out,'13-rollback-generation.png')});
     diagnostics.push('Actual process restarts verified restored PDF and research clip, then rollback to the retained original data.');
+    const incParent=path.join(out,'incremental-evidence');await fs.mkdir(incParent,{recursive:true});
+    await app.evaluate(({dialog},target)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[target]});},incParent);
+    page.once('dialog',dialog=>dialog.accept());await page.getByTitle('创建增量备份').click();
+    await page.getByText(/增量快照已生成/).waitFor({timeout:30000});
+    await page.screenshot({path:path.join(out,'14-incremental.png')});
+    const snapshots=path.join(incParent,'research-studio-incremental','snapshots');const dirs=await fs.readdir(snapshots);assert.equal(dirs.length,1);
+    await app.evaluate(({dialog},snapshot,parent)=>{let n=0;dialog.showOpenDialog=async()=>({canceled:false,filePaths:[n++===0?snapshot:parent]});},path.join(snapshots,dirs[0]),incParent);
+    await page.getByTitle('导出增量快照').click();
+    await page.getByText(/增量快照已导出为完整备份/).waitFor({timeout:30000});
+    await page.screenshot({path:path.join(out,'15-incremental-export.png')});
+    diagnostics.push('Incremental snapshot and standalone backup export created via real GUI.');
     await page.waitForTimeout(1500);
   } catch (error) {
     diagnostics.push(String(error.stack || error));

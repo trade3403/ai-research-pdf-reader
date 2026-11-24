@@ -60,26 +60,28 @@ async function createBackup({profile,parent,stores}){
   return {...verified,path:final};
  }catch(e){await fsp.rm(stage,{recursive:true,force:true});throw e;}
 }
-async function verifyBackup(dir){
+async function verifyBackup(dir,objectRoot=null){
  const root=await fsp.realpath(dir);
  const manifestPath=path.join(root,'manifest.json'),st=await fsp.lstat(manifestPath);
  if(!st.isFile()||st.size>MAX_MANIFEST)throw Error('Invalid backup manifest');
  const m=JSON.parse(await fsp.readFile(manifestPath,'utf8'));
  if(m.format!=='research-studio-backup'||m.version!==1||!Array.isArray(m.files)||m.files.length>MAX_FILES)throw Error('Unsupported backup format');
- const names=new Set();let bytes=0,pdfs=0;
- if(m.files.some(x=>PDF.test(x?.name))&&!((await fsp.lstat(path.join(root,'pdf-vault'))).isDirectory()))throw Error('Invalid vault directory');
+ const names=new Set(),locations=new Map();let bytes=0,pdfs=0;
+ if(objectRoot&&!(await fsp.lstat(objectRoot)).isDirectory())throw Error('Invalid object directory');
+ if(!objectRoot&&m.files.some(x=>PDF.test(x?.name))&&!((await fsp.lstat(path.join(root,'pdf-vault'))).isDirectory()))throw Error('Invalid vault directory');
  for(const entry of m.files){
   if(!entry||!validName(entry.name)||names.has(entry.name)||!Number.isSafeInteger(entry.size)||entry.size<0||typeof entry.sha256!=='string'||!/^[a-f0-9]{64}$/.test(entry.sha256))throw Error('Invalid manifest entry');
   names.add(entry.name);bytes+=entry.size;if(bytes>MAX_TOTAL)throw Error('Backup exceeds limit');
-  const f=path.join(root,entry.name),actual=await fileHash(f,PDF.test(entry.name)?100*1024*1024:MAX_TOTAL);
+  const f=objectRoot?path.join(objectRoot,entry.sha256):path.join(root,entry.name),actual=await fileHash(f,PDF.test(entry.name)?100*1024*1024:MAX_TOTAL);
+  locations.set(entry.name,f);
   if(actual.size!==entry.size||actual.sha256!==entry.sha256)throw Error('Backup checksum mismatch: '+entry.name);
   if(PDF.test(entry.name)){if(actual.sha256!==path.basename(entry.name,'.pdf'))throw Error('Invalid vault content address');pdfs++;}
  }
- for(let i=0;i<DB_NAMES.length;i++){const name=DB_NAMES[i];if(!names.has(name))throw Error('Missing database: '+name);sqliteCheck(path.join(root,name),TABLES[i]);}
+ for(let i=0;i<DB_NAMES.length;i++){const name=DB_NAMES[i];if(!names.has(name))throw Error('Missing database: '+name);sqliteCheck(locations.get(name),TABLES[i]);}
  // Verify references from both stores. Legacy external paths are reported separately.
  let externalReferences=0;
  for(const [name,table] of [[DB_NAMES[0],'documents'],[DB_NAMES[1],'items']]){
-  const db=new DatabaseSync(path.join(root,name),{readOnly:true});
+  const db=new DatabaseSync(locations.get(name),{readOnly:true});
   try{db.exec('PRAGMA trusted_schema=OFF;PRAGMA query_only=ON');for(const row of db.prepare('SELECT payload FROM '+table).iterate()){
    const p=JSON.parse(row.payload).path;if(p===null)continue;
    if(typeof p!=='string')throw Error('Invalid stored PDF reference');
@@ -89,4 +91,4 @@ async function verifyBackup(dir){
  }
  return {files:names.size,pdfs,bytes,externalReferences};
 }
-module.exports={createBackup,verifyBackup,DB_NAMES,validName,sqliteCheck,TABLES};
+module.exports={createBackup,verifyBackup,DB_NAMES,validName,sqliteCheck,TABLES,fileHash};

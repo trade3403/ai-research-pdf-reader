@@ -36,7 +36,9 @@
       "research-db.cjs",
       "azure-translator.cjs",
       "backup.cjs",
-      "restore.cjs"
+      "restore.cjs",
+      "incremental.cjs",
+      "legacy-preflight.cjs"
     ],
     "win": {
       "target": [

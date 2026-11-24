@@ -10,7 +10,8 @@ type StudioBridge = {
   azureTranslate(request:{texts:string[];region:string;from:string;to:string}):Promise<{translations:string[]}>;
   docxSave(name:string,bytes:Uint8Array):Promise<string|null>;
   restoreStatus():Promise<{canRollback:boolean}>;
-  backup(op:'create'|'verify'|'restore'|'rollback'):Promise<{files?:number;pdfs?:number;bytes?:number;externalReferences?:number;path?:string;scheduled?:boolean}|null>;
+  legacyPreflight():Promise<{present:{name:string;count:number}[];missing:string[];incompatible:{name:string;missing:string[]}[];records:number;externalReferences:number;compatible:boolean}|null>;
+  backup(op:'create'|'verify'|'restore'|'rollback'|'incremental'|'materialize'):Promise<{files?:number;pdfs?:number;bytes?:number;externalReferences?:number;path?:string;scheduled?:boolean;newObjects?:number;reusedObjects?:number;newBytes?:number}|null>;
   research(op:string,value?:unknown):Promise<unknown>;
   library(op:string,value?:unknown):Promise<unknown>;
   reader(op:string,value?:unknown):Promise<unknown>;

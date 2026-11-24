@@ -4,6 +4,8 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const {randomUUID}=require('node:crypto');
 const {createBackup,verifyBackup}=require('./backup.cjs');
+const {createIncremental,materializeIncremental}=require('./incremental.cjs');
+const {inspectLegacy}=require('./legacy-preflight.cjs');
 const {stageRestore,stageRollback,activatePending,state}=require('./restore.cjs');
 let dataRoot=null;
 const primaryInstance=app.requestSingleInstanceLock();
@@ -161,16 +163,21 @@ ipcMain.handle('studio:docx-save',async(event,name,bytes)=>{
 let backupBusy=false;
 ipcMain.handle('studio:backup',(event,op)=>{
  workspaceOnly(event);
- if(!['create','verify','restore','rollback'].includes(op))throw Error('Unsupported backup operation');
+ if(!['create','verify','restore','rollback','incremental','materialize'].includes(op))throw Error('Unsupported backup operation');
  if(backupBusy||translating)throw Error('Finish current backup or translation first');
  backupBusy=true;
  return (async()=>{
   try{
    const appProfile=app.getPath('userData');
    if(op==='rollback')return await stageRollback(appProfile);
-   const selected=await dialog.showOpenDialog(win,{title:op==='create'?'选择备份保存位置':'选择需要校验的备份文件夹',properties:['openDirectory']});
+   const selected=await dialog.showOpenDialog(win,{title:['create','incremental'].includes(op)?'选择备份保存位置':op==='materialize'?'选择增量快照文件夹':'选择需要校验的备份文件夹',properties:['openDirectory']});
    if(selected.canceled||!selected.filePaths[0])return null;
    if(op==='verify')return await verifyBackup(selected.filePaths[0]);
+   if(op==='materialize'){
+    const dest=await dialog.showOpenDialog(win,{title:'选择完整备份导出位置',properties:['openDirectory']});if(dest.canceled||!dest.filePaths[0])return null;
+    const rel=path.relative(await fs.realpath(appProfile),await fs.realpath(dest.filePaths[0]));if(rel===''||(!path.isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+path.sep)))throw Error('Choose export outside application profile');
+    return await materializeIncremental(selected.filePaths[0],dest.filePaths[0]);
+   }
    const profile=dataRoot;
    if(op==='restore'){
     readerDb??=createReaderDb(path.join(profile,'reader-v062.sqlite'));
@@ -181,10 +188,12 @@ ipcMain.handle('studio:backup',(event,op)=>{
    if(relative===''||(!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)))throw Error('Choose backup outside application profile');
    readerDb??=createReaderDb(path.join(profile,'reader-v062.sqlite'));
    libraryDb??=createLibraryDb(path.join(profile,'library-v062.sqlite'));
-   return await createBackup({profile,parent:selected.filePaths[0],stores:[readerDb,libraryDb,getResearch()]});
+   const options={profile,parent:selected.filePaths[0],stores:[readerDb,libraryDb,getResearch()]};
+   return op==='incremental'?await createIncremental(options):await createBackup(options);
   }finally{backupBusy=false;}
  })();
 });
+ipcMain.handle('studio:legacy-preflight',async event=>{workspaceOnly(event);const result=await dialog.showOpenDialog(win,{title:'选择 V0.5.9 SQLite 备份',properties:['openFile'],filters:[{name:'SQLite',extensions:['sqlite','db']}]});if(result.canceled||!result.filePaths[0])return null;return inspectLegacy(result.filePaths[0]);});
 app.on('will-quit',()=>{if(researchDb){researchDb.close();researchDb=null;}if(readerDb){readerDb.close();readerDb=null;}if(libraryDb){libraryDb.close();libraryDb=null;}});
 ipcMain.handle('studio:restore-status',async event=>{workspaceOnly(event);const p=await state(app.getPath('userData'));return {canRollback:p.previous!==null};});
 if(primaryInstance)app.whenReady().then(async()=>{
