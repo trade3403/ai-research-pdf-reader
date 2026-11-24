@@ -304,3 +304,27 @@ fn text_color_order_invisible_and_preview(){
     let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
     assert!(m.radicals.is_empty());assert!(build_tree(&g,&m).unwrap().to_latex(&g).is_err());
 }
+
+#[test]fn math_tree_nested_fraction_numerator(){
+    use rpcore::raster::math_tree::build_tree;
+    let p=fixture::pdf(b"BT /F1 6 Tf 50 59 Td <0001> Tj 1 0 0 1 50 50 Tm <0002> Tj /F1 10 Tf 1 0 0 1 49 36 Tm <0003> Tj ET 47 56 10 .4 re f 42 46 20 .5 re f");
+    let d=Document::open(&p).unwrap();
+    let (g,mut m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[35.,30.,70.,70.]).unwrap();
+    assert_eq!(m.fractions.len(),2);
+    assert_eq!(m.fractions[1].numerator_fraction,Some(m.fractions[0].rule_command_index));
+    assert_eq!(m.fractions[1].numerator,vec![0,1]);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\frac{\frac{O}{D}}{o}");
+    m.fractions[1].numerator.pop();
+    assert!(build_tree(&g,&m).is_err());
+}
+#[test]fn math_tree_nested_fraction_denominator(){
+    use rpcore::raster::math_tree::build_tree;
+    let p=fixture::pdf(b"BT /F1 10 Tf 49 62 Td <0003> Tj /F1 6 Tf 1 0 0 1 50 50 Tm <0001> Tj 1 0 0 1 50 41 Tm <0002> Tj ET 42 58 20 .5 re f 47 47 10 .4 re f");
+    let d=Document::open(&p).unwrap();
+    let (g,mut m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[35.,30.,70.,80.]).unwrap();
+    assert_eq!(m.fractions.len(),2);
+    assert_eq!(m.fractions[1].denominator_fraction,Some(m.fractions[0].rule_command_index));
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\frac{o}{\frac{O}{D}}");
+    m.fractions[0].numerator_fraction=Some(m.fractions[1].rule_command_index);
+    assert!(build_tree(&g,&m).is_err());
+}

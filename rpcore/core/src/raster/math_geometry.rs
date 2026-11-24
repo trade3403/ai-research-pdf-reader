@@ -14,6 +14,9 @@ pub struct ScriptCandidate{
 pub struct FractionCandidate{
     pub rule_command_index:usize,pub rule_bounds:[f64;4],
     pub numerator:Vec<usize>,pub denominator:Vec<usize>,
+    /// Optional child fraction rule index; that entire side is the child.
+    /// The corresponding glyph list includes all descendant glyphs.
+    pub numerator_fraction:Option<usize>,pub denominator_fraction:Option<usize>,
 }
 #[derive(Debug,Clone,PartialEq)]
 pub struct RadicalCandidate{
@@ -98,12 +101,13 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
         if a<=0.||d<=0.||b1!=0.||c!=0.||g.advance_end[0]<g.origin[0]{continue;}
         items.push(Item{index:i,bounds:b,x:g.origin[0],y:g.origin[1],advance_x:g.advance_end[0],em:d});
     }
-    let mut fractions=Vec::new();let mut radicals=Vec::new();let mut rule_count=0;
+    let mut fractions=Vec::new();let mut radicals=Vec::new();let mut rules=Vec::new();let mut rule_count=0;
     for (i,c) in list.commands.iter().enumerate(){
         let Some(b)=rule_bounds(c)else{continue;};
         let w=b[2]-b[0];let h=b[3]-b[1];
         if !contains(region,b)||h<=0.||w<h*6.{continue;}
         rule_count+=1;if rule_count>MAX_RULES{return Err(Error::Limit("math region rules"));}
+        rules.push((i,b));
         let numerator=row(&items,b,true);let denominator=row(&items,b,false);
         // Explicit Unicode radical plus a separate overbar. Do not infer
         // an arbitrary scope from the radical glyph alone.
@@ -125,13 +129,53 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
                 radicals.push(RadicalCandidate{symbol:root.index,rule_command_index:i,rule_bounds:b,radicand:denominator.clone()});
             }
         }
-        if numerator.is_empty()||denominator.is_empty(){continue;}
-        // A rule must be narrow relative to neighboring glyphs and not an
-        // arbitrarily long divider. This still cannot exclude all table rules.
+    }
+    // Process narrow rules first. A nested fraction can occupy an entire
+    // side only, not an arbitrary expression beside another term.
+    rules.sort_by(|a,b|(a.1[2]-a.1[0]).total_cmp(&(b.1[2]-b.1[0])).then(a.0.cmp(&b.0)));
+    let mut nested=std::collections::BTreeSet::new();
+    let mut extents:Vec<[f64;4]>=Vec::new();
+    let mut sizes:Vec<f64>=Vec::new();
+    for (i,b) in rules{
+        if radicals.iter().any(|r|r.rule_command_index==i){continue;}
+        let w=b[2]-b[0];let h=b[3]-b[1];
+        let side=|above:bool|->Option<(Vec<usize>,Option<usize>)>{
+            let direct=row(&items,b,above);
+            let mut matching=None;
+            for (fi,f) in fractions.iter().enumerate(){
+                let f:&FractionCandidate=f;
+                if nested.contains(&f.rule_command_index){continue;}
+                let a=extents[fi];let em=sizes[fi];
+                let gap=if above{a[1]-b[3]}else{b[1]-a[3]};
+                if gap<0.||gap>em*0.8||(f.rule_bounds[2]-f.rule_bounds[0])>w*0.8
+                    ||a[0]<b[0]-em*0.1||a[2]>b[2]+em*0.1
+                    ||((a[0]+a[2])-(b[0]+b[2])).abs()>w*0.4{continue;}
+                let ids:Vec<usize>=f.numerator.iter().chain(&f.denominator).copied().collect();
+                if !direct.iter().all(|j|ids.contains(j)){continue;}
+                if matching.is_some(){return None;}
+                matching=Some((ids,Some(f.rule_command_index)));
+            }
+            matching.or_else(||(!direct.is_empty()).then_some((direct,None)))
+        };
+        let Some((numerator,numerator_fraction))=side(true)else{continue;};
+        let Some((denominator,denominator_fraction))=side(false)else{continue;};
+        if numerator.iter().any(|j|denominator.contains(j)){continue;}
         let em=items.iter().filter(|g|numerator.contains(&g.index)||denominator.contains(&g.index))
             .map(|g|g.em).fold(0.,f64::max);
         if h>em*0.2||w>em*16.{continue;}
-        fractions.push(FractionCandidate{rule_command_index:i,rule_bounds:b,numerator,denominator});
+        let mut bounds=b;
+        for g in items.iter().filter(|g|numerator.contains(&g.index)||denominator.contains(&g.index)){
+            bounds[0]=bounds[0].min(g.bounds[0]);bounds[1]=bounds[1].min(g.bounds[1]);
+            bounds[2]=bounds[2].max(g.bounds[2]);bounds[3]=bounds[3].max(g.bounds[3]);
+        }
+        for child in [numerator_fraction,denominator_fraction].into_iter().flatten(){
+            let fi=fractions.iter().position(|f|f.rule_command_index==child).ok_or(Error::Invalid("nested fraction rule"))?;
+            let a=extents[fi];bounds[0]=bounds[0].min(a[0]);bounds[1]=bounds[1].min(a[1]);
+            bounds[2]=bounds[2].max(a[2]);bounds[3]=bounds[3].max(a[3]);
+            nested.insert(child);
+        }
+        extents.push(bounds);sizes.push(em);
+        fractions.push(FractionCandidate{rule_command_index:i,rule_bounds:b,numerator,denominator,numerator_fraction,denominator_fraction});
     }
     // Precompute fraction membership for constant-time pair checks.
     // At most 256 accepted rules, four u64 words per side and glyph.

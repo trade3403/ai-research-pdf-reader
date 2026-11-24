@@ -54,10 +54,9 @@ fn sorted_row(mut entries:Vec<(f64,MathNode)>)->MathNode{
     entries.sort_by(|a,b|a.0.total_cmp(&b.0));
     MathNode::Row(entries.into_iter().map(|(_,n)|n).collect())
 }
-/// Convert local candidate relationships to a tree. Disjoint fractions and
-/// nested scripts are supported. Ambiguous ownership, cross-row scripts,
-/// nested/overlapping fractions or radicals, and incompatible script rows
-/// are explicitly rejected, not resolved by guessing.
+/// Convert local candidate relationships to a tree. Whole-side nested fractions
+/// and nested scripts are supported. Ambiguous ownership, cross-row scripts,
+/// overlapping fractions or radicals, and incompatible script rows are rejected.
 pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     if m.glyph_indices.is_empty(){return Err(Error::Invalid("empty formula tree"));}
     if m.glyph_indices.len()>MAX_GLYPHS||m.scripts.len()>MAX_GLYPHS||m.fractions.len()>256||m.radicals.len()>256{return Err(Error::Limit("math tree inputs"));}
@@ -71,6 +70,7 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     }
     let mut owner:BTreeMap<usize,RowId>=selected.iter().map(|&i|(i,None)).collect();
     let mut rules=BTreeSet::new();
+    let mut by_rule=BTreeMap::new();
     for (fi,f) in m.fractions.iter().enumerate(){
         if !rules.insert(f.rule_command_index)||f.numerator.is_empty()||f.denominator.is_empty(){
             return Err(Error::Invalid("invalid formula fraction"));
@@ -78,11 +78,39 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
         if f.rule_bounds.iter().any(|v|!v.is_finite())||f.rule_bounds[0]>=f.rule_bounds[2]||f.rule_bounds[1]>=f.rule_bounds[3]{
             return Err(Error::Invalid("formula rule bounds"));
         }
-        for (above,ids) in [(true,&f.numerator),(false,&f.denominator)]{
+        by_rule.insert(f.rule_command_index,fi);
+        let mut seen=BTreeSet::new();
+        for ids in [&f.numerator,&f.denominator]{
             if ids.len()>MAX_GLYPHS{return Err(Error::Limit("formula row glyphs"));}
             for &i in ids{
+                if !selected.contains(&i)||!seen.insert(i){return Err(Error::Invalid("duplicate or external fraction glyph"));}
+            }
+        }
+    }
+    let mut nested=BTreeSet::new();
+    for (fi,f) in m.fractions.iter().enumerate(){
+        for (above,ids,child) in [(true,&f.numerator,f.numerator_fraction),(false,&f.denominator,f.denominator_fraction)]{
+            if let Some(rule)=child{
+                let ci=*by_rule.get(&rule).ok_or(Error::Invalid("nested fraction rule"))?;
+                let c=&m.fractions[ci];
+                let w=f.rule_bounds[2]-f.rule_bounds[0];let cw=c.rule_bounds[2]-c.rule_bounds[0];
+                if cw>=w||!nested.insert(ci){return Err(Error::Unsupported("cyclic or shared fraction child"));}
+                let expected:BTreeSet<usize>=c.numerator.iter().chain(&c.denominator).copied().collect();
+                if expected!=ids.iter().copied().collect(){return Err(Error::Invalid("nested fraction glyph ownership"));}
+                if (above&&c.rule_bounds[1]<=f.rule_bounds[3])||(!above&&c.rule_bounds[3]>=f.rule_bounds[1]){
+                    return Err(Error::Unsupported("nested fraction on wrong side"));
+                }
+                for &i in ids{
+                    let a=g.glyphs[i].outline_bounds.ok_or(Error::Invalid("nested glyph bounds"))?;
+                    if (above&&a[1]<f.rule_bounds[3])||(!above&&a[3]>f.rule_bounds[1]){
+                        return Err(Error::Unsupported("nested fraction crosses rule"));
+                    }
+                }
+                continue;
+            }
+            for &i in ids{
                 let o=owner.get_mut(&i).ok_or(Error::Invalid("fraction glyph outside region"))?;
-                if o.is_some(){return Err(Error::Unsupported("overlapping or nested fraction candidates"));}
+                if o.is_some(){return Err(Error::Unsupported("overlapping fraction candidates"));}
                 *o=Some((fi,above));
             }
         }
@@ -134,12 +162,9 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     }
     let top:Vec<usize>=selected.iter().copied().filter(|i|owner[i].is_none()).collect();
     let mut entries=row_nodes(&top,g,&parents,&children)?;
-    for f in &m.fractions{
-        let n=row_nodes(&f.numerator,g,&parents,&children)?;
-        let d=row_nodes(&f.denominator,g,&parents,&children)?;
-        if n.is_empty()||d.is_empty(){return Err(Error::Invalid("empty fraction row"));}
-        entries.push((f.rule_bounds[0],MathNode::Fraction{rule_command_index:f.rule_command_index,
-            numerator:Box::new(sorted_row(n)),denominator:Box::new(sorted_row(d))}));
+    for (fi,f) in m.fractions.iter().enumerate(){
+        if nested.contains(&fi){continue;}
+        entries.push((f.rule_bounds[0],fraction_node(fi,m,g,&by_rule,&parents,&children,0)?));
     }
     for r in &m.radicals{
         let nodes=row_nodes(&r.radicand,g,&parents,&children)?;
@@ -148,6 +173,23 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
             rule_command_index:r.rule_command_index,radicand:Box::new(sorted_row(nodes))}));
     }
     Ok(FormulaTree{root:sorted_row(entries)})
+}
+fn fraction_node(fi:usize,m:&MathRegion,g:&PageGlyphGeometry,by_rule:&BTreeMap<usize,usize>,
+    parents:&BTreeSet<usize>,children:&Children,depth:usize)->Result<MathNode>{
+    if depth>MAX_DEPTH{return Err(Error::Limit("nested fraction depth"));}
+    let f=&m.fractions[fi];
+    let side=|ids:&[usize],child:Option<usize>|->Result<MathNode>{
+        if let Some(rule)=child{
+            let ci=*by_rule.get(&rule).ok_or(Error::Invalid("nested fraction rule"))?;
+            return fraction_node(ci,m,g,by_rule,parents,children,depth+1);
+        }
+        let n=row_nodes(ids,g,parents,children)?;
+        if n.is_empty(){return Err(Error::Invalid("empty fraction row"));}
+        Ok(sorted_row(n))
+    };
+    Ok(MathNode::Fraction{rule_command_index:f.rule_command_index,
+        numerator:Box::new(side(&f.numerator,f.numerator_fraction)?),
+        denominator:Box::new(side(&f.denominator,f.denominator_fraction)?)})
 }
 // Every command is authored here, never taken from PDF text. Empty/multiple
 // scalars and unknown characters fail; no raw TeX control sequence injection.
