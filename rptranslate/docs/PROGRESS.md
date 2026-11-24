@@ -10,7 +10,8 @@
 | D1.2a | 已通过 | Unigram Viterbi 内核、identity profile、参考样本 |
 | D1.2b1 | 已通过 | SPM protobuf 读取、ID 映射与真实文件探测 |
 | D1.2b2a | 已通过 | 自主 compiled charsmap 与真实归一化对照 |
-| D1.2b2b | 未开始 | Marian JSON、真实 token 对照 |
+| D1.2b2b1 | 待验证 | 真实 SPM 端到端 ID 编解码对照 |
+| D1.2b2b2 | 未开始 | Marian JSON、网络词表 ID、特殊 token |
 | D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -55,8 +56,11 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.2b2a
 实现有界 compiled charsmap 解析、最长字节前缀匹配及默认空格归一化；新增真实 SPM 官方参考归一化对照测试。[代码提交 e0d7620](https://github.com/trade3403/ai-research-pdf-reader/commit/e0d76202ba43851d2432371a348dac9813ac071c)，[Actions 45508816763](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45508816763) 结论 success；CPU CI 全通过，固定版本三文件哈希一致，源模型与目标模型分别 19/19 归一化完全匹配 Python SentencePiece 0.2.1（合计 38/38）。仅验证默认归一化样本，尚未执行真实 token ID 或模型推理，D1.2 整体仍未完成。
 
-## 下一阶段 D1.2b2b
-归一化接入 Unigram、Marian JSON、语言标记/EOS/PAD/UNK 及真实 token ID/解码对照。
+## 当前阶段 D1.2b2b1
+接入已验证的 compiled charsmap 与 Unigram，真实 source/target SPM 的 30 组样本各自对照 Python SentencePiece 0.2.1 ID 及 decode。新增离线示例 CLI 和独立参考脚本，保留 19 组归一化回归。CI 待验证；SPM ID 不等于 Marian 网络 ID，D1.2 整体仍未完成。
+
+## 下一阶段 D1.2b2b2
+自主 Marian vocab.json 读取、网络词表 ID 映射、语言标记/EOS/PAD/UNK 与真实 Marian tokenizer 对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

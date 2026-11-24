@@ -1,5 +1,5 @@
 //! D1.2a: bounded Unigram Viterbi over an exported SentencePiece vocabulary.
-//! Identity normalization profile only; not a full Marian tokenizer.
+//! Supports pre-normalized input; not a full Marian network tokenizer.
 use std::collections::BTreeMap;
 
 const MAX_VOCAB_BYTES: usize = 16 * 1024 * 1024;
@@ -125,6 +125,15 @@ impl Unigram {
 
     pub fn encode(&self, input: &str) -> Result<Vec<usize>, Error> {
         let normalized = Self::normalize(input)?;
+        self.encode_normalized(&normalized)
+    }
+
+    /// Encode text already normalized by the model's configured normalizer.
+    /// A separate bound accommodates expansion by compiled character maps.
+    pub fn encode_normalized(&self, normalized: &str) -> Result<Vec<usize>, Error> {
+        if normalized.len() > 1024 * 1024 {
+            return Err(Error::Limit);
+        }
         let mut positions: Vec<_> = normalized.char_indices().map(|(i, _)| i).collect();
         positions.push(normalized.len());
         let n = positions.len() - 1;
@@ -224,6 +233,17 @@ mod tests {
             assert_eq!(model.encode(input).unwrap(), *ids);
             assert_eq!(model.decode(ids).unwrap(), *decoded);
         }
+    }
+
+    #[test]
+    fn normalized_input_is_not_normalized_twice() {
+        let model = Unigram::from_tsv(VOCAB).unwrap();
+        assert_eq!(model.encode_normalized("▁ab▁学术。"), Ok(vec![8, 12, 13]));
+        assert_eq!(model.encode_normalized(""), Ok(vec![]));
+        assert_eq!(
+            model.encode_normalized(&"a".repeat(1024 * 1024 + 1)),
+            Err(Error::Limit)
+        );
     }
 
     #[test]

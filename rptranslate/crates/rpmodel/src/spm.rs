@@ -1,6 +1,6 @@
 //! Bounded SentencePiece ModelProto reader. Inspect any model; only the
-//! identity Unigram profile can be executed by the current tokenizer.
-use crate::tokenizer::Unigram;
+//! identity and default nmt_nfkc Unigram profiles are supported.
+use crate::{normalization::CharsMap, tokenizer::Unigram};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -14,6 +14,7 @@ pub enum Error {
     InvalidModel,
     Unsupported,
     MissingId,
+    Normalize,
 }
 
 enum Value<'a> {
@@ -236,6 +237,28 @@ impl<'a> Model<'a> {
         {
             return Err(Error::Unsupported);
         }
+        self.unigram_pieces()
+    }
+
+    /// Construct a tokenizer for the verified default nmt_nfkc profile.
+    pub fn nmt_unigram(&self) -> Result<NmtUnigram<'a>, Error> {
+        if self.model_type != 1
+            || self.normalizer != "nmt_nfkc"
+            || self.charsmap.is_empty()
+            || !self.identity_flags
+            || self.byte_fallback
+            || self.unsupported_options
+            || self.pieces.iter().any(|p| p.kind > 3)
+        {
+            return Err(Error::Unsupported);
+        }
+        Ok(NmtUnigram {
+            normalizer: CharsMap::parse(self.charsmap).map_err(|_| Error::Normalize)?,
+            tokenizer: self.unigram_pieces()?,
+        })
+    }
+
+    fn unigram_pieces(&self) -> Result<Unigram, Error> {
         let mut tsv = String::new();
         for (i, p) in self.pieces.iter().enumerate() {
             if p.text.chars().any(char::is_control) {
@@ -268,6 +291,28 @@ impl<'a> Model<'a> {
                 Ok(vocabulary.get(p.text).copied().unwrap_or(unknown_id))
             })
             .collect()
+    }
+}
+
+/// End-to-end SentencePiece ID codec; Marian vocabulary IDs are separate.
+pub struct NmtUnigram<'a> {
+    normalizer: CharsMap<'a>,
+    tokenizer: Unigram,
+}
+
+impl NmtUnigram<'_> {
+    pub fn encode(&self, input: &str) -> Result<Vec<usize>, Error> {
+        let normalized = self
+            .normalizer
+            .normalize(input)
+            .map_err(|_| Error::Normalize)?;
+        self.tokenizer
+            .encode_normalized(&normalized)
+            .map_err(|_| Error::Limit)
+    }
+
+    pub fn decode(&self, ids: &[usize]) -> Result<String, Error> {
+        self.tokenizer.decode(ids).map_err(|_| Error::MissingId)
     }
 }
 
