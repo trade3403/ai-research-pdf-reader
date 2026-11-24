@@ -6,7 +6,7 @@ Independent, safe Rust prototype. No PDF engine dependencies. Not a production r
 - Direct and indirect scalar stream lengths, bounded reference chains, raw/ASCIIHex/ASCII85/RunLength/Flate stream decoding, including zlib checksum verification.
 - TIFF predictor 2 and PNG predictors 10–15 (1/2/4/8/16-bit samples), aligned direct DecodeParms dictionaries/arrays; indirect filter parameters remain unsupported.
 - Page Contents stream or ordered stream array, bounded decoded output, lexical content operations (raw operands and operator bytes).
-- Explicit errors on unsupported features; font-level Unicode mapping and strict horizontal page text extraction available; no complete graphics execution yet.
+- Explicit errors on unsupported features; font-level Unicode mapping and strict horizontal page text extraction available; partial vector display-list interpretation available; no rasterization yet.
 
 ## Build
 ```
@@ -32,8 +32,11 @@ The existing `filters::decode(&Object, limit)` API is unchanged. Final output is
 ## B08 text contract
 `Document::page_text(&PageInfo, content_limit)` returns `text::PageText` with content-order glyphs, Unicode, source codes, optional CID/GID, user-space origin, advance endpoint, approximate em-height quads, and rendering mode. Interprets BT/ET, Tf, Tc/Tw/Tz/TL/Ts/Tr, Tm/Td/TD/T*, Tj/TJ/quote operators, q/Q/cm. Quads are NOT ink bounds; page CropBox/Rotate and screen coordinate conversion are caller responsibilities. `plain_text()` concatenates content order without inferred whitespace; `search()` provides exact case-sensitive non-overlapping substring matches as half-open glyph ranges, and `select()` intersects quad AABBs. No visual reading-order/column inference, Form XObject traversal, ActualText interpretation, clipping/visibility testing or vertical positioning yet. External objects and marked content produce explicit warnings; unsupported ExtGState/unknown operators and missing glyph widths fail rather than guess. 100,000 page glyphs and 16 MiB Unicode output limits; no new dependencies. Existing APIs unchanged.
 
+## B09 vector graphics contract
+`Document::page_display_list(&PageInfo, content_limit)` returns `graphics::DisplayList`: ordered Save/Restore, path Paint (nonzero/even-odd fill and stroke parameters), Clip, Image reference and deferred Text commands. Path segments are transformed at construction to unrotated PDF user space; strokes retain painting CTM, width, cap, join, miter and dash. Clips represent intersections in command order, not computed polygons; initial clip is CropBox. Supports q/Q/cm, m/l/c/v/y/h/re, paint and W/W*, device Gray/RGB/CMYK and explicit device color spaces. Form XObjects expand in place with local Matrix/BBox/Resources, isolated graphics state and cycle/depth detection; image samples and text outlines remain deferred with explicit warnings. Unsupported ExtGState, shading, patterns, transparency groups, text clipping and unknown operators return errors. Text operators retained for future rendering are not fully validated; use B08 for text extraction. No color-managed conversion, rasterization, or exact clip/stroke tessellation yet. Cumulative page+Form decoded bytes capped by content_limit (max 16 MiB), 100,000 operations/commands, 200,000 path segments, 64 local graphics saves, 32 Form depth. Existing API unchanged, no dependencies.
+
 ## Remaining
-Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
+Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, complete graphics/color interpretation, rasterization, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 
 ## Deferred iOS validation (B-line core only)
 Routine GitHub Actions currently runs Windows and Ubuntu only. iOS device cross-build and simulator jobs are deferred to keep iteration fast. The scripts below remain available for future manual validation; the previous workflow is preserved in commit `685ec546d6c82c1163e0cba6f92201357fd06b39`. Re-enable after core parsing and rendering stabilize. Planned iOS jobs:

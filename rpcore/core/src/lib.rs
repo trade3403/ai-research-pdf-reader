@@ -385,3 +385,5 @@ pub mod content;
 pub mod fonts;
 
 pub mod text;
+
+pub mod graphics;

@@ -1,0 +1,266 @@
+//! Bounded vector display-list interpreter, not a rasterizer.
+//! Paths use unrotated PDF user coordinates; strokes retain the painting CTM.
+use crate::{content::{self,Operation},text::{Matrix,Point},Document,Error,Object,PageInfo,Result};
+use std::collections::BTreeSet;
+const MAX_OPS:usize=100_000;
+const MAX_SEGMENTS:usize=200_000;
+const MAX_COMMANDS:usize=100_000;
+const MAX_STACK:usize=64;
+const MAX_FORMS:usize=32;
+const MAX_DASH:usize=256;
+const MAX_COORD:f64=1e12;
+
+#[derive(Debug,Clone,PartialEq)]
+pub enum Segment{Move(Point),Line(Point),Cubic(Point,Point,Point),Close}
+pub type Path=Vec<Segment>;
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum FillRule{NonZero,EvenOdd}
+#[derive(Debug,Clone,Copy,PartialEq)]
+pub enum Color{Gray(f64),Rgb([f64;3]),Cmyk([f64;4])}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum Space{Gray,Rgb,Cmyk}
+impl Space{
+    fn initial(self)->Color{match self{Self::Gray=>Color::Gray(0.),Self::Rgb=>Color::Rgb([0.;3]),Self::Cmyk=>Color::Cmyk([0.,0.,0.,1.])}}
+    fn color(self,a:&[Object])->Result<Color>{Ok(match self{
+        Self::Gray=>Color::Gray(nums::<1>(a)?[0].clamp(0.,1.)),
+        Self::Rgb=>Color::Rgb(nums::<3>(a)?.map(|x|x.clamp(0.,1.))),
+        Self::Cmyk=>Color::Cmyk(nums::<4>(a)?.map(|x|x.clamp(0.,1.))),
+    })}
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum LineCap{Butt,Round,Square}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum LineJoin{Miter,Round,Bevel}
+#[derive(Debug,Clone,PartialEq)]
+pub struct Stroke{
+    pub color:Color,pub width:f64,pub cap:LineCap,pub join:LineJoin,
+    pub miter_limit:f64,pub dash:Vec<f64>,pub dash_phase:f64,pub ctm:Matrix,
+}
+#[derive(Debug,Clone,PartialEq)]
+pub enum Command{
+    Save,Restore,
+    Paint{path:Path,fill:Option<(Color,FillRule)>,stroke:Option<Stroke>},
+    /// Intersect current clipping region; path is applied after any painting.
+    Clip{path:Path,rule:FillRule},
+    /// Image reference and placement only. Image samples are not decoded here.
+    Image{object_id:(u32,u16),ctm:Matrix},
+    /// Text operators are retained in order, but glyph rendering is deferred.
+    Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>},
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted}
+#[derive(Debug,Clone,PartialEq)]
+pub struct DisplayList{
+    /// Initial clip is the page CropBox; Rotate is not applied.
+    pub crop_box:[f64;4],
+    pub commands:Vec<Command>,
+    pub warnings:Vec<Warning>,
+}
+#[derive(Clone)]
+struct State{
+    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,
+}
+impl Default for State{
+    fn default()->Self{
+        Self{ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
+            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray}
+    }
+}
+impl State{
+    fn stroke(&self)->Stroke{let mut s=self.stroke.clone();s.ctm=self.ctm;s}
+}
+#[derive(Default)]
+struct Current{
+    segments:Path,point:Option<Point>,start:Option<Point>,clip:Option<FillRule>,
+}
+fn arity(a:&[Object],n:usize)->Result<()>{
+    if a.len()==n{Ok(())}else{Err(Error::Invalid("graphics operand count"))}
+}
+fn number(o:&Object)->Result<f64>{
+    if let Object::Number(n)=o{if n.is_finite()&&n.abs()<=MAX_COORD{return Ok(*n);}}
+    Err(Error::Invalid("graphics number"))
+}
+fn nums<const N:usize>(a:&[Object])->Result<[f64;N]>{
+    arity(a,N)?;let mut v=[0.;N];for(i,o)in a.iter().enumerate(){v[i]=number(o)?;}Ok(v)
+}
+fn name(o:&Object)->Result<&[u8]>{
+    if let Object::Name(n)=o{Ok(n)}else{Err(Error::Invalid("graphics name"))}
+}
+fn device(n:&[u8])->Result<Space>{match n{
+    b"DeviceGray"=>Ok(Space::Gray),b"DeviceRGB"=>Ok(Space::Rgb),b"DeviceCMYK"=>Ok(Space::Cmyk),
+    _=>Err(Error::Unsupported("graphics color space")),
+}}
+struct Engine<'d,'a>{
+    doc:&'d Document<'a>,out:DisplayList,
+    active:BTreeSet<(u32,u16)>,ops:usize,segments:usize,bytes_left:usize,
+}
+impl<'d,'a> Engine<'d,'a>{
+    fn command(&mut self,c:Command)->Result<()>{
+        if self.out.commands.len()>=MAX_COMMANDS{return Err(Error::Limit("display list commands"));}
+        self.out.commands.push(c);Ok(())
+    }
+    fn warning(&mut self,w:Warning){if !self.out.warnings.contains(&w){self.out.warnings.push(w);}}
+    fn charge_segments(&mut self,n:usize)->Result<()>{
+        if n>MAX_SEGMENTS.saturating_sub(self.segments){return Err(Error::Limit("display list path segments"));}
+        self.segments+=n;Ok(())
+    }
+    fn push(&mut self,p:&mut Current,s:Segment)->Result<()>{
+        self.charge_segments(1)?;p.segments.push(s);Ok(())
+    }
+    fn moveto(&mut self,p:&mut Current,at:Point)->Result<()>{
+        self.push(p,Segment::Move(at))?;p.start=Some(at);p.point=Some(at);Ok(())
+    }
+    fn lineto(&mut self,p:&mut Current,at:Point)->Result<()>{
+        if p.point.is_none(){return Err(Error::Invalid("path has no current point"));}
+        self.push(p,Segment::Line(at))?;p.point=Some(at);Ok(())
+    }
+    fn cubic(&mut self,p:&mut Current,a:Point,b:Point,c:Point)->Result<()>{
+        if p.point.is_none(){return Err(Error::Invalid("curve has no current point"));}
+        self.push(p,Segment::Cubic(a,b,c))?;p.point=Some(c);Ok(())
+    }
+    fn close(&mut self,p:&mut Current)->Result<()>{
+        let start=p.start.ok_or(Error::Invalid("close without subpath"))?;
+        if !matches!(p.segments.last(),Some(Segment::Close)){self.push(p,Segment::Close)?;}
+        p.point=Some(start);Ok(())
+    }
+    fn rect(&mut self,p:&mut Current,m:Matrix,r:[f64;4])->Result<()>{
+        let [x,y,w,h]=r;
+        self.moveto(p,m.point([x,y])?)?;
+        for point in [[x+w,y],[x+w,y+h],[x,y+h]]{self.lineto(p,m.point(point)?)?;}
+        self.close(p)
+    }
+    fn finish(&mut self,p:&mut Current,s:&State,fill:Option<FillRule>,stroke:bool,close:bool)->Result<()>{
+        if close&&!p.segments.is_empty(){self.close(p)?;}
+        let path=std::mem::take(&mut p.segments);
+        if (fill.is_some()||stroke)&&!path.is_empty(){
+            if p.clip.is_some(){self.charge_segments(path.len())?;}
+            self.command(Command::Paint{path:path.clone(),
+                fill:fill.map(|rule|(s.fill,rule)),stroke:stroke.then(||s.stroke())})?;
+        }
+        if let Some(rule)=p.clip.take(){self.command(Command::Clip{path,rule})?;}
+        *p=Current::default();Ok(())
+    }
+    fn xobject(&mut self,resources:Option<&Object>,n:&[u8],s:&State,depth:usize)->Result<()>{
+        if depth>=MAX_FORMS{return Err(Error::Limit("form depth"));}
+        let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("XObject Resources"))?)?)?;
+        let x=crate::dict(self.doc.dereference(r.get(b"XObject".as_slice()).ok_or(Error::Invalid("XObject dictionary"))?)?)?;
+        let id=crate::reference(x.get(n))?;
+        if !self.active.insert(id){return Err(Error::Invalid("Form XObject cycle"));}
+        let result=self.xobject_inner(id,resources,s,depth);
+        self.active.remove(&id);result
+    }
+    fn xobject_inner(&mut self,id:(u32,u16),resources:Option<&Object>,s:&State,depth:usize)->Result<()>{
+        let stream=self.doc.resolve(id.0,id.1)?;
+        let Object::Stream{dict,..}=&stream else{return Err(Error::Invalid("XObject stream"));};
+        match name(dict.get(b"Subtype".as_slice()).ok_or(Error::Invalid("XObject subtype"))?)?{
+            b"Image"=>{
+                self.warning(Warning::ImageRenderingDeferred);
+                self.command(Command::Image{object_id:id,ctm:s.ctm})
+            }
+            b"Form"=>{
+                if dict.contains_key(b"Group".as_slice()){return Err(Error::Unsupported("Form transparency group"));}
+                if let Some(v)=dict.get(b"FormType".as_slice()){
+                    if number(v)?!=1.{return Err(Error::Unsupported("FormType"));}
+                }
+                let mut child=s.clone();
+                if let Some(v)=dict.get(b"Matrix".as_slice()){
+                    let Object::Array(a)=self.doc.dereference(v)? else{return Err(Error::Invalid("Form Matrix"));};
+                    child.ctm=child.ctm.compose(Matrix(nums(&a)?))?;
+                }
+                let bbox=self.doc.rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("Form BBox"))?)?;
+                let mut p=Current::default();
+                self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;
+                let data=crate::filters::decode(&stream,self.bytes_left)?;
+                self.bytes_left-=data.len();
+                let ops=content::parse(&data)?;
+                self.command(Command::Save)?;
+                self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
+                // Absent Resources may use the page's resource environment.
+                self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
+                self.command(Command::Restore)
+            }
+            _=>Err(Error::Unsupported("XObject subtype")),
+        }
+    }
+    fn run(&mut self,ops:&[Operation],resources:Option<&Object>,mut s:State,depth:usize,scope:Option<(u32,u16)>)->Result<()>{
+        let mut stack=Vec::new();let mut p=Current::default();let mut in_text=false;
+        for op in ops{
+            self.ops+=1;if self.ops>MAX_OPS{return Err(Error::Limit("cumulative graphics operations"));}
+            let a=&op.operands;let w=op.operator.as_slice();
+            // Text clipping changes later graphics. Do not pretend it was applied.
+            if in_text&&!matches!(w,b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""|b"BDC"|b"BMC"|b"EMC"|b"MP"|b"DP"|b"g"|b"G"|b"rg"|b"RG"|b"k"|b"K"|b"CS"|b"cs"|b"SC"|b"SCN"|b"sc"|b"scn"){
+                return Err(Error::Invalid("graphics operator in text object"));
+            }
+            match w{
+                b"q"=>{arity(a,0)?;if stack.len()>=MAX_STACK{return Err(Error::Limit("graphics stack"));}stack.push(s.clone());self.command(Command::Save)?;}
+                b"Q"=>{arity(a,0)?;s=stack.pop().ok_or(Error::Invalid("graphics stack underflow"))?;self.command(Command::Restore)?;}
+                b"cm"=>{s.ctm=s.ctm.compose(Matrix(nums(a)?))?;}
+                b"m"=>{self.moveto(&mut p,s.ctm.point(nums(a)?)?)?;}
+                b"l"=>{self.lineto(&mut p,s.ctm.point(nums(a)?)?)?;}
+                b"c"=>{let [x1,y1,x2,y2,x3,y3]=nums(a)?;self.cubic(&mut p,s.ctm.point([x1,y1])?,s.ctm.point([x2,y2])?,s.ctm.point([x3,y3])?)?;}
+                b"v"=>{let [x2,y2,x3,y3]=nums(a)?;let at=p.point.ok_or(Error::Invalid("curve current point"))?;self.cubic(&mut p,at,s.ctm.point([x2,y2])?,s.ctm.point([x3,y3])?)?;}
+                b"y"=>{let [x1,y1,x3,y3]=nums(a)?;let at=s.ctm.point([x3,y3])?;self.cubic(&mut p,s.ctm.point([x1,y1])?,at,at)?;}
+                b"h"=>{arity(a,0)?;self.close(&mut p)?;}
+                b"re"=>self.rect(&mut p,s.ctm,nums(a)?)?,
+                b"W"|b"W*"=>{arity(a,0)?;if p.clip.is_some(){return Err(Error::Invalid("duplicate pending clip"));}p.clip=Some(if w==b"W"{FillRule::NonZero}else{FillRule::EvenOdd});}
+                b"S"|b"s"|b"f"|b"F"|b"f*"|b"B"|b"B*"|b"b"|b"b*"|b"n"=>{
+                    arity(a,0)?;
+                    let fill=match w{b"f"|b"F"|b"B"|b"b"=>Some(FillRule::NonZero),b"f*"|b"B*"|b"b*"=>Some(FillRule::EvenOdd),_=>None};
+                    self.finish(&mut p,&s,fill,matches!(w,b"S"|b"s"|b"B"|b"B*"|b"b"|b"b*"),matches!(w,b"s"|b"b"|b"b*"))?;
+                }
+                b"w"=>{let v=nums::<1>(a)?[0];if v<0.{return Err(Error::Invalid("line width"));}s.stroke.width=v;}
+                b"J"=>{s.stroke.cap=match nums::<1>(a)?[0]{0.=>LineCap::Butt,1.=>LineCap::Round,2.=>LineCap::Square,_=>return Err(Error::Invalid("line cap"))};}
+                b"j"=>{s.stroke.join=match nums::<1>(a)?[0]{0.=>LineJoin::Miter,1.=>LineJoin::Round,2.=>LineJoin::Bevel,_=>return Err(Error::Invalid("line join"))};}
+                b"M"=>{let v=nums::<1>(a)?[0];if v<1.{return Err(Error::Invalid("miter limit"));}s.stroke.miter_limit=v;}
+                b"d"=>{
+                    arity(a,2)?;let Object::Array(values)=&a[0] else{return Err(Error::Invalid("dash array"));};
+                    if values.len()>MAX_DASH{return Err(Error::Limit("dash array"));}
+                    let dash=values.iter().map(number).collect::<Result<Vec<_>>>()?;
+                    if dash.iter().any(|&x|x<0.)||(!dash.is_empty()&&dash.iter().all(|&x|x==0.)){return Err(Error::Invalid("dash lengths"));}
+                    let phase=number(&a[1])?;if phase<0.{return Err(Error::Invalid("dash phase"));}
+                    s.stroke.dash=dash;s.stroke.dash_phase=phase;
+                }
+                b"g"|b"G"|b"rg"|b"RG"|b"k"|b"K"=>{
+                    let space=match w{b"g"|b"G"=>Space::Gray,b"rg"|b"RG"=>Space::Rgb,_=>Space::Cmyk};
+                    let color=space.color(a)?;
+                    if w[0].is_ascii_uppercase(){s.stroke_space=space;s.stroke.color=color;}else{s.fill_space=space;s.fill=color;}
+                }
+                b"CS"|b"cs"=>{arity(a,1)?;let space=device(name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
+                b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
+                b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
+                b"Do"=>{arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth)?;}
+                b"BT"|b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""=> {
+                    match w{
+                        b"BT"=>{arity(a,0)?;if in_text{return Err(Error::Invalid("nested BT"));}in_text=true;}
+                        b"ET"=>{arity(a,0)?;if !in_text{return Err(Error::Invalid("ET without BT"));}in_text=false;}
+                        b"Tr"=>{let v=nums::<1>(a)?[0];if !(0.0..=7.0).contains(&v)||v.fract()!=0.{return Err(Error::Invalid("text render mode"));}if v>=4.{return Err(Error::Unsupported("text clipping"));}}
+                        _=>{}
+                    }
+                    self.warning(Warning::TextRenderingDeferred);
+                    self.command(Command::Text{operation:op.clone(),ctm:s.ctm,fill:s.fill,stroke:s.stroke(),scope})?;
+                }
+                b"BMC"|b"BDC"|b"EMC"|b"MP"|b"DP"=>self.warning(Warning::MarkedContentNotInterpreted),
+                b"ri"=>{arity(a,1)?;name(&a[0])?;}
+                b"i"=>{let v=nums::<1>(a)?[0];if !(0.0..=100.).contains(&v){return Err(Error::Invalid("flatness"));}}
+                b"gs"=>return Err(Error::Unsupported("ExtGState graphics")),
+                b"sh"=>return Err(Error::Unsupported("shading")),
+                _=>return Err(Error::Unsupported("graphics operator")),
+            }
+        }
+        if !stack.is_empty()||in_text||p.clip.is_some()||!p.segments.is_empty(){return Err(Error::Invalid("unbalanced graphics stream"));}
+        Ok(())
+    }
+}
+impl Document<'_>{
+    /// Build a partial vector display list with explicit deferred-content warnings.
+    /// content_limit counts decoded page and expanded Form bytes cumulatively.
+    pub fn page_display_list(&self,page:&PageInfo,content_limit:usize)->Result<DisplayList>{
+        let limit=content_limit.min(content::MAX_CONTENT_BYTES);
+        let data=self.page_content(page,limit)?;
+        let ops=content::parse(&data)?;
+        let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new()},
+            active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len()};
+        e.run(&ops,page.resources.as_ref(),State::default(),0,None)?;
+        Ok(e.out)
+    }
+}
