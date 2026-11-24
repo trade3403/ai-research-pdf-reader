@@ -6,11 +6,16 @@ const assert = require('node:assert/strict');
   const out = path.resolve(__dirname,'../gui-evidence');
   await fs.mkdir(out,{recursive:true});
   const app = await electron.launch({args:[path.resolve(__dirname,'..')]});
-  let timer, pending = Promise.resolve(), count = 0, captureError;
+  let timer, pending = Promise.resolve(), count = 0, captureError, page;
+  const diagnostics = [];
   try {
-    const page = await app.firstWindow();
-    await page.locator('input[type=file]').waitFor({state:'attached',timeout:30000});
-    await page.locator('body').getByText('尚未打开文档',{exact:true}).waitFor();
+    page = await app.firstWindow();
+    page.on('console', msg => { if (['error','warning'].includes(msg.type())) diagnostics.push(msg.type()+': '+msg.text()); });
+    page.on('pageerror', error => diagnostics.push('pageerror: '+error.message));
+    page.on('requestfailed', request => diagnostics.push('requestfailed: '+request.url()+' '+request.failure()?.errorText));
+    const pdfInput = page.locator('input[type=file][accept="application/pdf,.pdf"]');
+    await pdfInput.waitFor({state:'attached',timeout:30000});
+    await page.locator('.status-bar').getByText('尚未打开文档',{exact:true}).waitFor();
     await page.screenshot({path:path.join(out,'01-start.png')});
     // Record actual Electron renderer screenshots at a fixed cadence; no mock UI.
     const capture = () => {
@@ -27,15 +32,27 @@ const assert = require('node:assert/strict');
     objects.forEach((obj,i)=>{offsets.push(Buffer.byteLength(pdf));pdf+=(i+1)+' 0 obj\n'+obj+'\nendobj\n';});
     const xref=Buffer.byteLength(pdf);
     pdf+='xref\n0 6\n0000000000 65535 f \n'+offsets.map(x=>String(x).padStart(10,'0')+' 00000 n \n').join('')+'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n'+xref+'\n%%EOF\n';
-    await page.locator('input[type=file]').setInputFiles({name:'GUI-fixture.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdf)});
+    await pdfInput.setInputFiles({name:'GUI-fixture.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdf)});
     await page.locator('canvas').first().waitFor({state:'visible',timeout:30000});
-    await page.getByText('1 页 · GUI-fixture.pdf',{exact:true}).waitFor({timeout:30000});
+    await page.locator('.status-bar').getByText('1 页 · GUI-fixture.pdf',{exact:true}).waitFor({timeout:30000});
+    await page.getByText('RPCore test paper',{exact:true}).first().waitFor({timeout:30000});
     await page.waitForTimeout(2000);
     await page.screenshot({path:path.join(out,'02-pdf-open.png')});
     assert.ok(await page.locator('canvas').count());
     await page.waitForTimeout(2000);
+  } catch (error) {
+    diagnostics.push(String(error.stack || error));
+    clearInterval(timer); await pending;
+    if (page) {
+      await page.screenshot({path:path.join(out,'failure.png'),timeout:5000}).catch(()=>{});
+      const body = await page.locator('body').innerText({timeout:5000}).catch(()=> 'unavailable');
+      diagnostics.push('Visible page: '+body);
+    }
+    throw error;
   } finally {
-    clearInterval(timer); await pending; await app.close();
+    clearInterval(timer); await pending;
+    await fs.writeFile(path.join(out,'diagnostics.txt'), diagnostics.join('\n'));
+    await app.close();
   }
   if(captureError) throw captureError;
   assert.ok(count>=4,'insufficient captured frames');
