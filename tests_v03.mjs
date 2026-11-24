@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const read=p=>readFileSync(p,'utf8');
+const code=read('src/components/LiteratureLibrary.tsx');
+const rust=read('src-tauri/src/lib.rs');
+const store=read('src/utils/libraryStore.ts');
+assert.match(code,/批量|导入文件夹|importFiles\(true\)/);
+for(const name of ['inspect_pdf_file','list_pdf_paths','write_library_export','read_citation_import'])assert.match(rust,new RegExp(name));
+for(const query of ['library_items','library_collections','library_memberships','library_tags','library_pages','library_fts'])assert.match(store,new RegExp(query));
+assert.match(code,/Crossref/);assert.match(code,/全文索引/);
+assert.match(read('src/App.tsx'),/LiteratureLibrary/);
+assert.ok(/^0\.[3-9]\./.test(JSON.parse(read('src-tauri/tauri.conf.json')).version), 'V0.3 or newer app version required');
+console.log('V0.3 structural checks passed');
