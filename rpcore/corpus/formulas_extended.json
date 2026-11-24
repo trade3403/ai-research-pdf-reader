@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "coordinate_system": "normalized top-left CropBox; approximate visual annotations from arXiv:1706.03762v7 pages 5–6; style omitted; not source-TeX equivalence",
+  "cases": [
+    {
+      "id": "multihead",
+      "paper": "transformer",
+      "page": 5,
+      "rect": [
+        0.299,
+        0.182,
+        0.681,
+        0.202
+      ],
+      "expected": [
+        "MultiHead(Q,K,V)=Concat(hea{d}_{1},...,hea{d}_{h}){W}^{O}",
+        "MultiHead(Q,K,V)=Concat(hea{d}_{1},\\ldots{} ,hea{d}_{h}){W}^{O}"
+      ],
+      "note": "Section 3.2.2 display, first line; head subscripts and ellipsis. Expected uses plain style; equivalent ellipsis spellings explicitly allowed."
+    },
+    {
+      "id": "attention-head",
+      "paper": "transformer",
+      "page": 5,
+      "rect": [
+        0.41,
+        0.203,
+        0.7,
+        0.225
+      ],
+      "expected": [
+        "hea{d}_{i}=Attention(Q{W}_{i}^{Q},K{W}_{i}^{K},V{W}_{i}^{V})"
+      ],
+      "note": "Section 3.2.2 second display line, excluding prose 'where'; simultaneous super/subscripts."
+    },
+    {
+      "id": "position-sin",
+      "paper": "transformer",
+      "page": 6,
+      "rect": [
+        0.379,
+        0.42,
+        0.639,
+        0.444
+      ],
+      "expected": [
+        "P{E}_{(pos,2i)}=sin(pos/1000{0}^{2i/{d}_{model}})"
+      ],
+      "note": "Section 3.5 first display; grouped multi-glyph scripts and nested subscript."
+    },
+    {
+      "id": "position-cos",
+      "paper": "transformer",
+      "page": 6,
+      "rect": [
+        0.363,
+        0.444,
+        0.639,
+        0.466
+      ],
+      "expected": [
+        "P{E}_{(pos,2i+1)}=cos(pos/1000{0}^{2i/{d}_{model}})"
+      ],
+      "note": "Section 3.5 second display; grouped multi-glyph scripts and nested subscript."
+    }
+  ]
+}

@@ -108,8 +108,15 @@ def report_md(report):
                 lines.append(f"- {key}: "+str(v[key]).replace("\n"," ").replace("<","&lt;").replace(">","&gt;"))
         for i,diag in list(v.get("glyph_diagnostics",{}).items())[:64]:
             lines.append(f"- glyph {i}: "+diag.replace("\n"," ").replace("<","&lt;").replace(">","&gt;"))
-    lines+=["","Reference and candidate LaTeX, selected-region glyph diagnostics, source hashes and timings are in report.json. No threshold for fidelity is enforced."]
+    lines+=["","Reference and candidate LaTeX, selected-region glyph diagnostics, source hashes and timings are in report.json.", "Gate: "+("all selected cases must exactly match in every requested font policy." if report.get("require_exact") else "observational; recognition failures do not fail CI.")]
     return "\n".join(lines)+"\n"
+
+def exit_code(rows, require_exact=False):
+    if not rows or any(x["outcome"] in {"timeout","process_error","protocol_error","download_error","budget_skipped"} for x in rows):
+        return 3
+    if require_exact and any(x["outcome"]!="exact_match" for x in rows):
+        return 1
+    return 0
 
 def main():
     p=argparse.ArgumentParser()
@@ -117,13 +124,14 @@ def main():
     p.add_argument("--out",required=True,type=pathlib.Path)
     p.add_argument("--font-dir",type=pathlib.Path)
     p.add_argument("--cases",type=pathlib.Path,default=ROOT/"formulas.json")
+    p.add_argument("--require-exact",action="store_true",help="Fail if any selected case fails exact matching in any requested font policy")
     a=p.parse_args()
     if not a.probe.is_file() or (a.font_dir and not a.font_dir.is_dir()):
         p.error("missing probe or font directory")
     papers={x["id"]:x for x in json.loads((ROOT/"papers.json").read_text(encoding="utf-8"))}
     cases=load_cases(a.cases,papers)
     modes=[("strict",None)]+([("explicit_urw",a.font_dir.resolve())] if a.font_dir else [])
-    report={"schema":1,"sources":{},"rows":[],"counts":{}}
+    report={"schema":1,"manifest":a.cases.name,"require_exact":a.require_exact,"sources":{},"rows":[],"counts":{}}
     deadline=time.monotonic()+240
     with tempfile.TemporaryDirectory(prefix="rpcore-formula-") as tmp:
         files={}
@@ -155,8 +163,8 @@ def main():
     md=report_md(report)
     (a.out/"report.md").write_text(md,encoding="utf-8")
     print(md)
-    # Recognition failures are observations. Infrastructure errors fail CI.
-    return int(any(x["outcome"] in {"timeout","process_error","protocol_error","download_error","budget_skipped"} for x in report["rows"]))
+    # Always persist the report before evaluating the regression gate.
+    return exit_code(report["rows"],a.require_exact)
 
 if __name__=="__main__":
     raise SystemExit(main())

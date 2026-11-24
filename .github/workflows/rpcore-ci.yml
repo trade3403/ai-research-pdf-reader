@@ -151,9 +151,9 @@ jobs:
           if [ -f rpcore/target/visual-area-72dpi-report/report.md ]; then cat rpcore/target/visual-area-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
   corpus-formulas:
-    # Observational transcription benchmark, independent of raster quality.
+    # Frozen four-case regression gate plus separately scored exploratory cases.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -164,7 +164,10 @@ jobs:
           mkdir -p rpcore/target/formula-report
           dpkg-query -W fonts-urw-base35 > rpcore/target/formula-report/font-package.txt
           sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/formula-report/font-sha256.txt
-          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report --font-dir /usr/share/fonts/opentype/urw-base35
+          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report --font-dir /usr/share/fonts/opentype/urw-base35 --require-exact
+      - if: success() || failure()
+        run: |
+          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report/extended --font-dir /usr/share/fonts/opentype/urw-base35 --cases rpcore/corpus/formulas_extended.json
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -174,3 +177,4 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/formula-report/report.md ]; then cat rpcore/target/formula-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/formula-report/extended/report.md ]; then cat rpcore/target/formula-report/extended/report.md >> "$GITHUB_STEP_SUMMARY"; fi
