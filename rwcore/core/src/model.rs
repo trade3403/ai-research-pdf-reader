@@ -6,6 +6,7 @@ pub struct Document {
     pub blocks: Vec<Block>,
     /// Parsed styles associated with the main document; direct formatting remains unchanged.
     pub styles: Option<crate::opc::StyleCatalog>,
+    pub numbering: Option<crate::numbering::NumberingCatalog>,
     pub diagnostics: Vec<Diagnostic>,
 }
 

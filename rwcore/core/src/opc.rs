@@ -121,6 +121,23 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
             Target::External(_) => warn(&mut document, "External styles relationship ignored"),
         }
     }
+    let mut numbering = graph.relationships.iter().filter(|r|
+        r.source == graph.main_part && r.kind == ResourceKind::Numbering);
+    if let Some(rel) = numbering.next() {
+        if numbering.next().is_some() {
+            return Err(Error::Invalid("multiple main document numbering relationships"));
+        }
+        match &rel.target {
+            Target::Internal(name) => {
+                if graph.parts.get(name).and_then(|mime| mime.as_deref()) != Some(crate::numbering::NUMBERING_MIME) {
+                    return Err(Error::Invalid("numbering content type"));
+                }
+                let bytes = part(&mut zip, name, limits)?;
+                document.numbering = Some(crate::numbering::parse_numbering(&bytes, limits)?);
+            }
+            Target::External(_) => warn(&mut document, "External numbering relationship ignored"),
+        }
+    }
     for node in body.children().filter(|n| n.is_element()) {
         if !named(node, ns, "p") {
             let name = node.tag_name().name().to_owned();
@@ -219,7 +236,7 @@ pub fn parse_direct_run_properties(bytes: &[u8], limits: Limits) -> Result<Direc
     Ok(parse_run_node(root, ns))
 }
 
-fn parse_run_node(root: Node<'_, '_>, ns: &str) -> DirectRunProperties {
+pub(crate) fn parse_run_node(root: Node<'_, '_>, ns: &str) -> DirectRunProperties {
     let mut out = DirectRunProperties::default();
     let mut seen = std::collections::HashSet::new();
     for node in root.children().filter(|n| n.is_element()) {
@@ -353,7 +370,7 @@ pub enum ParagraphAlignment { Left, Right, Center, Both, Start, End }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineRule { Auto, Exact, AtLeast }
 
-fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperties {
+pub(crate) fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperties {
     let mut out = DirectParagraphProperties::default();
     let mut seen = std::collections::HashSet::new();
     for node in root.children().filter(|n| n.is_element()) {
