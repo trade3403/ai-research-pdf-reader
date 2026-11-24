@@ -122,7 +122,11 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
                     let g=&geometry.glyphs[i];
                     g.form_scope==geometry.glyphs[root.index].form_scope
                     &&g.outline_bounds.is_some_and(|a|a[0]>=root.bounds[2]-em*0.1&&a[2]<=b[2]+em*0.1)
-                    &&(g.origin[1]-root.y).abs()<=em*0.3
+                    // A TeX radical origin can be at the top of its outline.
+                    // Require the radicand ink to fit the radical's vertical span,
+                    // rather than assuming a shared typographic baseline.
+                    &&((g.origin[1]-root.y).abs()<=em*0.3
+                        ||g.outline_bounds.is_some_and(|a|a[1]>=root.bounds[1]-em*0.1&&a[3]<=b[1]))
                     &&g.unicode.as_deref()!=Some("√")
                 }){continue;}
                 if radicals.len()>=MAX_RULES{return Err(Error::Limit("math radicals"));}
@@ -265,6 +269,21 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
             if membership[bi].1[fi/64]&mask!=0{f.denominator.push(g.index);}
         }
         membership[si]=membership[bi];
+    }
+    // A detected script inside an explicit overbar belongs to the radicand.
+    // Do not absorb scripts from another radical or a conflicting fraction row.
+    for s in &scripts{
+        let bi=by_index[&s.base];let si=by_index[&s.script];let g=items[si];
+        if membership[bi]!=membership[si]{continue;}
+        if radicals.iter().any(|r|r.symbol==s.script||r.radicand.contains(&s.script)){continue;}
+        let mut candidates=radicals.iter_mut().filter(|r|r.radicand.contains(&s.base));
+        let Some(r)=candidates.next()else{continue;};
+        if candidates.next().is_some(){continue;}
+        let root=items[by_index[&r.symbol]];let b=r.rule_bounds;
+        if g.bounds[0]>=root.bounds[2]-root.em*0.1&&g.bounds[2]<=b[2]+root.em*0.1
+            &&g.bounds[1]>=root.bounds[1]-root.em*0.1&&g.bounds[3]<=b[1]{
+            r.radicand.push(s.script);
+        }
     }
     // Preserve display-list order of relationship records for API callers.
     scripts.sort_by_key(|s|s.script);
