@@ -1,0 +1,43 @@
+name: Electron preview Windows build
+on:
+  push:
+    branches: [feature/electron-migration, main]
+    paths: ['electron-preview/**', '.github/workflows/electron-preview-ci.yml']
+  pull_request:
+    paths: ['electron-preview/**', '.github/workflows/electron-preview-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: electron-preview
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - run: node --check main.cjs
+      - run: node --check preload.cjs
+      - run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Check installer and generate SHA256
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem dist -Filter '*.exe' -File)
+          if ($files.Count -eq 0) { throw 'No installer' }
+          $files | ForEach-Object { "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electron-preview-windows-x64
+          path: |
+            electron-preview/dist/*.exe
+            electron-preview/dist/SHA256SUMS.txt
+            electron-preview/package-lock.json
+          if-no-files-found: error
