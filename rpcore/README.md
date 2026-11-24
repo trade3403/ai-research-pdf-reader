@@ -61,6 +61,18 @@ JPEG SOF2 supports DC first/refinement, AC spectral selection, successive approx
 ## B10.4c2a isolated transparency groups
 Form XObject `/Group << /S /Transparency /I true >>` with `/K false` (default) and absent or `/DeviceRGB` CS emits BeginGroup/EndGroup around the Form's BBox clip and content. The child starts with Normal blend and ca/CA=1; caller nonstroking opacity and blend apply once to the group result. Offscreen straight RGB8 and f32 alpha per 2x2 subsample implement source-over including partially transparent backdrops and nonseparable RGB modes. Nested isolated groups restore parent buffers and graphics state. Group alpha is independent of final opaque RGBA page output; existing clip limits remain. At most 8 groups and 128 MiB cumulative live offscreen color/alpha buffers (28 bytes per output pixel per layer, root excluded); group begin/end charge page work budget. Non-isolated, knockout, non-RGB groups, arbitrary graphics-state soft masks, and text inside Form remain unsupported. No third-party dependencies. CI runs group_demo and uploads original synthetic PDF plus native PNG. This is not full ISO 32000 transparency coverage.
 
+## B10.5 real-paper corpus
+The independent corpus probe and Python standard-library runner use versioned public arXiv PDFs (manifest `rpcore/corpus/papers.json`), downloaded into a temporary directory with size/time limits and recorded SHA-256. CI runs a synthetic smoke test then three research papers, first/middle/last page of each, at 0.5 pixels per PDF coordinate unit. A fresh process per stage and page (15-second timeout) tests page operations, text glyph/Unicode/warning counts and strict native render plus PNG encoding. Reports include per-stage errors, wall/engine timing, dimensions, nonwhite count and stable RGBA fingerprint; a successful return is not proof of visual fidelity. Unsupported/invalid/limit are separate categories; crashes, timeouts and all-download failure fail the corpus job. No paper PDF, extracted text or page images are uploaded. Baseline Rust test/build jobs remain independent. No third-party Cargo dependencies, no reference PDF renderer in the core.
+
+Local usage:
+```sh
+cargo build --manifest-path rpcore/Cargo.toml --locked --release --example corpus_probe
+python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/corpus-report
+# Local PDF and optional native PNGs (source permissions apply):
+python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/local-report --local input.pdf --all-pages --save-png
+```
+On Windows use the .exe and python command. Corpus reports are diagnostic, not a compatibility certification. Full-document coverage, pixel comparisons against independent reference images, and actual compatibility fixes follow the first measured baseline.
+
 ## Remaining
 Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, complete graphics/color interpretation, full rasterization and text rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 

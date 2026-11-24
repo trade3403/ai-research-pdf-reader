@@ -39,3 +39,27 @@ jobs:
           name: rpcore-render-demo-${{ matrix.os }}
           path: rpcore/target/render-demo/
           if-no-files-found: error
+
+  corpus:
+    # Separate observational Linux job: routine cross-platform unit tests stay independent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe --example render_demo
+      - run: rpcore/target/release/examples/render_demo rpcore/target/corpus-smoke
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/corpus-smoke-report --local rpcore/target/corpus-smoke/rpcore-vector-demo.pdf --require-success
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/corpus-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-real-paper-corpus
+          path: |
+            rpcore/target/corpus-report/report.json
+            rpcore/target/corpus-report/report.md
+            rpcore/target/corpus-smoke-report/report.json
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/corpus-report/report.md ]; then cat rpcore/target/corpus-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
