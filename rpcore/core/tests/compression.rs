@@ -6,7 +6,7 @@ fn stream(dict: &[u8], data: &[u8]) -> Object {
 fn hex(s:&str)->Vec<u8>{s.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect()}
 #[test]
 fn ascii85_flate_chain() {
-    let s=stream(b"<< /Filter [/ASCII85Decode /FlateDecode] /DecodeParms [null null] >>",&[71,97,113,69,35,56,108,33,60,90,33,45,55,33,40,48,96,126,62]);
+    let s=stream(b"<< /Filter [/ASCII85Decode /FlateDecode] /DecodeParms [null null] >>",b"GaqE#8l!<Z!-7!(0`~>");
     assert_eq!(filters::decode(&s,24).unwrap(),b"abc".repeat(8));
     assert!(filters::decode(&s,23).is_err());
 }

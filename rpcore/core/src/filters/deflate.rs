@@ -165,9 +165,16 @@ mod tests {
         assert_eq!(decode(&stored,3).unwrap(),b"abc");
         let fixed = hex("789c4b4c4a4ec4860072e00931");
         assert_eq!(decode(&fixed,24).unwrap(),b"abc".repeat(8));
-        let dynamic = hex("789cedcbd10983301400c055de00a593b884c4200f8c9124eedf417af77f5b1fb5453ef36d71f4ab8f98b9626f757da2f47bd6b2ea7a47ec473e394bde67d42bd737365114455114455114455114455114455114455114455114455114455114455114455114ff35fe001fab7a21");
+        // Verified independently against Python's standard zlib.
+        let dynamic = hex(&format!("{}{}{}", "789cedcbd10983301400c055de00a593b884c4200f8c9124eedf417af77f5b1fb5453ef36d71f4ab8f98b9626f757da2f47bd6b2ea7a47ec473e394bde67d42bd737365", "114455".repeat(10), "114ff35fe001fab7a21"));
+        assert_eq!(dynamic.len(),107);
         assert_eq!(decode(&dynamic,11400).unwrap(), b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(200));
         assert!(matches!(decode(&dynamic,11399), Err(Error::Limit(_))));
+        // Independent shorter dynamic-Huffman fixture; do not rely on one vector.
+        let short = hex("789cedcbd109c0200c05c055de00a593b884c4501e182349dcbf83b4f77fcd430ddc790cc3a70792856e5a17c457aa94d609f4c1cd14ae073a5937da1fbf1d5f770bd2dd");
+        assert_eq!(short.len(),68);
+        assert_eq!(decode(&short,570).unwrap(), b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(10));
+        assert!(matches!(decode(&short,569), Err(Error::Limit(_))));
     }
     #[test]
     fn malformed() {
