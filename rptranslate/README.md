@@ -30,3 +30,11 @@ cargo run --locked --offline -p rptranslate -- self-check
 - 免费 CI 只做有限研发测试；正式训练不使用反复运行的免费 Runner。Windows GPU/NPU 兼容性须在用户机器实测。
 
 D1.0 暂不提供真正翻译、模型加载、训练、GUI 或 GPU 加速。
+
+## 正式研发文档（D 线路）
+- [开发规范与技术架构](docs/DEVELOPMENT.md)
+- [研发路线与里程碑](docs/ROADMAP.md)
+- [研发目标与验收](docs/TARGETS.md)
+- [实际开发进度与 CI 证据](docs/PROGRESS.md)
+
+阶段完成以进度文档及对应 GitHub Actions 记录为准。
