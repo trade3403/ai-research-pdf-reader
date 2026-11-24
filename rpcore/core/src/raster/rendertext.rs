@@ -116,12 +116,17 @@ impl TextRenderer{
         }else{d.clone()};
         let desc=crate::dict(doc.dereference(cid.get(b"FontDescriptor".as_slice()).ok_or(Error::Unsupported("missing embedded font descriptor"))?)?)?;
         let traditional=font.kind==FontKind::Type1&&desc.contains_key(b"FontFile".as_slice());
-        let key=if traditional{b"FontFile".as_slice()}else if font.kind==FontKind::Type0Cid2{b"FontFile2".as_slice()}else{b"FontFile3".as_slice()};
+        let key=if traditional{b"FontFile".as_slice()}else if font.kind==FontKind::Type0Cid2&&desc.contains_key(b"FontFile2".as_slice()){b"FontFile2".as_slice()}else{b"FontFile3".as_slice()};
         let file=doc.dereference(desc.get(key).ok_or(Error::Unsupported("missing supported embedded font file"))?)?;
-        if !traditional&&font.kind!=FontKind::Type0Cid2{
-            let Object::Stream{dict,..}=&file else{return Err(Error::Invalid("CFF font stream"));};
+        let mut opentype=false;
+        if key==b"FontFile3"{
+            let Object::Stream{dict,..}=&file else{return Err(Error::Invalid("font program stream"));};
             let expected=if font.kind==FontKind::Type0Cid0{b"CIDFontType0C".as_slice()}else{b"Type1C".as_slice()};
-            if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==expected){return Err(Error::Unsupported("CFF font stream subtype"));}
+            match dict.get(b"Subtype".as_slice()).map(|v|doc.dereference(v)).transpose()?{
+                Some(Object::Name(n)) if n==b"OpenType"=>opentype=true,
+                Some(Object::Name(n)) if font.kind!=FontKind::Type0Cid2&&n==expected=>{},
+                _=>return Err(Error::Unsupported("FontFile3 subtype")),
+            }
         }
         let data=crate::filters::decode(&file,MAX_FONT_BYTES.min(MAX_FONT_TOTAL-self.font_bytes))?;
         self.font_bytes+=data.len();
@@ -136,7 +141,7 @@ impl TextRenderer{
             let (names,standard)=type1_mapping(doc,&d)?;
             Outline::Type1(t,names,standard)
         }else if font.kind==FontKind::Type0Cid2{Outline::Tt(TrueType::parse(data)?)}else{
-            let c=Cff::parse(data)?;
+            let c=if opentype{Cff::parse_opentype(&data)?}else{Cff::parse(data)?};
             if c.is_cid()!=(font.kind==FontKind::Type0Cid0){return Err(Error::Invalid("CFF CID subtype mismatch"));}
             let names=if c.is_cid(){[None;256]}else{cff_mapping(doc,&d,&c)?};
             Outline::Cff(c,names)

@@ -214,7 +214,30 @@ fn read_encoding(data:&[u8],offset:usize,keys:&BTreeMap<u16,u16>,names:&BTreeMap
 }
 #[derive(Debug)]
 pub struct Cff{data:Vec<u8>,chars:Vec<Range>,global:Vec<Range>,privates:Vec<Private>,fd:Vec<usize>,keys:BTreeMap<u16,u16>,names:BTreeMap<Vec<u8>,u16>,matrix:Matrix,cid:bool,encoding:[Option<u16>;256]}
+/// Extract CFF1 from an OpenType OTTO table directory. No font platform APIs.
+pub fn opentype_cff(data:&[u8])->Result<&[u8]>{
+    if data.len()>MAX_BYTES{return Err(Error::Limit("OpenType font bytes"));}
+    if data.get(..4)!=Some(b"OTTO"){return Err(Error::Unsupported("OpenType CFF container"));}
+    let u16at=|p:usize|->Result<usize>{Ok(u16::from_be_bytes(data.get(p..p+2).ok_or(Error::Invalid("OpenType directory"))?.try_into().unwrap()) as usize)};
+    let u32at=|p:usize|->Result<usize>{Ok(u32::from_be_bytes(data.get(p..p+4).ok_or(Error::Invalid("OpenType directory"))?.try_into().unwrap()) as usize)};
+    let n=u16at(4)?;if n==0||n>128{return Err(Error::Limit("OpenType table count"));}
+    let end=12+n*16;if end>data.len(){return Err(Error::Invalid("OpenType directory"));}
+    let mut result=None;let mut ranges=Vec::new();let mut tags=std::collections::BTreeSet::new();
+    for i in 0..n{
+        let p=12+16*i;let tag=&data[p..p+4];
+        if !tags.insert(tag){return Err(Error::Invalid("duplicate OpenType table"));}
+        let offset=u32at(p+8)?;let len=u32at(p+12)?;
+        let last=offset.checked_add(len).ok_or(Error::Invalid("OpenType table range"))?;
+        if offset<end||last>data.len()||offset%4!=0{return Err(Error::Invalid("OpenType table range"));}
+        if len>0{ranges.push((offset,last));}
+        if tag==b"CFF "{if len<4{return Err(Error::Invalid("OpenType CFF table"));}result=Some(&data[offset..last]);}
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|w|w[0].1>w[1].0){return Err(Error::Invalid("overlapping OpenType tables"));}
+    result.ok_or(Error::Unsupported("OpenType without CFF1"))
+}
 impl Cff{
+    pub fn parse_opentype(data:&[u8])->Result<Self>{Self::parse(opentype_cff(data)?.to_vec())}
     pub fn parse(data:Vec<u8>)->Result<Self>{
         if data.len()>MAX_BYTES{return Err(Error::Limit("CFF bytes"));}
         let mut r=Read{d:&data,p:0};if r.byte()?!=1{return Err(Error::Unsupported("CFF version"));}

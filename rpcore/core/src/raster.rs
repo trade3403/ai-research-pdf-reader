@@ -25,8 +25,9 @@ impl Bitmap{
 pub struct StandardFontSet{fonts:BTreeMap<Vec<u8>,Vec<u8>>,bytes:usize}
 impl StandardFontSet{
     pub fn new()->Self{Self::default()}
-    pub fn insert(&mut self,face:StandardFont,program:Vec<u8>)->Result<()>{
+    pub fn insert(&mut self,face:StandardFont,mut program:Vec<u8>)->Result<()>{
         if program.is_empty()||program.len()>crate::fonts::truetype::MAX_FONT_BYTES{return Err(Error::Limit("replacement font bytes"));}
+        if program.starts_with(b"OTTO"){program=crate::fonts::cff::opentype_cff(&program)?.to_vec();}
         let old=self.fonts.get(face.name()).map_or(0,Vec::len);
         let total=self.bytes-old+program.len();
         if total>32*1024*1024{return Err(Error::Limit("replacement font set bytes"));}

@@ -8,6 +8,7 @@ import argparse
 import collections
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -40,15 +41,19 @@ def download(url, path):
             raise ValueError("not a PDF")
     return size
 
-def invoke(exe, path, stage, page=None, png=None):
+def invoke(exe, path, stage, page=None, png=None, font_dir=None):
     cmd = [str(exe), str(path), stage]
     if page is not None:
         cmd.append(str(page))
     if png is not None:
         cmd.append(str(png))
+    env = os.environ.copy()
+    env.pop("RPCORE_STANDARD_FONT_DIR", None)
+    if font_dir is not None and stage == "render":
+        env["RPCORE_STANDARD_FONT_DIR"] = str(font_dir)
     start = time.monotonic()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+        p = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "wall_ms": round((time.monotonic()-start)*1000)}
     elapsed = round((time.monotonic()-start)*1000)
@@ -69,7 +74,7 @@ def invoke(exe, path, stage, page=None, png=None):
 def sample_pages(n):
     return sorted({1, (n+1)//2, n}) if n > 0 else []
 
-def process(exe, item, path, report_dir, save_png, deadline, all_pages):
+def process(exe, item, path, report_dir, save_png, deadline, all_pages, font_dir):
     result = dict(item)
     result.pop("local", None)
     try:
@@ -102,7 +107,7 @@ def process(exe, item, path, report_dir, save_png, deadline, all_pages):
                 row[stage] = {"status": "budget_skipped"}
                 continue
             png = report_dir / f"{item['id']}-{page}.png" if save_png and stage == "render" else None
-            row[stage] = invoke(exe, path, stage, page, png)
+            row[stage] = invoke(exe, path, stage, page, png, font_dir)
         result["pages"].append(row)
     return result
 
@@ -124,18 +129,19 @@ def summarize(results):
     return {"counts": {k: dict(v) for k,v in counts.items()},
             "failure_reasons": [{"stage": k[0], "status": k[1], "reason": k[2], "count": v} for k,v in reasons.most_common()]}
 
-def markdown(results, summary):
+def markdown(results, summary, font_dir):
     lines = ["# RPCore real-paper corpus report", "", "Strict render at 0.5 px/PDF unit; no missing-text fallback. Execution success is NOT a visual-fidelity score.", "", "| Stage | OK | Other | Total |", "|---|---:|---:|---:|"]
     for stage, c in summary["counts"].items():
         total = sum(c.values())
         lines.append(f"| {stage} | {c.get('ok',0)} | {total-c.get('ok',0)} | {total} |")
-    lines += ["", "| Paper | Download | Parse | Page | Content | Text | Render | Render ms |", "|---|---|---|---:|---|---|---|---:|"]
+    lines[2] = ("Explicit URW substitute fonts enabled; not strict original-font coverage. " if font_dir else "Strict original-font render. ") + "0.5 px/PDF unit; no missing-text fallback. Execution success is NOT a visual-fidelity score."
+    lines += ["", "| Paper | Download | Parse | Page | Content | Text | Render | Render ms | Substituted faces |", "|---|---|---|---:|---|---|---|---:|---|"]
     for d in results:
         prefix = f"| {d['id']} | {d['download']['status']} | {d.get('inspect',{}).get('status','not_run')} |"
         if not d.get("pages"):
-            lines.append(prefix+" — | — | — | — | — |")
+            lines.append(prefix+" — | — | — | — | — | — |")
         for p in d.get("pages", []):
-            lines.append(prefix+f" {p['page']} | {p['content']['status']} | {p['text']['status']} | {p['render']['status']} | {p['render'].get('wall_ms','—')} |")
+            lines.append(prefix+f" {p['page']} | {p['content']['status']} | {p['text']['status']} | {p['render']['status']} | {p['render'].get('wall_ms','—')} | {p['render'].get('substituted_fonts') or '—'} |")
     lines += ["", "## Failure reasons", ""]
     for x in summary["failure_reasons"]:
         reason = x["reason"].replace("|", r"\|").replace("\n", " ")
@@ -147,6 +153,7 @@ def main():
     parser.add_argument("--probe", required=True, type=pathlib.Path)
     parser.add_argument("--out", required=True, type=pathlib.Path)
     parser.add_argument("--manifest", type=pathlib.Path, default=pathlib.Path(__file__).with_name("papers.json"))
+    parser.add_argument("--font-dir", type=pathlib.Path, help="Explicit URW Base35 OTF directory; separate substitute coverage")
     parser.add_argument("--local", type=pathlib.Path, help="Run one local PDF instead of downloading papers")
     parser.add_argument("--all-pages", action="store_true", help="Up to 30 pages per paper instead of first/middle/last")
     parser.add_argument("--save-png", action="store_true", help="Local opt-in only; respect source permissions")
@@ -158,6 +165,10 @@ def main():
     if not exe.is_file():
         parser.error("probe executable missing")
     items = [{"id": "local", "title": "Local PDF", "local": str(a.local)}] if a.local else json.loads(a.manifest.read_text(encoding="utf-8"))
+    if a.font_dir is not None:
+        a.font_dir = a.font_dir.resolve()
+        if not a.font_dir.is_dir():
+            parser.error("font directory missing")
     a.out.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic()+360
     with tempfile.TemporaryDirectory(prefix="rpcore-corpus-") as tmp:
@@ -166,12 +177,12 @@ def main():
             if time.monotonic() >= deadline:
                 results.append({**item, "download":{"status":"budget_skipped"}})
                 continue
-            d = process(exe, item, pathlib.Path(tmp)/f"{item['id']}.pdf", a.out, a.save_png, deadline, a.all_pages)
+            d = process(exe, item, pathlib.Path(tmp)/f"{item['id']}.pdf", a.out, a.save_png, deadline, a.all_pages, a.font_dir)
             results.append(d)
             print(item["id"], d["download"]["status"], d.get("inspect",{}).get("status","not_run"), flush=True)
     summary = summarize(results)
-    (a.out/"report.json").write_text(json.dumps({"schema":1,"scale":0.5,"selection":"up_to_30" if a.all_pages else "first_middle_last","documents":results,"summary":summary}, indent=2, ensure_ascii=False)+"\n",encoding="utf-8")
-    md = markdown(results,summary)
+    (a.out/"report.json").write_text(json.dumps({"schema":1,"font_mode":"explicit_urw" if a.font_dir else "strict","scale":0.5,"selection":"up_to_30" if a.all_pages else "first_middle_last","documents":results,"summary":summary}, indent=2, ensure_ascii=False)+"\n",encoding="utf-8")
+    md = markdown(results,summary,a.font_dir)
     (a.out/"report.md").write_text(md,encoding="utf-8")
     print(md)
     # Unsupported documents are expected during development. Crashes/timeouts and

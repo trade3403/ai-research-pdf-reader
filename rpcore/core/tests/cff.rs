@@ -109,3 +109,21 @@ fn native_cff_pdf_pixels(){
         let b=out.bitmap;let i=(65*b.width+11)*4;assert_eq!(&b.rgba[i..i+4],&[0,0,0,255]);
     }
 }
+
+fn otto(cff:&[u8])->Vec<u8>{
+    let mut b=b"OTTO".to_vec();b.extend([0,1,0,16,0,0,0,0]);
+    b.extend(b"CFF ");b.extend([0;4]);b.extend(28u32.to_be_bytes());b.extend((cff.len()as u32).to_be_bytes());b.extend(cff);b
+}
+#[test]fn opentype_cff_container_and_substitution(){
+    use rpcore::{fonts::standard::StandardFont,raster::StandardFontSet};
+    let data=fixture::encoded_font(3,[34,35],0,&[]);let wrapped=otto(&data);
+    let c=Cff::parse_opentype(&wrapped).unwrap();assert_eq!(c.glyph_for_code(65),Some(1));
+    let mut set=StandardFontSet::new();set.insert(StandardFont::Helvetica,wrapped.clone()).unwrap();
+    let p=fixture::standard_pdf(b"BT /F1 20 Tf 10 20 Td (AB) Tj ET","Helvetica","");
+    let d=Document::open(&p).unwrap();let out=d.render_page_with_standard_fonts(&d.pages().unwrap()[0],Options::default(),10000,&set).unwrap();
+    assert_eq!(out.substituted_fonts,vec![StandardFont::Helvetica]);assert!(!out.bitmap.missing_text);
+    assert_eq!(&out.bitmap.rgba[(65*out.bitmap.width+11)*4..(65*out.bitmap.width+11)*4+4],&[0,0,0,255]);
+    for bad in [0u32,27,u32::MAX]{let mut b=wrapped.clone();b[20..24].copy_from_slice(&bad.to_be_bytes());assert!(Cff::parse_opentype(&b).is_err());}
+    let mut b=wrapped.clone();b[12..16].copy_from_slice(b"CFF2");assert!(Cff::parse_opentype(&b).is_err());
+    let mut b=wrapped.clone();b.pop();assert!(Cff::parse_opentype(&b).is_err());
+}

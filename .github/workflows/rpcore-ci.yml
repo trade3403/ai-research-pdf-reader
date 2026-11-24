@@ -63,3 +63,27 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/corpus-report/report.md ]; then cat rpcore/target/corpus-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-fonts:
+    # Optional explicit font assets, never bundled into RPCore release artifacts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fonts-urw-base35
+      - run: |
+          mkdir -p rpcore/target/font-report
+          dpkg-query -W fonts-urw-base35 > rpcore/target/font-report/font-package.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/font-report/font-sha256.txt
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/font-report --font-dir /usr/share/fonts/opentype/urw-base35
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-explicit-font-corpus
+          path: rpcore/target/font-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/font-report/report.md ]; then cat rpcore/target/font-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi

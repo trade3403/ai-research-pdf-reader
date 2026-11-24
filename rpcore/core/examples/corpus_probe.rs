@@ -1,6 +1,7 @@
 //! Isolated process probe for corpus diagnostics. No external rendering engine.
 use rpcore::{Document,Error,PageInfo,raster::Options,content::MAX_CONTENT_BYTES};
 use std::{io::Read,time::Instant};
+#[path="support/urw.rs"] mod urw;
 fn classify(e:Error){
     let (kind,reason)=match e{Error::Invalid(s)=>("invalid",s),Error::Unsupported(s)=>("unsupported",s),Error::Limit(s)=>("limit",s)};
     println!("status={kind}\nreason={reason}");
@@ -25,7 +26,13 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
         "text"=>doc.page_text(p,MAX_CONTENT_BYTES).map(|v|{
             println!("glyphs={}\nmapped={}\nwarnings={}",v.glyphs.len(),v.glyphs.iter().filter(|g|g.unicode.as_ref().is_some_and(|s|!s.is_empty())).count(),v.warnings.len());
         }),
-        "render"=>match doc.render_page(p,Options{scale:0.5,allow_missing_text:false},MAX_CONTENT_BYTES){
+        "render"=>match if let Some(dir)=std::env::var_os("RPCORE_STANDARD_FONT_DIR"){
+            let fonts=urw::load(std::path::Path::new(&dir))?;
+            doc.render_page_with_standard_fonts(p,Options{scale:0.5,allow_missing_text:false},MAX_CONTENT_BYTES,&fonts).map(|v|{
+                let names=v.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(",");
+                println!("substituted_fonts={names}");v.bitmap
+            })
+        }else{doc.render_page(p,Options{scale:0.5,allow_missing_text:false},MAX_CONTENT_BYTES)}{
             Ok(b)=>{
                 if b.missing_text{Err(Error::Invalid("strict render returned missing text"))}else{
                     let png=match b.png(){Ok(v)=>v,Err(e)=>{classify(e);return Ok(());}};
