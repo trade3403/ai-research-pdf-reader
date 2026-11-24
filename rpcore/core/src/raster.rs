@@ -8,6 +8,7 @@ mod glyph_area;
 mod glyph_geometry;
 mod page_viewport;
 pub mod math_geometry;
+pub mod math_tree;
 pub use page_viewport::PageViewport;
 pub use glyph_geometry::{GlyphGeometry,PageGlyphGeometry};
 use crate::fonts::standard::StandardFont;

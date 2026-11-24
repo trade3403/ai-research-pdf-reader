@@ -247,3 +247,28 @@ fn text_color_order_invisible_and_preview(){
     let (_,m)=d.page_math_geometry(&pages[0],10000,None,[35.,30.,60.,60.]).unwrap();
     assert_eq!(m.fractions.len(),1);assert_eq!(m.fractions[0].rule_bounds,[40.,43.75,52.,44.25]);
 }
+
+#[test]fn math_tree_disjoint_fraction_and_scripts_export(){
+    use rpcore::raster::math_tree::build_tree;
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 6 Tf 1 0 0 1 16.5 45 Tm <0002> Tj 1 0 0 1 16.5 36 Tm <0003> Tj /F1 8 Tf 1 0 0 1 43.6 48 Tm <0001> Tj 1 0 0 1 43.6 37 Tm <0002> Tj ET 40 44 12 .5 re f");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let (mut g,mut m)=d.page_math_geometry(&pages[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    let tree=build_tree(&g,&m).unwrap();
+    assert_eq!(tree.to_latex(&g).unwrap(),r"{O}_{o}^{D}\frac{O}{D}");
+    g.glyphs[1].unicode=None;assert!(tree.to_latex(&g).is_err());
+    m.fractions.push(m.fractions[0].clone());assert!(build_tree(&g,&m).is_err());
+}
+#[test]fn math_tree_rejects_conflicting_or_cyclic_scripts(){
+    use rpcore::raster::{math_tree::build_tree,math_geometry::{ScriptCandidate,ScriptKind}};
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 6 Tf 1 0 0 1 16.5 45 Tm <0002> Tj 1 0 0 1 16.5 36 Tm <0003> Tj ET");
+    let d=Document::open(&p).unwrap();let (g,mut m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    m.scripts.push(ScriptCandidate{base:1,script:0,kind:ScriptKind::Superscript});assert!(build_tree(&g,&m).is_err());
+    m.scripts.clear();assert!(build_tree(&g,&m).is_err());
+}
+#[test]fn math_tree_nested_scripts(){
+    use rpcore::raster::math_tree::build_tree;
+    let p=fixture::pdf(b"BT /F1 12 Tf 10 40 Td <0001> Tj /F1 7 Tf 1 0 0 1 17.8 45 Tm <0002> Tj /F1 4 Tf 1 0 0 1 22.35 49 Tm <0003> Tj ET");
+    let d=Document::open(&p).unwrap();let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert_eq!(m.scripts.len(),2);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),"{O}^{{D}^{o}}");
+}
