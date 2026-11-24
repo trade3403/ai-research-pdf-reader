@@ -85,3 +85,59 @@ fn ambiguous_default_and_empty_catalog() {
     assert_eq!(resolve_formatting(&c,&Paragraph::default(),&Run::default()), Err(Error::Invalid("multiple default styles of kind")));
     assert_eq!(resolve_formatting(&StyleCatalog::default(),&Paragraph::default(),&Run::default()).unwrap(), Default::default());
 }
+
+
+#[test]
+fn document_view_preserves_empty_and_unsupported_blocks() {
+    use rwcore::{Document, Block, FormattedBlock};
+    let c = catalog("<w:style w:type='paragraph' w:styleId='Normal' w:default='1'><w:pPr><w:jc w:val='center'/></w:pPr></w:style>");
+    let d = Document { styles: Some(c), blocks: vec![Block::Paragraph(Paragraph::default()),
+        Block::Unsupported { name: "tbl".into() }], ..Default::default() };
+    let mut blocks = d.formatted_blocks();
+    let FormattedBlock::Paragraph(p) = blocks.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.properties.alignment, Some(ParagraphAlignment::Center));
+    assert_eq!(p.runs().count(), 0);
+    assert!(matches!(blocks.next().unwrap().unwrap(), FormattedBlock::Unsupported { name: "tbl" }));
+    assert!(blocks.next().is_none());
+}
+
+#[test]
+fn document_view_keeps_run_order_and_isolates_errors() {
+    use rwcore::{Document, Block, FormattedBlock};
+    let c = catalog("<w:style w:type='paragraph' w:styleId='Normal' w:default='1'><w:rPr><w:b/></w:rPr></w:style>");
+    let mut p = Paragraph::default();
+    let first = Run { text: "科研".into(), ..Default::default() };
+    let mut bad = Run { text: "bad".into(), ..Default::default() };
+    bad.properties.style_id = Some("missing".into());
+    let mut last = Run { text: "paper".into(), ..Default::default() };
+    last.properties.bold = Some(false);
+    p.runs = vec![first, bad, last];
+    let d = Document { styles: Some(c), blocks: vec![Block::Paragraph(p)], ..Default::default() };
+    let FormattedBlock::Paragraph(view) = d.formatted_blocks().next().unwrap().unwrap() else { panic!("paragraph expected") };
+    let mut runs = view.runs();
+    let first = runs.next().unwrap().unwrap();
+    assert_eq!(first.source.text, "科研");
+    assert_eq!(first.properties.bold, Some(true));
+    assert_eq!(first.source.properties.bold, None);
+    assert!(matches!(runs.next().unwrap(), Err(Error::Invalid("missing selected style"))));
+    let last = runs.next().unwrap().unwrap();
+    assert_eq!(last.source.text, "paper");
+    assert_eq!(last.properties.bold, Some(false));
+    assert!(runs.next().is_none());
+}
+
+#[test]
+fn document_view_without_catalog_and_invalid_paragraph() {
+    use rwcore::{Document, Block, FormattedBlock};
+    let mut bad = Paragraph::default();
+    bad.properties.style_id = Some("absent".into());
+    let mut good = Paragraph::default();
+    good.properties.keep_next = Some(true);
+    good.runs.push(Run { text: "ok".into(), ..Default::default() });
+    let d = Document { blocks: vec![Block::Paragraph(bad), Block::Paragraph(good)], ..Default::default() };
+    let mut blocks = d.formatted_blocks();
+    assert!(matches!(blocks.next().unwrap(), Err(Error::Invalid("missing selected style"))));
+    let FormattedBlock::Paragraph(view) = blocks.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(view.properties.keep_next, Some(true));
+    assert_eq!(view.runs().next().unwrap().unwrap().source.text, "ok");
+}

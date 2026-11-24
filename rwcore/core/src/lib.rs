@@ -13,4 +13,4 @@ pub use package::{inspect_package, resolve_target, PackageGraph, Relationship, R
 pub use zip_guard::validate_zip;
 
 pub mod formatting;
-pub use formatting::{resolve_formatting, EffectiveFormatting};
+pub use formatting::{resolve_formatting, EffectiveFormatting, FormattedBlock, FormattedParagraph, FormattedRun};
