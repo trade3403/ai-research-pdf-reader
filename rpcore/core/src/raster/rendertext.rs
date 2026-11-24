@@ -1,10 +1,21 @@
-//! First native font renderer: horizontal embedded CIDFontType2 only.
+//! Native horizontal TrueType and CFF1 font rendering.
 use super::{Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
-use crate::{Document,PageInfo,Object,content::Operation,fonts::{Font,FontKind,WritingMode,truetype::{TrueType,MAX_FONT_BYTES}}};
+use crate::{Document,PageInfo,Object,content::Operation,fonts::{Font,FontKind,WritingMode,truetype::{TrueType,MAX_FONT_BYTES},cff::Cff}};
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
-struct Face{font:Font,tt:TrueType}
+enum Outline{Tt(TrueType),Cff(Cff,BTreeMap<u8,Vec<u8>>)}
+struct Face{font:Font,outline:Outline}
+fn differences(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<BTreeMap<u8,Vec<u8>>>{
+    let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Unsupported("CFF simple font explicit Differences required"))?)? else{return Err(Error::Unsupported("CFF simple font explicit Differences required"));};
+    let Object::Array(a)=doc.dereference(enc.get(b"Differences".as_slice()).ok_or(Error::Unsupported("CFF Differences required"))?)? else{return Err(Error::Invalid("CFF Differences"));};
+    let mut out=BTreeMap::new();let mut code=None;
+    for v in a{match v{
+        Object::Number(n) if (0.0..=255.).contains(&n)&&n.fract()==0.=>code=Some(n as usize),
+        Object::Name(n)=>{let i=code.ok_or(Error::Invalid("CFF Differences code"))?;if i>255{return Err(Error::Invalid("CFF Differences range"));}out.insert(i as u8,n);code=Some(i+1);}
+        _=>return Err(Error::Invalid("CFF Differences item")),
+    }}Ok(out)
+}
 #[derive(Clone)]
 struct State{face:Option<Arc<Face>>,size:f64,scale:f64,tc:f64,tw:f64,leading:f64,rise:f64,mode:u8}
 impl Default for State{fn default()->Self{Self{face:None,size:0.,scale:1.,tc:0.,tw:0.,leading:0.,rise:0.,mode:0}}}
@@ -24,15 +35,29 @@ impl TextRenderer{
         let fonts=crate::dict(doc.dereference(resources.get(b"Font".as_slice()).ok_or(Error::Invalid("page Font resources"))?)?)?;
         let entry=fonts.get(n).ok_or(Error::Invalid("render font resource"))?;
         let font=Font::load(doc,entry)?;
-        if font.kind!=FontKind::Type0Cid2||font.writing_mode!=WritingMode::Horizontal{return Err(Error::Unsupported("render font subtype or writing mode"));}
+        if !matches!(font.kind,FontKind::Type0Cid2|FontKind::Type0Cid0|FontKind::Type1)||font.writing_mode!=WritingMode::Horizontal{return Err(Error::Unsupported("render font subtype or writing mode"));}
         let d=crate::dict(doc.dereference(entry)?)?;
-        let Object::Array(a)=doc.dereference(d.get(b"DescendantFonts".as_slice()).ok_or(Error::Invalid("DescendantFonts"))?)? else{return Err(Error::Invalid("DescendantFonts"));};
-        let cid=crate::dict(doc.dereference(a.first().ok_or(Error::Invalid("DescendantFonts"))?)?)?;
+        let cid=if matches!(font.kind,FontKind::Type0Cid0|FontKind::Type0Cid2){
+            let Object::Array(a)=doc.dereference(d.get(b"DescendantFonts".as_slice()).ok_or(Error::Invalid("DescendantFonts"))?)? else{return Err(Error::Invalid("DescendantFonts"));};
+            crate::dict(doc.dereference(a.first().ok_or(Error::Invalid("DescendantFonts"))?)?)?
+        }else{d.clone()};
         let desc=crate::dict(doc.dereference(cid.get(b"FontDescriptor".as_slice()).ok_or(Error::Unsupported("missing embedded font descriptor"))?)?)?;
-        let file=doc.dereference(desc.get(b"FontFile2".as_slice()).ok_or(Error::Unsupported("missing FontFile2"))?)?;
+        let key=if font.kind==FontKind::Type0Cid2{b"FontFile2".as_slice()}else{b"FontFile3".as_slice()};
+        let file=doc.dereference(desc.get(key).ok_or(Error::Unsupported("missing supported embedded font file"))?)?;
+        if font.kind!=FontKind::Type0Cid2{
+            let Object::Stream{dict,..}=&file else{return Err(Error::Invalid("CFF font stream"));};
+            let expected=if font.kind==FontKind::Type0Cid0{b"CIDFontType0C".as_slice()}else{b"Type1C".as_slice()};
+            if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==expected){return Err(Error::Unsupported("CFF font stream subtype"));}
+        }
         let data=crate::filters::decode(&file,MAX_FONT_BYTES.min(MAX_FONT_TOTAL-self.font_bytes))?;
         self.font_bytes+=data.len();
-        let f=Arc::new(Face{font,tt:TrueType::parse(data)?});
+        let outline=if font.kind==FontKind::Type0Cid2{Outline::Tt(TrueType::parse(data)?)}else{
+            let c=Cff::parse(data)?;
+            if c.is_cid()!=(font.kind==FontKind::Type0Cid0){return Err(Error::Invalid("CFF CID subtype mismatch"));}
+            let names=if c.is_cid(){BTreeMap::new()}else{differences(doc,&d)?};
+            Outline::Cff(c,names)
+        };
+        let f=Arc::new(Face{font,outline});
         self.fonts.insert(n.to_vec(),Arc::clone(&f));Ok(f)
     }
     fn next_line(&mut self,x:f64,y:f64)->Result<()>{self.line=self.line.compose(Matrix::translation(x,y))?;self.tm=self.line;Ok(())}
@@ -41,12 +66,17 @@ impl TextRenderer{
         let f=Arc::clone(self.state.face.as_ref().ok_or(Error::Invalid("no current render font"))?);
         for glyph in f.font.decode(data)?{
             self.glyphs+=1;if self.glyphs>100_000{return Err(Error::Limit("render glyph count"));}
-            let gid=glyph.glyph_id.ok_or(Error::Unsupported("missing render glyph ID"))?;
             let width=glyph.width.ok_or(Error::Unsupported("missing render glyph width"))?;
             if self.state.mode!=3{
-                let unit=self.state.size/f64::from(f.tt.units_per_em());
-                let m=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?;
-                let outline=f.tt.outline(gid)?;
+                let (outline,fm)=match &f.outline{
+                    Outline::Tt(tt)=>{let gid=glyph.glyph_id.ok_or(Error::Unsupported("missing render glyph ID"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
+                    Outline::Cff(c,names)=>{
+                        let gid=if c.is_cid(){glyph.cid.and_then(|id|c.glyph_for_cid(id))}else{names.get(&glyph.code[0]).and_then(|n|c.glyph_for_name(n))}.ok_or(Error::Unsupported("missing CFF glyph mapping"))?;
+                        (c.outline(gid)?,c.font_matrix())
+                    }
+                };
+                let unit=self.state.size;
+                let m=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?.compose(fm)?;
                 let paths=flatten(&outline,m,&mut s.budget)?;
                 if matches!(self.state.mode,0|2){let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&mut s.budget)?;s.paint(&mask,rgb(fill))?;}
                 if matches!(self.state.mode,1|2){let paths=stroke_paths(&paths,stroke,view,&mut s.budget)?;let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&mut s.budget)?;s.paint(&mask,rgb(stroke.color))?;}

@@ -254,3 +254,5 @@ impl Document<'_>{
 }
 
 pub mod truetype;
+
+pub mod cff;
