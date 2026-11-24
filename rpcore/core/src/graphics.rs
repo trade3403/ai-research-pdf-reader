@@ -86,6 +86,9 @@ pub enum Command{
     /// Normal source-over constant opacity, retained in drawing order.
     Opacity{fill:f64,stroke:f64},
     Blend(BlendMode),
+    /// Begin an isolated, non-knockout RGB transparency group.
+    BeginGroup{opacity:f64,blend:BlendMode},
+    EndGroup,
     /// Current nonstroking color, needed by stencil images.
     StencilColor(Color),
     Paint{path:Path,fill:Option<(Color,FillRule)>,stroke:Option<Stroke>},
@@ -208,7 +211,25 @@ impl<'d,'a> Engine<'d,'a>{
                 self.command(Command::Image{object_id:id,ctm:s.ctm})
             }
             b"Form"=>{
-                if dict.contains_key(b"Group".as_slice()){return Err(Error::Unsupported("Form transparency group"));}
+                let isolated=if let Some(group)=dict.get(b"Group".as_slice()){
+                    let group=crate::dict(self.doc.dereference(group)?)?;
+                    if !matches!(group.get(b"S".as_slice()),Some(Object::Name(n)) if n==b"Transparency"){return Err(Error::Unsupported("Form group subtype"));}
+                    for (k,v) in &group{
+                        let v=self.doc.dereference(v)?;
+                        match k.as_slice(){
+                            b"Type" if matches!(&v,Object::Name(n) if n==b"Group")=>{},
+                            b"S" if matches!(&v,Object::Name(n) if n==b"Transparency")=>{},
+                            b"I" if v==Object::Bool(true)=>{},
+                            b"K" if v==Object::Bool(false)=>{},
+                            b"CS" if matches!(&v,Object::Name(n) if n==b"DeviceRGB")=>{},
+                            _=>return Err(Error::Unsupported("non-isolated, knockout or non-RGB group parameter")),
+                        }
+                    }
+                    if !matches!(group.get(b"I".as_slice()).map(|o|self.doc.dereference(o)).transpose()?,Some(Object::Bool(true))){
+                        return Err(Error::Unsupported("non-isolated transparency group"));
+                    }
+                    true
+                }else{false};
                 if let Some(v)=dict.get(b"FormType".as_slice()){
                     if number(v)?!=1.{return Err(Error::Unsupported("FormType"));}
                 }
@@ -224,9 +245,14 @@ impl<'d,'a> Engine<'d,'a>{
                 self.bytes_left-=data.len();
                 let ops=content::parse(&data)?;
                 self.command(Command::Save)?;
+                if isolated{
+                    self.command(Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend})?;
+                    child.fill_alpha=1.;child.stroke_alpha=1.;child.blend=BlendMode::Normal;
+                }
                 self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
                 // Absent Resources may use the page's resource environment.
                 self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
+                if isolated{self.command(Command::EndGroup)?;}
                 self.command(Command::Restore)
             }
             _=>Err(Error::Unsupported("XObject subtype")),

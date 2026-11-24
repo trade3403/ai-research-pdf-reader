@@ -196,15 +196,58 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
     }
     Ok(out)
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode}
+// Each group uses 12 RGB bytes and 16 alpha bytes per output pixel.
+// The cap counts all live offscreen buffers, excluding the existing root surface.
+const MAX_GROUP_BYTES:usize=128*1024*1024;
+const MAX_GROUP_DEPTH:usize=8;
+struct GroupLayer{
+    samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
+}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>}
 impl Surface{
     fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
-        if alpha>=1.&&self.blend_mode==BlendMode::Normal{self.samples[i..i+3].copy_from_slice(&c);}
-        else if alpha>0.{
+        let alpha=alpha.clamp(0.,1.);
+        if alpha==0.{return;}
+        let ab=self.alpha.as_ref().map_or(1.,|a|f64::from(a[i/3]));
+        let ao=alpha+ab*(1.-alpha);
+        if ab==0.||(alpha==1.&&self.blend_mode==BlendMode::Normal){
+            self.samples[i..i+3].copy_from_slice(&c);
+        }else{
             let b:[f64;3]=std::array::from_fn(|k|f64::from(self.samples[i+k])/255.);
-            let f=self.blend_mode.rgb(b,c.map(|v|f64::from(v)/255.));
-            for k in 0..3{self.samples[i+k]=((f[k]*alpha+b[k]*(1.-alpha))*255.).round().clamp(0.,255.)as u8;}
+            let src=c.map(|v|f64::from(v)/255.);
+            let f=self.blend_mode.rgb(b,src);
+            // Straight color; blend only where the source overlaps backdrop alpha.
+            for k in 0..3{
+                let premul=(1.-alpha)*ab*b[k]+alpha*((1.-ab)*src[k]+ab*f[k]);
+                self.samples[i+k]=(premul/ao*255.).round().clamp(0.,255.)as u8;
+            }
         }
+        if let Some(a)=&mut self.alpha{a[i/3]=ao as f32;}
+    }
+    fn begin_group(&mut self,opacity:f64,blend:BlendMode)->Result<()>{
+        let pixels=self.w*self.h;
+        if self.groups.len()>=MAX_GROUP_DEPTH||(self.groups.len()+1)*pixels*28>MAX_GROUP_BYTES{return Err(Error::Limit("transparency group buffers"));}
+        self.budget.charge(pixels*4)?;
+        let parent=GroupLayer{samples:std::mem::replace(&mut self.samples,vec![0;pixels*12]),
+            alpha:self.alpha.replace(vec![0.;pixels*4]),opacity,blend,stack_depth:self.stack.len()};
+        self.groups.push(parent);
+        self.fill_alpha=1.;self.stroke_alpha=1.;self.blend_mode=BlendMode::Normal;
+        Ok(())
+    }
+    fn end_group(&mut self)->Result<()>{
+        let parent=self.groups.pop().ok_or(Error::Invalid("group stack underflow"))?;
+        if self.stack.len()!=parent.stack_depth{return Err(Error::Invalid("group graphics stack"));}
+        let colors=std::mem::replace(&mut self.samples,parent.samples);
+        let alpha=std::mem::replace(&mut self.alpha,parent.alpha).ok_or(Error::Invalid("missing group alpha"))?;
+        self.blend_mode=parent.blend;
+        self.budget.charge(self.w*self.h*4)?;
+        // Group coverage already contains the inherited clip and Form BBox;
+        // do not apply the final child's clip again at group exit.
+        for (i,&a) in alpha.iter().enumerate(){
+            if a>0.{self.blend(i*3,[colors[i*3],colors[i*3+1],colors[i*3+2]],f64::from(a)*parent.opacity);}
+        }
+        // The surrounding Restore command restores the caller's complete state.
+        Ok(())
     }
     fn paint(&mut self,mask:&[u8],c:[u8;3],alpha:f64)->Result<()>{
         self.budget.charge(self.w*self.h*4)?;
@@ -236,7 +279,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal};
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new()};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -249,6 +292,8 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
             Command::Restore=>{let (clip,fa,sa,bm)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;s.blend_mode=bm;text.restore()?;}
             Command::Opacity{fill,stroke}=>{s.fill_alpha=*fill;s.stroke_alpha=*stroke;}
             Command::Blend(b)=>s.blend_mode=*b,
+            Command::BeginGroup{opacity,blend}=>s.begin_group(*opacity,*blend)?,
+            Command::EndGroup=>s.end_group()?,
             Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
@@ -270,7 +315,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
             }
         }
     }
-    if !s.stack.is_empty(){return Err(Error::Invalid("unbalanced raster stack"));}
+    if !s.stack.is_empty()||!s.groups.is_empty()||s.alpha.is_some(){return Err(Error::Invalid("unbalanced raster stack"));}
     let mut rgba=Vec::with_capacity(w*h*4);
     for samples in s.samples.chunks_exact(12){
         for c in 0..3{rgba.push(((u16::from(samples[c])+u16::from(samples[c+3])+u16::from(samples[c+6])+u16::from(samples[c+9])+2)/4) as u8);}
