@@ -33,7 +33,8 @@
       "reader-db.cjs",
       "pdf-vault.cjs",
       "library-db.cjs",
-      "research-db.cjs"
+      "research-db.cjs",
+      "azure-translator.cjs"
     ],
     "win": {
       "target": [

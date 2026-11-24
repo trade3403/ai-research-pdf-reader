@@ -98,6 +98,30 @@ const assert = require('node:assert/strict');
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.waitForFunction(async()=> (await window.studio.research('word.list')).some(x=>x.title==='GUI native manuscript'));
     await page.screenshot({path:path.join(out,'07-word.png')});
+    // The file chooser alone is substituted in the test; production export and import run unchanged.
+    const docxPath=path.join(out,'GUI-roundtrip.docx');
+    await app.evaluate(({dialog},target)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:target});},docxPath);
+    await page.locator('.tiptap[contenteditable=true]').fill('GUI Word roundtrip scientific text');
+    await page.getByRole('button',{name:'导出 DOCX',exact:true}).click();
+    for(let i=0;i<100;i++){if(await fs.stat(docxPath).then(()=>true,()=>false))break;await page.waitForTimeout(200);}
+    const docx=await fs.readFile(docxPath);assert.equal(docx.subarray(0,2).toString(),'PK');
+    await page.locator('input[type=file][accept^=".docx,"]').setInputFiles(docxPath);
+    await page.waitForFunction(()=>document.querySelector('.tiptap')?.textContent?.includes('GUI Word roundtrip scientific text'));
+    await page.waitForFunction(async()=> (await window.studio.research('word.list')).some(x=>x.title==='GUI-roundtrip'&&JSON.stringify(x.content).includes('GUI Word roundtrip scientific text')));
+    await page.screenshot({path:path.join(out,'08-word-roundtrip.png')});
+    await page.getByRole('button',{name:'科研记录',exact:true}).click();
+    await page.getByText('GUI native research note',{exact:true}).first().click();
+    await page.getByRole('button',{name:'翻译 / 中英对照',exact:true}).click();
+    await page.getByRole('button',{name:'翻译设置',exact:true}).click();
+    await page.locator('input[type=password]').fill('CI-only-test-key-not-real');
+    await page.getByRole('button',{name:'保存设置',exact:true}).click();
+    await page.waitForFunction(async()=>await window.studio.azureKey('has'));
+    const encrypted=await fs.readFile(path.join(profile,'secrets','azure.dpapi'));
+    assert.ok(!encrypted.includes(Buffer.from('CI-only-test-key-not-real')));
+    await page.screenshot({path:path.join(out,'09-translation-settings.png')});
+    await page.evaluate(()=>window.studio.azureKey('remove'));
+    assert.equal(await page.evaluate(()=>window.studio.azureKey('has')),false);
+    diagnostics.push('DOCX export/import roundtrip and real Windows encrypted key store verified. No live Azure request or real credentials used.');
     await page.waitForTimeout(1500);
   } catch (error) {
     diagnostics.push(String(error.stack || error));

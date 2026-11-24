@@ -83,16 +83,18 @@ export async function saveTranslatorSettings(input:TranslatorSettings):Promise<T
 }
 
 export async function setAzureTranslatorKey(key:string):Promise<void>{
-  if(electronBridge())throw new Error('Electron 安全密钥存储尚未接入，请勿将 Key 保存在普通数据库中。');
+  const bridge=electronBridge();if(bridge){await bridge.azureKey('save',key);return;}
   if(!isTauri())throw new Error('仅 Windows 桌面安装版支持安全保存 Azure Key');
   if(key.length<8||key.length>256)throw new Error('API Key 格式不正确');
   await invoke('translator_save_key',{key});
 }
 export async function removeAzureTranslatorKey():Promise<void>{
+  const bridge=electronBridge();if(bridge){await bridge.azureKey('remove');return;}
   if(!isTauri())throw new Error('请在桌面安装版设置密钥');
   await invoke('translator_remove_key');
 }
 export async function hasAzureTranslatorKey():Promise<boolean>{
+  const bridge=electronBridge();if(bridge)return Boolean(await bridge.azureKey('has'));
   if(!isTauri())return false;
   return invoke<boolean>('translator_has_key');
 }
@@ -110,7 +112,7 @@ export async function getMonthlyUsage(month=monthId()):Promise<number>{
 }
 async function reserveUsage(chars:number,limit:number,month:string):Promise<void>{
   if(chars===0)return;
-  if(electronBridge()){await nativeTranslation('translation.reserve',{chars,limit,month});return;}
+  if(electronBridge())throw new Error('Electron quota is reserved by the main process');
   if(!isTauri()){
     const usage=browserRead<Record<string,number>>(LOCAL_USAGE,{});
     if((usage[month]||0)+chars>limit)throw new Error('超过本月本机翻译预算，请下月再试或调整预算设置');
@@ -150,8 +152,8 @@ export async function translateResearchContent(source:string,settings:Translator
   const month=monthId();
   const cached=await fetchCached(cacheKey);
   if(cached)return {result:cached,cached:true,used:await getMonthlyUsage(month),month,limit:s.monthlyLimit};
-  if(electronBridge())throw new Error('Electron 已支持本地译文缓存；Azure 在线请求与安全密钥将在下一批接入。');
-  if(!isTauri())throw new Error('请在 Windows 安装版中使用 Azure 翻译');
+  const bridge=electronBridge();
+  if(!bridge&&!isTauri())throw new Error('请在 Windows 安装版中使用 Azure 翻译');
   const segments=splitResearchMarkup(text,s.glossary);
   const inputs=translationPayload(segments);
   // Azure bills Unicode text characters; reserve before each request to fail closed.
@@ -160,7 +162,7 @@ export async function translateResearchContent(source:string,settings:Translator
   if(inputs.some(x=>Array.from(x).length>10_000))throw new Error('单个段落过长，请拆分后翻译');
   if(chars>0){
     if(!await hasAzureTranslatorKey())throw new Error('请先在翻译设置中保存 Azure Translator Key');
-    await reserveUsage(chars,s.monthlyLimit,month);
+    if(!bridge)await reserveUsage(chars,s.monthlyLimit,month);
   }
   // The provider receives only natural-language segments, not protected LaTeX or code.
   let output:string[]=[];
@@ -172,7 +174,8 @@ export async function translateResearchContent(source:string,settings:Translator
     }
     if(batch.length)batches.push(batch);
     for(const batch of batches){
-      const answer=await invoke<{translations:string[]}>('translator_translate',{texts:batch,region:s.region,from:s.from,to:s.to});
+      const request={texts:batch,region:s.region,from:s.from,to:s.to};
+      const answer=bridge?await bridge.azureTranslate(request):await invoke<{translations:string[]}>('translator_translate',request);
       if(!Array.isArray(answer.translations)||answer.translations.length!==batch.length)throw new Error('Azure 返回的译文片段数量异常');
       output.push(...answer.translations);
     }

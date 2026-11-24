@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { electronBridge } from '../utils/electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -166,12 +167,13 @@ export default function WordEditor({incoming,onConsumed,onNotify}:Props) {
   };
   const loadBytes=async(bytes:Uint8Array,name:string,path:string|null)=>{
     if(!editor)throw new Error('编辑器尚未准备好');
+    await flush();
     const converted=await importDocxBytes(bytes);
     const doc=makeManuscript(name.replace(/\.docx$/i,''));doc.sourcePath=path;
     suppress.current=true;
     try{editor.commands.setContent(converted.html||'<p></p>',{emitUpdate:false});doc.content=ensureAcademicIds(editor.getJSON());}
     finally{suppress.current=false;}
-    await flush();activeRef.current=doc;setActive(doc);setRevision(0);
+    activeRef.current=doc;setActive(doc);setRevision(0);
     await saveManuscript(doc);await refresh();
     setSaveState('DOCX 已导入本地草稿');
     if(converted.warnings.length) onNotify(`已导入，转换提示 ${converted.warnings.length} 条；复杂版式可能变化`);
@@ -203,7 +205,12 @@ export default function WordEditor({incoming,onConsumed,onNotify}:Props) {
       const blob=await exportWordDocx(latest);
       if(blob.size>32*1024*1024)throw new Error('DOCX 导出大于 32 MB');
       const basename=(doc.title.replace(/[\\/:*?"<>|]/g,'_').slice(0,80)||'Manuscript')+'.docx';
-      if(isTauri()){
+      const bridge=electronBridge();
+      if(bridge){
+        const path=await bridge.docxSave(basename,new Uint8Array(await blob.arrayBuffer()));
+        if(!path)return;
+        updateMeta({sourcePath:path});
+      }else if(isTauri()){
         const {save}=await import('@tauri-apps/plugin-dialog');
         const path=await save({defaultPath:doc.sourcePath||basename,filters:[{name:'Word 文档',extensions:['docx']}]});
         if(!path)return;

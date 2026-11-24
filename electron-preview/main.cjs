@@ -1,6 +1,9 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, WebContentsView, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, WebContentsView, protocol, net, safeStorage } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs/promises');
+const {randomUUID}=require('node:crypto');
+const {createKeyStore,translateBatch}=require('./azure-translator.cjs');
 const { pathToFileURL } = require('node:url');
 const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
 const localUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
@@ -129,7 +132,27 @@ function workspaceOnly(event){authorize(event);if(event.senderFrame.url!==worksp
 ipcMain.handle('studio:pdf-store',async(event,bytes)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.store(bytes);});
 ipcMain.handle('studio:pdf-read',async(event,token)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.read(token);});
 ipcMain.handle('studio:library',(event,op,value)=>{workspaceOnly(event);libraryDb??=createLibraryDb(path.join(app.getPath('userData'),'library-v062.sqlite'));return libraryDb.call(op,value);});
-ipcMain.handle('studio:research',(event,op,value)=>{workspaceOnly(event);researchDb??=createResearchDb(path.join(app.getPath('userData'),'research-v063.sqlite'));return researchDb.call(op,value);});
+function getResearch(){return researchDb??=createResearchDb(path.join(app.getPath('userData'),'research-v063.sqlite'));}
+ipcMain.handle('studio:research',(event,op,value)=>{workspaceOnly(event);if(op==='translation.reserve')throw Error('Quota reservation is main-process only');return getResearch().call(op,value);});
+function keys(){return createKeyStore(path.join(app.getPath('userData'),'secrets','azure.dpapi'),safeStorage);}
+ipcMain.handle('studio:azure-key',(event,op,key)=>{workspaceOnly(event);const k=keys();switch(op){case 'save':return k.save(key);case 'has':return k.has();case 'remove':return k.remove();default:throw Error('Unsupported key operation');}});
+let translating=false;
+ipcMain.handle('studio:azure-translate',async(event,request)=>{
+ workspaceOnly(event);if(translating)throw Error('Translation already in progress');translating=true;
+ try{return await translateBatch(request,{keyStore:keys(),reserve:chars=>{
+  const db=getResearch();const limit=db.call('translation.settings')?.monthlyLimit??1500000;
+  db.call('translation.reserve',{chars,limit,month:new Date().toISOString().slice(0,7)});
+ }});}finally{translating=false;}
+});
+ipcMain.handle('studio:docx-save',async(event,name,bytes)=>{
+ workspaceOnly(event);
+ if(typeof name!=='string'||name.length>100||!name.toLowerCase().endsWith('.docx')||/[\\/:*?"<>|]/.test(name)||!(bytes instanceof Uint8Array)||bytes.length<4||bytes.length>32*1024*1024||bytes[0]!==80||bytes[1]!==75)throw Error('Invalid DOCX export');
+ const result=await dialog.showSaveDialog(win,{defaultPath:name,filters:[{name:'Word DOCX',extensions:['docx']}]});
+ if(result.canceled||!result.filePath)return null;
+ const target=result.filePath;if(!target.toLowerCase().endsWith('.docx'))throw Error('Choose a .docx file');
+ const tmp=path.join(path.dirname(target),'.studio-'+randomUUID()+'.tmp');
+ try{await fs.writeFile(tmp,bytes,{flag:'wx'});await fs.rename(tmp,target);return target;}finally{await fs.rm(tmp,{force:true});}
+});
 app.on('will-quit',()=>{if(researchDb){researchDb.close();researchDb=null;}if(readerDb){readerDb.close();readerDb=null;}if(libraryDb){libraryDb.close();libraryDb=null;}});
 app.whenReady().then(() => { registerWorkspace(); createWindow(); });
 app.on('window-all-closed', () => app.quit());

@@ -61,8 +61,8 @@ export default function TranslatorWorkspace({ source, label, onClose, onNotify }
   };
 
   const removeKey=async()=>{
-    if(!window.confirm('确认删除本机 Windows 凭据管理器中的 Azure Translator Key？'))return;
-    setBusy(true);try{await removeAzureTranslatorKey();setKeyReady(false);setKeyInput('');onNotify('Azure Key 已从 Windows 凭据管理器删除');}
+    if(!window.confirm('确认删除本机 Windows 加密密钥存储中的 Azure Translator Key？'))return;
+    setBusy(true);try{await removeAzureTranslatorKey();setKeyReady(false);setKeyInput('');onNotify('Azure Key 已从 Windows 加密密钥存储删除');}
     catch(e){setError(String(e))}finally{setBusy(false)}
   };
 
@@ -88,7 +88,7 @@ export default function TranslatorWorkspace({ source, label, onClose, onNotify }
 
   return <div className="translator-backdrop" role="dialog" aria-modal="true" aria-label="Azure 科研翻译">
     <div className="translator-window">
-      <div className="translator-header"><div><Languages size={19}/><strong>科研翻译 · Azure Translator F0</strong><small>{label}</small></div>
+      <div className="translator-header"><div><Languages size={19}/><strong>科研翻译 · Azure Translator</strong><small>{label}</small></div>
         <div><button type="button" className="button" onClick={()=>setShowSettings(x=>!x)}><Settings2 size={14}/> 翻译设置</button>
           <button type="button" className="icon-button" title="关闭翻译窗口" onClick={onClose}><X size={18}/></button></div>
       </div>
@@ -105,7 +105,7 @@ export default function TranslatorWorkspace({ source, label, onClose, onNotify }
             <label>目标语言
               <select value={settings.to} onChange={e=>setSettings({...settings,to:e.target.value as TranslatorSettings['to']})}><option value="zh-Hans">简体中文</option><option value="en">英语</option></select></label>
           </div>
-          <label className="translator-key-field"><span><KeyRound size={14}/> Azure API Key（仅保存到 Windows 凭据管理器）</span>
+          <label className="translator-key-field"><span><KeyRound size={14}/> Azure API Key（仅保存到 Windows 加密密钥存储）</span>
             <input type="password" autoComplete="off" placeholder={keyReady?'已配置；留空则保留原有 Key':'粘贴 Azure Translator Key'} value={keyInput} onChange={e=>setKeyInput(e.target.value)}/></label>
           <label>科研术语词典（每行：英文术语 = 中文译法）
             <textarea rows={4} value={glossaryText} onChange={e=>setGlossaryText(e.target.value)} placeholder={'stick-slip = 粘滑\na posteriori = 后验'}/></label>
