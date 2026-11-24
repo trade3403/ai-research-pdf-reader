@@ -1,0 +1,9 @@
+[package]
+name = "rwcore"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+zip = { version = "4", default-features = false, features = ["deflate"] }
+roxmltree = "0.21"
