@@ -1,0 +1,133 @@
+//! Conservative local geometric formula candidates, not a semantic parser.
+use super::{PageGlyphGeometry,page_viewport::validate_rect};
+use crate::{graphics::{Command,DisplayList,Segment,LineCap},Error,Result};
+const MAX_REGION_GLYPHS:usize=512;
+const MAX_RULES:usize=256;
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum ScriptKind{Superscript,Subscript}
+#[derive(Debug,Clone,PartialEq)]
+pub struct ScriptCandidate{
+    /// Indices in the returned PageGlyphGeometry, not Unicode offsets.
+    pub base:usize,pub script:usize,pub kind:ScriptKind,
+}
+#[derive(Debug,Clone,PartialEq)]
+pub struct FractionCandidate{
+    pub rule_command_index:usize,pub rule_bounds:[f64;4],
+    pub numerator:Vec<usize>,pub denominator:Vec<usize>,
+}
+#[derive(Debug,Clone,PartialEq)]
+pub struct MathRegion{
+    pub region:[f64;4],
+    pub glyph_indices:Vec<usize>,
+    pub scripts:Vec<ScriptCandidate>,
+    pub fractions:Vec<FractionCandidate>,
+}
+#[derive(Clone,Copy)]
+struct Item{index:usize,bounds:[f64;4],x:f64,y:f64,advance_x:f64,em:f64}
+fn contains(r:[f64;4],b:[f64;4])->bool{
+    b[0]>=r[0]&&b[1]>=r[1]&&b[2]<=r[2]&&b[3]<=r[3]
+}
+fn rule_bounds(c:&Command)->Option<[f64;4]>{
+    let Command::Paint{path,fill,stroke}=c else{return None;};
+    match (path.as_slice(),fill,stroke){
+        ([Segment::Move(a),Segment::Line(b),Segment::Line(c),Segment::Line(d),Segment::Close],Some(_),None)=>{
+            // Only a single nondegenerate axis-aligned rectangle.
+            if !((a[1]==b[1]&&b[0]==c[0]&&c[1]==d[1]&&d[0]==a[0])||
+                 (a[0]==b[0]&&b[1]==c[1]&&c[0]==d[0]&&d[1]==a[1])){return None;}
+            Some([a[0].min(c[0]),a[1].min(c[1]),a[0].max(c[0]),a[1].max(c[1])])
+        }
+        ([Segment::Move(a),Segment::Line(b)],None,Some(s))=>{
+            let [x,y,z,w,_,_]=s.ctm.0;
+            // No hairline, dash, rotated/sheared or nonuniform stroke.
+            if a[1]!=b[1]||!s.dash.is_empty()||s.width<=0.||s.cap!=LineCap::Butt
+                ||y!=0.||z!=0.||x.abs()!=w.abs()||x==0.{return None;}
+            let h=s.width*x.abs()*0.5;
+            Some([a[0].min(b[0]),a[1]-h,a[0].max(b[0]),a[1]+h])
+        }
+        _=>None,
+    }
+}
+fn row(items:&[Item],bar:[f64;4],above:bool)->Vec<usize>{
+    let cy=(bar[1]+bar[3])*0.5;
+    let width=bar[2]-bar[0];
+    let mut candidates:Vec<(Item,f64)>=Vec::new();
+    for &g in items{
+        let gap=if above{g.bounds[1]-bar[3]}else{bar[1]-g.bounds[3]};
+        let margin=g.em*0.2;
+        if gap<0.||gap>g.em*0.8||g.bounds[0]<bar[0]-margin||g.bounds[2]>bar[2]+margin
+            ||g.bounds[2]-g.bounds[0]>width*1.25{continue;}
+        if (above&&g.y<=cy)||(!above&&g.y>=cy){continue;}
+        candidates.push((g,gap));
+    }
+    let Some(&(nearest,_))=candidates.iter().min_by(|a,b|a.1.total_cmp(&b.1))else{return Vec::new();};
+    // Keep only the closest compatible baseline row.
+    let mut row:Vec<Item>=candidates.into_iter().map(|(g,_)|g).filter(|g|
+        (g.y-nearest.y).abs()<=nearest.em*0.25&&(0.65..=1.5).contains(&(g.em/nearest.em))).collect();
+    if row.is_empty(){return Vec::new();}
+    let left=row.iter().map(|g|g.bounds[0]).fold(f64::INFINITY,f64::min);
+    let right=row.iter().map(|g|g.bounds[2]).fold(f64::NEG_INFINITY,f64::max);
+    // A centered row, not text simply passing near a table rule.
+    if ((left+right)-(bar[0]+bar[2])).abs()>width*0.5||right-left<width*0.15{return Vec::new();}
+    row.sort_by(|a,b|a.x.total_cmp(&b.x).then(a.index.cmp(&b.index)));
+    row.into_iter().map(|g|g.index).collect()
+}
+/// Analyze an explicitly selected region in unrotated PDF coordinates.
+/// Geometry and display list must come from the same page and font policy.
+/// The output consists only of heuristic candidates; it does not establish
+/// that the selected content is mathematics. No reading-order or LaTeX claim.
+pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;4])->Result<MathRegion>{
+    validate_rect(region)?;
+    if region[0]>=region[2]||region[1]>=region[3]{return Err(Error::Invalid("empty math region"));}
+    let mut items=Vec::new();
+    let mut indices=Vec::new();
+    for (i,g) in geometry.glyphs.iter().enumerate(){
+        let Some(b)=g.outline_bounds else{continue;};
+        if !contains(region,b){continue;}
+        if indices.len()>=MAX_REGION_GLYPHS{return Err(Error::Limit("math region glyphs"));}
+        indices.push(i);
+        let [a,b1,c,d,_,_]=g.em_matrix.0;
+        // Analyze upright horizontal glyphs only, leave other orientations unclassified.
+        if a<=0.||d<=0.||b1!=0.||c!=0.||g.advance_end[0]<g.origin[0]{continue;}
+        items.push(Item{index:i,bounds:b,x:g.origin[0],y:g.origin[1],advance_x:g.advance_end[0],em:d});
+    }
+    let mut fractions=Vec::new();let mut rule_count=0;
+    for (i,c) in list.commands.iter().enumerate(){
+        let Some(b)=rule_bounds(c)else{continue;};
+        let w=b[2]-b[0];let h=b[3]-b[1];
+        if !contains(region,b)||h<=0.||w<h*6.{continue;}
+        rule_count+=1;if rule_count>MAX_RULES{return Err(Error::Limit("math region rules"));}
+        let numerator=row(&items,b,true);let denominator=row(&items,b,false);
+        if numerator.is_empty()||denominator.is_empty(){continue;}
+        // A rule must be narrow relative to neighboring glyphs and not an
+        // arbitrarily long divider. This still cannot exclude all table rules.
+        let em=items.iter().filter(|g|numerator.contains(&g.index)||denominator.contains(&g.index))
+            .map(|g|g.em).fold(0.,f64::max);
+        if h>em*0.2||w>em*16.{continue;}
+        fractions.push(FractionCandidate{rule_command_index:i,rule_bounds:b,numerator,denominator});
+    }
+    let mut scripts=Vec::new();
+    for g in &items{
+        let mut best:Option<(f64,usize,ScriptKind)>=None;let mut ambiguous=false;
+        for b in &items{
+            if g.index==b.index||geometry.glyphs[g.index].form_scope!=geometry.glyphs[b.index].form_scope{continue;}
+            let ratio=g.em/b.em;
+            if !(0.35..=0.82).contains(&ratio){continue;}
+            let dy=(g.y-b.y)/b.em;let dx=(g.x-b.advance_x)/b.em;
+            if !(-0.3..=0.45).contains(&dx)||g.x<=b.x{continue;}
+            let kind=if (0.22..=0.95).contains(&dy){ScriptKind::Superscript}
+                else if (-0.65..=-0.15).contains(&dy){ScriptKind::Subscript}else{continue;};
+            // Do not reinterpret numerator/denominator pairs as scripts.
+            if fractions.iter().any(|f|(f.numerator.contains(&b.index)&&f.denominator.contains(&g.index))||
+                (f.denominator.contains(&b.index)&&f.numerator.contains(&g.index))){continue;}
+            let score=dx.abs()+(dy.abs()-0.4).abs()*0.2;
+            match best{
+                None=>{best=Some((score,b.index,kind));ambiguous=false;}
+                Some((s,_,_)) if score<s-0.05=>{best=Some((score,b.index,kind));ambiguous=false;}
+                Some((s,_,_)) if (score-s).abs()<=0.05=>{ambiguous=true;}
+                _=>{}
+            }
+        }
+        if !ambiguous{if let Some((_,base,kind))=best{scripts.push(ScriptCandidate{base,script:g.index,kind});}}
+    }
+    Ok(MathRegion{region,glyph_indices:indices,scripts,fractions})
+}

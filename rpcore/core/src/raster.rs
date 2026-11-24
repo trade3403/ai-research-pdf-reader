@@ -7,6 +7,7 @@ mod images;
 mod glyph_area;
 mod glyph_geometry;
 mod page_viewport;
+pub mod math_geometry;
 pub use page_viewport::PageViewport;
 pub use glyph_geometry::{GlyphGeometry,PageGlyphGeometry};
 use crate::fonts::standard::StandardFont;
@@ -635,5 +636,13 @@ impl Document<'_>{
     pub fn page_glyph_geometry(&self,page:&PageInfo,content_limit:usize,fonts:Option<&StandardFontSet>)->Result<PageGlyphGeometry>{
         let list=self.page_display_list(page,content_limit)?;
         rendertext::TextRenderer::collect_geometry(self,page,&list,fonts)
+    }
+    /// Local geometric formula candidates and their original glyph records.
+    /// The region is in unrotated PDF user space; no raster allocation.
+    pub fn page_math_geometry(&self,page:&PageInfo,content_limit:usize,fonts:Option<&StandardFontSet>,region:[f64;4])->Result<(PageGlyphGeometry,math_geometry::MathRegion)>{
+        let list=self.page_display_list(page,content_limit)?;
+        let geometry=rendertext::TextRenderer::collect_geometry(self,page,&list,fonts)?;
+        let math=math_geometry::analyze_region(&geometry,&list,region)?;
+        Ok((geometry,math))
     }
 }

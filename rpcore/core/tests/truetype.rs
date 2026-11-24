@@ -217,3 +217,33 @@ fn text_color_order_invisible_and_preview(){
     assert_eq!(g.hit_test(&v,[8.,2.]).unwrap(),None);
     assert!(g.select_view_rect(&v,[3.,3.,2.,2.]).is_err());
 }
+
+#[test]fn math_region_scripts_and_fraction_candidates(){
+    use rpcore::raster::math_geometry::ScriptKind;
+    // Base and two smaller displaced glyphs; separate centered fraction.
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 6 Tf 1 0 0 1 16.5 45 Tm <0002> Tj 1 0 0 1 16.5 36 Tm <0003> Tj /F1 8 Tf 1 0 0 1 43.6 48 Tm <0001> Tj 1 0 0 1 43.6 37 Tm <0002> Tj ET 40 44 12 .5 re f");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let (g,m)=d.page_math_geometry(&pages[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert_eq!(m.glyph_indices,vec![0,1,2,3,4]);
+    assert_eq!(m.scripts.len(),2);
+    assert!(m.scripts.iter().any(|s|s.base==0&&s.script==1&&s.kind==ScriptKind::Superscript));
+    assert!(m.scripts.iter().any(|s|s.base==0&&s.script==2&&s.kind==ScriptKind::Subscript));
+    assert_eq!(m.fractions.len(),1);let f=&m.fractions[0];
+    assert_eq!(f.numerator,vec![3]);assert_eq!(f.denominator,vec![4]);assert_eq!(f.rule_bounds,[40.,44.,52.,44.5]);
+    assert_eq!(g.glyphs[f.numerator[0]].unicode.as_deref(),Some("O"));
+}
+#[test]fn math_region_rejects_same_size_scripts_and_unpaired_rules(){
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj 1 0 0 1 16.5 45 Tm <0002> Tj ET 8 35 30 .5 re f");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let (_,m)=d.page_math_geometry(&pages[0],10000,None,[0.,20.,60.,70.]).unwrap();
+    assert!(m.scripts.is_empty());assert!(m.fractions.is_empty());
+    let (_,m)=d.page_math_geometry(&pages[0],10000,None,[0.,20.,15.,70.]).unwrap();
+    assert!(m.glyph_indices.is_empty());
+    assert!(d.page_math_geometry(&pages[0],10000,None,[5.,0.,4.,10.]).is_err());
+}
+#[test]fn math_region_horizontal_stroke_fraction(){
+    let p=fixture::pdf(b"BT /F1 8 Tf 43.6 48 Td <0001> Tj 1 0 0 1 43.6 37 Tm <0002> Tj ET .5 w 40 44 m 52 44 l S");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let (_,m)=d.page_math_geometry(&pages[0],10000,None,[35.,30.,60.,60.]).unwrap();
+    assert_eq!(m.fractions.len(),1);assert_eq!(m.fractions[0].rule_bounds,[40.,43.75,52.,44.25]);
+}
