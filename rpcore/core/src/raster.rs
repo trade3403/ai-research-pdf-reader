@@ -200,10 +200,11 @@ struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<
 impl Surface{
     fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
         if alpha>=1.&&self.blend_mode==BlendMode::Normal{self.samples[i..i+3].copy_from_slice(&c);}
-        else if alpha>0.{for (k,&v) in c.iter().enumerate(){
-            let b=f64::from(self.samples[i+k]);let f=self.blend_mode.channel(b/255.,f64::from(v)/255.)*255.;
-            self.samples[i+k]=(f*alpha+b*(1.-alpha)).round().clamp(0.,255.)as u8;
-        }}
+        else if alpha>0.{
+            let b:[f64;3]=std::array::from_fn(|k|f64::from(self.samples[i+k])/255.);
+            let f=self.blend_mode.rgb(b,c.map(|v|f64::from(v)/255.));
+            for k in 0..3{self.samples[i+k]=((f[k]*alpha+b[k]*(1.-alpha))*255.).round().clamp(0.,255.)as u8;}
+        }
     }
     fn paint(&mut self,mask:&[u8],c:[u8;3],alpha:f64)->Result<()>{
         self.budget.charge(self.w*self.h*4)?;

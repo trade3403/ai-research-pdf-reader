@@ -37,7 +37,7 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
 #[test]fn normal_opacity_restore(){
     let p=fixture::pdf(b"q /Half gs 1 0 0 rg 0 0 10 10 re f 0 0 1 rg 5 0 10 10 re f Q 0 g 15 0 5 10 re f",b"null".to_vec(),b"null".to_vec(),"<< /ca 0.5 /CA 0.25 /BM /Normal >>");let b=render(&p);
     assert_eq!(px(&b,2,15),[255,128,128,255]);assert_eq!(px(&b,7,15),[128,64,192,255]);assert_eq!(px(&b,12,15),[128,128,255,255]);assert_eq!(px(&b,17,15),[0,0,0,255]);
-    let p=fixture::pdf(b"/Half gs",b"null".to_vec(),b"null".to_vec(),"<< /BM /Hue >>");let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
+    let p=fixture::pdf(b"/Half gs",b"null".to_vec(),b"null".to_vec(),"<< /BM /Unknown >>");let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
 }
 
 #[test]fn packed_and_indexed(){
@@ -75,4 +75,31 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
         let p=fixture::pdf(b"2 0 0 2 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let d=Document::open(&p).unwrap();
         assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
     }
+}
+
+#[test]fn progressive_and_four_components(){
+    let gray=fixture::progressive_gradient();assert_eq!(gray.len(),285);
+    let a=jpeg::decode(&gray,1000,Transform::Auto).unwrap();assert_eq!((a.width,a.height,a.channels),(8,8,1));
+    for row in a.data.chunks_exact(8){for (&v,t) in row.iter().zip([1,30,61,90,121,149,181,210]){close(v,t);}}
+    let mut truncated=gray.clone();truncated.truncate(gray.len()-2);assert!(jpeg::decode(&truncated,1000,Transform::Auto).is_err());
+    let c=fixture::cmyk();assert_eq!(c.len(),177);
+    let a=jpeg::decode(&c,1000,Transform::Auto).unwrap();assert_eq!((a.width,a.height,a.channels),(8,8,4));
+    for p in a.data.chunks_exact(4){for (&v,t) in p.iter().zip([255,0,0,255]){close(v,t);}}
+    // Adobe APP14 transform 2 test: same component coefficients with YCCK semantics.
+    let mut y=c.clone();y[17]=2;let a=jpeg::decode(&y,1000,Transform::Auto).unwrap();
+    for p in a.data.chunks_exact(4){for (&v,t) in p.iter().zip([179,0,227,255]){close(v,t);}}
+    let im=fixture::stream("/Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /Filter /DCTDecode /Decode [1 0 1 0 1 0 1 0]",&c);
+    let p=fixture::pdf(b"8 0 0 8 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let b=render(&p);
+    for (&v,t) in px(&b,2,15).iter().zip([255,0,0,255]){close(v,t);}
+}
+#[test]fn nonseparable_and_softlight(){
+    use rpcore::graphics::BlendMode;
+    let b=[0.4,0.4,0.4];let s=[1.,0.,0.];
+    let c=BlendMode::Color.rgb(b,s);
+    assert!((0.3*c[0]+0.59*c[1]+0.11*c[2]-0.4).abs()<1e-10);
+    assert!(c[0]>c[1]);for v in BlendMode::Hue.rgb(b,s){assert!((v-0.4).abs()<1e-10);}
+    for v in BlendMode::Saturation.rgb([0.8,0.2,0.1],[0.5;3]){assert!((v-0.369).abs()<1e-10);}
+    assert!((BlendMode::SoftLight.channel(0.25,1.)-0.5).abs()<1e-12);
+    let p=fixture::pdf(b"0.4 g 0 0 20 20 re f /Half gs 1 0 0 rg 0 0 20 20 re f",b"null".to_vec(),b"null".to_vec(),"<< /BM /Color >>");
+    let out=render(&p);for (i,&v) in px(&out,5,15)[..3].iter().enumerate(){close(v,(c[i]*255.).round()as u8);}
 }

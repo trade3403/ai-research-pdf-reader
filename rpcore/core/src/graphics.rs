@@ -37,13 +37,14 @@ pub struct Stroke{
     pub miter_limit:f64,pub dash:Vec<f64>,pub dash_phase:f64,pub ctm:Matrix,
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub enum BlendMode{Normal,Multiply,Screen,Overlay,Darken,Lighten,Difference,Exclusion,HardLight,ColorDodge,ColorBurn}
+pub enum BlendMode{Normal,Multiply,Screen,Overlay,Darken,Lighten,Difference,Exclusion,HardLight,ColorDodge,ColorBurn,SoftLight,Hue,Saturation,Color,Luminosity}
 impl BlendMode{
     fn parse(n:&[u8])->Option<Self>{Some(match n{
         b"Normal"|b"Compatible"=>Self::Normal,b"Multiply"=>Self::Multiply,b"Screen"=>Self::Screen,b"Overlay"=>Self::Overlay,
         b"Darken"=>Self::Darken,b"Lighten"=>Self::Lighten,b"Difference"=>Self::Difference,b"Exclusion"=>Self::Exclusion,
-        b"HardLight"=>Self::HardLight,b"ColorDodge"=>Self::ColorDodge,b"ColorBurn"=>Self::ColorBurn,_=>return None,
+        b"HardLight"=>Self::HardLight,b"ColorDodge"=>Self::ColorDodge,b"ColorBurn"=>Self::ColorBurn,b"SoftLight"=>Self::SoftLight,b"Hue"=>Self::Hue,b"Saturation"=>Self::Saturation,b"Color"=>Self::Color,b"Luminosity"=>Self::Luminosity,_=>return None,
     })}
+    /// Scalar formula for separable modes; use rgb() for nonseparable modes.
     pub fn channel(self,b:f64,s:f64)->f64{match self{
         Self::Normal=>s,Self::Multiply=>b*s,Self::Screen=>b+s-b*s,
         Self::Overlay=>if b<=0.5{2.*b*s}else{1.-2.*(1.-b)*(1.-s)},
@@ -51,7 +52,33 @@ impl BlendMode{
         Self::Darken=>b.min(s),Self::Lighten=>b.max(s),Self::Difference=>(b-s).abs(),Self::Exclusion=>b+s-2.*b*s,
         Self::ColorDodge=>if b==0.{0.}else if s==1.{1.}else{(b/(1.-s)).min(1.)},
         Self::ColorBurn=>if b==1.{1.}else if s==0.{0.}else{1.-((1.-b)/s).min(1.)},
+        Self::SoftLight=>if s<=0.5{b-(1.-2.*s)*b*(1.-b)}else{let d=if b<=0.25{((16.*b-12.)*b+4.)*b}else{b.sqrt()};b+(2.*s-1.)*(d-b)},
+        Self::Hue|Self::Saturation|Self::Color|Self::Luminosity=>self.rgb([b;3],[s;3])[0],
     }}
+    /// PDF separable and nonseparable blend functions in normalized device RGB.
+    pub fn rgb(self,b:[f64;3],s:[f64;3])->[f64;3]{
+        fn lum(c:[f64;3])->f64{0.3*c[0]+0.59*c[1]+0.11*c[2]}
+        fn sat(c:[f64;3])->f64{c.iter().copied().fold(f64::NEG_INFINITY,f64::max)-c.iter().copied().fold(f64::INFINITY,f64::min)}
+        fn set_lum(c:[f64;3],l:f64)->[f64;3]{
+            let d=l-lum(c);let mut v=c.map(|x|x+d);let l=lum(v);
+            let n=v.iter().copied().fold(f64::INFINITY,f64::min);let x=v.iter().copied().fold(f64::NEG_INFINITY,f64::max);
+            if n<0.{v=v.map(|a|l+(a-l)*l/(l-n));}
+            if x>1.{let x=v.iter().copied().fold(f64::NEG_INFINITY,f64::max);if x>1.{v=v.map(|a|l+(a-l)*(1.-l)/(x-l));}}
+            v.map(|a|a.clamp(0.,1.))
+        }
+        fn set_sat(c:[f64;3],s:f64)->[f64;3]{
+            let mut order=[0,1,2];order.sort_by(|&a,&b|c[a].total_cmp(&c[b]));
+            let [lo,mid,hi]=order;let mut v=[0.;3];
+            if c[hi]>c[lo]{v[mid]=(c[mid]-c[lo])*s/(c[hi]-c[lo]);v[hi]=s;}v
+        }
+        match self{
+            Self::Hue=>set_lum(set_sat(s,sat(b)),lum(b)),
+            Self::Saturation=>set_lum(set_sat(b,sat(s)),lum(b)),
+            Self::Color=>set_lum(s,lum(b)),
+            Self::Luminosity=>set_lum(b,lum(s)),
+            _=>std::array::from_fn(|i|self.channel(b[i],s[i])),
+        }
+    }
 }
 #[derive(Debug,Clone,PartialEq)]
 pub enum Command{
