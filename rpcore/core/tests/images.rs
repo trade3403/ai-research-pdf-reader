@@ -37,5 +37,42 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
 #[test]fn normal_opacity_restore(){
     let p=fixture::pdf(b"q /Half gs 1 0 0 rg 0 0 10 10 re f 0 0 1 rg 5 0 10 10 re f Q 0 g 15 0 5 10 re f",b"null".to_vec(),b"null".to_vec(),"<< /ca 0.5 /CA 0.25 /BM /Normal >>");let b=render(&p);
     assert_eq!(px(&b,2,15),[255,128,128,255]);assert_eq!(px(&b,7,15),[128,64,192,255]);assert_eq!(px(&b,12,15),[128,128,255,255]);assert_eq!(px(&b,17,15),[0,0,0,255]);
-    let p=fixture::pdf(b"/Half gs",b"null".to_vec(),b"null".to_vec(),"<< /BM /Multiply >>");let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
+    let p=fixture::pdf(b"/Half gs",b"null".to_vec(),b"null".to_vec(),"<< /BM /Hue >>");let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
+}
+
+#[test]fn packed_and_indexed(){
+    for (bits,data,expected) in [(1,vec![0x40,0x80],vec![0,255,255,0]),(2,vec![0x30,0xc0],vec![0,255,255,0]),(4,vec![0x0f,0xf0],vec![0,255,255,0]),(16,vec![0,0,255,255,255,255,0,0],vec![0,255,255,0]) ]{
+        let im=fixture::stream(&format!("/Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent {bits}"),&data);
+        let p=fixture::pdf(b"2 0 0 2 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let b=render(&p);
+        for y in 0..2{for x in 0..2{assert_eq!(px(&b,x,18+y),[expected[y*2+x],expected[y*2+x],expected[y*2+x],255]);}}
+    }
+    let im=fixture::stream("/Subtype /Image /Width 3 /Height 1 /ColorSpace [/Indexed /DeviceRGB 2 <ff000000ff000000ff>] /BitsPerComponent 2",&[0x18]);
+    let p=fixture::pdf(b"3 0 0 1 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let b=render(&p);
+    assert_eq!(px(&b,0,19),[255,0,0,255]);assert_eq!(px(&b,1,19),[0,255,0,255]);assert_eq!(px(&b,2,19),[0,0,255,255]);
+}
+#[test]fn interpolate_and_masks(){
+    let im=fixture::stream("/Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Interpolate true",&[0,255]);
+    let p=fixture::pdf(b"4 0 0 1 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let b=render(&p);
+    for (x,v) in [0,64,191,255].into_iter().enumerate(){close(px(&b,x,19)[0],v);}
+    for hard in [false,true]{
+        let im=fixture::stream(&format!("/Subtype /Image /Width 4 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /{} 6 0 R",if hard{"Mask"}else{"SMask"}),&[255,0,0].repeat(4));
+        let m=if hard{fixture::stream("/Subtype /Image /Width 2 /Height 1 /ImageMask true",&[0x40])}else{fixture::stream("/Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8",&[255,0])};
+        let p=fixture::pdf(b"4 0 0 1 0 0 cm /Im Do",im,m,"<< >>");let b=render(&p);
+        assert_eq!(px(&b,0,19),[255,0,0,255]);assert_eq!(px(&b,1,19),[255,0,0,255]);assert_eq!(px(&b,2,19),[255,255,255,255]);assert_eq!(px(&b,3,19),[255,255,255,255]);
+    }
+}
+#[test]fn blend_modes_and_restore(){
+    for (mode,expected) in [("Multiply",[0,0,0,255]),("Screen",[255,0,255,255]),("Difference",[255,0,255,255]),("Darken",[0,0,0,255]),("Lighten",[255,0,255,255])]{
+        let p=fixture::pdf(b"1 0 0 rg 0 0 20 20 re f q /Half gs 0 0 1 rg 0 0 10 10 re f Q 0 0 1 rg 10 0 10 10 re f",b"null".to_vec(),b"null".to_vec(),&format!("<< /BM /{mode} >>"));let b=render(&p);
+        assert_eq!(px(&b,5,15),expected);assert_eq!(px(&b,15,15),[0,0,255,255]);
+    }
+    let p=fixture::pdf(b"1 0 0 rg 0 0 20 20 re f /Half gs 0 0 1 rg 0 0 20 20 re f",b"null".to_vec(),b"null".to_vec(),"<< /BM [/Unknown /Multiply] /ca 0.5 >>");let b=render(&p);
+    assert_eq!(px(&b,5,15),[128,0,0,255]);
+}
+#[test]fn malformed_packed_and_palette(){
+    for (dict,data) in [("/ColorSpace /DeviceGray /BitsPerComponent 4",vec![0]),("/ColorSpace [/Indexed /DeviceRGB 2 <ff0000>] /BitsPerComponent 2",vec![0,0])]{
+        let im=fixture::stream(&format!("/Subtype /Image /Width 2 /Height 2 {dict}"),&data);
+        let p=fixture::pdf(b"2 0 0 2 0 0 cm /Im Do",im,b"null".to_vec(),"<< >>");let d=Document::open(&p).unwrap();
+        assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
+    }
 }

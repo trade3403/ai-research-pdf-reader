@@ -36,11 +36,29 @@ pub struct Stroke{
     pub color:Color,pub width:f64,pub cap:LineCap,pub join:LineJoin,
     pub miter_limit:f64,pub dash:Vec<f64>,pub dash_phase:f64,pub ctm:Matrix,
 }
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum BlendMode{Normal,Multiply,Screen,Overlay,Darken,Lighten,Difference,Exclusion,HardLight,ColorDodge,ColorBurn}
+impl BlendMode{
+    fn parse(n:&[u8])->Option<Self>{Some(match n{
+        b"Normal"|b"Compatible"=>Self::Normal,b"Multiply"=>Self::Multiply,b"Screen"=>Self::Screen,b"Overlay"=>Self::Overlay,
+        b"Darken"=>Self::Darken,b"Lighten"=>Self::Lighten,b"Difference"=>Self::Difference,b"Exclusion"=>Self::Exclusion,
+        b"HardLight"=>Self::HardLight,b"ColorDodge"=>Self::ColorDodge,b"ColorBurn"=>Self::ColorBurn,_=>return None,
+    })}
+    pub fn channel(self,b:f64,s:f64)->f64{match self{
+        Self::Normal=>s,Self::Multiply=>b*s,Self::Screen=>b+s-b*s,
+        Self::Overlay=>if b<=0.5{2.*b*s}else{1.-2.*(1.-b)*(1.-s)},
+        Self::HardLight=>if s<=0.5{2.*b*s}else{1.-2.*(1.-b)*(1.-s)},
+        Self::Darken=>b.min(s),Self::Lighten=>b.max(s),Self::Difference=>(b-s).abs(),Self::Exclusion=>b+s-2.*b*s,
+        Self::ColorDodge=>if b==0.{0.}else if s==1.{1.}else{(b/(1.-s)).min(1.)},
+        Self::ColorBurn=>if b==1.{1.}else if s==0.{0.}else{1.-((1.-b)/s).min(1.)},
+    }}
+}
 #[derive(Debug,Clone,PartialEq)]
 pub enum Command{
     Save,Restore,
     /// Normal source-over constant opacity, retained in drawing order.
     Opacity{fill:f64,stroke:f64},
+    Blend(BlendMode),
     /// Current nonstroking color, needed by stencil images.
     StencilColor(Color),
     Paint{path:Path,fill:Option<(Color,FillRule)>,stroke:Option<Stroke>},
@@ -62,12 +80,12 @@ pub struct DisplayList{
 }
 #[derive(Clone)]
 struct State{
-    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,
+    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,blend:BlendMode,
 }
 impl Default for State{
     fn default()->Self{
         Self{ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
-            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.}
+            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.,blend:BlendMode::Normal}
     }
 }
 impl State{
@@ -196,14 +214,21 @@ impl<'d,'a> Engine<'d,'a>{
             match k.as_slice(){
                 b"Type" if matches!(&v,Object::Name(n) if n==b"ExtGState")=>{},
                 b"ca"|b"CA"=>{let a=number(&v)?;if !(0.0..=1.0).contains(&a){return Err(Error::Invalid("ExtGState alpha"));}if k==b"ca"{s.fill_alpha=a;}else{s.stroke_alpha=a;}}
-                b"BM" if matches!(&v,Object::Name(n) if n==b"Normal"||n==b"Compatible")=>{},
+                b"BM"=>{
+                    s.blend=match &v{
+                        Object::Name(n)=>BlendMode::parse(n),
+                        Object::Array(a)=>a.iter().find_map(|v|if let Object::Name(n)=v{BlendMode::parse(n)}else{None}),
+                        _=>None,
+                    }.ok_or(Error::Unsupported("blend mode"))?;
+                },
                 b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{},
                 b"AIS" if v==Object::Bool(false)=>{},
                 b"TK" if v==Object::Bool(true)=>{},
                 _=>return Err(Error::Unsupported("ExtGState parameter")),
             }
         }
-        self.command(Command::Opacity{fill:s.fill_alpha,stroke:s.stroke_alpha})
+        self.command(Command::Opacity{fill:s.fill_alpha,stroke:s.stroke_alpha})?;
+        self.command(Command::Blend(s.blend))
     }
     fn run(&mut self,ops:&[Operation],resources:Option<&Object>,mut s:State,depth:usize,scope:Option<(u32,u16)>)->Result<()>{
         let mut stack=Vec::new();let mut p=Current::default();let mut in_text=false;

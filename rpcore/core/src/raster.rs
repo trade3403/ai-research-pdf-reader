@@ -1,5 +1,5 @@
 //! Independent CPU rasterizer. 2x2 sample coverage, opaque white background.
-use crate::{graphics::{Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,Segment,Stroke},text::{Matrix,Point},Document,Error,PageInfo,Result};
+use crate::{graphics::{BlendMode,Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,Segment,Stroke},text::{Matrix,Point},Document,Error,PageInfo,Result};
 use std::sync::Arc;
 mod png;
 mod rendertext;
@@ -196,11 +196,14 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
     }
     Ok(out)
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3]}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode}
 impl Surface{
     fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
-        if alpha>=1.{self.samples[i..i+3].copy_from_slice(&c);}
-        else if alpha>0.{for (k,&v) in c.iter().enumerate(){self.samples[i+k]=(f64::from(v)*alpha+f64::from(self.samples[i+k])*(1.-alpha)).round() as u8;}}
+        if alpha>=1.&&self.blend_mode==BlendMode::Normal{self.samples[i..i+3].copy_from_slice(&c);}
+        else if alpha>0.{for (k,&v) in c.iter().enumerate(){
+            let b=f64::from(self.samples[i+k]);let f=self.blend_mode.channel(b/255.,f64::from(v)/255.)*255.;
+            self.samples[i+k]=(f*alpha+b*(1.-alpha)).round().clamp(0.,255.)as u8;
+        }}
     }
     fn paint(&mut self,mask:&[u8],c:[u8;3],alpha:f64)->Result<()>{
         self.budget.charge(self.w*self.h*4)?;
@@ -216,17 +219,14 @@ impl Surface{
         let hi=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::NEG_INFINITY,f64::max);
         let (x0,x1)=(span_bound(lo(0),self.w*2),span_bound(hi(0),self.w*2));
         let (y0,y1)=(span_bound(lo(1),self.h*2),span_bound(hi(1),self.h*2));
-        self.budget.charge((x1-x0)*(y1-y0))?;
+        self.budget.charge((x1-x0)*(y1-y0)*if img.interpolate{4}else{1})?;
         for y in y0..y1{for x in x0..x1{
             let i=y/2*self.w+x/2;let s=(y%2)*2+x%2;
             if self.clip[i]&(1<<s)==0{continue;}
             let [u,v]=inv.point([(x as f64+0.5)*0.5,(y as f64+0.5)*0.5])?;
             if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
-            let ix=((u*img.w as f64).floor() as usize).min(img.w-1);
-            let iy=(((1.-v)*img.h as f64).floor() as usize).min(img.h-1);
-            let p=iy*img.w+ix;
-            let color=if img.stencil{self.stencil}else{[img.rgb[p*3],img.rgb[p*3+1],img.rgb[p*3+2]]};
-            let alpha=img.alpha.as_ref().map_or(1.,|a|f64::from(a[p])/255.)*self.fill_alpha;
+            let (color,alpha)=img.sample(u,1.-v,self.stencil);
+            let alpha=alpha*self.fill_alpha;
             self.blend(i*12+s*3,color,alpha);
         }}Ok(())
     }
@@ -235,7 +235,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3]};
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -243,10 +243,11 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
         match c{
             Command::Save=>{
                 if s.stack.len()>=64||(s.stack.len()+2)*w*h>MAX_CLIP_BYTES{return Err(Error::Limit("raster clip stack"));}
-                s.stack.push((Arc::clone(&s.clip),s.fill_alpha,s.stroke_alpha));text.save();
+                s.stack.push((Arc::clone(&s.clip),s.fill_alpha,s.stroke_alpha,s.blend_mode));text.save();
             }
-            Command::Restore=>{let (clip,fa,sa)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;text.restore()?;}
+            Command::Restore=>{let (clip,fa,sa,bm)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;s.blend_mode=bm;text.restore()?;}
             Command::Opacity{fill,stroke}=>{s.fill_alpha=*fill;s.stroke_alpha=*stroke;}
+            Command::Blend(b)=>s.blend_mode=*b,
             Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
