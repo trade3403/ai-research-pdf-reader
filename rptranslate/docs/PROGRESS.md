@@ -1,19 +1,19 @@
 # D 线路实际开发进度
 
-更新：2026-11-24。当前工程版本 0.1.0；D1.0 已通过 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-24。当前工程版本 0.1.0；D1.0、D1.1 已通过 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
 | D1.0 | 已通过 | 独立工程、基础数值/语料/元数据及 CPU CI |
-| D1.1 | 待验证 | 自主 Safetensors 子集解析和参考样本，等待 CI |
+| D1.1 | 已通过 | 自主 Safetensors 子集解析、参考样本及 CPU CI |
 | D1.2–D1.7 | 未开始 | Tokenizer、Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 1/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -28,17 +28,22 @@ D1 里程碑完成 1/14（按阶段数统计，不是工作量百分比）。
 - 无外部 Rust crate，未使用在线翻译 API；合成 fixture 不是真实论文模型结果。
 
 ## 当前限制
-没有模型权重加载、分词器、张量引擎、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
+尚未加载真实预训练模型（已有 FP32/FP16/BF16 Safetensors 子集读取器），没有分词器、张量引擎、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
 
-## 当前阶段 D1.1
+## D1.1 阶段要求
 实现安全、边界明确的 Safetensors 解析。先确认格式规范，定义头长度和张量数/维度/大小上限，解析元数据及 dtype、shape、offset，支持小 fixture 的 FP32/FP16/BF16，校验数据区域、字节序、越界、重叠、溢出和异常输入。与成熟实现对照；通过 CPU CI 后更新本文件。不要提前宣称可翻译。
 
 ## D1.1 实现记录
 - 新增 rpmodel::safetensors：有界 JSON 权重索引、FP32/FP16/BF16、按需切片读取、范围检查。
 - 官方 Python safetensors 0.7.0 生成合成参考文件；测试含损坏头、重复键、Unicode、空张量、溢出、半精度边界。
-- [算法与限制](D1.1_SAFETENSORS.md)。CI 尚待验证；不计为完成。
+- [算法与限制](D1.1_SAFETENSORS.md)。CPU CI 已通过。
 - 首轮 [格式检查失败](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45416657427)，已按 rustfmt 修正。第二轮 [Clippy 失败](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45416762689)，已将固定大小 chunks_exact 改为 as_chunks（需 Rust 1.88+），保留全部质量门槛。
 - 另用 Python 重述 FP16 转换公式，与标准库 struct 对照全部 65536 种位模式，非 NaN 值逐位一致、NaN 分类一致；此检查不是 Rust 运行结果。
+
+- 验收代码提交：[51bf64cf3fcb52dc0b8124e814d6c8c428cb3606](https://github.com/trade3403/ai-research-pdf-reader/commit/51bf64cf3fcb52dc0b8124e814d6c8c428cb3606)。[第三轮 GitHub Actions 45416917593](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45416917593) 已完成，结论 success；格式、Clippy、单元测试、Release 编译、自检全部通过。尚未验证真实大模型、其他 dtype、分片及性能。
+
+## 下一阶段 D1.2
+自主 Tokenizer：先选择并核实目标 Marian 英中模型的分词格式、词表及特殊 token，建立参考 fixture，逐步实现 Unicode 与分词编解码。以参考实现 token ID 对照作为验收，仍用 GitHub 免费 Runner。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
