@@ -2,9 +2,9 @@ name: Electron preview Windows build
 on:
   push:
     branches: [feature/electron-migration, main]
-    paths: ['electron-preview/**', '.github/workflows/electron-preview-ci.yml']
+    paths: ['electron-preview/**', 'src/**', '.github/workflows/electron-preview-ci.yml']
   pull_request:
-    paths: ['electron-preview/**', '.github/workflows/electron-preview-ci.yml']
+    paths: ['electron-preview/**', 'src/**', '.github/workflows/electron-preview-ci.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -6,3 +6,11 @@ contextBridge.exposeInMainWorld('preview', Object.freeze({
   toggleChat: enabled => ipcRenderer.invoke('preview:chat-toggle', enabled),
   openExternalChat: () => ipcRenderer.invoke('preview:chat-external')
 }));
+
+contextBridge.exposeInMainWorld('studio', Object.freeze({
+  chatOpen: owner => ipcRenderer.invoke('studio:chat-open',owner),
+  chatBounds: (owner,rect) => ipcRenderer.invoke('studio:chat-bounds',owner,rect),
+  chatClose: owner => ipcRenderer.invoke('studio:chat-close',owner),
+  chatExternal: () => ipcRenderer.invoke('preview:chat-external'),
+  reader: (op,value) => ipcRenderer.invoke('studio:reader',op,value)
+}));

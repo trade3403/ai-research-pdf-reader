@@ -4,7 +4,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
 const localUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
-let win = null, chat = null;
+let win = null, chat = null, chatOwner = null, readerDb = null;
+const {createReaderDb} = require('./reader-db.cjs');
 const workspaceUrl = 'studio://local/index.html';
 protocol.registerSchemesAsPrivileged([{ scheme: 'studio', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 function registerWorkspace() {
@@ -28,25 +29,27 @@ function registerWorkspace() {
 const prefs = { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true };
 function authorize(event) {
   if (!win || event.sender !== win.webContents || !event.senderFrame ||
-      event.senderFrame !== win.webContents.mainFrame || !isTrustedLocal(event.senderFrame.url, localUrl)) {
+      event.senderFrame !== win.webContents.mainFrame || !(isTrustedLocal(event.senderFrame.url, localUrl) || isTrustedLocal(event.senderFrame.url, workspaceUrl))) {
     throw new Error('Unauthorized IPC');
   }
 }
 function layout() {
-  if (!win || !chat) return;
+  if (!win || !chat || chatOwner) return;
   const [w, h] = win.getContentSize();
   const left = Math.round(w * .54);
   chat.setBounds({ x: left, y: 68, width: Math.max(0, w-left), height: Math.max(0, h-68) });
 }
 function closeChat() {
   if (!chat) return;
-  const old = chat; chat = null;
+  const old = chat; chat = null; chatOwner = null;
   if (win && !win.isDestroyed()) win.contentView.removeChildView(old);
   if (!old.webContents.isDestroyed()) old.webContents.close();
 }
-function openChat() {
+function openChat(owner = null) {
   if (chat) return;
   chat = new WebContentsView({ webPreferences: { ...prefs, partition: 'persist:research-chat-preview' } });
+  chatOwner = owner;
+  if (owner) chat.setVisible(false);
   const wc = chat.webContents;
   wc.session.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
   wc.session.setPermissionCheckHandler(() => false);
@@ -90,5 +93,34 @@ ipcMain.handle('preview:chat-external', event => {
   authorize(event);
   return shell.openExternal('https://chatgpt.com/');
 });
+function checkOwner(owner) { if(typeof owner!=='string'||!/^[a-f0-9-]{36}$/.test(owner)) throw new Error('Invalid dock owner'); }
+ipcMain.handle('studio:chat-open',(event,owner)=>{
+  authorize(event);checkOwner(owner);
+  if(chat && chatOwner!==owner) closeChat();
+  openChat(owner);
+  return true;
+});
+ipcMain.handle('studio:chat-bounds',(event,owner,rect)=>{
+  authorize(event);checkOwner(owner);
+  if(!chat||chatOwner!==owner) return false;
+  if(rect===null){chat.setVisible(false);return true;}
+  if(!rect||!['x','y','width','height'].every(k=>Number.isFinite(rect[k]))) throw new Error('Invalid dock bounds');
+  const [w,h]=win.getContentSize();
+  const x=Math.max(0,Math.round(rect.x)),y=Math.max(0,Math.round(rect.y));
+  const width=Math.min(Math.round(rect.width),w-x),height=Math.min(Math.round(rect.height),h-y);
+  if(width<40||height<40){chat.setVisible(false);return false;}
+  chat.setBounds({x,y,width,height});chat.setVisible(true);return true;
+});
+ipcMain.handle('studio:chat-close',(event,owner)=>{
+  authorize(event);checkOwner(owner);
+  if(chatOwner===owner) closeChat();
+});
+ipcMain.handle('studio:reader',(event,op,value)=>{
+  authorize(event);
+  if(event.senderFrame.url!==workspaceUrl) throw new Error('Workspace only');
+  if(!readerDb) readerDb=createReaderDb(path.join(app.getPath('userData'),'reader-v062.sqlite'));
+  return readerDb.call(op,value);
+});
+app.on('will-quit',()=>{if(readerDb){readerDb.close();readerDb=null;}});
 app.whenReady().then(() => { registerWorkspace(); createWindow(); });
 app.on('window-all-closed', () => app.quit());

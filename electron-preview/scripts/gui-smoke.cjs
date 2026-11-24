@@ -47,6 +47,25 @@ const assert = require('node:assert/strict');
     await page.screenshot({path:path.join(out,'02-pdf-open.png')});
     assert.ok(await page.locator('canvas').count());
     await page.waitForTimeout(2000);
+    // Validate the actual application's reader data is persisted in native SQLite.
+    const document=await page.evaluate(async()=>{for(let i=0;i<30;i++){const docs=await window.studio.reader('listDocuments');const doc=docs.find(x=>x.name==='GUI-fixture.pdf');if(doc)return doc;await new Promise(r=>setTimeout(r,200));}return null;});
+    assert.ok(document,'PDF reading record not persisted');
+    await page.getByRole('button',{name:'ChatGPT 网页',exact:true}).click();
+    await page.locator('.chat-native-viewport').waitFor({state:'visible'});
+    await page.waitForTimeout(1500);
+    const child=await app.evaluate(({BrowserWindow})=>{const win=BrowserWindow.getAllWindows()[0];return win.contentView.children.filter(v=>v.webContents&&v.webContents!==win.webContents).map(v=>({bounds:v.getBounds(),prefs:v.webContents.getLastWebPreferences()}));});
+    assert.equal(child.length,1,'native child not created');
+    assert.ok(child[0].bounds.width>40&&child[0].bounds.height>40);
+    assert.equal(child[0].prefs.nodeIntegration,false);assert.equal(child[0].prefs.contextIsolation,true);
+    diagnostics.push('Native ChatGPT view geometry and security verified; remote login not tested.');
+    await page.getByRole('button',{name:'隐藏 PDF 阅读区'}).click();
+    await page.waitForTimeout(800);
+    await page.getByRole('button',{name:'显示 PDF 阅读区'}).click();
+    await page.waitForTimeout(800);
+    await page.getByRole('button',{name:'关闭 ChatGPT 侧栏'}).click();
+    await page.waitForTimeout(800);
+    assert.equal(await app.evaluate(({BrowserWindow})=>{const win=BrowserWindow.getAllWindows()[0];return win.contentView.children.filter(v=>v.webContents&&v.webContents!==win.webContents).length;}),0);
+    await page.screenshot({path:path.join(out,'03-reader-restored.png')});
   } catch (error) {
     diagnostics.push(String(error.stack || error));
     clearInterval(timer); await pending;

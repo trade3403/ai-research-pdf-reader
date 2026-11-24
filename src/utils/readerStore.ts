@@ -1,3 +1,4 @@
+import { electronBridge } from './electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import type { Annotation, AnnotationColor, AnnotationKind, PdfRect } from './annotations';
 import { validRects } from './annotations';
@@ -48,6 +49,18 @@ function getBrowser<T>(key: string, fallback: T): T {
 }
 function setBrowser<T>(key: string, value: T): void { localStorage.setItem(key, JSON.stringify(value)); }
 
+let migrated: Promise<unknown>|null=null;
+async function nativeReader<T>(op:string,value?:unknown):Promise<T> {
+  const bridge=electronBridge();
+  if(!bridge) throw new Error('Electron reader unavailable');
+  if(!migrated) migrated=bridge.reader('importPreview',{
+    documents:getBrowser<SavedDocument[]>(DOCUMENTS_KEY,[]),
+    annotations:getBrowser<Annotation[]>(ANNOTATIONS_KEY,[])
+  }).catch(error=>{migrated=null;throw error;});
+  await migrated;
+  return bridge.reader(op,value) as Promise<T>;
+}
+
 function safeAnnotation(ann: Annotation): Annotation {
   return { ...ann, rects: validRects(Array.isArray(ann.rects) ? ann.rects : []) };
 }
@@ -68,6 +81,7 @@ function fromAnnotationRow(row: AnnotationRow): Annotation {
 }
 
 export async function getAnnotations(fingerprint: string): Promise<Annotation[]> {
+  if (electronBridge()) return (await nativeReader<Annotation[]>('getAnnotations',fingerprint)).map(safeAnnotation);
   if (!isTauri()) return getBrowser<Annotation[]>(ANNOTATIONS_KEY, []).filter((a) => a.fingerprint === fingerprint).map(safeAnnotation);
   const db = await getDatabase();
   const rows = await db.select<AnnotationRow[]>('SELECT * FROM annotations WHERE fingerprint = $1 ORDER BY page, created_at', [fingerprint]);
@@ -75,6 +89,7 @@ export async function getAnnotations(fingerprint: string): Promise<Annotation[]>
 }
 
 export async function saveAnnotation(ann: Annotation): Promise<void> {
+  if(electronBridge()){await nativeReader('saveAnnotation',ann);return;}
   if (!isTauri()) {
     const list = getBrowser<Annotation[]>(ANNOTATIONS_KEY, []).filter((a) => a.id !== ann.id);
     setBrowser(ANNOTATIONS_KEY, [...list, ann]);
@@ -91,6 +106,7 @@ export async function saveAnnotation(ann: Annotation): Promise<void> {
 }
 
 export async function deleteAnnotation(id: string): Promise<void> {
+  if(electronBridge()){await nativeReader('deleteAnnotation',id);return;}
   if (!isTauri()) {
     setBrowser(ANNOTATIONS_KEY, getBrowser<Annotation[]>(ANNOTATIONS_KEY, []).filter((a) => a.id !== id));
     return;
@@ -108,6 +124,7 @@ function fromDocumentRow(row: DocumentRow): SavedDocument {
 }
 
 export async function listDocuments(): Promise<SavedDocument[]> {
+  if(electronBridge()) return nativeReader<SavedDocument[]>('listDocuments');
   if (!isTauri()) return getBrowser<SavedDocument[]>(DOCUMENTS_KEY, []).sort((a, b) => b.lastOpened.localeCompare(a.lastOpened));
   const db = await getDatabase();
   const rows = await db.select<DocumentRow[]>('SELECT * FROM documents ORDER BY last_opened DESC LIMIT 40');
@@ -115,6 +132,7 @@ export async function listDocuments(): Promise<SavedDocument[]> {
 }
 
 export async function getDocument(fingerprint: string): Promise<SavedDocument | null> {
+  if(electronBridge()) return nativeReader<SavedDocument|null>('getDocument',fingerprint);
   if (!isTauri()) return getBrowser<SavedDocument[]>(DOCUMENTS_KEY, []).find((a) => a.fingerprint === fingerprint) || null;
   const db = await getDatabase();
   const rows = await db.select<DocumentRow[]>('SELECT * FROM documents WHERE fingerprint = $1', [fingerprint]);
@@ -122,6 +140,7 @@ export async function getDocument(fingerprint: string): Promise<SavedDocument | 
 }
 
 export async function saveDocument(doc: SavedDocument): Promise<void> {
+  if(electronBridge()){await nativeReader('saveDocument',doc);return;}
   if (!isTauri()) {
     const list = getBrowser<SavedDocument[]>(DOCUMENTS_KEY, []).filter((a) => a.fingerprint !== doc.fingerprint);
     setBrowser(DOCUMENTS_KEY, [doc, ...list].slice(0, 40));

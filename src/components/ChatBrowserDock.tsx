@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { electronBridge } from '../utils/electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import { ChevronDown, ChevronUp, ClipboardPaste, ExternalLink, Globe, Info, LoaderCircle, PanelLeftClose, PanelLeftOpen, RefreshCw, Save, X } from 'lucide-react';
 import { loadLibrary } from '../utils/libraryStore';
@@ -44,7 +45,7 @@ export default function ChatBrowserDock({ onCaptureText, onClose, resizing, onNo
   const [filling, setFilling] = useState(false);
   const alignRef = useRef<(() => Promise<boolean>) | null>(null);
   const resizingRef = useRef(resizing);
-  const [state, setState] = useState<BrowserState>(isTauri() ? 'starting' : 'fallback');
+  const [state, setState] = useState<BrowserState>(isTauri() || electronBridge() ? 'starting' : 'fallback');
   const [details, setDetails] = useState('');
   const [browserKey, setBrowserKey] = useState(0);
   const [reading, setReading] = useState(false);
@@ -232,9 +233,38 @@ export default function ChatBrowserDock({ onCaptureText, onClose, resizing, onNo
     };
   }, [browserKey]);
 
+  useEffect(() => {
+    const bridge=electronBridge();
+    if (!bridge) return;
+    const owner=crypto.randomUUID();
+    let cancelled=false, busy=false, last='';
+    const align=async()=>{
+      if(cancelled||busy) return;
+      const rect=mountRef.current?.getBoundingClientRect();
+      const geometry=rect&&!resizingRef.current&&rect.width>=40&&rect.height>=40
+        ? {x:rect.left,y:rect.top,width:rect.width,height:rect.height}:null;
+      const key=JSON.stringify(geometry);
+      if(key===last) return;
+      busy=true;
+      try {
+        const aligned=await bridge.chatBounds(owner,geometry);
+        if(!cancelled){last=key;if(aligned&&geometry){setState('ready');setDetails('');}}
+      } catch(error){if(!cancelled){setDetails(String(error));setState('error');}}
+      finally{busy=false;}
+    };
+    let timer:ReturnType<typeof setInterval>|undefined;
+    void bridge.chatOpen(owner).then(()=>{
+      if(cancelled){void bridge.chatClose(owner);return;}
+      void align();timer=setInterval(()=>void align(),150);
+    }).catch(error=>{if(!cancelled){setDetails(String(error));setState('error');}});
+    return ()=>{cancelled=true;clearInterval(timer);void bridge.chatClose(owner).catch(()=>{});};
+  }, [browserKey]);
+
   const openExternal = async () => {
     try {
-      if (isTauri()) {
+      const bridge=electronBridge();
+      if(bridge) await bridge.chatExternal();
+      else if (isTauri()) {
         const { openUrl } = await import('@tauri-apps/plugin-opener');
         await openUrl(CHATGPT_URL);
       } else window.open(CHATGPT_URL, '_blank', 'noopener,noreferrer');
@@ -326,7 +356,7 @@ export default function ChatBrowserDock({ onCaptureText, onClose, resizing, onNo
     <div className="chat-native-viewport" ref={mountRef}>
       {state !== 'ready' && <div className="chat-browser-placeholder">
         {state === 'starting' ? <LoaderCircle className="spin" size={24}/> : <Globe size={28}/>}
-        <strong>{state === 'starting' ? '正在加载 Windows WebView2…' : '内置网页不可用'}</strong>
+        <strong>{state === 'starting' ? (electronBridge() ? '正在加载 Chromium 分屏…' : '正在加载 Windows WebView2…') : '内置网页不可用'}</strong>
         <p>{state === 'starting' ? '网页加载后可直接登录已有 ChatGPT 账号。' : details || '浏览器预览模式或当前环境不支持嵌入式网页。'}</p>
         {state !== 'starting' && <button className="button primary" onClick={() => void openExternal()}><ExternalLink size={15}/> 在浏览器打开 ChatGPT</button>}
       </div>}
