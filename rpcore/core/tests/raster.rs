@@ -47,3 +47,17 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
     assert_eq!(rows.len(),b.height*(1+b.width*4));
     for (r,row) in rows.chunks_exact(1+b.width*4).enumerate(){assert_eq!(row[0],0);assert_eq!(&row[1..],&b.rgba[r*b.width*4..(r+1)*b.width*4]);}
 }
+
+#[test]fn bounded_local_coverage_many_small_paths(){
+    let data=b"2.02 3.02 0.04 0.04 re f\n".repeat(300);
+    let p=pdf(&data,0,false);let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],Options{scale:50.,allow_missing_text:false},100000).unwrap();
+    assert_eq!((b.width,b.height),(500,400));
+    assert_eq!(pixel(&b,1,398),[0,0,0,255]);
+    assert_eq!(pixel(&b,100,100),[255,255,255,255]);
+}
+#[test]fn local_masks_outside_clip_and_fractional_edges(){
+    let b=render(b"q 100 100 10 10 re W n 2 3 10 8 re f Q -100 -100 1 1 re f 2.5 3 1 1 re f",0,false);
+    assert_eq!(pixel(&b,0,7),[128,128,128,255]);assert_eq!(pixel(&b,1,7),[128,128,128,255]);
+    assert_eq!(pixel(&b,2,7),[255,255,255,255]);assert_eq!(pixel(&b,0,0),[255,255,255,255]);
+}

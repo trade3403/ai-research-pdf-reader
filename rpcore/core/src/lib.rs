@@ -389,3 +389,5 @@ pub mod text;
 pub mod graphics;
 
 pub mod raster;
+
+mod color;

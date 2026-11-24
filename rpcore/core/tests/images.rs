@@ -103,3 +103,10 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
     let p=fixture::pdf(b"0.4 g 0 0 20 20 re f /Half gs 1 0 0 rg 0 0 20 20 re f",b"null".to_vec(),b"null".to_vec(),"<< /BM /Color >>");
     let out=render(&p);for (i,&v) in px(&out,5,15)[..3].iter().enumerate(){close(v,(c[i]*255.).round()as u8);}
 }
+
+#[test]fn icc_image_alternate(){
+    let im=fixture::stream("/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8",&[255,0,0]);
+    let profile=fixture::stream("/N 3",b"uninterpreted ICC profile");
+    let p=fixture::pdf(b"1 0 0 1 0 0 cm /Im Do",im,profile,"<< >>");
+    let b=render(&p);assert_eq!(px(&b,0,19),[255,0,0,255]);
+}

@@ -6,7 +6,7 @@ fn stream(dict:&str,content:&[u8])->Vec<u8>{
 fn fixture(content:&[u8],extra:Vec<Vec<u8>>)->Vec<u8>{
     let mut objs=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> /ColorSpace << /C /DeviceRGB >> /ExtGState << /GS << /LW 2 /LC 1 /LJ 2 /ML 4 /D [[3 2] 1] /OP false /op false /OPM 1 /TR2 /Default >> /Bad << /OP true >> >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> /ColorSpace << /C /DeviceRGB /ICC [/ICCBased 5 0 R] /Cal [/CalRGB << /WhitePoint [1 1 1] >>] >> /ExtGState << /GS << /LW 2 /LC 1 /LJ 2 /ML 4 /D [[3 2] 1] /OP false /op false /OPM 1 /TR2 /Default >> /Bad << /OP true >> >> >> >>".to_vec(),
         stream("",content)];
     objs.extend(extra);
     let mut p=b"%PDF-1.4\n".to_vec();let mut offsets=Vec::new();
@@ -76,5 +76,18 @@ fn cumulative_form_budget(){
     assert_eq!(*fill,Some((Color::Rgb([1.,0.,0.]),FillRule::NonZero)));
     let s=stroke.as_ref().unwrap();assert_eq!(s.width,2.);assert_eq!(s.cap,LineCap::Round);assert_eq!(s.join,LineJoin::Bevel);assert_eq!(s.miter_limit,4.);assert_eq!(s.dash,vec![3.,2.]);
     let b=fixture(b"/Bad gs",vec![]);let d=Document::open(&b).unwrap();
+    assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
+}
+
+#[test]fn icc_device_alternate_and_diagnostics(){
+    let profile=stream("/N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1]",b"uninterpreted profile fixture");
+    let l=list(b"/ICC cs 0.1 0.2 0.3 sc 0 0 10 10 re f",vec![profile]);
+    assert!(l.warnings.contains(&Warning::IccAlternateUsed));
+    let Command::Paint{fill,..}=l.commands.last().unwrap() else{panic!("paint")};
+    assert_eq!(*fill,Some((Color::Rgb([0.1,0.2,0.3]),FillRule::NonZero)));
+    let p=fixture(b"/Cal cs",vec![]);let d=Document::open(&p).unwrap();
+    assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Unsupported("graphics CalRGB color space"))));
+    let profile=stream("/N 3 /Alternate /DeviceGray",b"bad");
+    let p=fixture(b"/ICC cs",vec![profile]);let d=Document::open(&p).unwrap();
     assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
 }

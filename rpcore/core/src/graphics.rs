@@ -100,7 +100,7 @@ pub enum Command{
     Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>},
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
-pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted}
+pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed}
 #[derive(Debug,Clone,PartialEq)]
 pub struct DisplayList{
     /// Initial clip is the page CropBox; Rotate is not applied.
@@ -258,12 +258,29 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("XObject subtype")),
         }
     }
-    fn color_space(&self,resources:Option<&Object>,n:&[u8])->Result<Space>{
+    fn color_space(&mut self,resources:Option<&Object>,n:&[u8])->Result<Space>{
         if let Ok(s)=device(n){return Ok(s);}
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Unsupported("graphics color space"))?)?)?;
         let spaces=crate::dict(self.doc.dereference(r.get(b"ColorSpace".as_slice()).ok_or(Error::Unsupported("graphics color space"))?)?)?;
         let o=self.doc.dereference(spaces.get(n).ok_or(Error::Unsupported("graphics color space"))?)?;
-        match o{Object::Name(n)=>device(&n),_=>Err(Error::Unsupported("graphics complex color space"))}
+        match o{
+            Object::Name(n)=>device(&n),
+            Object::Array(a)=>match a.first(){
+                Some(Object::Name(n)) if n==b"ICCBased"=>{
+                    let space=match crate::color::icc_components(self.doc,&a)?{1=>Space::Gray,3=>Space::Rgb,4=>Space::Cmyk,_=>unreachable!()};
+                    self.warning(Warning::IccAlternateUsed);
+                    Ok(space)
+                }
+                Some(Object::Name(n)) if n==b"Pattern"=>Err(Error::Unsupported("graphics Pattern color space")),
+                Some(Object::Name(n)) if n==b"CalRGB"=>Err(Error::Unsupported("graphics CalRGB color space")),
+                Some(Object::Name(n)) if n==b"CalGray"=>Err(Error::Unsupported("graphics CalGray color space")),
+                Some(Object::Name(n)) if n==b"Lab"=>Err(Error::Unsupported("graphics Lab color space")),
+                Some(Object::Name(n)) if n==b"Separation"||n==b"DeviceN"=>Err(Error::Unsupported("graphics spot color space")),
+                Some(Object::Name(n)) if n==b"Indexed"=>Err(Error::Unsupported("graphics Indexed color space")),
+                _=>Err(Error::Unsupported("graphics complex color space")),
+            },
+            _=>Err(Error::Unsupported("graphics complex color space")),
+        }
     }
     fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State)->Result<()>{
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("ExtGState Resources"))?)?)?;

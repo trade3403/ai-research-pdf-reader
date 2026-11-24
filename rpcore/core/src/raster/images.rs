@@ -34,6 +34,7 @@ enum Space{Device(usize),Indexed{base:usize,high:usize,palette:Vec<u8>}}
 fn space(doc:&Document<'_>,d:&Dict)->Result<Space>{
     let o=doc.dereference(d.get(b"ColorSpace".as_slice()).ok_or(Error::Invalid("image color space"))?)?;
     if let Object::Array(a)=&o{
+        if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased"){return Ok(Space::Device(crate::color::icc_components(doc,a)?));}
         if a.len()!=4||!matches!(&a[0],Object::Name(n) if n==b"Indexed"||n==b"I"){return Err(Error::Unsupported("image color space array"));}
         let base=device(&doc.dereference(&a[1])?)?;
         let high=match a[2]{Object::Number(v) if v>=0.&&v<=255.&&v.fract()==0.=>v as usize,_=>return Err(Error::Invalid("Indexed hival"))};
