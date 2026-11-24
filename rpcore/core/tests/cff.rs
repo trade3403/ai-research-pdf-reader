@@ -31,3 +31,51 @@ fn native_cff_pdf_pixels(){
         assert_eq!(pixel(29,67),[0,0,0,255]);
     }
 }
+
+#[test]fn cff_builtin_encodings_and_expert_charsets(){
+    let c=Cff::parse(fixture::encoded_font(3,[34,35],0,&[])).unwrap();
+    assert_eq!(c.glyph_for_code(b'A'),Some(1));assert_eq!(c.glyph_for_code(b'B'),Some(2));assert_eq!(c.glyph_for_code(b'C'),None);
+    for (cs,code,name) in [(1,33,b"exclamsmall".as_slice()),(2,36,b"dollaroldstyle".as_slice())]{
+        let c=Cff::parse(fixture::encoded_font(cs,[0,0],1,&[])).unwrap();
+        assert_eq!(c.glyph_for_code(32),Some(1));assert_eq!(c.glyph_for_code(code),Some(2));assert_eq!(c.glyph_for_name(name),Some(2));
+    }
+    let c=Cff::parse(fixture::encoded_font(0,[0,0],0,&[])).unwrap();assert_eq!(c.glyph_for_code(32),Some(1));assert_eq!(c.glyph_for_code(33),Some(2));
+}
+#[test]fn custom_encoding_formats_supplements_and_bounds(){
+    for enc in [vec![0,2,65,66],vec![1,1,65,1],vec![0x80,1,65,1,66,0,35]]{
+        let c=Cff::parse(fixture::encoded_font(3,[34,35],2,&enc)).unwrap();
+        assert_eq!(c.glyph_for_code(65),Some(1));assert_eq!(c.glyph_for_code(66),Some(2));
+    }
+    for enc in [vec![0,2,65,65],vec![1,1,255,1],vec![0,3,65,66,67],vec![0x80,1,65,1,66,0,90],vec![0x80,1,65,1,65,0,35]]{
+        assert!(Cff::parse(fixture::encoded_font(3,[34,35],2,&enc)).is_err());
+    }
+}
+#[test]fn pdf_encoding_precedence_and_native_pixels(){
+    // Built-in encoding swaps A/B. PDF named base replaces it; Differences
+    // override one code and keep the selected base for all other codes.
+    for (enc,hole) in [
+        ("",false),
+        ("/Encoding /StandardEncoding",true),
+        ("/Encoding /WinAnsiEncoding",true),
+        ("/Encoding /MacRomanEncoding",true),
+        ("/Encoding << /BaseEncoding /StandardEncoding /Differences [65 /B] >>",false),
+        ("/Encoding << /Differences [65 /A] >>",true),
+    ]{
+        let f=fixture::encoded_font(3,[34,35],2,&[0,2,66,65]);
+        let p=fixture::pdf_with_font(false,b"BT /F1 20 Tf 10 20 Td (AB) Tj ET",f,enc);
+        let d=Document::open(&p).unwrap();let b=d.render_page(&d.pages().unwrap()[0],Options::default(),10000).unwrap();
+        let at=(64*b.width+15)*4;
+        assert_eq!(&b.rgba[at..at+4],if hole{&[255,255,255,255]}else{&[0,0,0,255]},"{enc}");
+    }
+    let f=fixture::encoded_font(3,[34,35],0,&[]);
+    let p=fixture::pdf_with_font(false,b"BT /F1 20 Tf (A) Tj ET",f,"/Encoding << /Differences [65 /Missing] >>");
+    let d=Document::open(&p).unwrap();assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(Error::Unsupported("missing CFF glyph mapping"))));
+}
+#[test]fn encoding_names_are_not_unicode_indices(){
+    use rpcore::fonts::cff::predefined_name;
+    assert_eq!(predefined_name(b"StandardEncoding",39),Some(b"quoteright".as_slice()));
+    assert_eq!(predefined_name(b"WinAnsiEncoding",39),Some(b"quotesingle".as_slice()));
+    assert_eq!(predefined_name(b"WinAnsiEncoding",128),Some(b"Euro".as_slice()));
+    assert_eq!(predefined_name(b"MacExpertEncoding",35),Some(b"centoldstyle".as_slice()));
+    assert_eq!(predefined_name(b"ExpertEncoding",35),None);
+}

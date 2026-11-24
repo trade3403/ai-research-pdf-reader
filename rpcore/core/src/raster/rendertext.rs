@@ -4,17 +4,45 @@ use crate::{Document,PageInfo,Object,content::Operation,fonts::{Font,FontKind,Wr
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
-enum Outline{Tt(TrueType),Cff(Cff,BTreeMap<u8,Vec<u8>>),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool)}
+enum Outline{Tt(TrueType),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool)}
 struct Face{font:Font,outline:Outline}
 fn differences(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<BTreeMap<u8,Vec<u8>>>{
-    let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Unsupported("CFF simple font explicit Differences required"))?)? else{return Err(Error::Unsupported("CFF simple font explicit Differences required"));};
+    let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Invalid("missing Encoding dictionary"))?)? else{return Err(Error::Invalid("Encoding dictionary"));};
     let Object::Array(a)=doc.dereference(enc.get(b"Differences".as_slice()).ok_or(Error::Unsupported("CFF Differences required"))?)? else{return Err(Error::Invalid("CFF Differences"));};
+    if a.len()>1024{return Err(Error::Limit("font Differences"));}
     let mut out=BTreeMap::new();let mut code=None;
     for v in a{match v{
         Object::Number(n) if (0.0..=255.).contains(&n)&&n.fract()==0.=>code=Some(n as usize),
         Object::Name(n)=>{let i=code.ok_or(Error::Invalid("CFF Differences code"))?;if i>255{return Err(Error::Invalid("CFF Differences range"));}out.insert(i as u8,n);code=Some(i+1);}
         _=>return Err(Error::Invalid("CFF Differences item")),
     }}Ok(out)
+}
+fn cff_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>,c:&Cff)->Result<[Option<u16>;256]>{
+    let enc=d.get(b"Encoding".as_slice()).map(|v|doc.dereference(v)).transpose()?;
+    let (base,diff)=match enc{
+        None=>(None,BTreeMap::new()),
+        Some(Object::Name(n))=>(Some(n),BTreeMap::new()),
+        Some(Object::Dict(e))=>{
+            let base=match e.get(b"BaseEncoding".as_slice()).map(|v|doc.dereference(v)).transpose()?{
+                None=>None,Some(Object::Name(n))=>Some(n),_=>return Err(Error::Invalid("CFF BaseEncoding")),
+            };
+            let diff=if e.contains_key(b"Differences".as_slice()){differences(doc,d)?}else{BTreeMap::new()};
+            (base,diff)
+        }
+        _=>return Err(Error::Invalid("CFF PDF Encoding")),
+    };
+    if base.as_ref().is_some_and(|n|!matches!(n.as_slice(),b"StandardEncoding"|b"WinAnsiEncoding"|b"MacRomanEncoding"|b"MacExpertEncoding")){
+        return Err(Error::Unsupported("CFF PDF BaseEncoding"));
+    }
+    let mut map=[None;256];
+    for code in 0..=255u8{
+        map[code as usize]=if let Some(name)=diff.get(&code){
+            c.glyph_for_name(name)
+        }else if let Some(base)=&base{
+            c.glyph_for_encoding(base,code)
+        }else{c.glyph_for_code(code)};
+    }
+    Ok(map)
 }
 fn type1_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<(BTreeMap<u8,Vec<u8>>,bool)>{
     match d.get(b"Encoding".as_slice()).map(|v|doc.dereference(v)).transpose()?{
@@ -80,7 +108,7 @@ impl TextRenderer{
         }else if font.kind==FontKind::Type0Cid2{Outline::Tt(TrueType::parse(data)?)}else{
             let c=Cff::parse(data)?;
             if c.is_cid()!=(font.kind==FontKind::Type0Cid0){return Err(Error::Invalid("CFF CID subtype mismatch"));}
-            let names=if c.is_cid(){BTreeMap::new()}else{differences(doc,&d)?};
+            let names=if c.is_cid(){[None;256]}else{cff_mapping(doc,&d,&c)?};
             Outline::Cff(c,names)
         };
         let f=Arc::new(Face{font,outline});
@@ -102,7 +130,7 @@ impl TextRenderer{
                         (t.outline(name)?,t.font_matrix())
                     }
                     Outline::Cff(c,names)=>{
-                        let gid=if c.is_cid(){glyph.cid.and_then(|id|c.glyph_for_cid(id))}else{names.get(&glyph.code[0]).and_then(|n|c.glyph_for_name(n))}.ok_or(Error::Unsupported("missing CFF glyph mapping"))?;
+                        let gid=if c.is_cid(){glyph.cid.and_then(|id|c.glyph_for_cid(id))}else{names[glyph.code[0] as usize]}.ok_or(Error::Unsupported("missing CFF glyph mapping"))?;
                         (c.outline(gid)?,c.font_matrix())
                     }
                 };

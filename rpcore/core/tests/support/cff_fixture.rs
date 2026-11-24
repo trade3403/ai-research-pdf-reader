@@ -46,13 +46,15 @@ fn stream(dict:&str,data:&[u8])->Vec<u8>{
     let mut o=format!("<< {dict} /Length {} >>\nstream\n",data.len()).into_bytes();o.extend_from_slice(data);o.extend_from_slice(b"\nendstream");o
 }
 pub fn pdf(cid:bool,content:&[u8])->Vec<u8>{
-    let f=font(cid,false);
+    pdf_with_font(cid,content,font(cid,false),"/Encoding << /Differences [65 /outlineA /outlineB] >>")
+}
+pub fn pdf_with_font(cid:bool,content:&[u8],f:Vec<u8>,encoding:&str)->Vec<u8>{
     let mut objects=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 140 90] /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".to_vec(),stream("",content)];
     if cid{
         objects.push(b"<< /Type /Font /Subtype /Type0 /BaseFont /RPCoreCFF /Encoding /Identity-H /DescendantFonts [6 0 R] >>".to_vec());
         objects.push(b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /RPCoreCFF /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 650 /FontDescriptor 7 0 R >>".to_vec());
     }else{
-        objects.push(b"<< /Type /Font /Subtype /Type1 /BaseFont /RPCoreCFF /Encoding << /Differences [65 /outlineA /outlineB] >> /FirstChar 65 /LastChar 66 /Widths [650 650] /FontDescriptor 7 0 R >>".to_vec());
+        objects.push(format!("<< /Type /Font /Subtype /Type1 /BaseFont /RPCoreCFF {encoding} /FirstChar 65 /LastChar 66 /Widths [650 650] /FontDescriptor 7 0 R >>").into_bytes());
         objects.push(b"null".to_vec());
     }
     objects.push(b"<< /Type /FontDescriptor /FontName /RPCoreCFF /Flags 4 /FontBBox [0 0 600 700] /ItalicAngle 0 /Ascent 700 /Descent 0 /CapHeight 700 /StemV 100 /FontFile3 8 0 R >>".to_vec());
@@ -62,4 +64,24 @@ pub fn pdf(cid:bool,content:&[u8])->Vec<u8>{
     let x=p.len();p.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n",objects.len()+1).as_bytes());
     for o in offs{p.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());}
     p.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",objects.len()+1).as_bytes());p
+}
+
+// Small independent CFF with a selectable encoding and charset; no subrs.
+// charset_id 0..2 selects predefined charset, otherwise explicit SID list.
+pub fn encoded_font(charset_id:usize,sids:[u16;2],encoding_id:usize,encoding:&[u8])->Vec<u8>{
+    let mut a=Vec::new();op(&mut a,&[0,0],21);op(&mut a,&[600,0,0,700,-600,0,0,-700],5);
+    op(&mut a,&[200,200],21);op(&mut a,&[0,300,200,0,0,-300,-200,0],5);a.push(14);
+    let mut b=Vec::new();op(&mut b,&[0,0],21);op(&mut b,&[600,0,0,700,-600,0,0,-700],5);b.push(14);
+    let chars=index(&[vec![14],a,b]);
+    fn top(cs:usize,enc:usize,ch:usize)->Vec<u8>{
+        let mut t=Vec::new();di(&mut t,cs);t.push(15);di(&mut t,enc);t.push(16);di(&mut t,ch);t.push(17);t
+    }
+    let mut f=vec![1,0,4,2];f.extend(index(&[b"EncodingFixture".to_vec()]));
+    let pos=f.len()+index(&[top(0,0,0)]).len()+4;
+    let mut charset=Vec::new();
+    if charset_id>2{charset.push(0);for sid in sids{charset.extend(sid.to_be_bytes());}}
+    let enc_pos=pos+charset.len();let bytes=if encoding_id>1{encoding}else{&[]};
+    let chars_pos=enc_pos+bytes.len();
+    f.extend(index(&[top(if charset_id>2{pos}else{charset_id},if encoding_id>1{enc_pos}else{encoding_id},chars_pos)]));
+    f.extend([0,0,0,0]);f.extend(charset);f.extend(bytes);f.extend(chars);f
 }

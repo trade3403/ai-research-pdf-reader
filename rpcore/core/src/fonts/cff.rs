@@ -9,6 +9,102 @@ const MAX_STEMS:usize=96;
 const MAX_DEPTH:usize=10;
 const MAX_STACK:usize=48;
 const STANDARD:&str=".notdef space exclam quotedbl numbersign dollar percent ampersand quoteright parenleft parenright asterisk plus comma hyphen period slash zero one two three four five six seven eight nine colon semicolon less equal greater question at A B C D E F G H I J K L M N O P Q R S T U V W X Y Z bracketleft backslash bracketright asciicircum underscore quoteleft a b c d e f g h i j k l m n o p q r s t u v w x y z braceleft bar braceright asciitilde exclamdown cent sterling fraction yen florin section currency quotesingle quotedblleft guillemotleft guilsinglleft guilsinglright fi fl endash dagger daggerdbl periodcentered paragraph bullet quotesinglbase quotedblbase quotedblright guillemotright ellipsis perthousand questiondown grave acute circumflex tilde macron breve dotaccent dieresis ring cedilla hungarumlaut ogonek caron emdash AE ordfeminine Lslash Oslash OE ordmasculine ae dotlessi lslash oslash oe germandbls onesuperior logicalnot mu trademark Eth onehalf plusminus Thorn onequarter divide brokenbar degree thorn threequarters twosuperior registered minus eth multiply threesuperior copyright Aacute Acircumflex Adieresis Agrave Aring Atilde Ccedilla Eacute Ecircumflex Edieresis Egrave Iacute Icircumflex Idieresis Igrave Ntilde Oacute Ocircumflex Odieresis Ograve Otilde Scaron Uacute Ucircumflex Udieresis Ugrave Yacute Ydieresis Zcaron aacute acircumflex adieresis agrave aring atilde ccedilla eacute ecircumflex edieresis egrave iacute icircumflex idieresis igrave ntilde oacute ocircumflex odieresis ograve otilde scaron uacute ucircumflex udieresis ugrave yacute ydieresis zcaron exclamsmall Hungarumlautsmall dollaroldstyle dollarsuperior ampersandsmall Acutesmall parenleftsuperior parenrightsuperior twodotenleader onedotenleader zerooldstyle oneoldstyle twooldstyle threeoldstyle fouroldstyle fiveoldstyle sixoldstyle sevenoldstyle eightoldstyle nineoldstyle commasuperior threequartersemdash periodsuperior questionsmall asuperior bsuperior centsuperior dsuperior esuperior isuperior lsuperior msuperior nsuperior osuperior rsuperior ssuperior tsuperior ff ffi ffl parenleftinferior parenrightinferior Circumflexsmall hyphensuperior Gravesmall Asmall Bsmall Csmall Dsmall Esmall Fsmall Gsmall Hsmall Ismall Jsmall Ksmall Lsmall Msmall Nsmall Osmall Psmall Qsmall Rsmall Ssmall Tsmall Usmall Vsmall Wsmall Xsmall Ysmall Zsmall colonmonetary onefitted rupiah Tildesmall exclamdownsmall centoldstyle Lslashsmall Scaronsmall Zcaronsmall Dieresissmall Brevesmall Caronsmall Dotaccentsmall Macronsmall figuredash hypheninferior Ogoneksmall Ringsmall Cedillasmall questiondownsmall oneeighth threeeighths fiveeighths seveneighths onethird twothirds zerosuperior foursuperior fivesuperior sixsuperior sevensuperior eightsuperior ninesuperior zeroinferior oneinferior twoinferior threeinferior fourinferior fiveinferior sixinferior seveninferior eightinferior nineinferior centinferior dollarinferior periodinferior commainferior Agravesmall Aacutesmall Acircumflexsmall Atildesmall Adieresissmall Aringsmall AEsmall Ccedillasmall Egravesmall Eacutesmall Ecircumflexsmall Edieresissmall Igravesmall Iacutesmall Icircumflexsmall Idieresissmall Ethsmall Ntildesmall Ogravesmall Oacutesmall Ocircumflexsmall Otildesmall Odieresissmall OEsmall Oslashsmall Ugravesmall Uacutesmall Ucircumflexsmall Udieresissmall Yacutesmall Thornsmall Ydieresissmall 001.000 001.001 001.002 001.003 Black Bold Book Light Medium Regular Roman Semibold";
+// Standardized Adobe CFF charset and encoding SID tables (CFF specification, Technical Note 5176).
+// PDF WinAnsi, MacRoman and MacExpert glyph-name tables use the same SID vocabulary.
+// SID 0 is undefined; WinAnsi code 128 (Euro) is handled by name, not a fixed SID.
+const EXPERT_CHARSET:[u16;166]=[
+    0,1,229,230,231,232,233,234,235,236,237,238,13,14,15,99,
+    239,240,241,242,243,244,245,246,247,248,27,28,249,250,251,252,
+    253,254,255,256,257,258,259,260,261,262,263,264,265,266,109,110,
+    267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,
+    283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,
+    299,300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,
+    315,316,317,318,158,155,163,319,320,321,322,323,324,325,326,150,
+    164,169,327,328,329,330,331,332,333,334,335,336,337,338,339,340,
+    341,342,343,344,345,346,347,348,349,350,351,352,353,354,355,356,
+    357,358,359,360,361,362,363,364,365,366,367,368,369,370,371,372,
+    373,374,375,376,377,378,
+];
+const EXPERT_SUBSET:[u16;87]=[
+    0,1,231,232,235,236,237,238,13,14,15,99,239,240,241,242,
+    243,244,245,246,247,248,27,28,249,250,251,253,254,255,256,257,
+    258,259,260,261,262,263,264,265,266,109,110,267,268,269,270,272,
+    300,301,302,305,314,315,158,155,163,320,321,322,323,324,325,326,
+    150,164,169,327,328,329,330,331,332,333,334,335,336,337,338,339,
+    340,341,342,343,344,345,346,
+];
+const EXPERT_ENC:[u16;256]=[
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,229,230,0,231,232,233,234,235,236,237,238,13,14,15,99,
+    239,240,241,242,243,244,245,246,247,248,27,28,249,250,251,252,
+    0,253,254,255,256,257,0,0,0,258,0,0,259,260,261,262,
+    0,0,263,264,265,0,266,109,110,267,268,269,0,270,271,272,
+    273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,
+    289,290,291,292,293,294,295,296,297,298,299,300,301,302,303,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,304,305,306,0,0,307,308,309,310,311,0,312,0,0,313,
+    0,0,314,315,0,0,316,317,318,0,0,0,158,155,163,319,
+    320,321,322,323,324,325,0,0,326,150,164,169,327,328,329,330,
+    331,332,333,334,335,336,337,338,339,340,341,342,343,344,345,346,
+    347,348,349,350,351,352,353,354,355,356,357,358,359,360,361,362,
+    363,364,365,366,367,368,369,370,371,372,373,374,375,376,377,378,
+];
+const WIN_ANSI:[u16;256]=[
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,2,3,4,5,6,7,104,9,10,11,12,13,14,15,16,
+    17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+    33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,
+    49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,
+    124,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,
+    81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,116,
+    0,116,117,101,118,121,112,113,126,122,192,107,142,116,199,116,
+    116,65,8,105,119,116,111,137,127,153,221,108,148,116,228,198,
+    1,96,97,98,103,100,160,102,131,170,139,106,151,14,165,128,
+    161,156,164,169,125,152,115,114,133,150,143,120,158,155,163,123,
+    174,171,172,176,173,175,138,177,181,178,179,180,185,182,183,184,
+    154,186,190,187,188,191,189,168,141,196,193,194,195,197,157,149,
+    203,200,201,205,202,204,144,206,210,207,208,209,214,211,212,213,
+    167,215,219,216,217,220,218,159,147,225,222,223,224,226,162,227,
+];
+const MAC_ROMAN:[u16;256]=[
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,2,3,4,5,6,7,104,9,10,11,12,13,14,15,16,
+    17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+    33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,
+    49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,
+    124,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,
+    81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,0,
+    173,175,177,178,186,189,195,200,203,201,202,205,204,206,207,210,
+    208,209,211,214,212,213,215,216,219,217,218,220,222,225,223,224,
+    112,161,97,98,102,116,115,149,165,170,153,125,131,0,138,141,
+    0,156,0,0,100,152,0,0,0,0,0,139,143,0,144,147,
+    123,96,151,0,101,0,0,106,120,121,1,174,176,191,142,148,
+    111,137,105,119,65,8,159,0,227,198,99,103,107,108,109,110,
+    113,114,117,118,122,172,179,171,180,181,182,183,184,185,187,188,
+    0,190,193,194,196,145,126,127,128,129,130,132,133,134,135,136,
+];
+const MAC_EXPERT:[u16;256]=[
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,229,230,305,231,232,233,234,235,236,237,238,13,14,15,99,
+    239,240,241,242,243,244,245,246,247,248,27,28,0,250,0,252,
+    0,0,0,0,363,0,0,158,155,163,320,321,322,323,324,325,
+    0,0,0,0,0,0,266,109,110,267,268,269,0,270,271,315,
+    273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,
+    289,290,291,292,293,294,295,296,297,298,299,300,301,302,303,0,
+    0,253,255,0,0,0,0,348,347,349,351,350,352,354,356,355,
+    357,358,360,359,361,362,364,366,365,367,369,368,373,372,374,375,
+    0,331,337,336,339,341,340,307,0,343,335,0,309,0,311,262,
+    338,0,346,345,376,0,344,0,0,377,0,342,333,308,353,371,
+    319,334,306,0,0,0,0,0,0,318,0,0,0,0,0,370,
+    314,272,0,0,0,0,304,0,378,0,150,164,169,327,328,329,
+    330,332,326,0,257,263,265,0,0,258,264,256,0,0,0,0,
+    0,259,316,310,313,254,261,260,249,251,312,317,0,0,0,0,
+];
 struct Read<'a>{d:&'a[u8],p:usize}
 impl Read<'_>{
     fn take(&mut self,n:usize)->Result<&[u8]>{let end=self.p.checked_add(n).ok_or(Error::Limit("CFF offset"))?;let a=self.d.get(self.p..end).ok_or(Error::Invalid("truncated CFF"))?;self.p=end;Ok(a)}
@@ -72,8 +168,52 @@ fn private(data:&[u8],d:&Dict)->Result<Private>{
     let value=|op|->Result<f64>{match p.get(&op){None=>Ok(0.),Some(a) if a.len()==1&&a[0].abs()<=1e7=>Ok(a[0]),_=>Err(Error::Invalid("CFF width"))}};
     Ok(Private{local,default_width:value(20)?,nominal_width:value(21)?})
 }
+/// Names from standardized encoding tables. Undefined entries stay unmapped.
+pub fn predefined_name(encoding:&[u8],code:u8)->Option<&'static[u8]>{
+    if encoding==b"StandardEncoding"{return super::type1::standard_name(code);}
+    if encoding==b"WinAnsiEncoding"&&code==128{return Some(b"Euro");}
+    let table=match encoding{
+        b"ExpertEncoding"=>&EXPERT_ENC,b"WinAnsiEncoding"=>&WIN_ANSI,
+        b"MacRomanEncoding"=>&MAC_ROMAN,b"MacExpertEncoding"=>&MAC_EXPERT,_=>return None,
+    };
+    let sid=table[code as usize];if sid==0{return None;}
+    STANDARD.split_ascii_whitespace().nth(sid as usize).map(str::as_bytes)
+}
+fn read_encoding(data:&[u8],offset:usize,keys:&BTreeMap<u16,u16>,names:&BTreeMap<Vec<u8>,u16>,n:usize)->Result<[Option<u16>;256]>{
+    let mut map=[None;256];
+    if offset<=1{
+        let name=if offset==0{b"StandardEncoding".as_slice()}else{b"ExpertEncoding".as_slice()};
+        for code in 0..=255u8{map[code as usize]=predefined_name(name,code).and_then(|n|names.get(n).copied());}
+        return Ok(map);
+    }
+    let mut r=Read{d:data,p:offset};
+    let fmt=r.byte()?;let mut gid=1usize;
+    let mut put=|code:usize,gid:usize|->Result<()>{
+        if code>255||gid>=n||map[code].is_some(){return Err(Error::Invalid("CFF Encoding range or duplicate code"));}
+        map[code]=Some(gid as u16);Ok(())
+    };
+    match fmt&127{
+        0=>{let count=r.byte()? as usize;for _ in 0..count{put(r.byte()? as usize,gid)?;gid+=1;}}
+        1=>{let count=r.byte()? as usize;for _ in 0..count{
+            let first=r.byte()? as usize;let left=r.byte()? as usize;
+            if first+left>255{return Err(Error::Invalid("CFF Encoding range"));}
+            for code in first..=first+left{put(code,gid)?;gid+=1;}
+        }}
+        _=>return Err(Error::Invalid("CFF Encoding format")),
+    }
+    if fmt&128!=0{
+        let count=r.byte()? as usize;
+        for _ in 0..count{
+            let code=r.byte()? as usize;let sid=r.uint(2)? as u16;
+            let gid=*keys.get(&sid).ok_or(Error::Invalid("CFF Encoding supplement SID"))?;
+            if gid==0||map[code].is_some(){return Err(Error::Invalid("CFF Encoding supplement code"));}
+            map[code]=Some(gid);
+        }
+    }
+    Ok(map)
+}
 #[derive(Debug)]
-pub struct Cff{data:Vec<u8>,chars:Vec<Range>,global:Vec<Range>,privates:Vec<Private>,fd:Vec<usize>,keys:BTreeMap<u16,u16>,names:BTreeMap<Vec<u8>,u16>,matrix:Matrix,cid:bool}
+pub struct Cff{data:Vec<u8>,chars:Vec<Range>,global:Vec<Range>,privates:Vec<Private>,fd:Vec<usize>,keys:BTreeMap<u16,u16>,names:BTreeMap<Vec<u8>,u16>,matrix:Matrix,cid:bool,encoding:[Option<u16>;256]}
 impl Cff{
     pub fn parse(data:Vec<u8>)->Result<Self>{
         if data.len()>MAX_BYTES{return Err(Error::Limit("CFF bytes"));}
@@ -92,8 +232,12 @@ impl Cff{
         if charset==0&&!cid{
             if n>229{return Err(Error::Invalid("ISOAdobe charset size"));}
             values.extend((1..n).map(|i|i as u16));
+        }else if !cid&&matches!(charset,1|2){
+            let predefined=if charset==1{EXPERT_CHARSET.as_slice()}else{EXPERT_SUBSET.as_slice()};
+            if n>predefined.len(){return Err(Error::Invalid("CFF predefined charset size"));}
+            values=predefined[..n].to_vec();
         }else{
-            if charset<=2{return Err(Error::Unsupported("CFF predefined charset"));}
+            if charset<=2{return Err(Error::Invalid("CID predefined charset"));}
             r.p=charset;let format=r.byte()?;
             while values.len()<n{
                 let first=r.uint(2)?;let more=match format{0=>0,1=>r.uint(1)?,2=>r.uint(2)?,_=>return Err(Error::Invalid("CFF charset format"))};
@@ -127,13 +271,23 @@ impl Cff{
             }
             if f.iter().any(|&i|i>=p.len()){return Err(Error::Invalid("FDSelect index"));}(p,f)
         }else{(vec![private(&data,&d)?],vec![0;n])};
-        Ok(Self{data,chars,global,privates,fd,keys,names,matrix:m,cid})
+        let encoding=if cid{[None;256]}else{
+            let enc=if d.contains_key(&16){offset(&d,16)?}else{0};
+            read_encoding(&data,enc,&keys,&names,n)?
+        };
+        Ok(Self{data,chars,global,privates,fd,keys,names,matrix:m,cid,encoding})
     }
     pub fn is_cid(&self)->bool{self.cid}
     pub fn glyph_count(&self)->usize{self.chars.len()}
     pub fn font_matrix(&self)->Matrix{self.matrix}
     pub fn glyph_for_cid(&self,cid:u32)->Option<u16>{if self.cid{self.keys.get(&u16::try_from(cid).ok()?).copied()}else{None}}
     pub fn glyph_for_name(&self,name:&[u8])->Option<u16>{self.names.get(name).copied()}
+    /// Resolve a simple font's built-in code; CID fonts have no byte encoding.
+    pub fn glyph_for_code(&self,code:u8)->Option<u16>{self.encoding[code as usize]}
+    /// Resolve a PDF predefined encoding by glyph name, not by Unicode or GID.
+    pub fn glyph_for_encoding(&self,encoding:&[u8],code:u8)->Option<u16>{
+        predefined_name(encoding,code).and_then(|name|self.glyph_for_name(name))
+    }
     pub fn outline(&self,gid:u16)->Result<Path>{
         let i=gid as usize;let &(a,b)=self.chars.get(i).ok_or(Error::Invalid("CFF glyph ID"))?;
         let p=&self.privates[self.fd[i]];
