@@ -262,7 +262,9 @@ impl TextRenderer{
                     device=grid_baseline(device,fm);
                 }
                 let m=device.compose(fm)?;
-                if self.state.mode==0&&matches!(s.text_quality,TextQuality::Fine|TextQuality::FineGrid){
+                if self.state.mode==0&&s.text_quality==TextQuality::Area{
+                    s.paint_area_glyph(&outline,m,rgb(fill),s.fill_alpha)?;
+                }else if self.state.mode==0&&matches!(s.text_quality,TextQuality::Fine|TextQuality::FineGrid){
                     s.paint_fine_glyph(&outline,m,rgb(fill),s.fill_alpha)?;
                 }else{
                 let paths=flatten(&outline,m,&mut s.budget)?;

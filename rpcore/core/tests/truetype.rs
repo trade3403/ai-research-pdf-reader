@@ -125,3 +125,23 @@ fn text_color_order_invisible_and_preview(){
         assert_eq!(render(TextQuality::Fine),render(TextQuality::FineGrid),"{content:?}");
     }
 }
+
+#[test]fn area_glyph_recovers_narrow_vertical_stroke(){
+    use rpcore::raster::TextQuality;
+    // 20 pt x 1% horizontal scale x 0.6 em = 0.12 px.
+    // Fine's first horizontal sample is x=0.125, so misses this stem.
+    let p=fixture::pdf(b"BT /F1 20 Tf 1 Tz 10 20 Td <0001> Tj ET");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let render=|q|d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,q).unwrap().bitmap;
+    let a=render(TextQuality::Fine);let b=render(TextQuality::Area);
+    assert_eq!(pixel(&a,10,68),[255,255,255,255]);
+    assert!((i32::from(pixel(&b,10,68)[0])-224).abs()<=1);
+    assert_eq!(pixel(&b,11,68),[255,255,255,255]);
+}
+#[test]fn area_glyph_preserves_hole_and_clip(){
+    use rpcore::raster::TextQuality;
+    let p=fixture::pdf(b"q 10 20 8 14 re W n BT /F1 20 Tf 10 20 Td <0001> Tj ET Q");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let b=d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Area).unwrap().bitmap;
+    assert_eq!(pixel(&b,11,65),[0,0,0,255]);assert_eq!(pixel(&b,15,64),[255,255,255,255]);assert_eq!(pixel(&b,20,65),[255,255,255,255]);
+}

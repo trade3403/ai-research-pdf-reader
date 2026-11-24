@@ -4,6 +4,7 @@ use std::sync::Arc;
 mod png;
 mod rendertext;
 mod images;
+mod glyph_area;
 use crate::fonts::standard::StandardFont;
 use std::collections::BTreeMap;
 const MAX_PIXELS:usize=4_000_000;
@@ -22,6 +23,8 @@ pub enum TextQuality{
     /// Experimental Fine coverage plus bounded horizontal baseline alignment.
     /// Does not execute TrueType instructions or interpret Type1/CFF stem hints.
     FineGrid,
+    /// Experimental continuous horizontal span coverage, 8 vertical rows per pixel.
+    Area,
 }
 impl Default for Options{fn default()->Self{Self{scale:1.,allow_missing_text:false}}}
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -489,6 +492,22 @@ impl Surface{
                 if clip&(1<<q)==0{continue;}
                 let n=fine.at(x*2+q%2,y*2+q/2).count_ones();
                 if n!=0{self.blend((y*self.w+x)*12+q*3,c,alpha*f64::from(n)/4.);}
+            }
+        }}
+        Ok(())
+    }
+    fn paint_area_glyph(&mut self,outline:&Path,m:Matrix,c:[u8;3],alpha:f64)->Result<()>{
+        let m=Matrix([2.,0.,0.,2.,0.,0.]).compose(m)?;
+        let paths=flatten(outline,m,&mut self.budget)?;
+        let area=glyph_area::coverage(&paths,&self.clip,&mut self.budget)?;
+        let(x0,y0,x1,y1)=area.bounds();
+        self.budget.charge((x1-x0)*(y1-y0)*4)?;
+        for y in y0..y1{for x in x0..x1{
+            let clip=self.clip.at(x,y);
+            for q in 0..4{
+                if clip&(1<<q)==0{continue;}
+                let a=area.at(x*2+q%2,y*2+q/2);
+                if a>0.{self.blend((y*self.w+x)*12+q*3,c,alpha*a);}
             }
         }}
         Ok(())
