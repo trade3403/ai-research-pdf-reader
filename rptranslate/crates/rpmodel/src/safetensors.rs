@@ -195,6 +195,20 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Internal bounded parser for a flat JSON string-to-integer vocabulary.
+pub(crate) fn parse_vocab_json(input: &str) -> Result<BTreeMap<String, u64>, Error> {
+    if input.len() > 16 * 1024 * 1024 {
+        return Err(Error::Limit);
+    }
+    let mut p = Parser { rest: input };
+    let result = p.object(200_000, |p, _| p.number())?;
+    p.ws();
+    if !p.rest.is_empty() {
+        return Err(Error::Header);
+    }
+    Ok(result)
+}
+
 enum Field {
     Dtype(Dtype),
     Numbers(Vec<u64>),

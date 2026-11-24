@@ -311,6 +311,16 @@ impl NmtUnigram<'_> {
             .map_err(|_| Error::Limit)
     }
 
+    pub fn encode_pieces(&self, input: &str) -> Result<Vec<String>, Error> {
+        let normalized = self
+            .normalizer
+            .normalize(input)
+            .map_err(|_| Error::Normalize)?;
+        self.tokenizer
+            .encode_normalized_pieces(&normalized)
+            .map_err(|_| Error::Limit)
+    }
+
     pub fn decode(&self, ids: &[usize]) -> Result<String, Error> {
         self.tokenizer.decode(ids).map_err(|_| Error::MissingId)
     }

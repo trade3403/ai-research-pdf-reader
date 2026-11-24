@@ -43,7 +43,7 @@ jobs:
   model-tokenizer-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.2b1') || contains(github.event.head_commit.message, 'D1.2b2a') || contains(github.event.head_commit.message, 'D1.2b2b1'))
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.2b1') || contains(github.event.head_commit.message, 'D1.2b2a') || (contains(github.event.head_commit.message, 'D1.2b2b1') || contains(github.event.head_commit.message, 'D1.2b2b2')))
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,8 +70,11 @@ jobs:
           81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052  target.spm
           f1832ca38f7aa158b9a944ff583e4901e6b37d9d4ad9241f03838e636e9cfb03  vocab.json
           EOF
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Compare actual model normalization
-        if: contains(github.event.head_commit.message, 'D1.2b2a') || contains(github.event.head_commit.message, 'D1.2b2b1')
+        if: contains(github.event.head_commit.message, 'D1.2b2a') || (contains(github.event.head_commit.message, 'D1.2b2b1') || contains(github.event.head_commit.message, 'D1.2b2b2'))
         working-directory: rptranslate
         run: |
           python3 -m venv "$RUNNER_TEMP/spm-reference"
@@ -80,8 +83,16 @@ jobs:
           "$RUNNER_TEMP/spm-reference/bin/python" crates/rpmodel/tests/check_real_normalization.py "$RUNNER_TEMP/rp-tokenizer"
 
       - name: Compare actual SentencePiece IDs and decoding
-        if: contains(github.event.head_commit.message, 'D1.2b2b1')
+        if: (contains(github.event.head_commit.message, 'D1.2b2b1') || contains(github.event.head_commit.message, 'D1.2b2b2'))
         working-directory: rptranslate
         run: |
           cargo build --locked --offline -p rpmodel --example tokenize_spm
           "$RUNNER_TEMP/spm-reference/bin/python" crates/rpmodel/tests/check_real_spm_ids.py "$RUNNER_TEMP/rp-tokenizer"
+
+      - name: Compare Marian network tokenizer
+        if: contains(github.event.head_commit.message, 'D1.2b2b2')
+        working-directory: rptranslate
+        run: |
+          "$RUNNER_TEMP/spm-reference/bin/pip" install --disable-pip-version-check --only-binary=:all: transformers==4.48.3
+          cargo build --locked --offline -p rpmodel --example marian_codec
+          "$RUNNER_TEMP/spm-reference/bin/python" crates/rpmodel/tests/check_real_marian.py "$RUNNER_TEMP/rp-tokenizer"

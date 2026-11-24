@@ -131,6 +131,26 @@ impl Unigram {
     /// Encode text already normalized by the model's configured normalizer.
     /// A separate bound accommodates expansion by compiled character maps.
     pub fn encode_normalized(&self, normalized: &str) -> Result<Vec<usize>, Error> {
+        let segments = self.segments(normalized)?;
+        Ok(segments.into_iter().map(|(_, _, id)| id).collect())
+    }
+
+    /// Preserve the actual surface of unknown spans for shared network vocabularies.
+    pub fn encode_normalized_pieces(&self, normalized: &str) -> Result<Vec<String>, Error> {
+        let segments = self.segments(normalized)?;
+        Ok(segments
+            .into_iter()
+            .map(|(start, end, id)| {
+                if id == self.unknown {
+                    normalized[start..end].to_owned()
+                } else {
+                    self.pieces[id].text.clone()
+                }
+            })
+            .collect())
+    }
+
+    fn segments(&self, normalized: &str) -> Result<Vec<(usize, usize, usize)>, Error> {
         if normalized.len() > 1024 * 1024 {
             return Err(Error::Limit);
         }
@@ -167,12 +187,21 @@ impl Unigram {
         let mut i = n;
         while i != 0 {
             let (start, id) = previous[i];
-            reversed.push(id);
+            reversed.push((positions[start], positions[i], id));
             i = start;
         }
         reversed.reverse();
-        reversed.dedup_by(|a, b| *a == self.unknown && *b == self.unknown);
-        Ok(reversed)
+        let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+        for (start, end, id) in reversed {
+            if let Some(last) = merged.last_mut() {
+                if id == self.unknown && last.2 == self.unknown {
+                    last.1 = end;
+                    continue;
+                }
+            }
+            merged.push((start, end, id));
+        }
+        Ok(merged)
     }
 
     /// Control pieces do not appear in output; unknown uses default surface.
@@ -243,6 +272,15 @@ mod tests {
         assert_eq!(
             model.encode_normalized(&"a".repeat(1024 * 1024 + 1)),
             Err(Error::Limit)
+        );
+    }
+
+    #[test]
+    fn unknown_surface_is_preserved() {
+        let model = Unigram::from_tsv(VOCAB).unwrap();
+        assert_eq!(
+            model.encode_normalized_pieces("▁a😀🧪b").unwrap(),
+            vec!["▁a", "😀🧪", "b"]
         );
     }
 

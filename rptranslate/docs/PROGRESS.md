@@ -11,7 +11,7 @@
 | D1.2b1 | 已通过 | SPM protobuf 读取、ID 映射与真实文件探测 |
 | D1.2b2a | 已通过 | 自主 compiled charsmap 与真实归一化对照 |
 | D1.2b2b1 | 已通过 | 真实 SPM 端到端 ID 编解码对照 |
-| D1.2b2b2 | 未开始 | Marian JSON、网络词表 ID、特殊 token |
+| D1.2b2b2 | 待验证 | Marian JSON、网络词表 ID、特殊 token |
 | D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -59,8 +59,8 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.2b2b1
 接入已验证的 compiled charsmap 与 Unigram，真实 source/target SPM 的 30 组样本各自对照 Python SentencePiece 0.2.1 ID 及 decode。新增离线示例 CLI 和独立参考脚本，保留 19 组归一化回归。[代码提交 0d876b6](https://github.com/trade3403/ai-research-pdf-reader/commit/0d876b64e9ab1428496bdd58e5cb0fbc109cdecd)，[Actions 45511290596](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45511290596) 已完成 success；CPU CI 通过，固定文件哈希一致；source/target 各 ID 30/30、decode 30/30，归一化各 19/19。SPM ID 不等于 Marian 网络 ID，D1.2 整体仍未完成。
 
-## 下一阶段 D1.2b2b2
-自主 Marian vocab.json 读取、网络词表 ID 映射、语言标记/EOS/PAD/UNK 与真实 Marian tokenizer 对照。
+## 当前阶段 D1.2b2b2
+新增自主共享 Marian JSON 词表、双向 ID 映射、保留未知片段、显式语言标记和 EOS/PAD/UNK 处理；以真实固定模型和 Transformers 4.48.3 的底层 Marian tokenization、特殊 token 构造、skip-special 解码作对照。CI 待验证。未实现可选 Moses 预处理、通用 added-token splitting、自动 padding/truncation，尚无神经翻译。通过后按实际对照范围决定 D1.2 验收及 D1.3 进入条件。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
