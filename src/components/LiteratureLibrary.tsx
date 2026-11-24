@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { InputHTMLAttributes } from 'react';
 import { electronBridge } from '../utils/electronBridge';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import {
@@ -212,7 +213,8 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
     let indexed=0;let total=0;let clipped=false;
     setProgress({done:0,total:1,imported:0,skipped:0,failed:0,phase:'全文索引'});
     try{
-      const bytes=await invoke<number[]>('read_recent_pdf',{path:selected.path});
+      const bridge=electronBridge();
+      const bytes=bridge?await bridge.pdfRead(selected.path):await invoke<number[]>('read_recent_pdf',{path:selected.path});
       const pdf=await openPdf(new Uint8Array(bytes));
       try {
         total=pdf.numPages;await clearIndexedPages(selected.id);
@@ -275,7 +277,7 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
 
   return <div className="literature-workspace">
     <input hidden ref={pdfImportInput} type="file" accept=".pdf,application/pdf" multiple onChange={e=>{const files=Array.from(e.target.files||[]);e.target.value='';void importManaged(files);}}/>
-      <input hidden ref={folderImportInput} type="file" {...({webkitdirectory:''} as React.InputHTMLAttributes<HTMLInputElement>)} multiple onChange={e=>{const files=Array.from(e.target.files||[]);e.target.value='';void importManaged(files);}}/>
+      <input hidden ref={folderImportInput} type="file" {...({webkitdirectory:''} as InputHTMLAttributes<HTMLInputElement>)} multiple onChange={e=>{const files=Array.from(e.target.files||[]);e.target.value='';void importManaged(files);}}/>
       <input ref={citationInput} type="file" className="hidden" accept=".bib,.ris" onChange={e=>{void importCitations(e.target.files?.[0]||null);e.target.value='';}} />
     <aside className="literature-folders">
       <div className="literature-panel-title"><Database size={17}/> 文献分类 <button className="icon-button" title="创建分类" onClick={()=>void createFolder()}><FolderPlus size={17}/></button></div>
