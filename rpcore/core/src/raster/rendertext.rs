@@ -1,10 +1,10 @@
 //! Native horizontal TrueType, CFF1 and traditional Type1 font rendering.
 use super::{StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
-use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
+use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,CmapKind,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
-enum Outline{Tt(TrueType),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool),ReplacementType1(Type1)}
+enum Outline{Tt(TrueType),SimpleTt(TrueType,[Option<u16>;256]),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool),ReplacementType1(Type1)}
 struct Face{font:Font,outline:Outline}
 fn differences(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<BTreeMap<u8,Vec<u8>>>{
     let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Invalid("missing Encoding dictionary"))?)? else{return Err(Error::Invalid("Encoding dictionary"));};
@@ -43,6 +43,60 @@ fn cff_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>,c:&Cff)->Result<[Op
         }else{c.glyph_for_code(code)};
     }
     Ok(map)
+}
+fn simple_tt_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>,desc:&BTreeMap<Vec<u8>,Object>,font:&Font,tt:&TrueType)->Result<[Option<u16>;256]>{
+    let flags=match desc.get(b"Flags".as_slice()).map(|v|doc.dereference(v)).transpose()?{
+        Some(Object::Number(n)) if n>=0.&&n<=u32::MAX as f64&&n.fract()==0.=>n as u32,
+        _=>return Err(Error::Invalid("TrueType FontDescriptor Flags")),
+    };
+    let symbolic=flags&4!=0;
+    if symbolic&&flags&32!=0{return Err(Error::Invalid("conflicting TrueType font flags"));}
+    let enc=d.get(b"Encoding".as_slice()).map(|v|doc.dereference(v)).transpose()?;
+    let (base,has_diff)=match enc{
+        None=>(None,false),
+        Some(Object::Name(n))=>(Some(n),false),
+        Some(Object::Dict(e))=>{
+            let base=match e.get(b"BaseEncoding".as_slice()).map(|v|doc.dereference(v)).transpose()?{
+                None=>None,Some(Object::Name(n))=>Some(n),_=>return Err(Error::Invalid("TrueType BaseEncoding")),
+            };(base,e.contains_key(b"Differences".as_slice()))
+        }
+        _=>return Err(Error::Invalid("TrueType Encoding")),
+    };
+    if base.as_ref().is_some_and(|b|!matches!(b.as_slice(),b"WinAnsiEncoding"|b"MacRomanEncoding"|b"StandardEncoding"|b"MacExpertEncoding")){
+        return Err(Error::Unsupported("TrueType PDF encoding"));
+    }
+    let cm=tt.character_map()?;let mut out=[None;256];
+    // Windows Symbol uses a single consistent high byte in its private-use
+    // range, or a direct low-byte mapping. Ambiguous matches remain unmapped.
+    let symbol_only=symbolic&&base.is_none()&&!has_diff;
+    let mut prefix=None;
+    if symbol_only{
+        for p in [0,0xf000,0xf100,0xf200]{
+            if (0..=255).any(|c|cm.glyph(CmapKind::Symbol,p+c).is_some()){
+                if prefix.is_some(){return Err(Error::Unsupported("ambiguous TrueType symbol cmap"));}
+                prefix=Some(p);
+            }
+        }
+    }
+    for code in 0..=255u8{
+        out[code as usize]=if symbol_only{
+            if let Some(p)=prefix{cm.glyph(CmapKind::Symbol,p+u32::from(code))}
+            else{cm.glyph(CmapKind::MacRoman,u32::from(code))}
+        }else{
+            let name=font.simple_glyph_name(code);
+            // Adobe glyph names map to scalar characters; ligature names
+            // are special because the extraction interface expands them.
+            let scalar=name.and_then(|n|match n{
+                b"fi"=>Some(0xfb01),b"fl"=>Some(0xfb02),b"ff"=>Some(0xfb00),b"ffi"=>Some(0xfb03),b"ffl"=>Some(0xfb04),
+                _=>StandardFont::Helvetica.unicode(n).or_else(||font.simple_encoding_unicode(code)).and_then(|s|{let mut c=s.chars();let first=c.next()?;c.next().is_none().then_some(first as u32)}),
+            });
+            scalar.and_then(|c|cm.glyph(CmapKind::Unicode,c)).or_else(||{
+                let name=name?;
+                (0..=255u8).find(|&c|crate::fonts::standard::encoded_name(b"MacRomanEncoding",c)==Some(name)).and_then(|c|cm.glyph(CmapKind::MacRoman,u32::from(c)))
+            })
+        };
+    }
+    Ok(out)
 }
 fn type1_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<(BTreeMap<u8,Vec<u8>>,bool)>{
     match d.get(b"Encoding".as_slice()).map(|v|doc.dereference(v)).transpose()?{
@@ -90,7 +144,7 @@ impl TextRenderer{
         // Bound unique loaded faces independently of aliases to the same indirect font.
         if self.indirect_fonts.len()+self.fonts.values().filter(|f|!self.indirect_fonts.values().any(|v|Arc::ptr_eq(f,v))).count()>=MAX_FONT_LOADS{return Err(Error::Limit("render font count"));}
         let font=Font::load(doc,entry)?;
-        if !matches!(font.kind,FontKind::Type0Cid2|FontKind::Type0Cid0|FontKind::Type1)||font.writing_mode!=WritingMode::Horizontal{return Err(Error::Unsupported("render font subtype or writing mode"));}
+        if font.writing_mode!=WritingMode::Horizontal{return Err(Error::Unsupported("vertical font rasterization"));}
         let d=crate::dict(doc.dereference(entry)?)?;
         if let Some(face)=font.standard_face(){
             if let Some(program)=substitutes.and_then(|s|s.get(face)){
@@ -116,7 +170,7 @@ impl TextRenderer{
         }else{d.clone()};
         let desc=crate::dict(doc.dereference(cid.get(b"FontDescriptor".as_slice()).ok_or(Error::Unsupported("missing embedded font descriptor"))?)?)?;
         let traditional=font.kind==FontKind::Type1&&desc.contains_key(b"FontFile".as_slice());
-        let key=if traditional{b"FontFile".as_slice()}else if font.kind==FontKind::Type0Cid2&&desc.contains_key(b"FontFile2".as_slice()){b"FontFile2".as_slice()}else{b"FontFile3".as_slice()};
+        let key=if traditional{b"FontFile".as_slice()}else if matches!(font.kind,FontKind::Type0Cid2|FontKind::TrueType)&&desc.contains_key(b"FontFile2".as_slice()){b"FontFile2".as_slice()}else{b"FontFile3".as_slice()};
         let file=doc.dereference(desc.get(key).ok_or(Error::Unsupported("missing supported embedded font file"))?)?;
         let mut opentype=false;
         if key==b"FontFile3"{
@@ -124,7 +178,7 @@ impl TextRenderer{
             let expected=if font.kind==FontKind::Type0Cid0{b"CIDFontType0C".as_slice()}else{b"Type1C".as_slice()};
             match dict.get(b"Subtype".as_slice()).map(|v|doc.dereference(v)).transpose()?{
                 Some(Object::Name(n)) if n==b"OpenType"=>opentype=true,
-                Some(Object::Name(n)) if font.kind!=FontKind::Type0Cid2&&n==expected=>{},
+                Some(Object::Name(n)) if !matches!(font.kind,FontKind::Type0Cid2|FontKind::TrueType)&&n==expected=>{},
                 _=>return Err(Error::Unsupported("FontFile3 subtype")),
             }
         }
@@ -140,7 +194,9 @@ impl TextRenderer{
             let t=Type1::parse_pdf(&data,length(b"Length1")?,length(b"Length2")?,length(b"Length3")?)?;
             let (names,standard)=type1_mapping(doc,&d)?;
             Outline::Type1(t,names,standard)
-        }else if font.kind==FontKind::Type0Cid2{Outline::Tt(TrueType::parse(data)?)}else{
+         }else if font.kind==FontKind::Type0Cid2{Outline::Tt(TrueType::parse(data)?)}else if font.kind==FontKind::TrueType{
+            let tt=TrueType::parse(data)?;let map=simple_tt_mapping(doc,&d,&desc,&font,&tt)?;Outline::SimpleTt(tt,map)
+        }else{
             let c=if opentype{Cff::parse_opentype(&data)?}else{Cff::parse(data)?};
             if c.is_cid()!=(font.kind==FontKind::Type0Cid0){return Err(Error::Invalid("CFF CID subtype mismatch"));}
             let names=if c.is_cid(){[None;256]}else{cff_mapping(doc,&d,&c)?};
@@ -159,6 +215,7 @@ impl TextRenderer{
             if self.state.mode!=3{
                 let (outline,fm)=match &f.outline{
                     Outline::Tt(tt)=>{let gid=glyph.glyph_id.ok_or(Error::Unsupported("missing render glyph ID"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
+                    Outline::SimpleTt(tt,map)=>{let gid=map[glyph.code[0] as usize].ok_or(Error::Unsupported("missing simple TrueType glyph mapping"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
                     Outline::ReplacementType1(t)=>{
                         let name=f.font.simple_glyph_name(glyph.code[0]).ok_or(Error::Unsupported("missing replacement glyph name"))?;
                         (t.outline(name)?,t.font_matrix())

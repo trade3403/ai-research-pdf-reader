@@ -249,6 +249,8 @@ impl Font{
     pub fn standard_face(&self)->Option<standard::StandardFont>{if let Encoding::Simple(s)=&self.encoding{s.standard}else{None}}
     /// Encoding glyph name, independent of ToUnicode.
     pub fn simple_glyph_name(&self,code:u8)->Option<&[u8]>{if let Encoding::Simple(s)=&self.encoding{s.name(code)}else{None}}
+    /// The PDF encoding only, excluding ToUnicode (which is extraction metadata).
+    pub fn simple_encoding_unicode(&self,code:u8)->Option<String>{if let Encoding::Simple(s)=&self.encoding{s.unicode(code)}else{None}}
     pub fn decode(&self,input:&[u8])->Result<Vec<Glyph>>{
         if input.len()>MAX_GLYPHS*4{return Err(Error::Limit("font input"));}
         let mut out=Vec::new();let mut pos=0;

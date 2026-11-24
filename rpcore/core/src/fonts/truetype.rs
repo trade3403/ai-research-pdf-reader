@@ -1,6 +1,8 @@
 //! Bounded TrueType sfnt/glyf reader. No bytecode execution or system font substitution.
 use crate::{graphics::{Path,Segment},text::{Matrix,Point},Error,Result};
 use std::collections::{BTreeMap,BTreeSet};
+mod cmap;
+pub use cmap::CmapKind;
 pub const MAX_FONT_BYTES:usize=16*1024*1024;
 const MAX_POINTS:usize=100_000;
 const MAX_COMPONENTS:usize=1024;
@@ -9,7 +11,7 @@ const MAX_DEPTH:usize=16;
 struct Node{p:Point,on:bool}
 type Contour=Vec<Node>;
 #[derive(Debug)]
-pub struct TrueType{bytes:Vec<u8>,glyf:(usize,usize),loca:Vec<usize>,metrics:Vec<(u16,i16)>,units:u16}
+pub struct TrueType{bytes:Vec<u8>,glyf:(usize,usize),loca:Vec<usize>,metrics:Vec<(u16,i16)>,units:u16,cmap:Option<(usize,usize)>}
 fn u16at(d:&[u8],i:usize)->Result<u16>{let a=d.get(i..i.checked_add(2).ok_or(Error::Limit("font offset"))?).ok_or(Error::Invalid("truncated font"))?;Ok(u16::from_be_bytes([a[0],a[1]]))}
 fn i16at(d:&[u8],i:usize)->Result<i16>{Ok(u16at(d,i)? as i16)}
 fn u32at(d:&[u8],i:usize)->Result<u32>{let a=d.get(i..i.checked_add(4).ok_or(Error::Limit("font offset"))?).ok_or(Error::Invalid("truncated font"))?;Ok(u32::from_be_bytes([a[0],a[1],a[2],a[3]]))}
@@ -59,7 +61,13 @@ impl TrueType{
             let (advance,lsb)=if i<nmetrics{(u16at(hmtx,i*4)?,i16at(hmtx,i*4+2)?)}else{(u16at(hmtx,(nmetrics-1)*4)?,i16at(hmtx,nmetrics*4+(i-nmetrics)*2)?)};
             metrics.push((advance,lsb));
         }
-        Ok(Self{bytes,glyf,loca,metrics,units})
+        let cmap=tables.get(b"cmap").copied();
+        Ok(Self{bytes,glyf,loca,metrics,units,cmap})
+    }
+    /// Parse the optional character map lazily; CIDToGID rendering does not need it.
+    pub fn character_map(&self)->Result<CharacterMap>{
+        let (a,b)=self.cmap.ok_or(Error::Unsupported("missing TrueType cmap"))?;
+        Ok(CharacterMap(cmap::Maps::parse(&self.bytes[a..b],self.glyph_count())?))
     }
     pub fn units_per_em(&self)->u16{self.units}
     pub fn glyph_count(&self)->usize{self.metrics.len()}
@@ -151,4 +159,10 @@ fn emit(c:&[Node],out:&mut Path)->Result<()>{
     }
     if let Some(p)=control{out.push(quad(at,p,start));}
     out.push(Segment::Close);Ok(())
+}
+
+#[derive(Debug)]
+pub struct CharacterMap(cmap::Maps);
+impl CharacterMap{
+    pub fn glyph(&self,kind:CmapKind,code:u32)->Option<u16>{self.0.get(kind,code)}
 }

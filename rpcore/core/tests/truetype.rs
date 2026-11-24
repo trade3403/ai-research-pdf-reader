@@ -36,3 +36,41 @@ fn text_color_order_invisible_and_preview(){
     assert_eq!(pixel(&b,10,69),[0,0,255,255]);assert_eq!(pixel(&b,11,65),[255,0,0,255]);assert_eq!(pixel(&b,24,65),[255,255,255,255]);
     let preview=d.render_page(&pages[0],Options{scale:1.,allow_missing_text:true},10000).unwrap();assert!(preview.missing_text);assert_eq!(pixel(&preview,11,65),[255,255,255,255]);
 }
+
+#[test]fn native_cmap_formats_and_bounds(){
+    use rpcore::fonts::truetype::CmapKind;
+    let mut f0=vec![0,0,1,6,0,0];f0.resize(262,0);f0[6+65]=1;f0[6+66]=2;
+    let f6=fixture::cmap6(65,&[1,2]);
+    // Two format-4 segments, direct delta for A/B and sentinel FFFF.
+    let f4=[0,4,0,32,0,0,0,4,0,4,0,1,0,0,0,66,255,255,0,0,0,65,255,255,255,192,0,1,0,0,0,0];
+    // Format 12 groups map A/B and supplementary scalar to glyph 3.
+    let mut f12=vec![0,12,0,0,0,0,0,40,0,0,0,0,0,0,0,2];
+    for x in [65u32,66,1,0x1f600,0x1f600,3]{f12.extend(x.to_be_bytes());}
+    for (platform,enc,sub) in [(0,3,f0),(3,1,f6),(3,1,f4.to_vec()),(3,10,f12.clone())]{
+        let t=TrueType::parse(fixture::font_with_cmap(false,Some(fixture::cmap_table(platform,enc,&sub)))).unwrap();
+        let c=t.character_map().unwrap();assert_eq!(c.glyph(CmapKind::Unicode,65),Some(1));assert_eq!(c.glyph(CmapKind::Unicode,66),Some(2));assert_eq!(c.glyph(CmapKind::Unicode,67),None);
+        if enc==10{assert_eq!(c.glyph(CmapKind::Unicode,0x1f600),Some(3));}
+        let mut bad=sub.clone();bad.pop();let t=TrueType::parse(fixture::font_with_cmap(false,Some(fixture::cmap_table(platform,enc,&bad)))).unwrap();assert!(t.character_map().is_err());
+    }
+    let bad=fixture::cmap6(65,&[4]);
+    let t=TrueType::parse(fixture::font_with_cmap(false,Some(fixture::cmap_table(3,1,&bad)))).unwrap();assert!(t.character_map().is_err());
+}
+#[test]fn simple_truetype_encoding_and_pixels(){
+    for (encoding,flags,platform,enc,start,first) in [
+        ("/Encoding /WinAnsiEncoding",32,3,1,65,1),
+        ("/Encoding /MacRomanEncoding",32,1,0,65,1),
+        ("/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /B] >>",32,3,1,65,2),
+        ("",4,3,0,0xf041,1),
+    ]{
+        let f=fixture::font_with_cmap(false,Some(fixture::cmap_table(platform,enc,&fixture::cmap6(start,&[1,2]))));
+        let p=fixture::simple_pdf(b"BT /F1 20 Tf 10 20 Td (A) Tj ET",f,encoding,flags);
+        let d=Document::open(&p).unwrap();let b=d.render_page(&d.pages().unwrap()[0],Options::default(),10000).unwrap();
+        assert_eq!(pixel(&b,15,64),if first==1{&[255,255,255,255]}else{&[0,0,0,255]},"{encoding}");
+        assert!(!b.missing_text);
+    }
+}
+#[test]fn simple_truetype_does_not_guess_glyph_id(){
+    let f=fixture::font_with_cmap(false,Some(fixture::cmap_table(3,1,&fixture::cmap6(66,&[2]))));
+    let p=fixture::simple_pdf(b"BT /F1 20 Tf 10 20 Td (A) Tj ET",f,"/Encoding /WinAnsiEncoding",32);
+    let d=Document::open(&p).unwrap();assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(Error::Unsupported("missing simple TrueType glyph mapping"))));
+}
