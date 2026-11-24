@@ -383,3 +383,5 @@ pub mod filters;
 pub mod content;
 
 pub mod fonts;
+
+pub mod text;

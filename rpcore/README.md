@@ -6,7 +6,7 @@ Independent, safe Rust prototype. No PDF engine dependencies. Not a production r
 - Direct and indirect scalar stream lengths, bounded reference chains, raw/ASCIIHex/ASCII85/RunLength/Flate stream decoding, including zlib checksum verification.
 - TIFF predictor 2 and PNG predictors 10–15 (1/2/4/8/16-bit samples), aligned direct DecodeParms dictionaries/arrays; indirect filter parameters remain unsupported.
 - Page Contents stream or ordered stream array, bounded decoded output, lexical content operations (raw operands and operator bytes).
-- Explicit errors on unsupported features; font-level Unicode mapping available; no page-level text extraction or graphics execution yet.
+- Explicit errors on unsupported features; font-level Unicode mapping and strict horizontal page text extraction available; no complete graphics execution yet.
 
 ## Build
 ```
@@ -29,8 +29,11 @@ The existing `filters::decode(&Object, limit)` API is unchanged. Final output is
 ## B07 font contract
 `Document::page_font(&PageInfo, resource_name)` lazily resolves inherited font resources. `fonts::Font::decode(bytes)` yields source code bytes, optional CID, optional TrueType glyph ID, optional Unicode string, and optional horizontal width in 1/1000 text-space units. Supports Type1/MMType1 and TrueType simple font dictionaries, explicit WinAnsi and limited StandardEncoding/Differences, Type0 Identity-H/V and embedded explicit CID CMaps, CIDFontType0/2 W/DW, CIDToGIDMap, ToUnicode bfchar/bfrange (including UTF-16 surrogate pairs and multi-character mappings). Unknown mappings remain None; no guessed Unicode for arbitrary CIDs. CMap usecmap, predefined non-Identity CMaps, full Adobe Glyph List, MacRoman/Symbol encodings, Standard14 built-in metrics, vertical advances W2/DW2, Type3 and embedded TrueType/CFF outlines remain unsupported. CMap parsing does not execute PostScript; each map is capped at 4 MiB input and 65,536 mappings per kind. No existing API changes, no new dependencies.
 
+## B08 text contract
+`Document::page_text(&PageInfo, content_limit)` returns `text::PageText` with content-order glyphs, Unicode, source codes, optional CID/GID, user-space origin, advance endpoint, approximate em-height quads, and rendering mode. Interprets BT/ET, Tf, Tc/Tw/Tz/TL/Ts/Tr, Tm/Td/TD/T*, Tj/TJ/quote operators, q/Q/cm. Quads are NOT ink bounds; page CropBox/Rotate and screen coordinate conversion are caller responsibilities. `plain_text()` concatenates content order without inferred whitespace; `search()` provides exact case-sensitive non-overlapping substring matches as half-open glyph ranges, and `select()` intersects quad AABBs. No visual reading-order/column inference, Form XObject traversal, ActualText interpretation, clipping/visibility testing or vertical positioning yet. External objects and marked content produce explicit warnings; unsupported ExtGState/unknown operators and missing glyph widths fail rather than guess. 100,000 page glyphs and 16 MiB Unicode output limits; no new dependencies. Existing APIs unchanged.
+
 ## Remaining
-Encryption, complete font encoding/metrics and outlines, page-level text extraction, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
+Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 
 ## Deferred iOS validation (B-line core only)
 Routine GitHub Actions currently runs Windows and Ubuntu only. iOS device cross-build and simulator jobs are deferred to keep iteration fast. The scripts below remain available for future manual validation; the previous workflow is preserved in commit `685ec546d6c82c1163e0cba6f92201357fd06b39`. Re-enable after core parsing and rendering stabilize. Planned iOS jobs:
