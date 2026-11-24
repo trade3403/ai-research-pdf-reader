@@ -138,7 +138,6 @@ pub(crate) fn graph(archive: &mut ZipArchive<Cursor<&[u8]>>, limits: Limits) -> 
             let raw = required(n, "PartName")?;
             if !raw.starts_with('/') { return Err(Error::Invalid("override part name")); }
             let name = raw[1..].to_owned();
-            if !names.contains(&name) { return Err(Error::Invalid("override target missing")); }
             if overrides.insert(name, mime).is_some() { return Err(Error::Invalid("duplicate content type override")); }
         } else if named(n, CT, "Default") {
             let ext = required(n, "Extension")?.to_ascii_lowercase();
@@ -190,6 +189,9 @@ pub(crate) fn graph(archive: &mut ZipArchive<Cursor<&[u8]>>, limits: Limits) -> 
     }
     if parts.get(main_part).and_then(|v| v.as_deref()) != Some(MAIN_TYPE) {
         return Err(Error::Unsupported("main part content type"));
+    }
+    for name in overrides.keys() {
+        if !parts.contains_key(name) { return Err(Error::MissingNamedPart(name.clone())); }
     }
     for r in &relationships {
         if let Target::Internal(name) = &r.target {
