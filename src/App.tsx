@@ -734,7 +734,7 @@ export default function App() {
         {wordChatOpen && <>{chatResizeHandle}<ChatBrowserDock resizing={chatResizing} onClose={() => setWordChatOpen(false)} onNotify={notify} activeFingerprint={active?.fingerprint || null} activePage={active?.page || null} onCaptureText={text => {setPendingClip({body:text});setMode('records');}}/></>}
       </div>}
       {translationDraft && <TranslatorWorkspace source={translationDraft.source} label={translationDraft.label} onClose={() => setTranslationDraft(null)} onNotify={notify}/>}
-      <footer className="status-bar"><span><span className="status-dot"/> PDF.js 本地渲染</span><span>{active ? `${active.pdf.numPages} 页 · ${active.name}` : '尚未打开文档'}</span><span>{restoring ? '正在恢复上次阅读…' : 'AI Research PDF Reader V0.5.9'}</span></footer>
+      <footer className="status-bar"><span><span className="status-dot"/> PDF.js 本地渲染</span><span>{active ? `${active.pdf.numPages} 页 · ${active.name}` : '尚未打开文档'}</span><span>{restoring ? '正在恢复上次阅读…' : 'AI Research PDF Reader · Electron 迁移预览 / V0.5.9 基线'}</span></footer>
       {toast && <div role="alert" className={`toast ${toast.tone}`}><CircleAlert size={17}/>{toast.text}<button title="关闭" onClick={() => setToast(null)}><X size={15}/></button></div>}
     </div>
   );

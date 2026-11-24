@@ -1,10 +1,30 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, WebContentsView } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, WebContentsView, protocol, net } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
 const localUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
 let win = null, chat = null;
+const workspaceUrl = 'studio://local/index.html';
+protocol.registerSchemesAsPrivileged([{ scheme: 'studio', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
+function registerWorkspace() {
+  protocol.handle('studio', request => {
+    try {
+      const u = new URL(request.url);
+      if (u.hostname !== 'local' || request.method !== 'GET') return new Response('Forbidden', { status: 403 });
+      const root = path.join(__dirname, 'workspace');
+      const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
+      if (rel.includes('\\') || rel.includes(':') || rel.split('/').some(x => x === '..' || x === '.')) return new Response('Forbidden', { status: 403 });
+      const target = path.resolve(root, rel);
+      if (!target.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 });
+      return net.fetch(pathToFileURL(target).href).then(response => {
+        const headers = new Headers(response.headers);
+        headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: https://api.crossref.org; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'");
+        return new Response(response.body, { status: response.status, headers });
+      }).catch(() => new Response('Not found', { status: 404 }));
+    } catch { return new Response('Bad request', { status: 400 }); }
+  });
+}
 const prefs = { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true };
 function authorize(event) {
   if (!win || event.sender !== win.webContents || !event.senderFrame ||
@@ -44,11 +64,12 @@ function createWindow() {
     webPreferences: { ...prefs, preload: path.join(__dirname, 'preload.cjs') }
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.webContents.on('will-navigate', (event, url) => { if (url !== localUrl) event.preventDefault(); });
+  win.webContents.on('will-navigate', (event, url) => { if (url !== localUrl && url !== workspaceUrl) event.preventDefault(); });
   win.on('resize', layout);
   win.on('close', closeChat);
   win.on('closed', () => { win = null; });
-  win.loadFile('index.html');
+  if (process.argv.includes('--shell-preview')) win.loadFile('index.html');
+  else win.loadURL(workspaceUrl);
 }
 ipcMain.handle('preview:info', event => {
   authorize(event);
@@ -69,5 +90,5 @@ ipcMain.handle('preview:chat-external', event => {
   authorize(event);
   return shell.openExternal('https://chatgpt.com/');
 });
-app.whenReady().then(createWindow);
+app.whenReady().then(() => { registerWorkspace(); createWindow(); });
 app.on('window-all-closed', () => app.quit());

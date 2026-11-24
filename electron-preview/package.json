@@ -1,17 +1,20 @@
 {
   "name": "research-studio-electron-preview",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Desktop migration preview; not feature complete",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
-    "dist": "electron-builder --win nsis --x64 --publish never"
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "workspace": "node scripts/copy-workspace.cjs",
+    "test:gui": "node scripts/gui-smoke.cjs"
   },
   "devDependencies": {
     "electron": "^39.0.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.56.0"
   },
   "build": {
     "appId": "app.researchstudio.electron.preview",
@@ -25,7 +28,8 @@
       "policy.cjs",
       "index.html",
       "renderer.js",
-      "style.css"
+      "style.css",
+      "workspace/**/*"
     ],
     "win": {
       "target": [
