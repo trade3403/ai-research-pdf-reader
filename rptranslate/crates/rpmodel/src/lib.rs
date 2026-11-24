@@ -1,4 +1,6 @@
-//! Model metadata contract. Real weights and tokenizer are not loaded in D1.0.
+//! Model metadata and bounded local weight-file reader.
+pub mod safetensors;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
     pub id: String,
