@@ -57,3 +57,7 @@ The probe reports package/edge/block/warning counts and nonzero exit on parse er
 ## C2.0 continuation
 
 CI #18 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45435743540), tested revision 01fa37bae8056eb37571002de0178a94ffd75201: 38 passed, zero failed or ignored on each of Linux, Windows and macOS (114 executions). Direct run properties now attached to Run during DOCX parsing without reparsing XML; duplicate containers and invalid properties diagnosed. Two new package-level regressions, 40 source tests pending CI. Direct values only, no style inheritance. Next: paragraph properties and style resolution. Real corpus and dependency audit remain outstanding.
+
+## C2.0 paragraph increment
+
+CI #19 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45453903857), revision e14b31fd2a5a6493c4b266db4adcb33c10735d0b: 40 tests passed per platform, zero failed or ignored (120 executions). Direct paragraph properties now attached to the model: style ID, alignment, spacing, signed left/right indentation, first-line/hanging indentation and pagination flags. Line value retains raw units (auto: 240ths of a line; exact/atLeast: twips); no effective layout is computed. Unsupported attributes and conflicting indentation diagnosed. Two new package tests (42 total pending CI). Next: style definitions and bounded inheritance. Real corpus and dependency audit remain outstanding.

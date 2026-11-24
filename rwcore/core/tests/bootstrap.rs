@@ -94,3 +94,33 @@ fn duplicate_run_container_and_invalid_property_are_reported() {
     assert_eq!(p.runs[0].properties.bold, None);
     assert_eq!(doc.diagnostics.len(), 2);
 }
+
+
+#[test]
+fn reads_direct_paragraph_properties() {
+    use rwcore::opc::{ParagraphAlignment, LineRule};
+    let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/><w:jc w:val="center"/><w:spacing w:before="0" w:after="120" w:line="360" w:lineRule="auto"/><w:ind w:left="-120" w:right="240" w:firstLine="480"/><w:keepNext/><w:keepLines w:val="0"/><w:pageBreakBefore/></w:pPr><w:r><w:t>标题</w:t></w:r></w:p><w:p/></w:body></w:document>"#;
+    let doc = read_docx(&fixture(xml, REL), Limits::default()).unwrap();
+    let Block::Paragraph(p) = &doc.blocks[0] else { panic!("paragraph expected") };
+    let f = &p.properties;
+    assert_eq!(p.text(), "标题");
+    assert_eq!(f.style_id.as_deref(), Some("Heading1"));
+    assert_eq!(f.alignment, Some(ParagraphAlignment::Center));
+    assert_eq!((f.before_twips, f.after_twips, f.line), (Some(0), Some(120), Some(360)));
+    assert_eq!(f.line_rule, Some(LineRule::Auto));
+    assert_eq!((f.left_twips, f.right_twips, f.first_line_twips), (Some(-120), Some(240), Some(480)));
+    assert_eq!((f.keep_next, f.keep_lines, f.page_break_before), (Some(true), Some(false), Some(true)));
+    let Block::Paragraph(empty) = &doc.blocks[1] else { panic!("paragraph expected") };
+    assert_eq!(empty.properties, Default::default());
+    assert!(doc.diagnostics.is_empty());
+}
+#[test]
+fn paragraph_properties_report_invalid_and_duplicate_values() {
+    let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:jc w:val="bad"/><w:jc w:val="left"/><w:spacing w:before="-1" w:lineRule="bad"/><w:ind w:firstLine="120" w:hanging="240"/><w:keepNext w:val="bad"/><w:numPr/></w:pPr><w:pPr/></w:p></w:body></w:document>"#;
+    let doc = read_docx(&fixture(xml, REL), Limits::default()).unwrap();
+    let Block::Paragraph(p) = &doc.blocks[0] else { panic!("paragraph expected") };
+    assert_eq!(p.properties.alignment, None);
+    assert_eq!(p.properties.before_twips, None);
+    assert_eq!(p.properties.keep_next, None);
+    assert_eq!(doc.diagnostics.len(), 8);
+}

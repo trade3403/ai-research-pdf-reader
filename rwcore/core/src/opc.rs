@@ -114,7 +114,20 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
             continue;
         }
         let mut paragraph = Paragraph::default();
+        let mut paragraph_properties_seen = false;
         for child in node.children().filter(|n| n.is_element()) {
+            if named(child, ns, "pPr") {
+                if paragraph_properties_seen {
+                    warn(&mut document, "Duplicate paragraph property container");
+                    continue;
+                }
+                paragraph_properties_seen = true;
+                paragraph.properties = parse_paragraph_node(child, ns);
+                for message in &paragraph.properties.diagnostics {
+                    warn(&mut document, message.clone());
+                }
+                continue;
+            }
             if !named(child, ns, "r") {
                 warn(&mut document, format!("Unsupported paragraph element: {}", child.tag_name().name()));
                 continue;
@@ -295,4 +308,98 @@ mod direct_property_tests {
         assert_eq!(parse_direct_run_properties(s.as_bytes(), limits), Err(Error::Limit("part bytes")));
         assert!(parse_direct_run_properties(b"<rPr/>", Limits::default()).is_err());
     }
+}
+
+
+/// Direct paragraph formatting only; absent values are not defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DirectParagraphProperties {
+    pub style_id: Option<String>,
+    pub alignment: Option<ParagraphAlignment>,
+    pub before_twips: Option<u32>,
+    pub after_twips: Option<u32>,
+    pub line: Option<i32>,
+    pub line_rule: Option<LineRule>,
+    pub left_twips: Option<i32>,
+    pub right_twips: Option<i32>,
+    pub first_line_twips: Option<u32>,
+    pub hanging_twips: Option<u32>,
+    pub keep_next: Option<bool>,
+    pub keep_lines: Option<bool>,
+    pub page_break_before: Option<bool>,
+    pub diagnostics: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParagraphAlignment { Left, Right, Center, Both, Start, End }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineRule { Auto, Exact, AtLeast }
+
+fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperties {
+    let mut out = DirectParagraphProperties::default();
+    let mut seen = std::collections::HashSet::new();
+    for node in root.children().filter(|n| n.is_element()) {
+        let name = node.tag_name().name();
+        if node.tag_name().namespace() != Some(ns) {
+            out.diagnostics.push(format!("Unsupported foreign paragraph property: {name}"));
+            continue;
+        }
+        if !seen.insert(name) {
+            out.diagnostics.push(format!("Duplicate paragraph property: {name}"));
+            continue;
+        }
+        let val = node.attribute((ns, "val"));
+        let valid = match name {
+            "pStyle" => {
+                out.style_id = val.filter(|s| !s.is_empty()).map(str::to_owned);
+                out.style_id.is_some()
+            }
+            "jc" => {
+                out.alignment = match val {
+                    Some("left") => Some(ParagraphAlignment::Left),
+                    Some("right") => Some(ParagraphAlignment::Right),
+                    Some("center") => Some(ParagraphAlignment::Center),
+                    Some("both") => Some(ParagraphAlignment::Both),
+                    Some("start") => Some(ParagraphAlignment::Start),
+                    Some("end") => Some(ParagraphAlignment::End),
+                    _ => None,
+                };
+                out.alignment.is_some()
+            }
+            "keepNext" => { out.keep_next = on_off(node, ns); out.keep_next.is_some() }
+            "keepLines" => { out.keep_lines = on_off(node, ns); out.keep_lines.is_some() }
+            "pageBreakBefore" => { out.page_break_before = on_off(node, ns); out.page_break_before.is_some() }
+            "spacing" | "ind" => {
+                for a in node.attributes() {
+                    let v = a.value();
+                    let ok = if a.namespace() != Some(ns) { false } else {
+                        match (name, a.name()) {
+                            ("spacing", "before") => { out.before_twips = v.parse().ok(); out.before_twips.is_some() }
+                            ("spacing", "after") => { out.after_twips = v.parse().ok(); out.after_twips.is_some() }
+                            ("spacing", "line") => { out.line = v.parse().ok(); out.line.is_some() }
+                            ("spacing", "lineRule") => {
+                                out.line_rule = match v { "auto" => Some(LineRule::Auto), "exact" => Some(LineRule::Exact), "atLeast" => Some(LineRule::AtLeast), _ => None };
+                                out.line_rule.is_some()
+                            }
+                            ("ind", "left") => { out.left_twips = v.parse().ok(); out.left_twips.is_some() }
+                            ("ind", "right") => { out.right_twips = v.parse().ok(); out.right_twips.is_some() }
+                            ("ind", "firstLine") => { out.first_line_twips = v.parse().ok(); out.first_line_twips.is_some() }
+                            ("ind", "hanging") => { out.hanging_twips = v.parse().ok(); out.hanging_twips.is_some() }
+                            _ => false,
+                        }
+                    };
+                    if !ok { out.diagnostics.push(format!("Unsupported or invalid paragraph attribute: {name}/{}", a.name())); }
+                }
+                if out.first_line_twips.is_some() && out.hanging_twips.is_some() && name == "ind" {
+                    out.diagnostics.push("Conflicting firstLine and hanging indentation".into());
+                }
+                true
+            }
+            _ => {
+                out.diagnostics.push(format!("Unsupported paragraph property: {name}"));
+                continue;
+            }
+        };
+        if !valid { out.diagnostics.push(format!("Invalid paragraph property: {name}")); }
+    }
+    out
 }

@@ -16,6 +16,7 @@ pub enum Block {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Paragraph {
     pub runs: Vec<Run>,
+    pub properties: crate::opc::DirectParagraphProperties,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
