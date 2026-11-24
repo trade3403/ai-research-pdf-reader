@@ -188,22 +188,58 @@ impl Type1{
     pub fn glyph_name(&self,c:u8)->Option<&[u8]>{self.encoding.get(&c).map(Vec::as_slice)}
     pub fn outline(&self,name:&[u8])->Result<Path>{
         let bytes=self.glyphs.get(name).ok_or(Error::Unsupported("missing Type1 glyph"))?;
-        let mut vm=Vm{font:self,stack:Vec::new(),path:Vec::new(),p:[0.,0.],start:None,metrics:false,ops:0};
-        if vm.run(bytes,0)?!=Flow::End||!vm.metrics{return Err(Error::Invalid("Type1 glyph termination or metrics"));}
+        let mut vm=Vm{font:self,stack:Vec::new(),path:Vec::new(),p:[0.,0.],start:None,metrics:false,ops:0,flex:None,returns:Vec::new()};
+        if vm.run(bytes,0)?!=Flow::End||!vm.metrics||vm.flex.is_some()||!vm.returns.is_empty(){return Err(Error::Invalid("Type1 glyph termination or metrics"));}
         Ok(vm.path)
     }
 }
 #[derive(PartialEq,Eq)]
 enum Flow{End,Return}
-struct Vm<'a>{font:&'a Type1,stack:Vec<f64>,path:Path,p:Point,start:Option<Point>,metrics:bool,ops:usize}
+struct Vm<'a>{font:&'a Type1,stack:Vec<f64>,path:Path,p:Point,start:Option<Point>,metrics:bool,ops:usize,flex:Option<Vec<Point>>,returns:Vec<f64>}
 impl Vm<'_>{
     fn push(&mut self,v:f64)->Result<()>{if self.stack.len()>=MAX_STACK{return Err(Error::Limit("Type1 operand stack"));}if !v.is_finite()||v.abs()>1e9{return Err(Error::Limit("Type1 operand"));}self.stack.push(v);Ok(())}
     fn args<const N:usize>(&mut self)->Result<[f64;N]>{if self.stack.len()!=N{return Err(Error::Invalid("Type1 operand count"));}Ok(std::mem::take(&mut self.stack).try_into().unwrap())}
     fn rel(&mut self,x:f64,y:f64)->Result<Point>{let p=[self.p[0]+x,self.p[1]+y];if p.iter().any(|v|!v.is_finite()||v.abs()>1e9){return Err(Error::Limit("Type1 coordinates"));}self.p=p;Ok(p)}
     fn close(&mut self){if self.start.take().is_some(){self.path.push(Segment::Close);}}
-    fn mov(&mut self,x:f64,y:f64)->Result<()>{if !self.metrics{return Err(Error::Invalid("Type1 missing metrics"));}self.close();let p=self.rel(x,y)?;self.path.push(Segment::Move(p));self.start=Some(p);Ok(())}
-    fn line(&mut self,x:f64,y:f64)->Result<()>{if self.start.is_none(){return Err(Error::Invalid("Type1 line without moveto"));}let p=self.rel(x,y)?;self.path.push(Segment::Line(p));Ok(())}
-    fn curve(&mut self,a:[f64;6])->Result<()>{if self.start.is_none(){return Err(Error::Invalid("Type1 curve without moveto"));}let p=self.rel(a[0],a[1])?;let q=self.rel(a[2],a[3])?;let r=self.rel(a[4],a[5])?;self.path.push(Segment::Cubic(p,q,r));Ok(())}
+    fn mov(&mut self,x:f64,y:f64)->Result<()>{if !self.metrics{return Err(Error::Invalid("Type1 missing metrics"));}if self.flex.is_some(){self.rel(x,y)?;return Ok(());}self.close();let p=self.rel(x,y)?;self.path.push(Segment::Move(p));self.start=Some(p);Ok(())}
+    fn line(&mut self,x:f64,y:f64)->Result<()>{if self.flex.is_some(){return Err(Error::Invalid("Type1 line during flex"));}if self.start.is_none(){return Err(Error::Invalid("Type1 line without moveto"));}let p=self.rel(x,y)?;self.path.push(Segment::Line(p));Ok(())}
+    fn curve(&mut self,a:[f64;6])->Result<()>{if self.flex.is_some(){return Err(Error::Invalid("Type1 curve during flex"));}if self.start.is_none(){return Err(Error::Invalid("Type1 curve without moveto"));}let p=self.rel(a[0],a[1])?;let q=self.rel(a[2],a[3])?;let r=self.rel(a[4],a[5])?;self.path.push(Segment::Cubic(p,q,r));Ok(())}
+    fn other(&mut self)->Result<()>{
+        let id=self.stack.pop().ok_or(Error::Invalid("Type1 OtherSubr number"))?;
+        let n=self.stack.pop().ok_or(Error::Invalid("Type1 OtherSubr count"))?;
+        if n<0.||n.fract()!=0.||n>self.stack.len() as f64{return Err(Error::Invalid("Type1 OtherSubr count"));}
+        let a=self.stack.split_off(self.stack.len()-n as usize);
+        if !self.returns.is_empty(){return Err(Error::Invalid("unconsumed Type1 OtherSubr results"));}
+        match (id,a.len()){
+            (1.,0)=>{
+                if self.flex.is_some()||self.start.is_none(){return Err(Error::Invalid("Type1 flex start"));}
+                self.flex=Some(Vec::with_capacity(7));
+            }
+            (2.,0)=>{
+                let points=self.flex.as_mut().ok_or(Error::Invalid("Type1 flex point"))?;
+                if points.len()>=7{return Err(Error::Invalid("Type1 flex point count"));}
+                points.push(self.p);
+            }
+            (0.,3)=>{
+                let points=self.flex.take().ok_or(Error::Invalid("Type1 flex end"))?;
+                if points.len()!=7{return Err(Error::Invalid("Type1 flex point count"));}
+                // First recorded point is the reference point; the following six
+                // are the two cubic control/control/end triples. Hint depth is
+                // intentionally not executed. The supplied endpoint is returned
+                // to CharString via two pop operators followed by setcurrentpoint.
+                self.path.push(Segment::Cubic(points[1],points[2],points[3]));
+                self.path.push(Segment::Cubic(points[4],points[5],points[6]));
+                self.p=points[6];
+                self.returns.extend([a[2],a[1]]);
+            }
+            (3.,1)=>{
+                // Standard hint replacement returns the requested Subr number.
+                // Hint instructions are ignored, but its CharString still runs.
+                self.returns.push(a[0]);
+            }
+            _=>return Err(Error::Unsupported("Type1 OtherSubrs/flex")),
+        }Ok(())
+    }
     fn run(&mut self,d:&[u8],depth:usize)->Result<Flow>{
         if depth>MAX_DEPTH{return Err(Error::Limit("Type1 subroutine depth"));}
         let mut i=0usize;
@@ -222,7 +258,7 @@ impl Vm<'_>{
                 6=>{let [x]=self.args()?;self.line(x,0.)?;}
                 7=>{let [y]=self.args()?;self.line(0.,y)?;}
                 8=>{let a=self.args()?;self.curve(a)?;}
-                9=>{let _: [f64;0]=self.args()?;if self.start.is_none(){return Err(Error::Invalid("Type1 closepath"));}self.close();}
+                9=>{let _: [f64;0]=self.args()?;if self.start.is_none()||self.flex.is_some(){return Err(Error::Invalid("Type1 closepath"));}self.close();}
                 10=>{
                     let n=self.stack.pop().ok_or(Error::Invalid("Type1 callsubr operand"))?;
                     if n<0.||n>MAX_ENTRIES as f64||n.fract()!=0.{return Err(Error::Invalid("Type1 callsubr index"));}
@@ -242,12 +278,43 @@ impl Vm<'_>{
                     7=>{let [x,y,_wx,_wy]=self.args()?;if self.metrics{return Err(Error::Invalid("duplicate Type1 sbw"));}self.p=[x,y];self.metrics=true;}
                     12=>{let b=self.stack.pop().ok_or(Error::Invalid("Type1 div"))?;let a=self.stack.pop().ok_or(Error::Invalid("Type1 div"))?;if b==0.{return Err(Error::Invalid("Type1 div by zero"));}self.push(a/b)?;}
                     6=>return Err(Error::Unsupported("Type1 seac")),
-                    16|17|33=>return Err(Error::Unsupported("Type1 OtherSubrs/flex")),
+                    16=>self.other()?,
+                    17=>{let v=self.returns.pop().ok_or(Error::Invalid("Type1 OtherSubr pop"))?;self.push(v)?;}
+                    33=>{let [x,y]=self.args()?;if self.flex.is_some(){return Err(Error::Invalid("Type1 setcurrentpoint during flex"));}self.p=[x,y];}
                     _=>return Err(Error::Unsupported("Type1 escaped operator")),
                 }
                 _=>return Err(Error::Unsupported("Type1 operator")),
             }
         }
         Err(Error::Invalid("truncated Type1 CharString"))
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn op(v:&mut Vec<u8>,a:&[i32],o:&[u8]){
+        for &n in a{if (-107..=107).contains(&n){v.push((n+139)as u8);}else{v.push(255);v.extend_from_slice(&n.to_be_bytes());}}
+        v.extend_from_slice(o);
+    }
+    fn font(g:Vec<u8>)->Type1{
+        Type1{matrix:Matrix([0.001,0.,0.,0.001,0.,0.]),encoding:BTreeMap::new(),
+            glyphs:BTreeMap::from([(b"A".to_vec(),g)]),subrs:BTreeMap::from([(4,vec![139,159,3,11])])}
+    }
+    #[test]fn standard_hint_replacement(){
+        let mut g=Vec::new();op(&mut g,&[0,650],&[13]);op(&mut g,&[4,1,3],&[12,16]);
+        g.extend([12,17,10]);op(&mut g,&[10,20],&[21]);op(&mut g,&[50,0],&[5]);g.push(14);
+        assert_eq!(font(g).outline(b"A").unwrap(),vec![Segment::Move([10.,20.]),Segment::Line([60.,20.]),Segment::Close]);
+    }
+    #[test]fn flex_two_cubics(){
+        let mut g=Vec::new();op(&mut g,&[0,650],&[13]);op(&mut g,&[10,20],&[21]);op(&mut g,&[0,1],&[12,16]);
+        for (x,y) in [(0,0),(10,0),(10,10),(10,10),(10,0),(10,-10),(10,-10)]{
+            op(&mut g,&[x,y],&[21]);op(&mut g,&[0,2],&[12,16]);
+        }
+        op(&mut g,&[50,70,20,3,0],&[12,16]);g.extend([12,17,12,17,12,33]);op(&mut g,&[10,0],&[5]);g.push(14);
+        assert_eq!(font(g).outline(b"A").unwrap(),vec![Segment::Move([10.,20.]),Segment::Cubic([20.,20.],[30.,30.],[40.,40.]),Segment::Cubic([50.,40.],[60.,30.],[70.,20.]),Segment::Line([80.,20.]),Segment::Close]);
+    }
+    #[test]fn unsupported_and_malformed_othersubrs(){
+        for (n,id) in [(0,2),(0,9),(1,3)]{let mut g=Vec::new();op(&mut g,&[0,650],&[13]);op(&mut g,&[n,id],&[12,16]);g.push(14);assert!(font(g).outline(b"A").is_err());}
     }
 }

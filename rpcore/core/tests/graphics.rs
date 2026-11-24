@@ -6,7 +6,7 @@ fn stream(dict:&str,content:&[u8])->Vec<u8>{
 fn fixture(content:&[u8],extra:Vec<Vec<u8>>)->Vec<u8>{
     let mut objs=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> /ColorSpace << /C /DeviceRGB >> /ExtGState << /GS << /LW 2 /LC 1 /LJ 2 /ML 4 /D [[3 2] 1] /OP false /op false /OPM 1 /TR2 /Default >> /Bad << /OP true >> >> >> >>".to_vec(),
         stream("",content)];
     objs.extend(extra);
     let mut p=b"%PDF-1.4\n".to_vec();let mut offsets=Vec::new();
@@ -68,4 +68,13 @@ fn cumulative_form_budget(){
     let b=fixture(b"/Fm Do /Fm Do",vec![f]);let d=Document::open(&b).unwrap();let p=d.pages().unwrap();
     assert!(matches!(d.page_display_list(&p[0],30),Err(Error::Limit(_))));
     assert!(d.page_display_list(&p[0],100).is_ok());
+}
+
+#[test]fn named_device_space_and_extgstate_stroke(){
+    let l=list(b"/C cs 1 0 0 sc /GS gs 0 0 10 10 re B",vec![]);
+    let Command::Paint{fill,stroke,..}=l.commands.last().unwrap() else{panic!("paint")};
+    assert_eq!(*fill,Some((Color::Rgb([1.,0.,0.]),FillRule::NonZero)));
+    let s=stroke.as_ref().unwrap();assert_eq!(s.width,2.);assert_eq!(s.cap,LineCap::Round);assert_eq!(s.join,LineJoin::Bevel);assert_eq!(s.miter_limit,4.);assert_eq!(s.dash,vec![3.,2.]);
+    let b=fixture(b"/Bad gs",vec![]);let d=Document::open(&b).unwrap();
+    assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
 }

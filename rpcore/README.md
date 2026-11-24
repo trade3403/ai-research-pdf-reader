@@ -73,6 +73,10 @@ python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe
 ```
 On Windows use the .exe and python command. Corpus reports are diagnostic, not a compatibility certification. Full-document coverage, pixel comparisons against independent reference images, and actual compatibility fixes follow the first measured baseline.
 
+## B10.5b1 corpus-driven compatibility fixes
+Baseline run 45364806857: 3/3 document structures, 9/9 page content streams, 4/9 text extraction, 0/9 strict renders. First failures: Type1 OtherSubrs/flex (3 render), graphics color space (3 render), ExtGState parameters (2 render), non-isolated/knockout/non-RGB group (1 render), ExtGState text interpretation (3 text), missing glyph width (2 text).
+This increment implements conventional Type1 OtherSubrs 0/1/2 flex and 3 hint replacement (no arbitrary PostScript or hint execution), text ExtGState lookup with explicit warning and rejection of Font override, named device color-space resources, ExtGState line parameters and limited neutral/quality entries, and PDF default MissingWidth=0 when FontDescriptor exists. Standard14 metrics without a descriptor, calibrated/ICC/Pattern color spaces, dash rasterization, non-isolated groups, and other missing features remain unsupported. No claim of improved corpus success until the rerun. Same nine-page corpus is retained.
+
 ## Remaining
 Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, complete graphics/color interpretation, full rasterization and text rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 

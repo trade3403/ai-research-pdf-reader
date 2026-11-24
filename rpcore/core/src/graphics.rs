@@ -258,6 +258,13 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("XObject subtype")),
         }
     }
+    fn color_space(&self,resources:Option<&Object>,n:&[u8])->Result<Space>{
+        if let Ok(s)=device(n){return Ok(s);}
+        let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Unsupported("graphics color space"))?)?)?;
+        let spaces=crate::dict(self.doc.dereference(r.get(b"ColorSpace".as_slice()).ok_or(Error::Unsupported("graphics color space"))?)?)?;
+        let o=self.doc.dereference(spaces.get(n).ok_or(Error::Unsupported("graphics color space"))?)?;
+        match o{Object::Name(n)=>device(&n),_=>Err(Error::Unsupported("graphics complex color space"))}
+    }
     fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State)->Result<()>{
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("ExtGState Resources"))?)?)?;
         let states=crate::dict(self.doc.dereference(r.get(b"ExtGState".as_slice()).ok_or(Error::Invalid("ExtGState dictionary"))?)?)?;
@@ -277,6 +284,26 @@ impl<'d,'a> Engine<'d,'a>{
                 b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{},
                 b"AIS" if v==Object::Bool(false)=>{},
                 b"TK" if v==Object::Bool(true)=>{},
+                b"LW"=>{let x=number(&v)?;if x<0.{return Err(Error::Invalid("ExtGState line width"));}s.stroke.width=x;}
+                b"LC"=>s.stroke.cap=match number(&v)?{0.=>LineCap::Butt,1.=>LineCap::Round,2.=>LineCap::Square,_=>return Err(Error::Invalid("ExtGState line cap"))},
+                b"LJ"=>s.stroke.join=match number(&v)?{0.=>LineJoin::Miter,1.=>LineJoin::Round,2.=>LineJoin::Bevel,_=>return Err(Error::Invalid("ExtGState line join"))},
+                b"ML"=>{let x=number(&v)?;if x<1.{return Err(Error::Invalid("ExtGState miter limit"));}s.stroke.miter_limit=x;}
+                b"D"=>{
+                    let Object::Array(a)=v else{return Err(Error::Invalid("ExtGState dash"));};
+                    arity(&a,2)?;let Object::Array(values)=&a[0] else{return Err(Error::Invalid("ExtGState dash array"));};
+                    if values.len()>MAX_DASH{return Err(Error::Limit("dash array"));}
+                    let dash=values.iter().map(number).collect::<Result<Vec<_>>>()?;
+                    if dash.iter().any(|&x|x<0.)||(!dash.is_empty()&&dash.iter().all(|&x|x==0.)){return Err(Error::Invalid("dash lengths"));}
+                    let phase=number(&a[1])?;if phase<0.{return Err(Error::Invalid("dash phase"));}
+                    s.stroke.dash=dash;s.stroke.dash_phase=phase;
+                }
+                // These quality hints do not change the abstract path geometry.
+                b"FL" if (0.0..=100.).contains(&number(&v)?)=>{},
+                b"SM" if (0.0..=1.).contains(&number(&v)?)=>{},
+                b"RI" if matches!(&v,Object::Name(n) if matches!(n.as_slice(),b"AbsoluteColorimetric"|b"RelativeColorimetric"|b"Saturation"|b"Perceptual"))=>{},
+                b"SA"|b"OP"|b"op" if v==Object::Bool(false)=>{},
+                b"OPM" if matches!(number(&v)?,0.|1.)=>{},
+                b"TR"|b"TR2" if matches!(&v,Object::Name(n) if n==b"Identity"||n==b"Default")=>{},
                 _=>return Err(Error::Unsupported("ExtGState parameter")),
             }
         }
@@ -326,7 +353,7 @@ impl<'d,'a> Engine<'d,'a>{
                     let color=space.color(a)?;
                     if w[0].is_ascii_uppercase(){s.stroke_space=space;s.stroke.color=color;}else{s.fill_space=space;s.fill=color;}
                 }
-                b"CS"|b"cs"=>{arity(a,1)?;let space=device(name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
+                b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
                 b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
                 b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
                 b"Do"=>{arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth)?;}

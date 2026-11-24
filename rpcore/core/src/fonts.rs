@@ -167,7 +167,7 @@ fn simple_widths(doc:&Document<'_>,d:&Dict)->Result<(BTreeMap<u32,f64>,Option<f6
     }
     let default=if let Some(v)=get(d,b"FontDescriptor"){
         let desc=dictionary(doc.dereference(v)?)?;
-        get(&desc,b"MissingWidth").map(|v|doc.dereference(v).and_then(|v|width(&v))).transpose()?
+        Some(get(&desc,b"MissingWidth").map(|v|doc.dereference(v).and_then(|v|width(&v))).transpose()?.unwrap_or(0.))
     }else{None};
     Ok((widths,default))
 }

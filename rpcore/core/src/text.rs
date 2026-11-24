@@ -172,7 +172,17 @@ impl<'d,'a> Interpreter<'d,'a>{
             b"\""=>{self.require_text()?;arity(a,3)?;self.state.word_space=num(&a[0])?;self.state.char_space=num(&a[1])?;self.next_line()?;self.show(string(&a[2])?,i)?;}
             // These operators can affect extracted text. Do not silently claim complete extraction.
             b"Do"=>self.warning(TextWarning::ExternalObjectNotInterpreted),
-            b"gs"=>return Err(Error::Unsupported("ExtGState text interpretation")),
+            b"gs"=>{
+                arity(a,1)?;
+                let Object::Name(n)=&a[0] else{return Err(Error::Invalid("ExtGState name"));};
+                let resources=crate::dict(self.doc.dereference(self.page.resources.as_ref().ok_or(Error::Invalid("ExtGState Resources"))?)?)?;
+                let states=crate::dict(self.doc.dereference(resources.get(b"ExtGState".as_slice()).ok_or(Error::Invalid("ExtGState dictionary"))?)?)?;
+                let state=crate::dict(self.doc.dereference(states.get(n).ok_or(Error::Invalid("ExtGState name"))?)?)?;
+                // Font is the only ExtGState entry that changes text positioning
+                // directly. Preserve explicit failure rather than using a stale font.
+                if state.contains_key(b"Font".as_slice()){return Err(Error::Unsupported("ExtGState text font"));}
+                self.warning(TextWarning::GraphicsStateNotInterpreted);
+            }
             b"BDC"=>{self.warning(TextWarning::ActualTextNotInterpreted);}
             b"BMC"|b"EMC"|b"MP"|b"DP"|b"BX"|b"EX"|
             b"m"|b"l"|b"c"|b"v"|b"y"|b"h"|b"re"|b"S"|b"s"|b"f"|b"F"|b"f*"|b"B"|b"B*"|b"b"|b"b*"|b"n"|

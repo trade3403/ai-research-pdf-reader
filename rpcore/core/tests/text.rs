@@ -2,7 +2,7 @@ use rpcore::{Document,Error,text::{Matrix,TextWarning}};
 fn fixture(content:&[u8])->Vec<u8>{
     let mut body=format!("<< /Length {} >>\nstream\n",content.len()).into_bytes();body.extend_from_slice(content);body.extend_from_slice(b"\nendstream");
     let objects=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /ExtGState << /GS << /ca 0.5 /BM /Multiply >> /Bad << /Font [4 0 R 12] >> >> >> >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>".to_vec(),
         b"<< /Type /Font /Subtype /Type1 /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /uni4E2D /fi /unknown] >> /FontDescriptor << /MissingWidth 500 >> >>".to_vec(),body];
     let mut pdf=b"%PDF-1.4\n".to_vec();let mut offsets=Vec::new();
@@ -54,4 +54,12 @@ fn malformed_text_rejected(){
         let b=fixture(data);let d=Document::open(&b).unwrap();
         assert!(matches!(d.page_text(&d.pages().unwrap()[0],10000),Err(Error::Invalid(_)|Error::Unsupported(_))));
     }
+}
+
+#[test]fn ext_gstate_preserves_text_geometry(){
+    let t=extract(b"BT /F1 10 Tf (A) Tj /GS gs (B) Tj ET");
+    near(t.glyphs[1].origin,[5.,0.]);
+    assert!(t.warnings.contains(&TextWarning::GraphicsStateNotInterpreted));
+    let b=fixture(b"/Bad gs");let d=Document::open(&b).unwrap();
+    assert!(matches!(d.page_text(&d.pages().unwrap()[0],10000),Err(Error::Unsupported("ExtGState text font"))));
 }
