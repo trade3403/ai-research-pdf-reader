@@ -25,7 +25,7 @@ fn near(a:&[u8],b:[u8;4]){for (&x,y) in a.iter().zip(b){assert!((i32::from(x)-i3
     let b=render(&p);assert_eq!(px(&b,5,15),[255,0,0,255]);
 }
 #[test]fn unsupported_groups_cycles_and_budget(){
-    for g in ["<< /S /Transparency >>","<< /S /Transparency /I false >>","<< /S /Transparency /I true /K true >>","<< /S /Transparency /I true /CS /DeviceCMYK >>"]{
+    for g in ["<< /S /Transparency /I true /K true >>","<< /S /Transparency /I true /CS /DeviceCMYK >>"]{
         let p=fixture::pdf(b"/G Do",g,fixture::OVERLAP,b"","<< >>","<< >>");let d=Document::open(&p).unwrap();
         assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Unsupported(_))));
     }
@@ -33,4 +33,28 @@ fn near(a:&[u8],b:[u8;4]){for (&x,y) in a.iter().zip(b){assert!((i32::from(x)-i3
     assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
     let p=fixture::pdf(b"/G Do",fixture::GROUP,b"/N Do",b"0 0 1 rg 0 0 10 10 re f","<< >>","<< >>");let d=Document::open(&p).unwrap();
     assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options{scale:100.,allow_missing_text:false},10000),Err(Error::Limit(_))));
+}
+
+const NONISO:&str="<< /S /Transparency /I false /CS /DeviceRGB >>";
+#[test]fn nonisolated_backdrop_and_default_isolation(){
+    for g in [NONISO,"<< /S /Transparency >>"]{
+        let p=fixture::pdf(b"0 1 0 rg 0 0 20 20 re f /G Do",g,b"/Inner gs 1 0 0 rg 0 0 10 10 re f",b"","<< >>","<< /BM /Multiply >>");
+        let d=Document::open(&p).unwrap();let list=d.page_display_list(&d.pages().unwrap()[0],10000).unwrap();
+        assert!(list.commands.iter().any(|c|matches!(c,Command::BeginNonIsolatedGroup{..})));
+        let b=render(&p);assert_eq!(px(&b,5,15),[0,0,0,255]);assert_eq!(px(&b,17,15),[0,255,0,255]);
+    }
+    let p=fixture::pdf(b"0 1 0 rg 0 0 20 20 re f /G Do",fixture::GROUP,b"/Inner gs 1 0 0 rg 0 0 10 10 re f",b"","<< >>","<< /BM /Multiply >>");
+    assert_eq!(px(&render(&p),5,15),[255,0,0,255]);
+}
+#[test]fn nonisolated_opacity_and_outer_blend(){
+    let p=fixture::pdf(b"0 1 0 rg 0 0 20 20 re f /Outer gs /G Do",NONISO,b"/Inner gs 1 0 0 rg 0 0 10 10 re f",b"","<< /ca 0.5 >>","<< /ca 0.5 /BM /Multiply >>");
+    let b=render(&p);near(px(&b,5,15),[0,191,0,255]);assert_eq!(px(&b,17,15),[0,255,0,255]);
+    let p=fixture::pdf(b"0 1 0 rg 0 0 20 20 re f /Outer gs /G Do",NONISO,b"/Inner gs 1 0 0 rg 0 0 10 10 re f",b"","<< /BM /Multiply /ca 0.5 >>","<< /ca 0.5 >>");
+    let b=render(&p);near(px(&b,5,15),[0,191,0,255]);assert_eq!(px(&b,17,15),[0,255,0,255]);
+}
+#[test]fn nonisolated_nested_groups(){
+    let p=fixture::pdf(b"0.5 g 0 0 20 20 re f /Outer gs /G Do",NONISO,b"/Inner gs /N Do",b"1 0 0 rg 0 0 10 10 re f","<< /ca 0.5 >>","<< /ca 0.5 >>");
+    let b=render(&p);near(px(&b,5,15),[160,96,96,255]);near(px(&b,17,15),[128,128,128,255]);
+    let p=fixture::pdf_nested(b"/Outer gs /G Do",fixture::GROUP,b"/Inner gs 1 0 0 rg 0 0 10 10 re f /N Do",b"0 0 1 rg 0 0 10 10 re f","<< /ca 0.5 >>","<< /ca 0.5 >>",NONISO);
+    let b=render(&p);near(px(&b,5,15),[191,159,223,255]);
 }

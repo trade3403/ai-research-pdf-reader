@@ -88,6 +88,8 @@ pub enum Command{
     Blend(BlendMode),
     /// Begin an isolated, non-knockout RGB transparency group.
     BeginGroup{opacity:f64,blend:BlendMode},
+    /// Non-isolated RGB group with inherited backdrop.
+    BeginNonIsolatedGroup{opacity:f64,blend:BlendMode},
     EndGroup,
     /// Current nonstroking color, needed by stencil images.
     StencilColor(Color),
@@ -100,7 +102,7 @@ pub enum Command{
     Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>},
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
-pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed}
+pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed,DeviceQualityHintNotInterpreted}
 #[derive(Debug,Clone,PartialEq)]
 pub struct DisplayList{
     /// Initial clip is the page CropBox; Rotate is not applied.
@@ -211,25 +213,26 @@ impl<'d,'a> Engine<'d,'a>{
                 self.command(Command::Image{object_id:id,ctm:s.ctm})
             }
             b"Form"=>{
-                let isolated=if let Some(group)=dict.get(b"Group".as_slice()){
+                let group_isolated=if let Some(group)=dict.get(b"Group".as_slice()){
                     let group=crate::dict(self.doc.dereference(group)?)?;
-                    if !matches!(group.get(b"S".as_slice()),Some(Object::Name(n)) if n==b"Transparency"){return Err(Error::Unsupported("Form group subtype"));}
+                    if !matches!(group.get(b"S".as_slice()).map(|v|self.doc.dereference(v)).transpose()?,Some(Object::Name(n)) if n==b"Transparency"){return Err(Error::Unsupported("Form group subtype"));}
+                    let mut isolated=false;
                     for (k,v) in &group{
                         let v=self.doc.dereference(v)?;
                         match k.as_slice(){
                             b"Type" if matches!(&v,Object::Name(n) if n==b"Group")=>{},
                             b"S" if matches!(&v,Object::Name(n) if n==b"Transparency")=>{},
-                            b"I" if v==Object::Bool(true)=>{},
+                            b"I"=>if let Object::Bool(v)=v{isolated=v;}else{return Err(Error::Invalid("group I"));},
                             b"K" if v==Object::Bool(false)=>{},
+                            b"K" if v==Object::Bool(true)=>return Err(Error::Unsupported("knockout transparency group")),
+                            b"K"=>return Err(Error::Invalid("group K")),
                             b"CS" if matches!(&v,Object::Name(n) if n==b"DeviceRGB")=>{},
-                            _=>return Err(Error::Unsupported("non-isolated, knockout or non-RGB group parameter")),
+                            b"CS"=>return Err(Error::Unsupported("non-RGB transparency group color space")),
+                            _=>return Err(Error::Unsupported("transparency group parameter")),
                         }
                     }
-                    if !matches!(group.get(b"I".as_slice()).map(|o|self.doc.dereference(o)).transpose()?,Some(Object::Bool(true))){
-                        return Err(Error::Unsupported("non-isolated transparency group"));
-                    }
-                    true
-                }else{false};
+                    Some(isolated)
+                }else{None};
                 if let Some(v)=dict.get(b"FormType".as_slice()){
                     if number(v)?!=1.{return Err(Error::Unsupported("FormType"));}
                 }
@@ -245,14 +248,14 @@ impl<'d,'a> Engine<'d,'a>{
                 self.bytes_left-=data.len();
                 let ops=content::parse(&data)?;
                 self.command(Command::Save)?;
-                if isolated{
-                    self.command(Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend})?;
+                if let Some(isolated)=group_isolated{
+                    self.command(if isolated{Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend}}else{Command::BeginNonIsolatedGroup{opacity:s.fill_alpha,blend:s.blend}})?;
                     child.fill_alpha=1.;child.stroke_alpha=1.;child.blend=BlendMode::Normal;
                 }
                 self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
                 // Absent Resources may use the page's resource environment.
                 self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
-                if isolated{self.command(Command::EndGroup)?;}
+                if group_isolated.is_some(){self.command(Command::EndGroup)?;}
                 self.command(Command::Restore)
             }
             _=>Err(Error::Unsupported("XObject subtype")),
@@ -318,10 +321,23 @@ impl<'d,'a> Engine<'d,'a>{
                 b"FL" if (0.0..=100.).contains(&number(&v)?)=>{},
                 b"SM" if (0.0..=1.).contains(&number(&v)?)=>{},
                 b"RI" if matches!(&v,Object::Name(n) if matches!(n.as_slice(),b"AbsoluteColorimetric"|b"RelativeColorimetric"|b"Saturation"|b"Perceptual"))=>{},
-                b"SA"|b"OP"|b"op" if v==Object::Bool(false)=>{},
+                b"SA" if matches!(v,Object::Bool(_))=>{
+                    if v==Object::Bool(true){self.warning(Warning::DeviceQualityHintNotInterpreted);}
+                }
+                b"OP"|b"op" if v==Object::Bool(false)=>{},
+                b"HT"|b"BG"|b"BG2"|b"UCR"|b"UCR2" if matches!(&v,Object::Name(n) if n==b"Default")=>{},
+                b"OP"|b"op"=>return Err(Error::Unsupported("ExtGState overprint")),
+                b"SMask"=>return Err(Error::Unsupported("ExtGState graphics soft mask")),
+                b"AIS"=>return Err(Error::Unsupported("ExtGState alpha is shape")),
+                b"TK"=>return Err(Error::Unsupported("ExtGState text knockout")),
+                b"Font"=>return Err(Error::Unsupported("ExtGState font")),
+                b"HT"=>return Err(Error::Unsupported("ExtGState halftone")),
+                b"BG"|b"BG2"|b"UCR"|b"UCR2"=>return Err(Error::Unsupported("ExtGState black generation or undercolor removal")),
+                b"SA"=>return Err(Error::Invalid("ExtGState stroke adjustment")),
                 b"OPM" if matches!(number(&v)?,0.|1.)=>{},
                 b"TR"|b"TR2" if matches!(&v,Object::Name(n) if n==b"Identity"||n==b"Default")=>{},
-                _=>return Err(Error::Unsupported("ExtGState parameter")),
+                b"TR"|b"TR2"=>return Err(Error::Unsupported("ExtGState transfer function")),
+                _=>return Err(Error::Unsupported("ExtGState unknown or invalid parameter")),
             }
         }
         self.command(Command::Opacity{fill:s.fill_alpha,stroke:s.stroke_alpha})?;

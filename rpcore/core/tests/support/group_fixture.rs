@@ -4,6 +4,9 @@ pub fn stream(dict:&str,data:&[u8])->Vec<u8>{
     out.extend_from_slice(data);out.extend_from_slice(b"\nendstream");out
 }
 pub fn pdf(page:&[u8],group:&str,body:&[u8],nested:&[u8],outer_gs:&str,inner_gs:&str)->Vec<u8>{
+    pdf_nested(page,group,body,nested,outer_gs,inner_gs,"<< /S /Transparency /I true /CS /DeviceRGB >>")
+}
+pub fn pdf_nested(page:&[u8],group:&str,body:&[u8],nested:&[u8],outer_gs:&str,inner_gs:&str,nested_group:&str)->Vec<u8>{
     let resources="/Resources << /XObject << /G 5 0 R /N 6 0 R >> /ExtGState << /Outer 7 0 R /Inner 8 0 R >> >>";
     let objects=[
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -11,7 +14,7 @@ pub fn pdf(page:&[u8],group:&str,body:&[u8],nested:&[u8],outer_gs:&str,inner_gs:
         format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {resources} >>").into_bytes(),
         stream("",page),
         stream(&format!("/Type /XObject /Subtype /Form /BBox [0 0 15 15] /Group {group} {resources}"),body),
-        stream(&format!("/Type /XObject /Subtype /Form /BBox [0 0 15 15] /Group << /S /Transparency /I true /CS /DeviceRGB >> {resources}"),nested),
+        stream(&format!("/Type /XObject /Subtype /Form /BBox [0 0 15 15] /Group {nested_group} {resources}"),nested),
         outer_gs.as_bytes().to_vec(),inner_gs.as_bytes().to_vec(),
     ];
     let mut out=b"%PDF-1.4\n".to_vec();let mut offsets=Vec::new();

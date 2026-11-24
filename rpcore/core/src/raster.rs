@@ -247,18 +247,26 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
     }
     Ok(out)
 }
-// Each group uses 12 RGB bytes and 16 alpha bytes per output pixel.
+// Each group uses 28 bytes per output pixel, plus 16 bytes for non-isolated coverage.
 // The cap counts all live offscreen buffers, excluding the existing root surface.
 const MAX_GROUP_BYTES:usize=128*1024*1024;
 const MAX_GROUP_DEPTH:usize=8;
 struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
+    coverage:Option<Vec<f32>>,
 }
 struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>}
 impl Surface{
+    fn mark_coverage(&mut self,index:usize,alpha:f64){
+        if let Some(coverage)=self.groups.last_mut().and_then(|g|g.coverage.as_mut()){
+            let a=f64::from(coverage[index]);
+            coverage[index]=(alpha+a*(1.-alpha)) as f32;
+        }
+    }
     fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
         let alpha=alpha.clamp(0.,1.);
         if alpha==0.{return;}
+        self.mark_coverage(i/3,alpha);
         let ab=self.alpha.as_ref().map_or(1.,|a|f64::from(a[i/3]));
         let ao=alpha+ab*(1.-alpha);
         if ab==0.||(alpha==1.&&self.blend_mode==BlendMode::Normal){
@@ -275,12 +283,16 @@ impl Surface{
         }
         if let Some(a)=&mut self.alpha{a[i/3]=ao as f32;}
     }
-    fn begin_group(&mut self,opacity:f64,blend:BlendMode)->Result<()>{
+    fn begin_group(&mut self,opacity:f64,blend:BlendMode,isolated:bool)->Result<()>{
         let pixels=self.w*self.h;
-        if self.groups.len()>=MAX_GROUP_DEPTH||(self.groups.len()+1)*pixels*28>MAX_GROUP_BYTES{return Err(Error::Limit("transparency group buffers"));}
-        self.budget.charge(pixels*4)?;
-        let parent=GroupLayer{samples:std::mem::replace(&mut self.samples,vec![0;pixels*12]),
-            alpha:self.alpha.replace(vec![0.;pixels*4]),opacity,blend,stack_depth:self.stack.len()};
+        let used=self.groups.iter().map(|g|if g.coverage.is_some(){44}else{28}).sum::<usize>();
+        if self.groups.len()>=MAX_GROUP_DEPTH||(used+if isolated{28}else{44})*pixels>MAX_GROUP_BYTES{return Err(Error::Limit("transparency group buffers"));}
+        self.budget.charge(pixels*if isolated{4}else{8})?;
+        let colors=if isolated{vec![0;pixels*12]}else{self.samples.clone()};
+        let alpha=if isolated{vec![0.;pixels*4]}else{self.alpha.clone().unwrap_or_else(||vec![1.;pixels*4])};
+        let parent=GroupLayer{samples:std::mem::replace(&mut self.samples,colors),
+            alpha:self.alpha.replace(alpha),opacity,blend,stack_depth:self.stack.len(),
+            coverage:if isolated{None}else{Some(vec![0.;pixels*4])}};
         self.groups.push(parent);
         self.fill_alpha=1.;self.stroke_alpha=1.;self.blend_mode=BlendMode::Normal;
         Ok(())
@@ -291,13 +303,36 @@ impl Surface{
         let colors=std::mem::replace(&mut self.samples,parent.samples);
         let alpha=std::mem::replace(&mut self.alpha,parent.alpha).ok_or(Error::Invalid("missing group alpha"))?;
         self.blend_mode=parent.blend;
-        self.budget.charge(self.w*self.h*4)?;
-        // Group coverage already contains the inherited clip and Form BBox;
-        // do not apply the final child's clip again at group exit.
-        for (i,&a) in alpha.iter().enumerate(){
-            if a>0.{self.blend(i*3,[colors[i*3],colors[i*3+1],colors[i*3+2]],f64::from(a)*parent.opacity);}
+        self.budget.charge(self.w*self.h*if parent.coverage.is_some(){8}else{4})?;
+        // Group coverage includes clip and BBox; no repeated clip on exit.
+        if let Some(coverage)=parent.coverage{
+            for (i,&ag) in coverage.iter().enumerate(){
+                let ag=f64::from(ag);let scale=parent.opacity;
+                if ag<=0.||scale<=0.{continue;}
+                let ab=self.alpha.as_ref().map_or(1.,|a|f64::from(a[i]));
+                let ar=f64::from(alpha[i]);let at=i*3;
+                if parent.blend==BlendMode::Normal{
+                    // Equivalent to backdrop removal + normal composite, without
+                    // dividing by small coverage or rounding recovered RGB.
+                    let ao=ab*(1.-scale)+ar*scale;
+                    for k in 0..3{
+                        let p=f64::from(self.samples[at+k])*ab*(1.-scale)+f64::from(colors[at+k])*ar*scale;
+                        self.samples[at+k]=if ao>0.{(p/ao).round().clamp(0.,255.)as u8}else{0};
+                    }
+                    if let Some(a)=&mut self.alpha{a[i]=ao as f32;}
+                    self.mark_coverage(i,ag*scale);
+                }else{
+                    // Recover the group contribution in premultiplied space.
+                    // RGB8 intermediate precision can affect small coverage.
+                    let c=std::array::from_fn(|k|((f64::from(colors[at+k])*ar-f64::from(self.samples[at+k])*ab*(1.-ag))/ag).round().clamp(0.,255.)as u8);
+                    self.blend(at,c,ag*scale);
+                }
+            }
+        }else{
+            for (i,&a) in alpha.iter().enumerate(){
+                if a>0.{self.blend(i*3,[colors[i*3],colors[i*3+1],colors[i*3+2]],f64::from(a)*parent.opacity);}
+            }
         }
-        // The surrounding Restore command restores the caller's complete state.
         Ok(())
     }
     fn paint(&mut self,mask:&Coverage,c:[u8;3],alpha:f64)->Result<()>{
@@ -347,7 +382,8 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
             Command::Restore=>{let (clip,fa,sa,bm)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;s.blend_mode=bm;text.restore()?;}
             Command::Opacity{fill,stroke}=>{s.fill_alpha=*fill;s.stroke_alpha=*stroke;}
             Command::Blend(b)=>s.blend_mode=*b,
-            Command::BeginGroup{opacity,blend}=>s.begin_group(*opacity,*blend)?,
+            Command::BeginGroup{opacity,blend}=>s.begin_group(*opacity,*blend,true)?,
+            Command::BeginNonIsolatedGroup{opacity,blend}=>s.begin_group(*opacity,*blend,false)?,
             Command::EndGroup=>s.end_group()?,
             Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
