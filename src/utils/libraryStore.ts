@@ -1,3 +1,4 @@
+import { electronBridge } from './electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import { getDatabase } from './readerStore';
 
@@ -66,7 +67,14 @@ function browserSnapshot():LibrarySnapshot {
 }
 function browserSave(snapshot:LibrarySnapshot) { localStorage.setItem(BROWSER_KEY, JSON.stringify(snapshot)); }
 
+let migration:Promise<unknown>|null=null;
+async function nativeLibrary<T>(op:string,v?:unknown):Promise<T>{
+ const bridge=electronBridge();if(!bridge)throw Error('Native library unavailable');
+ if(!migration)migration=bridge.library('importPreview',browserSnapshot()).catch(e=>{migration=null;throw e;});
+ await migration;return bridge.library(op,v) as Promise<T>;
+}
 export async function loadLibrary():Promise<LibrarySnapshot> {
+  if(electronBridge()) return nativeLibrary<LibrarySnapshot>('load');
   if (!isTauri()) return browserSnapshot();
   await initLibrary(); const db = await getDatabase();
   const [rows, cols, tags, joins] = await Promise.all([
@@ -83,6 +91,7 @@ export async function loadLibrary():Promise<LibrarySnapshot> {
 
 /** Atomically insert a new file reference; UNIQUE sha256 and path prevent duplicate file imports. */
 export async function importLibraryItem(item:LiteratureItem):Promise<ImportStatus> {
+  if(electronBridge()) return nativeLibrary<ImportStatus>('insert',item);
   if (!isTauri()) {
     const state=browserSnapshot();
     if (item.sha256 && state.items.some(x=>x.sha256===item.sha256)) return 'duplicate-hash';
@@ -107,6 +116,7 @@ export async function importLibraryItem(item:LiteratureItem):Promise<ImportStatu
 
 export async function saveLibraryItem(item:LiteratureItem):Promise<void> {
   const changed={...item,updatedAt:NOW()};
+  if(electronBridge()){await nativeLibrary('update',changed);return;}
   if (!isTauri()) {const state=browserSnapshot();state.items=state.items.map(i=>i.id===item.id?changed:i);browserSave(state);return;}
   await initLibrary();const db=await getDatabase();
   await db.execute(`UPDATE library_items SET fingerprint=$2,path=$3,filename=$4,title=$5,authors=$6,year=$7,journal=$8,doi=$9,abstract=$10,
@@ -123,6 +133,7 @@ export async function saveLibraryItem(item:LiteratureItem):Promise<void> {
   }
 }
 export async function deleteLibraryItem(id:string):Promise<void> {
+  if(electronBridge()){await nativeLibrary('delete',id);return;}
   if (!isTauri()) {const state=browserSnapshot();state.items=state.items.filter(x=>x.id!==id);browserSave(state);return;}
   await initLibrary();const db=await getDatabase();
   await db.execute('DELETE FROM library_pages WHERE item_id=$1',[id]);
@@ -134,11 +145,13 @@ export async function deleteLibraryItem(id:string):Promise<void> {
 export async function createCollection(name:string,parentId:string|null=null):Promise<Collection> {
   const c={id:crypto.randomUUID(),name:name.trim(),parentId};
   if (!c.name) throw new Error('分类名称不能为空');
+  if(electronBridge())return nativeLibrary<Collection>('createCollection',c);
   if (!isTauri()){const s=browserSnapshot();s.collections.push(c);browserSave(s);return c;}
   await initLibrary();const db=await getDatabase();
   await db.execute('INSERT INTO library_collections(id,name,parent_id) VALUES($1,$2,$3)',[c.id,c.name,c.parentId]);return c;
 }
 export async function removeCollection(id:string):Promise<void> {
+  if(electronBridge()){await nativeLibrary('removeCollection',id);return;}
   if(!isTauri()){const s=browserSnapshot();s.collections=s.collections.filter(c=>c.id!==id);s.items.forEach(i=>i.collectionIds=i.collectionIds.filter(c=>c!==id));browserSave(s);return;}
   await initLibrary();const db=await getDatabase();
   await db.execute('UPDATE library_collections SET parent_id=NULL WHERE parent_id=$1',[id]);
@@ -146,6 +159,7 @@ export async function removeCollection(id:string):Promise<void> {
   await db.execute('DELETE FROM library_collections WHERE id=$1',[id]);
 }
 export async function saveIndexedPage(itemId:string,page:number,text:string):Promise<void> {
+  if(electronBridge()){await nativeLibrary('savePage',{itemId,page,text});return;}
   if(!isTauri()) return;
   await initLibrary();const db=await getDatabase();
   await db.execute('INSERT OR REPLACE INTO library_pages(item_id,page,content) VALUES($1,$2,$3)',[itemId,page,text]);
@@ -155,6 +169,7 @@ export async function saveIndexedPage(itemId:string,page:number,text:string):Pro
   } catch {/* FTS5 optional */}
 }
 export async function clearIndexedPages(itemId:string):Promise<void> {
+  if(electronBridge()){await nativeLibrary('clearPages',itemId);return;}
   if(!isTauri()) return;
   await initLibrary();const db=await getDatabase();
   await db.execute('DELETE FROM library_pages WHERE item_id=$1',[itemId]);
@@ -162,6 +177,7 @@ export async function clearIndexedPages(itemId:string):Promise<void> {
 }
 /** Parameterized substring query works for Chinese and English, with or without FTS5. */
 export async function searchIndexedItems(query:string):Promise<Set<string>> {
+  if(electronBridge())return new Set(query.trim()?await nativeLibrary<string[]>('search',query.trim()):[]);
   if(!isTauri()||!query.trim()) return new Set();
   await initLibrary();const db=await getDatabase();
   const escaped=query.trim().replace(/\\/g,'\\\\').replace(/%/g,'\\%').replace(/_/g,'\\_');

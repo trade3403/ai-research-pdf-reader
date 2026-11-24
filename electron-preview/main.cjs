@@ -6,6 +6,9 @@ const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
 const localUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
 let win = null, chat = null, chatOwner = null, readerDb = null;
 const {createReaderDb} = require('./reader-db.cjs');
+const {createVault}=require('./pdf-vault.cjs');
+const {createLibraryDb}=require('./library-db.cjs');
+let vault=null,libraryDb=null;
 const workspaceUrl = 'studio://local/index.html';
 protocol.registerSchemesAsPrivileged([{ scheme: 'studio', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 function registerWorkspace() {
@@ -121,6 +124,10 @@ ipcMain.handle('studio:reader',(event,op,value)=>{
   if(!readerDb) readerDb=createReaderDb(path.join(app.getPath('userData'),'reader-v062.sqlite'));
   return readerDb.call(op,value);
 });
-app.on('will-quit',()=>{if(readerDb){readerDb.close();readerDb=null;}});
+function workspaceOnly(event){authorize(event);if(event.senderFrame.url!==workspaceUrl)throw Error('Workspace only');}
+ipcMain.handle('studio:pdf-store',async(event,bytes)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.store(bytes);});
+ipcMain.handle('studio:pdf-read',async(event,token)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.read(token);});
+ipcMain.handle('studio:library',(event,op,value)=>{workspaceOnly(event);libraryDb??=createLibraryDb(path.join(app.getPath('userData'),'library-v062.sqlite'));return libraryDb.call(op,value);});
+app.on('will-quit',()=>{if(readerDb){readerDb.close();readerDb=null;}if(libraryDb){libraryDb.close();libraryDb=null;}});
 app.whenReady().then(() => { registerWorkspace(); createWindow(); });
 app.on('window-all-closed', () => app.quit());

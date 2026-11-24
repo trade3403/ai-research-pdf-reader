@@ -4,6 +4,9 @@ type StudioBridge = {
   chatBounds(owner:string,rect:Rect|null):Promise<boolean>;
   chatClose(owner:string):Promise<void>;
   chatExternal():Promise<void>;
+  pdfStore(bytes:Uint8Array):Promise<string>;
+  pdfRead(token:string):Promise<Uint8Array>;
+  library(op:string,value?:unknown):Promise<unknown>;
   reader(op:string,value?:unknown):Promise<unknown>;
 };
 export function electronBridge(): StudioBridge|undefined {

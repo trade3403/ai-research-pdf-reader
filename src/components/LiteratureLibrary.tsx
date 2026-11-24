@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { electronBridge } from '../utils/electronBridge';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import {
   ArrowDownToLine, BookOpen, Check, Database, FilePlus2, FileSearch, FileText,
@@ -44,6 +45,8 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
   const runningRef=useRef(false);
   const indexRef=useRef(false);
   const citationInput=useRef<HTMLInputElement>(null);
+  const pdfImportInput=useRef<HTMLInputElement>(null);
+  const folderImportInput=useRef<HTMLInputElement>(null);
   const selected=useMemo(()=>snapshot.items.find(x=>x.id===selectedId)||null,[snapshot,selectedId]);
   const reload=useCallback(async()=>{
     try { const data=await loadLibrary();setSnapshot(data); }
@@ -111,7 +114,26 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
       setProgress(null);onNotify(`导入完成：新增 ${imported}，跳过重复 ${skipped}，失败 ${failed}${cancelRef.current?'（已取消）':''}`);
     }
   },[scope,reload,onNotify]);
+  const importManaged=useCallback(async(files:File[])=>{
+    const bridge=electronBridge();if(!bridge||runningRef.current||!files.length)return;
+    runningRef.current=true;cancelRef.current=false;setErrors([]);
+    let imported=0,skipped=0,failed=0,done=0;
+    setProgress({done,total:files.length,imported,skipped,failed,phase:'导入 PDF'});
+    try{for(const file of files){
+      if(cancelRef.current)break;
+      try{
+        if(!file.name.toLowerCase().endsWith('.pdf')){skipped++;continue;}
+        if(file.size>100*1024*1024)throw Error('PDF 超过 100 MB');
+        const token=await bridge.pdfStore(new Uint8Array(await file.arrayBuffer()));
+        const now=new Date().toISOString();
+        const item:LiteratureItem={id:crypto.randomUUID(),path:token,sha256:token.slice(6),fingerprint:null,filename:file.name,fileSize:file.size,title:titleFromFilename(file.name),authors:'',year:null,journal:'',doi:extractDoi(file.name),abstract:'',starred:false,addedAt:now,updatedAt:now,indexStatus:'none',tags:[],collectionIds:scope.startsWith('collection:')?[scope.slice(11)]:[]};
+        if(await importLibraryItem(item)==='inserted')imported++;else skipped++;
+      }catch(e){failed++;setErrors(old=>[...old.slice(-99),file.name+' — '+stringifyError(e)]);}
+      finally{done++;setProgress({done,total:files.length,imported,skipped,failed,phase:'导入 PDF'});}
+    }}finally{runningRef.current=false;await reload();setProgress(null);onNotify('导入完成：新增 '+imported+'，跳过 '+skipped+'，失败 '+failed);}
+  },[scope,reload,onNotify]);
   const importFiles=useCallback(async(directory:boolean)=>{
+    if(electronBridge()){(directory?folderImportInput:pdfImportInput).current?.click();return;}
     if(!isTauri()){onNotify('请在 Windows 桌面版中批量导入本地 PDF','error');return;}
     try {
       const {open}=await import('@tauri-apps/plugin-dialog');
@@ -149,7 +171,8 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
   const inspectMetadata=useCallback(async()=>{
     if(!selected?.path)return;
     try{
-      const bytes=await invoke<number[]>('read_recent_pdf',{path:selected.path});
+      const bridge=electronBridge();
+      const bytes=bridge?await bridge.pdfRead(selected.path):await invoke<number[]>('read_recent_pdf',{path:selected.path});
       const pdf=await openPdf(new Uint8Array(bytes));
       try {
         const metadata=await pdf.getMetadata();
@@ -251,7 +274,9 @@ export default function LiteratureLibrary({onOpenPdf,onNotify}:Props) {
   },[snapshot,reload,onNotify]);
 
   return <div className="literature-workspace">
-    <input ref={citationInput} type="file" className="hidden" accept=".bib,.ris" onChange={e=>{void importCitations(e.target.files?.[0]||null);e.target.value='';}} />
+    <input hidden ref={pdfImportInput} type="file" accept=".pdf,application/pdf" multiple onChange={e=>{const files=Array.from(e.target.files||[]);e.target.value='';void importManaged(files);}}/>
+      <input hidden ref={folderImportInput} type="file" {...({webkitdirectory:''} as React.InputHTMLAttributes<HTMLInputElement>)} multiple onChange={e=>{const files=Array.from(e.target.files||[]);e.target.value='';void importManaged(files);}}/>
+      <input ref={citationInput} type="file" className="hidden" accept=".bib,.ris" onChange={e=>{void importCitations(e.target.files?.[0]||null);e.target.value='';}} />
     <aside className="literature-folders">
       <div className="literature-panel-title"><Database size={17}/> 文献分类 <button className="icon-button" title="创建分类" onClick={()=>void createFolder()}><FolderPlus size={17}/></button></div>
       <button className={`lib-category ${scope==='all'?'active':''}`} onClick={()=>setScope('all')}><FileText size={16}/> 全部文献 <em>{snapshot.items.length}</em></button>

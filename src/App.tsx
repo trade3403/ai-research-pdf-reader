@@ -6,6 +6,8 @@ import {
   Minus, Moon, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Search,
   SidebarOpen, Sun, X, ZoomIn, Highlighter, MessageSquareText, LibraryBig, Globe, NotebookPen, Languages, Sparkles, Sigma, Lightbulb, DatabaseBackup, DatabaseZap, FilePenLine,
 } from 'lucide-react';
+import { electronBridge } from './utils/electronBridge';
+import { loadLibrary } from './utils/libraryStore';
 import { isTauri } from '@tauri-apps/api/core';
 import PdfPage from './components/PdfPage';
 import Thumbnail from './components/Thumbnail';
@@ -220,6 +222,8 @@ export default function App() {
     if (bytes.byteLength < 5 || String.fromCharCode(...bytes.slice(0, 5)) !== '%PDF-') {
       throw new Error(`${name} 不是有效的 PDF 文件（文件头缺少 %PDF-）`);
     }
+    const bridge=electronBridge();
+    if(bridge&&!path) path=await bridge.pdfStore(bytes);
     const pdf = await openPdf(bytes);
     const fingerprint = pdf.fingerprints[0] || crypto.randomUUID();
     // Existing document locations and reading progress are indexed by PDF fingerprint.
@@ -239,6 +243,7 @@ export default function App() {
   }, [notify]);
 
   const openBrowserFiles = useCallback(async (files: FileList | File[]) => {
+    setMode('reader');
     setBusy(true);
     try {
       for (const file of Array.from(files)) {
@@ -290,8 +295,10 @@ export default function App() {
     }
     setBusy(true);
     try {
-      const bytes = await import('@tauri-apps/api/core').then(m => m.invoke<number[]>('read_recent_pdf', { path }));
-      const tab = await readInput(basename(path), new Uint8Array(bytes), path);
+      const bridge=electronBridge();
+      const bytes = bridge?await bridge.pdfRead(path):await import('@tauri-apps/api/core').then(m => m.invoke<number[]>('read_recent_pdf', { path }));
+      const name=bridge?(await loadLibrary()).items.find(x=>x.path===path)?.filename||(await listDocuments()).find(x=>x.path===path)?.name||'PDF 文档.pdf':basename(path);
+      const tab = await readInput(name, new Uint8Array(bytes), path);
       if (targetPage && Number.isFinite(targetPage)) setTabs(old => old.map(item => item.id === tab.id ? { ...item, page: Math.max(1, Math.min(item.pdf.numPages, targetPage)) } : item));
       setMode('reader');
     } catch (error) {notify(`无法打开文献 PDF：${humanError(error)}`, 'error');}
@@ -300,19 +307,20 @@ export default function App() {
 
   // Native desktop app automatically restores recently opened local files and their last page.
   useEffect(() => {
-    if (!isTauri()) return;
+    const bridge=electronBridge();
+    if (!isTauri()&&!bridge) return;
     let cancelled = false;
     setRestoring(true);
     (async () => {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const recent = (await listDocuments()).filter((doc) => Boolean(doc.path)).slice(0, 4).reverse();
+        const recent = (await listDocuments()).filter((doc) => Boolean(doc.path)&&(!bridge||doc.path?.startsWith('vault:'))).slice(0, 4).reverse();
         for (const doc of recent) {
           if (cancelled) break;
           try {
-            const bytes = await invoke<number[]>('read_recent_pdf', { path: doc.path });
+            const bytes = bridge?await bridge.pdfRead(doc.path!):await import('@tauri-apps/api/core').then(m=>m.invoke<number[]>('read_recent_pdf',{path:doc.path}));
             if (cancelled) break;
             await readInput(doc.name, new Uint8Array(bytes), doc.path);
+            if(bridge&&!cancelled) setMode('reader');
           } catch (error) {
             if (!cancelled) notify(`未能恢复 ${doc.name}：${humanError(error)}`, 'error');
           }

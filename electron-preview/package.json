@@ -30,7 +30,9 @@
       "renderer.js",
       "style.css",
       "workspace/**/*",
-      "reader-db.cjs"
+      "reader-db.cjs",
+      "pdf-vault.cjs",
+      "library-db.cjs"
     ],
     "win": {
       "target": [

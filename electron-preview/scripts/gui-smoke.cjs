@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 (async () => {
   const out = path.resolve(__dirname,'../gui-evidence');
   await fs.mkdir(out,{recursive:true});
-  const app = await electron.launch({args:[path.resolve(__dirname,'..')]});
+  const profile=await fs.mkdtemp(path.join(require('node:os').tmpdir(),'studio-gui-'));
+  const launch=()=>electron.launch({args:[path.resolve(__dirname,'..'),'--user-data-dir='+profile]});
+  let app=await launch();
   let timer, pending = Promise.resolve(), count = 0, captureError, page;
   const diagnostics = [];
   try {
@@ -50,6 +52,7 @@ const assert = require('node:assert/strict');
     // Validate the actual application's reader data is persisted in native SQLite.
     const document=await page.evaluate(async()=>{for(let i=0;i<30;i++){const docs=await window.studio.reader('listDocuments');const doc=docs.find(x=>x.name==='GUI-fixture.pdf');if(doc)return doc;await new Promise(r=>setTimeout(r,200));}return null;});
     assert.ok(document,'PDF reading record not persisted');
+    assert.match(document.path,/^vault:[a-f0-9]{64}$/);
     await page.getByRole('button',{name:'ChatGPT 网页',exact:true}).click();
     await page.locator('.chat-native-viewport').waitFor({state:'visible'});
     await page.waitForTimeout(1500);
@@ -66,6 +69,22 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(800);
     assert.equal(await app.evaluate(({BrowserWindow})=>{const win=BrowserWindow.getAllWindows()[0];return win.contentView.children.filter(v=>v.webContents&&v.webContents!==win.webContents).length;}),0);
     await page.screenshot({path:path.join(out,'03-reader-restored.png')});
+    await page.getByRole('button',{name:'文献库',exact:true}).click();
+    await page.locator('input[type=file][accept=".pdf,application/pdf"]').setInputFiles({name:'GUI-fixture.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdf)});
+    await page.locator('.lib-paper-row').filter({hasText:'GUI-fixture'}).waitFor({timeout:30000});
+    await page.screenshot({path:path.join(out,'04-library.png')});
+    clearInterval(timer);await pending;await app.close();
+    app=await launch();page=await app.firstWindow();
+    timer=setInterval(capture,500);
+    await page.locator('.status-bar').getByText('1 页 · GUI-fixture.pdf',{exact:true}).waitFor({timeout:30000});
+    await page.getByText('RPCore test paper',{exact:true}).first().waitFor({timeout:30000});
+    await page.screenshot({path:path.join(out,'05-restart-restored.png')});
+    await page.getByRole('button',{name:'文献库',exact:true}).click();
+    await page.locator('.lib-paper-row').filter({hasText:'GUI-fixture'}).waitFor({timeout:30000});
+    await page.locator('.lib-paper-row').filter({hasText:'GUI-fixture'}).dblclick();
+    await page.getByText('RPCore test paper',{exact:true}).first().waitFor({timeout:30000});
+    await page.waitForTimeout(1500);
+    diagnostics.push('Managed PDF and SQLite library restored after actual Electron process restart.');
   } catch (error) {
     diagnostics.push(String(error.stack || error));
     clearInterval(timer); await pending;
@@ -78,7 +97,8 @@ const assert = require('node:assert/strict');
   } finally {
     clearInterval(timer); await pending;
     await fs.writeFile(path.join(out,'diagnostics.txt'), diagnostics.join('\n'));
-    await app.close();
+    await app.close().catch(()=>{});
+    await fs.rm(profile,{recursive:true,force:true}).catch(()=>{});
   }
   if(captureError) throw captureError;
   assert.ok(count>=4,'insufficient captured frames');
