@@ -1,0 +1,71 @@
+name: Verify local Windows runner
+run-name: Local runner diagnostics · ${{ github.sha }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/check-local-runner.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-runner-diagnostics:
+    name: Check local Windows build environment
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 5
+    steps:
+      - name: Identify runner
+        shell: powershell
+        run: |
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "User: $env:USERNAME"
+          Write-Host "OS:"
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
+
+      - name: Check required build tools
+        shell: powershell
+        run: |
+          $tools = @("git", "node", "npm", "rustc", "cargo", "makensis", "choco", "winget")
+          foreach ($tool in $tools) {
+            $found = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($found) {
+              Write-Host "FOUND $tool : $($found.Source)"
+              try { & $tool --version 2>&1 | Select-Object -First 2 } catch { Write-Host "Version query not supported for $tool" }
+            } else {
+              Write-Host "MISSING $tool"
+            }
+          }
+          $vswherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswherePath) {
+            $vsInstall = & $vswherePath -latest -products '*' -property installationPath
+            Write-Host "Visual Studio installation: $vsInstall"
+            $vcInstall = & $vswherePath -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($vcInstall) { Write-Host "FOUND MSVC C++ x64/x86 tools in $vcInstall" } else { Write-Host "MISSING MSVC C++ x64/x86 workload component" }
+            $clFiles = Get-ChildItem (Join-Path $vsInstall "VC\Tools\MSVC") -Filter cl.exe -Recurse -ErrorAction SilentlyContinue
+            if ($clFiles) { Write-Host "FOUND cl.exe: $($clFiles[0].FullName)" } else { Write-Host "MISSING cl.exe under Visual Studio" }
+          } else {
+            Write-Host "MISSING Visual Studio Installer / vswhere"
+          }
+          $sdkLib = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Lib"
+          if (Test-Path $sdkLib) {
+            $sdkVersions = (Get-ChildItem $sdkLib -Directory | Select-Object -ExpandProperty Name) -join ", "
+            Write-Host "Windows SDK libraries: $sdkVersions"
+          } else {
+            Write-Host "MISSING Windows 10/11 SDK libraries"
+          }
+          $nsisPaths = @(
+            "$env:ProgramFiles\NSIS\makensis.exe",
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          )
+          foreach ($path in $nsisPaths) { if (Test-Path $path) { Write-Host "FOUND NSIS: $path" } }
+          $wvKeys = @(
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1E7E6F5-16D4-4B4B-9B4B-7A5C7A4D6D5D}",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F1E7E6F5-16D4-4B4B-9B4B-7A5C7A4D6D5D}"
+          )
+          foreach ($key in $wvKeys) {
+            $wv = Get-ItemProperty $key -ErrorAction SilentlyContinue
+            if ($wv.pv) { Write-Host "WebView2 Runtime version: $($wv.pv)"; break }
+          }

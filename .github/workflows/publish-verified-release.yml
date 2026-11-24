@@ -1,0 +1,62 @@
+name: Publish Verified Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Stable version tag matching package.json (example v0.5.1)'
+        type: string
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tested main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Validate version and locate successful build for HEAD
+        shell: bash
+        env:
+          TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid semantic version tag'; exit 1; }
+          SHA="$(git rev-parse HEAD)"
+          VERSION="$(node -p "require('./package.json').version")"
+          [[ "$TAG" == "v${VERSION}" ]] || { echo "Version mismatch: $TAG != v$VERSION"; exit 1; }
+          git fetch --tags
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then echo "Tag already exists: $TAG"; exit 1; fi
+          RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&branch=main&per_page=100" --jq '[.workflow_runs[] | select(.name=="Build and Publish Windows Installer" and .conclusion=="success" and .event=="push")][0].id // empty')
+          [[ -n "$RUN_ID" ]] || { echo "No successful Windows CI run for $SHA"; exit 1; }
+          echo "TESTED_SHA=$SHA" >> "$GITHUB_ENV"
+          echo "VERIFIED_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Download and verify the tested installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p verified-release
+          gh run download "$VERIFIED_RUN_ID" -n AI-Research-PDF-Reader-Windows-Installer -D verified-release
+          cd verified-release
+          test -n "$(find . -maxdepth 1 -name '*.exe' -print -quit)"
+          sha256sum -c SHA256SUMS.txt
+      - name: Publish stable tag and release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$TESTED_SHA" ]] || { echo 'HEAD changed'; exit 1; }
+          git tag "$RELEASE_TAG" "$TESTED_SHA"
+          git push origin "refs/tags/$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" verified-release/*.exe verified-release/SHA256SUMS.txt \
+            --title "AI Research PDF Reader $RELEASE_TAG" \
+            --notes "Verified Windows x64 NSIS installer; source commit $TESTED_SHA; GitHub Actions run $VERIFIED_RUN_ID. Unsigned binary; install only if you trust this private repository. User SQLite databases/PDFs/API keys are not packaged." \
+            --verify-tag

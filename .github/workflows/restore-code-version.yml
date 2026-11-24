@@ -1,0 +1,41 @@
+name: Prepare Code Rollback Pull Request
+
+on:
+  workflow_dispatch:
+    inputs:
+      stable_tag:
+        description: 'Existing stable release tag to restore (for example v0.5.0)'
+        type: string
+        required: true
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  stage-rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate tag and stage restoring code on a new branch
+        shell: bash
+        env:
+          TAG: ${{ inputs.stable_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid tag'; exit 1; }
+          git fetch --tags --force
+          git rev-parse "refs/tags/$TAG^{commit}" >/dev/null
+          BRANCH="restore/${TAG}-${GITHUB_RUN_NUMBER}"
+          git switch -c "$BRANCH"
+          git restore --source="$TAG" --staged --worktree .
+          if git diff --cached --quiet; then echo 'Selected tag has identical code; nothing to restore'; exit 1; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Propose code restore to $TAG"
+          git push origin "$BRANCH"
+          echo "RESTORE_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+      - name: Open reviewable rollback PR (never force push main)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.stable_tag }}
+        run: |
+          gh pr create --base main --head "$RESTORE_BRANCH" --title "Review code restore to $TAG" --body "This PR restores tracked code to $TAG. It does NOT restore SQLite databases, PDFs, Azure credentials, or local user data. Review diffs and CI before merging."
