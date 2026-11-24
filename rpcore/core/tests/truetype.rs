@@ -365,3 +365,17 @@ fn text_color_order_invisible_and_preview(){
     assert_eq!(m.radicals[0].radicand,vec![1,2]);
     assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\sqrt{{D}_{o}}");
 }
+
+#[test]fn math_fraction_whole_side_radical_with_subscript(){
+    use rpcore::raster::math_tree::build_tree;
+    let mut p=fixture::pdf(b"BT /F1 10 Tf 18 59 Td <0002> Tj /F1 12 Tf 1 0 0 1 10 40 Tm <0001> Tj /F1 10 Tf 1 0 0 1 18 40 Tm <0002> Tj /F1 7 Tf 1 0 0 1 24.5 38.5 Tm <0003> Tj ET 17 49 15 .4 re f 8 52 26 .5 re f");
+    let i=p.windows(6).position(|v|v==b"<004f>").unwrap();
+    p[i..i+6].copy_from_slice(b"<221a>");
+    let d=Document::open(&p).unwrap();
+    let (g,mut m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,75.]).unwrap();
+    assert_eq!(m.radicals.len(),1);assert_eq!(m.fractions.len(),1);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\frac{D}{\sqrt{{D}_{o}}}");
+    // A root crossing the parent bar must not be nested.
+    m.fractions[0].rule_bounds[1]=48.;
+    assert!(build_tree(&g,&m).is_err());
+}

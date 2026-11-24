@@ -55,8 +55,8 @@ fn sorted_row(mut entries:Vec<(f64,MathNode)>)->MathNode{
     MathNode::Row(entries.into_iter().map(|(_,n)|n).collect())
 }
 /// Convert local candidate relationships to a tree. Whole-side nested fractions
-/// and nested scripts are supported. Ambiguous ownership, cross-row scripts,
-/// overlapping fractions or radicals, and incompatible script rows are rejected.
+/// and nested scripts are supported, as is a radical occupying a complete
+/// side of a non-nested fraction. Ambiguous ownership and incompatible rows are rejected.
 pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     if m.glyph_indices.is_empty(){return Err(Error::Invalid("empty formula tree"));}
     if m.glyph_indices.len()>MAX_GLYPHS||m.scripts.len()>MAX_GLYPHS||m.fractions.len()>256||m.radicals.len()>256{return Err(Error::Limit("math tree inputs"));}
@@ -116,6 +116,8 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
         }
     }
     let mut radical_symbols=BTreeSet::new();
+    let mut radical_sides:BTreeMap<(usize,bool),usize>=BTreeMap::new();
+    let mut nested_radicals=BTreeSet::new();
     for (ri,r) in m.radicals.iter().enumerate(){
         if !rules.insert(r.rule_command_index)||r.radicand.is_empty()||!radical_symbols.insert(r.symbol)
             ||g.glyphs.get(r.symbol).and_then(|a|a.unicode.as_deref())!=Some("√"){
@@ -125,10 +127,47 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
             r.rule_bounds[0]>=r.rule_bounds[2]||r.rule_bounds[1]>=r.rule_bounds[3]{
             return Err(Error::Invalid("radical rule or row bounds"));
         }
+        let mut members=BTreeSet::new();
         for i in std::iter::once(r.symbol).chain(r.radicand.iter().copied()){
-            let o=owner.get_mut(&i).ok_or(Error::Invalid("radical glyph outside region"))?;
-            if o.is_some(){return Err(Error::Unsupported("overlapping radical or fraction candidates"));}
-            *o=Some((m.fractions.len()+ri,true));
+            if !selected.contains(&i)||!members.insert(i){return Err(Error::Invalid("duplicate or external radical glyph"));}
+        }
+        let previous=owner[&r.symbol];
+        if let Some((fi,above))=previous{
+            // The radical symbol must be explicitly selected by the fraction
+            // row detector. Only an entire side of a non-nested fraction can
+            // be replaced; no partially intersecting or competing structures.
+            let f=m.fractions.get(fi).ok_or(Error::Unsupported("overlapping radical candidates"))?;
+            if nested.contains(&fi)||f.numerator_fraction.is_some()||f.denominator_fraction.is_some(){
+                return Err(Error::Unsupported("radical in nested fraction"));
+            }
+            let ids=if above{&f.numerator}else{&f.denominator};
+            if !ids.iter().all(|i|members.contains(i))||members.iter().any(|i|owner[i].is_some()&&owner[i]!=previous){
+                return Err(Error::Unsupported("partial radical fraction ownership"));
+            }
+            let b=f.rule_bounds;
+            let em=g.glyphs[r.symbol].em_matrix.0[3];
+            let mut extent=r.rule_bounds;
+            for &i in &members{
+                let a=g.glyphs[i].outline_bounds.ok_or(Error::Invalid("radical glyph bounds"))?;
+                if a.iter().any(|v|!v.is_finite())||a[0]>a[2]||a[1]>a[3]{return Err(Error::Invalid("radical glyph bounds"));}
+                extent=[extent[0].min(a[0]),extent[1].min(a[1]),extent[2].max(a[2]),extent[3].max(a[3])];
+            }
+            let width=b[2]-b[0];
+            let gap=if above{extent[1]-b[3]}else{b[1]-extent[3]};
+            if gap<0.||gap>em*0.8||extent[0]<b[0]-em*0.1||extent[2]>b[2]+em*0.1
+                ||((extent[0]+extent[2])-(b[0]+b[2])).abs()>width*0.4
+                ||extent[2]-extent[0]<width*0.15{
+                return Err(Error::Unsupported("radical outside fraction side"));
+            }
+            if radical_sides.insert((fi,above),ri).is_some(){return Err(Error::Unsupported("shared radical fraction side"));}
+            nested_radicals.insert(ri);
+        }else if members.iter().any(|i|owner[i].is_some()){
+            return Err(Error::Unsupported("overlapping radical or fraction candidates"));
+        }
+        // Assign all members to the innermost row; their fraction parent is
+        // represented by radical_sides instead of emitting duplicate glyphs.
+        for i in members{
+            *owner.get_mut(&i).ok_or(Error::Invalid("radical glyph outside region"))?=Some((m.fractions.len()+ri,true));
         }
     }
     let mut children:Children=BTreeMap::new();let mut parents=BTreeSet::new();
@@ -164,32 +203,37 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     let mut entries=row_nodes(&top,g,&parents,&children)?;
     for (fi,f) in m.fractions.iter().enumerate(){
         if nested.contains(&fi){continue;}
-        entries.push((f.rule_bounds[0],fraction_node(fi,m,g,&by_rule,&parents,&children,0)?));
+        entries.push((f.rule_bounds[0],fraction_node(fi,m,g,&by_rule,&radical_sides,&parents,&children,0)?));
     }
-    for r in &m.radicals{
-        let nodes=row_nodes(&r.radicand,g,&parents,&children)?;
-        if nodes.is_empty(){return Err(Error::Invalid("empty radicand"));}
-        entries.push((g.glyphs[r.symbol].origin[0],MathNode::Radical{symbol:r.symbol,
-            rule_command_index:r.rule_command_index,radicand:Box::new(sorted_row(nodes))}));
+    for (ri,r) in m.radicals.iter().enumerate(){
+        if nested_radicals.contains(&ri){continue;}
+        entries.push((g.glyphs[r.symbol].origin[0],radical_node(ri,m,g,&parents,&children)?));
     }
     Ok(FormulaTree{root:sorted_row(entries)})
 }
+fn radical_node(ri:usize,m:&MathRegion,g:&PageGlyphGeometry,parents:&BTreeSet<usize>,children:&Children)->Result<MathNode>{
+    let r=&m.radicals[ri];
+    let nodes=row_nodes(&r.radicand,g,parents,children)?;
+    if nodes.is_empty(){return Err(Error::Invalid("empty radicand"));}
+    Ok(MathNode::Radical{symbol:r.symbol,rule_command_index:r.rule_command_index,radicand:Box::new(sorted_row(nodes))})
+}
 fn fraction_node(fi:usize,m:&MathRegion,g:&PageGlyphGeometry,by_rule:&BTreeMap<usize,usize>,
-    parents:&BTreeSet<usize>,children:&Children,depth:usize)->Result<MathNode>{
+    radical_sides:&BTreeMap<(usize,bool),usize>,parents:&BTreeSet<usize>,children:&Children,depth:usize)->Result<MathNode>{
     if depth>MAX_DEPTH{return Err(Error::Limit("nested fraction depth"));}
     let f=&m.fractions[fi];
-    let side=|ids:&[usize],child:Option<usize>|->Result<MathNode>{
+    let side=|ids:&[usize],child:Option<usize>,above:bool|->Result<MathNode>{
+        if let Some(&ri)=radical_sides.get(&(fi,above)){return radical_node(ri,m,g,parents,children);}
         if let Some(rule)=child{
             let ci=*by_rule.get(&rule).ok_or(Error::Invalid("nested fraction rule"))?;
-            return fraction_node(ci,m,g,by_rule,parents,children,depth+1);
+            return fraction_node(ci,m,g,by_rule,radical_sides,parents,children,depth+1);
         }
         let n=row_nodes(ids,g,parents,children)?;
         if n.is_empty(){return Err(Error::Invalid("empty fraction row"));}
         Ok(sorted_row(n))
     };
     Ok(MathNode::Fraction{rule_command_index:f.rule_command_index,
-        numerator:Box::new(side(&f.numerator,f.numerator_fraction)?),
-        denominator:Box::new(side(&f.denominator,f.denominator_fraction)?)})
+        numerator:Box::new(side(&f.numerator,f.numerator_fraction,true)?),
+        denominator:Box::new(side(&f.denominator,f.denominator_fraction,false)?)})
 }
 // Every command is authored here, never taken from PDF text. Empty/multiple
 // scalars and unknown characters fail; no raw TeX control sequence injection.
