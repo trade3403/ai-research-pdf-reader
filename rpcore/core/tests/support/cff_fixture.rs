@@ -85,3 +85,19 @@ pub fn encoded_font(charset_id:usize,sids:[u16;2],encoding_id:usize,encoding:&[u
     f.extend(index(&[top(if charset_id>2{pos}else{charset_id},if encoding_id>1{enc_pos}else{encoding_id},chars_pos)]));
     f.extend([0,0,0,0]);f.extend(charset);f.extend(bytes);f.extend(chars);f
 }
+
+// A completely unembedded Standard 14 PDF, original synthetic content.
+pub fn standard_pdf(content:&[u8],base:&str,extra:&str)->Vec<u8>{
+    let objects=vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 140 90] /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".to_vec(),
+        stream("",content),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} {extra} >>").into_bytes(),
+    ];
+    let mut p=b"%PDF-1.4\n".to_vec();let mut offs=Vec::new();
+    for(i,o)in objects.iter().enumerate(){offs.push(p.len());p.extend_from_slice(format!("{} 0 obj\n",i+1).as_bytes());p.extend_from_slice(o);p.extend_from_slice(b"\nendobj\n");}
+    let x=p.len();p.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n",objects.len()+1).as_bytes());
+    for o in offs{p.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());}
+    p.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",objects.len()+1).as_bytes());p
+}

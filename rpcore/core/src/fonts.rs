@@ -3,6 +3,7 @@
 use crate::{Document,Error,Object,PageInfo,Result};
 use std::collections::BTreeMap;
 pub mod cmap;
+pub mod standard;
 use cmap::CMap;
 const MAX_GLYPHS:usize=100_000;
 type Dict=BTreeMap<Vec<u8>,Object>;
@@ -22,9 +23,9 @@ pub struct Glyph{
 #[derive(Debug,Clone)]
 enum Encoding{Simple(Simple),Identity,Custom(CMap)}
 #[derive(Debug,Clone,Copy)]
-enum Base{Unknown,Standard,WinAnsi}
+enum Base{Unknown,Standard,WinAnsi,MacRoman,MacExpert,Symbol,Ding}
 #[derive(Debug,Clone)]
-struct Simple{base:Base,differences:BTreeMap<u8,Option<String>>}
+struct Simple{base:Base,differences:BTreeMap<u8,Option<String>>,names:BTreeMap<u8,Vec<u8>>,standard:Option<standard::StandardFont>}
 #[derive(Debug,Clone)]
 enum Gid{Unknown,Identity,Map(Vec<u8>)}
 #[derive(Debug,Clone)]
@@ -50,7 +51,7 @@ fn width(o:&Object)->Result<f64>{
 }
 fn dictionary(o:Object)->Result<Dict>{crate::dict(o)}
 fn base(n:Option<&[u8]>)->Base{
-    match n{Some(b"WinAnsiEncoding")=>Base::WinAnsi,Some(b"StandardEncoding")=>Base::Standard,_=>Base::Unknown}
+    match n{Some(b"WinAnsiEncoding")=>Base::WinAnsi,Some(b"StandardEncoding")=>Base::Standard,Some(b"MacRomanEncoding")=>Base::MacRoman,Some(b"MacExpertEncoding")=>Base::MacExpert,Some(b"SymbolEncoding")=>Base::Symbol,Some(b"ZapfDingbatsEncoding")=>Base::Ding,_=>Base::Unknown}
 }
 fn glyph_name(n:&[u8])->Option<String>{
     let n=n.split(|&b|b==b'.').next()?;
@@ -84,7 +85,7 @@ fn glyph_name(n:&[u8])->Option<String>{
 }
 fn base_char(base:Base,c:u8)->Option<String>{
     let ch=match base{
-        Base::Unknown=>return None,
+        Base::Unknown|Base::MacRoman|Base::MacExpert|Base::Symbol|Base::Ding=>return None,
         Base::Standard=>match c{39=>'’',96=>'‘',32..=126=>char::from(c),_=>return None},
         Base::WinAnsi=>match c{
             32..=126|160..=255=>char::from(c),
@@ -95,8 +96,8 @@ fn base_char(base:Base,c:u8)->Option<String>{
     Some(ch.to_string())
 }
 impl Simple{
-    fn parse(doc:&Document<'_>,o:Option<&Object>,fallback:Base)->Result<Self>{
-        let mut out=Self{base:fallback,differences:BTreeMap::new()};
+    fn parse(doc:&Document<'_>,o:Option<&Object>,fallback:Base,standard:Option<standard::StandardFont>)->Result<Self>{
+        let mut out=Self{base:fallback,differences:BTreeMap::new(),names:BTreeMap::new(),standard};
         if let Some(o)=o{
             match doc.dereference(o)?{
                 Object::Name(n)=>out.base=base(Some(&n)),
@@ -112,7 +113,7 @@ impl Simple{
                                 Object::Name(n)=>{
                                     let i=next.ok_or(Error::Invalid("font Differences start"))?;
                                     if i>255{return Err(Error::Invalid("font Differences range"));}
-                                    out.differences.insert(i as u8,glyph_name(&n));next=Some(i+1);
+                                    out.differences.insert(i as u8,glyph_name(&n));out.names.insert(i as u8,n);next=Some(i+1);
                                 }
                                 _=>return Err(Error::Invalid("font Differences item")),
                             }
@@ -124,8 +125,17 @@ impl Simple{
         }
         Ok(out)
     }
+    fn name(&self,c:u8)->Option<&[u8]>{
+        if let Some(n)=self.names.get(&c){return Some(n);}
+        let e=match self.base{Base::Unknown=>return None,Base::Standard=>b"StandardEncoding".as_slice(),Base::WinAnsi=>b"WinAnsiEncoding",Base::MacRoman=>b"MacRomanEncoding",Base::MacExpert=>b"MacExpertEncoding",Base::Symbol=>b"SymbolEncoding",Base::Ding=>b"ZapfDingbatsEncoding"};
+        standard::encoded_name(e,c)
+    }
     fn unicode(&self,c:u8)->Option<String>{
-        match self.differences.get(&c){Some(v)=>v.clone(),None=>base_char(self.base,c)}
+        if let Some(f)=self.standard{
+            // Respect explicit Differences, including unknown glyph names.
+            return self.name(c).and_then(|n|f.unicode(n).or_else(||glyph_name(n)));
+        }
+        match self.differences.get(&c){Some(v)=>v.clone(),None=>base_char(self.base,c).or_else(||self.name(c).and_then(glyph_name))}
     }
 }
 fn cid_widths(doc:&Document<'_>,d:&Dict)->Result<(BTreeMap<u32,f64>,Option<f64>)>{
@@ -186,9 +196,21 @@ impl Font{
         let (kind,encoding,writing_mode,widths,default_width,gid)=match name(get(&d,b"Subtype")){
             Some(b"Type1"|b"MMType1"|b"TrueType")=>{
                 let kind=if name(get(&d,b"Subtype"))==Some(b"TrueType"){FontKind::TrueType}else{FontKind::Type1};
-                // No invented built-in font encoding. Explicit encoding or ToUnicode only.
-                let encoding=Encoding::Simple(Simple::parse(doc,get(&d,b"Encoding"),Base::Unknown)?);
-                let (w,dw)=simple_widths(doc,&d)?;
+                // Use the standard metrics only for an exact Standard 14 Type1
+                // name without an embedded font program. Subset names are not guessed.
+                let mut standard=if kind==FontKind::Type1{base_font.as_deref().and_then(standard::StandardFont::from_name)}else{None};
+                if let Some(v)=get(&d,b"FontDescriptor"){
+                    let desc=dictionary(doc.dereference(v)?)?;
+                    if [b"FontFile".as_slice(),b"FontFile2",b"FontFile3"].iter().any(|k|desc.contains_key(*k)){standard=None;}
+                }
+                let fallback=standard.map_or(Base::Unknown,|f|base(Some(f.default_encoding())));
+                let encoding=Encoding::Simple(Simple::parse(doc,get(&d,b"Encoding"),fallback,standard)?);
+                let (mut w,dw)=simple_widths(doc,&d)?;
+                if !d.contains_key(b"Widths".as_slice()){
+                    if let (Some(f),Encoding::Simple(s))=(standard,&encoding){
+                        for c in 0..=255u8{if let Some(v)=s.name(c).and_then(|n|f.width(n)){w.insert(u32::from(c),v);}}
+                    }
+                }
                 (kind,encoding,WritingMode::Horizontal,w,dw,Gid::Unknown)
             }
             Some(b"Type0")=>{
@@ -223,6 +245,10 @@ impl Font{
         };
         Ok(Self{kind,base_font,writing_mode,encoding,to_unicode,widths,default_width,gid})
     }
+    /// Exact, unembedded Standard 14 face, if recognized.
+    pub fn standard_face(&self)->Option<standard::StandardFont>{if let Encoding::Simple(s)=&self.encoding{s.standard}else{None}}
+    /// Encoding glyph name, independent of ToUnicode.
+    pub fn simple_glyph_name(&self,code:u8)->Option<&[u8]>{if let Encoding::Simple(s)=&self.encoding{s.name(code)}else{None}}
     pub fn decode(&self,input:&[u8])->Result<Vec<Glyph>>{
         if input.len()>MAX_GLYPHS*4{return Err(Error::Limit("font input"));}
         let mut out=Vec::new();let mut pos=0;

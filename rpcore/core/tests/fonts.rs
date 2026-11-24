@@ -51,7 +51,34 @@ fn custom_cid_cmap_vertical(){
 }
 #[test]
 fn unknown_encoding_not_guessed(){
-    let b=fixture(vec![b"<< /Subtype /Type1 /BaseFont /Symbol >>".to_vec()]);
+    let b=fixture(vec![b"<< /Subtype /Type1 /BaseFont /UnknownExample >>".to_vec()]);
     let d=Document::open(&b).unwrap();let f=d.page_font(&d.pages().unwrap()[0],b"F1").unwrap();
     assert_eq!(f.decode(b"A").unwrap()[0].unicode,None);
+}
+
+#[test]fn standard_fourteen_metrics_and_encoding(){
+    use rpcore::fonts::standard::StandardFont;
+    for face in StandardFont::ALL{
+        let name=std::str::from_utf8(face.name()).unwrap();
+        let p=fixture(vec![format!("<< /Subtype /Type1 /BaseFont /{name} >>").into_bytes()]);
+        let d=Document::open(&p).unwrap();let f=d.page_font(&d.pages().unwrap()[0],b"F1").unwrap();
+        assert_eq!(f.standard_face(),Some(face));
+        let g=f.decode(b"A ").unwrap();
+        assert!(g.iter().all(|g|g.width.is_some()));
+        if face==StandardFont::Symbol{assert_eq!(g[0].unicode.as_deref(),Some("Α"));assert_eq!(g[0].width,Some(722.));}
+        if face==StandardFont::ZapfDingbats{assert_eq!(g[0].unicode.as_deref(),Some("✡"));}
+        if face==StandardFont::Helvetica{assert_eq!(g[0].width,Some(667.));assert_eq!(g[1].width,Some(278.));}
+        if face==StandardFont::TimesRoman{assert_eq!(g[0].width,Some(722.));assert_eq!(g[1].width,Some(250.));}
+    }
+}
+#[test]fn standard_differences_and_explicit_width_precedence(){
+    for (extra,expected) in [("",1000.),("/FirstChar 65 /LastChar 65 /Widths [123]",123.)]{
+        let p=fixture(vec![format!("<< /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /AE] >> {extra} >>").into_bytes()]);
+        let d=Document::open(&p).unwrap();let f=d.page_font(&d.pages().unwrap()[0],b"F1").unwrap();
+        let g=f.decode(b"A").unwrap();assert_eq!(g[0].width,Some(expected));assert_eq!(g[0].unicode.as_deref(),Some("Æ"));
+        assert_eq!(f.simple_glyph_name(65),Some(b"AE".as_slice()));
+    }
+    let p=fixture(vec![b"<< /Subtype /Type1 /BaseFont /ABCDEF+Helvetica >>".to_vec()]);
+    let d=Document::open(&p).unwrap();let f=d.page_font(&d.pages().unwrap()[0],b"F1").unwrap();
+    assert_eq!(f.standard_face(),None);assert_eq!(f.decode(b"A").unwrap()[0].width,None);
 }

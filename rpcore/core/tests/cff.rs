@@ -79,3 +79,33 @@ fn native_cff_pdf_pixels(){
     assert_eq!(predefined_name(b"MacExpertEncoding",35),Some(b"centoldstyle".as_slice()));
     assert_eq!(predefined_name(b"ExpertEncoding",35),None);
 }
+
+#[test]fn explicit_standard_font_substitution(){
+    use rpcore::{fonts::standard::StandardFont,raster::StandardFontSet};
+    let p=fixture::standard_pdf(b"BT /F1 20 Tf 10 20 Td (AB) Tj ET","Helvetica","");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    assert!(d.render_page(&pages[0],Options::default(),10000).is_err());
+    let mut fonts=StandardFontSet::new();
+    fonts.insert(StandardFont::Helvetica,fixture::encoded_font(3,[34,35],0,&[])).unwrap();
+    let out=d.render_page_with_standard_fonts(&pages[0],Options::default(),10000,&fonts).unwrap();
+    assert_eq!(out.substituted_fonts,vec![StandardFont::Helvetica]);assert!(!out.bitmap.missing_text);
+    let b=out.bitmap;let pixel=|x:usize,y:usize|{let i=(y*b.width+x)*4;&b.rgba[i..i+4]};
+    assert_eq!(pixel(11,65),[0,0,0,255]);assert_eq!(pixel(15,64),[255,255,255,255]);assert_eq!(pixel(29,67),[0,0,0,255]);
+    let p=fixture::standard_pdf(b"BT /F1 20 Tf (C) Tj ET","Helvetica","");
+    let d=Document::open(&p).unwrap();assert!(d.render_page_with_standard_fonts(&d.pages().unwrap()[0],Options::default(),10000,&fonts).is_err());
+    let p=fixture::standard_pdf(b"BT /F1 20 Tf (A) Tj ET","UnknownFont","");
+    let d=Document::open(&p).unwrap();assert!(d.render_page_with_standard_fonts(&d.pages().unwrap()[0],Options::default(),10000,&fonts).is_err());
+    assert!(fonts.insert(StandardFont::TimesRoman,vec![1,2,3]).is_err());
+}
+#[path="support/type1_fixture.rs"] mod type1_fixture;
+#[test]fn explicit_type1_standard_substitution(){
+    use rpcore::{fonts::standard::StandardFont,raster::StandardFontSet};
+    let p=fixture::standard_pdf(b"BT /F1 20 Tf 10 20 Td (AB) Tj ET","Helvetica","");
+    let d=Document::open(&p).unwrap();
+    for bytes in [type1_fixture::pfa(),type1_fixture::pfb()]{
+        let mut fonts=StandardFontSet::new();fonts.insert(StandardFont::Helvetica,bytes).unwrap();
+        let out=d.render_page_with_standard_fonts(&d.pages().unwrap()[0],Options::default(),10000,&fonts).unwrap();
+        assert_eq!(out.substituted_fonts,vec![StandardFont::Helvetica]);assert!(!out.bitmap.missing_text);
+        let b=out.bitmap;let i=(65*b.width+11)*4;assert_eq!(&b.rgba[i..i+4],&[0,0,0,255]);
+    }
+}

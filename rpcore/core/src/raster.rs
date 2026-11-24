@@ -4,6 +4,8 @@ use std::sync::Arc;
 mod png;
 mod rendertext;
 mod images;
+use crate::fonts::standard::StandardFont;
+use std::collections::BTreeMap;
 const MAX_PIXELS:usize=4_000_000;
 const MAX_SIDE:usize=8192;
 const MAX_EDGES:usize=200_000;
@@ -16,6 +18,31 @@ impl Default for Options{fn default()->Self{Self{scale:1.,allow_missing_text:fal
 pub struct Bitmap{pub width:usize,pub height:usize,pub rgba:Vec<u8>,pub missing_text:bool}
 impl Bitmap{
     pub fn png(&self)->Result<Vec<u8>>{png::encode(self.width,self.height,&self.rgba)}
+}
+/// Explicit caller-owned Standard 14 substitute programs. No filesystem lookup,
+/// system fonts, silent substitution, or bundled third-party outline assets.
+#[derive(Default)]
+pub struct StandardFontSet{fonts:BTreeMap<Vec<u8>,Vec<u8>>,bytes:usize}
+impl StandardFontSet{
+    pub fn new()->Self{Self::default()}
+    pub fn insert(&mut self,face:StandardFont,program:Vec<u8>)->Result<()>{
+        if program.is_empty()||program.len()>crate::fonts::truetype::MAX_FONT_BYTES{return Err(Error::Limit("replacement font bytes"));}
+        let old=self.fonts.get(face.name()).map_or(0,Vec::len);
+        let total=self.bytes-old+program.len();
+        if total>32*1024*1024{return Err(Error::Limit("replacement font set bytes"));}
+        // Only formats with native name-based outlines are accepted.
+        if !(program.starts_with(&[1,0])||program.starts_with(&[0x80,1])||program.starts_with(b"%!")){
+            return Err(Error::Unsupported("replacement font format"));
+        }
+        self.fonts.insert(face.name().to_vec(),program);self.bytes=total;Ok(())
+    }
+    fn get(&self,face:StandardFont)->Option<&[u8]>{self.fonts.get(face.name()).map(Vec::as_slice)}
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct SubstitutedBitmap{
+    pub bitmap:Bitmap,
+    /// Unique Standard 14 faces for which caller-supplied outlines were loaded.
+    pub substituted_fonts:Vec<StandardFont>,
 }
 fn viewport(p:&PageInfo,scale:f64)->Result<(Matrix,usize,usize,f64,f64)>{
     let [x0,y0,x1,y1]=p.crop_box;
@@ -303,7 +330,7 @@ impl Surface{
         }}Ok(())
     }
 }
-fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Result<Bitmap>{
+fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>)->Result<SubstitutedBitmap>{
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
@@ -338,7 +365,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
                 // Explicit preview mode skips all text, as in B10.1. Strict mode never silently skips.
                 if opt.allow_missing_text{missing_text=true;continue;}
                 if scope.is_some(){return Err(Error::Unsupported("Form text rasterization"));}
-                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke)?;
+                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke,substitutes)?;
             }
         }
     }
@@ -348,13 +375,20 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
         for c in 0..3{rgba.push(((u16::from(samples[c])+u16::from(samples[c+3])+u16::from(samples[c+6])+u16::from(samples[c+9])+2)/4) as u8);}
         rgba.push(255);
     }
-    Ok(Bitmap{width:w,height:h,rgba,missing_text})
+    Ok(SubstitutedBitmap{bitmap:Bitmap{width:w,height:h,rgba,missing_text},substituted_fonts:text.substituted_fonts()})
 }
 impl Document<'_>{
     pub fn render_page(&self,page:&PageInfo,options:Options,content_limit:usize)->Result<Bitmap>{
         // Reject invalid viewport before decoding page content.
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
-        render(self,page,&list,options)
+        Ok(render(self,page,&list,options,None)?.bitmap)
+    }
+    /// Explicit substitute outlines; caller must provide appropriately licensed,
+    /// compatible font programs. Pixel equivalence to original fonts is not promised.
+    pub fn render_page_with_standard_fonts(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:&StandardFontSet)->Result<SubstitutedBitmap>{
+        viewport(page,options.scale)?;
+        let list=self.page_display_list(page,content_limit)?;
+        render(self,page,&list,options,Some(fonts))
     }
 }

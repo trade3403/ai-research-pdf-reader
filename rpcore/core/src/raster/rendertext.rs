@@ -1,10 +1,10 @@
 //! Native horizontal TrueType, CFF1 and traditional Type1 font rendering.
-use super::{Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
-use crate::{Document,PageInfo,Object,content::Operation,fonts::{Font,FontKind,WritingMode,truetype::{TrueType,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
+use super::{StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
+use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
-enum Outline{Tt(TrueType),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool)}
+enum Outline{Tt(TrueType),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool),ReplacementType1(Type1)}
 struct Face{font:Font,outline:Outline}
 fn differences(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<BTreeMap<u8,Vec<u8>>>{
     let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Invalid("missing Encoding dictionary"))?)? else{return Err(Error::Invalid("Encoding dictionary"));};
@@ -62,16 +62,17 @@ fn type1_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<(BTreeMa
 #[derive(Clone)]
 struct State{face:Option<Arc<Face>>,size:f64,scale:f64,tc:f64,tw:f64,leading:f64,rise:f64,mode:u8}
 impl Default for State{fn default()->Self{Self{face:None,size:0.,scale:1.,tc:0.,tw:0.,leading:0.,rise:0.,mode:0}}}
-pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<Vec<u8>,Arc<Face>>,font_bytes:usize,glyphs:usize}
+pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<Vec<u8>,Arc<Face>>,font_bytes:usize,glyphs:usize,substituted:Vec<StandardFont>}
 fn arity(a:&[Object],n:usize)->Result<()>{if a.len()==n{Ok(())}else{Err(Error::Invalid("render text operand count"))}}
 fn num(v:&Object)->Result<f64>{if let Object::Number(n)=v{if n.is_finite()&&n.abs()<=1e12{return Ok(*n);}}Err(Error::Invalid("render text number"))}
 fn nums<const N:usize>(a:&[Object])->Result<[f64;N]>{arity(a,N)?;let mut o=[0.;N];for(i,v)in a.iter().enumerate(){o[i]=num(v)?;}Ok(o)}
 fn string(v:&Object)->Result<&[u8]>{if let Object::String(s)=v{Ok(s)}else{Err(Error::Invalid("render text string"))}}
 impl TextRenderer{
-    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),font_bytes:0,glyphs:0}}
+    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),font_bytes:0,glyphs:0,substituted:Vec::new()}}
     pub(super) fn save(&mut self){self.stack.push(self.state.clone());}
     pub(super) fn restore(&mut self)->Result<()>{self.state=self.stack.pop().ok_or(Error::Invalid("text graphics stack"))?;Ok(())}
-    fn load(&mut self,doc:&Document<'_>,page:&PageInfo,n:&[u8])->Result<Arc<Face>>{
+    pub(super) fn substituted_fonts(&self)->Vec<StandardFont>{self.substituted.clone()}
+    fn load(&mut self,doc:&Document<'_>,page:&PageInfo,n:&[u8],substitutes:Option<&StandardFontSet>)->Result<Arc<Face>>{
         if let Some(f)=self.fonts.get(n){return Ok(Arc::clone(f));}
         if self.fonts.len()>=MAX_FONT_LOADS{return Err(Error::Limit("render font count"));}
         let resources=crate::dict(doc.dereference(page.resources.as_ref().ok_or(Error::Invalid("page font Resources"))?)?)?;
@@ -80,6 +81,24 @@ impl TextRenderer{
         let font=Font::load(doc,entry)?;
         if !matches!(font.kind,FontKind::Type0Cid2|FontKind::Type0Cid0|FontKind::Type1)||font.writing_mode!=WritingMode::Horizontal{return Err(Error::Unsupported("render font subtype or writing mode"));}
         let d=crate::dict(doc.dereference(entry)?)?;
+        if let Some(face)=font.standard_face(){
+            if let Some(program)=substitutes.and_then(|s|s.get(face)){
+                if program.len()>MAX_FONT_TOTAL-self.font_bytes{return Err(Error::Limit("render replacement font bytes"));}
+                let outline=if program.starts_with(&[1,0]){
+                    let c=Cff::parse(program.to_vec())?;
+                    if c.is_cid(){return Err(Error::Unsupported("CID replacement font"));}
+                    let map=std::array::from_fn(|i|font.simple_glyph_name(i as u8).and_then(|n|c.glyph_for_name(n)));
+                    Outline::Cff(c,map)
+                }else if program.starts_with(&[0x80,1]){
+                    Outline::ReplacementType1(Type1::parse_pfb(program)?)
+                }else{
+                    Outline::ReplacementType1(Type1::parse_pfa(program)?)
+                };
+                self.font_bytes+=program.len();
+                if !self.substituted.contains(&face){self.substituted.push(face);}
+                let f=Arc::new(Face{font,outline});self.fonts.insert(n.to_vec(),Arc::clone(&f));return Ok(f);
+            }
+        }
         let cid=if matches!(font.kind,FontKind::Type0Cid0|FontKind::Type0Cid2){
             let Object::Array(a)=doc.dereference(d.get(b"DescendantFonts".as_slice()).ok_or(Error::Invalid("DescendantFonts"))?)? else{return Err(Error::Invalid("DescendantFonts"));};
             crate::dict(doc.dereference(a.first().ok_or(Error::Invalid("DescendantFonts"))?)?)?
@@ -124,6 +143,10 @@ impl TextRenderer{
             if self.state.mode!=3{
                 let (outline,fm)=match &f.outline{
                     Outline::Tt(tt)=>{let gid=glyph.glyph_id.ok_or(Error::Unsupported("missing render glyph ID"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
+                    Outline::ReplacementType1(t)=>{
+                        let name=f.font.simple_glyph_name(glyph.code[0]).ok_or(Error::Unsupported("missing replacement glyph name"))?;
+                        (t.outline(name)?,t.font_matrix())
+                    }
                     Outline::Type1(t,names,standard)=>{
                         let code=glyph.code[0];
                         let name=names.get(&code).map(Vec::as_slice).or_else(||if *standard{standard_name(code)}else{t.glyph_name(code)}).ok_or(Error::Unsupported("missing Type1 encoding"))?;
@@ -145,12 +168,12 @@ impl TextRenderer{
             self.tm=self.tm.compose(Matrix::translation(advance,0.))?;
         }Ok(())
     }
-    pub(super) fn execute(&mut self,doc:&Document<'_>,page:&PageInfo,s:&mut Surface,op:&Operation,view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke)->Result<()>{
+    pub(super) fn execute(&mut self,doc:&Document<'_>,page:&PageInfo,s:&mut Surface,op:&Operation,view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke,substitutes:Option<&StandardFontSet>)->Result<()>{
         let a=&op.operands;
         match op.operator.as_slice(){
             b"BT"=>{arity(a,0)?;if self.in_text{return Err(Error::Invalid("nested render BT"));}self.in_text=true;self.tm=Matrix::IDENTITY;self.line=Matrix::IDENTITY;}
             b"ET"=>{arity(a,0)?;if !self.in_text{return Err(Error::Invalid("render ET"));}self.in_text=false;}
-            b"Tf"=>{arity(a,2)?;let Object::Name(n)=&a[0] else{return Err(Error::Invalid("render font name"));};self.state.size=num(&a[1])?;self.state.face=Some(self.load(doc,page,n)?);}
+            b"Tf"=>{arity(a,2)?;let Object::Name(n)=&a[0] else{return Err(Error::Invalid("render font name"));};self.state.size=num(&a[1])?;self.state.face=Some(self.load(doc,page,n,substitutes)?);}
             b"Tc"=>self.state.tc=nums::<1>(a)?[0],b"Tw"=>self.state.tw=nums::<1>(a)?[0],b"Tz"=>self.state.scale=nums::<1>(a)?[0]/100.,
             b"TL"=>self.state.leading=nums::<1>(a)?[0],b"Ts"=>self.state.rise=nums::<1>(a)?[0],
             b"Tr"=>{let v=nums::<1>(a)?[0];if !(0.0..=3.0).contains(&v)||v.fract()!=0.{return Err(Error::Unsupported("text render mode"));}self.state.mode=v as u8;}
