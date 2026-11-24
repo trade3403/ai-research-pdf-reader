@@ -381,3 +381,5 @@ impl Document<'_> {
 pub mod filters;
 
 pub mod content;
+
+pub mod fonts;

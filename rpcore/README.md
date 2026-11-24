@@ -6,7 +6,7 @@ Independent, safe Rust prototype. No PDF engine dependencies. Not a production r
 - Direct and indirect scalar stream lengths, bounded reference chains, raw/ASCIIHex/ASCII85/RunLength/Flate stream decoding, including zlib checksum verification.
 - TIFF predictor 2 and PNG predictors 10–15 (1/2/4/8/16-bit samples), aligned direct DecodeParms dictionaries/arrays; indirect filter parameters remain unsupported.
 - Page Contents stream or ordered stream array, bounded decoded output, lexical content operations (raw operands and operator bytes).
-- Explicit errors on unsupported features; no graphics execution or Unicode text extraction yet.
+- Explicit errors on unsupported features; font-level Unicode mapping available; no page-level text extraction or graphics execution yet.
 
 ## Build
 ```
@@ -26,8 +26,11 @@ The existing `filters::decode(&Object, limit)` API is unchanged. Final output is
 ## B06 index contract
 `Document::open` and `resolve(id, generation)` retain their signatures. Index revisions merge newest-first by object number, including free tombstones; hybrid streams override same-revision table entries. XRef streams support direct W/Index/Size/Length and existing filters. Object streams validate their header, ID/index and object bounds; a mutex-protected single-container cache retains at most 16 MiB of decoded bytes plus its bounded index. Limits include 64 revisions and 100,000 cumulative entries (hybrid entries counted conservatively). No encryption, recovery scanning, indirect XRef bootstrap fields, or unknown xref entry types. Synthetic regression fixtures exercise compressed pages, hybrid and sparse incremental revisions, deleted objects and malformed indices. Real-world compatibility still needs corpus validation.
 
+## B07 font contract
+`Document::page_font(&PageInfo, resource_name)` lazily resolves inherited font resources. `fonts::Font::decode(bytes)` yields source code bytes, optional CID, optional TrueType glyph ID, optional Unicode string, and optional horizontal width in 1/1000 text-space units. Supports Type1/MMType1 and TrueType simple font dictionaries, explicit WinAnsi and limited StandardEncoding/Differences, Type0 Identity-H/V and embedded explicit CID CMaps, CIDFontType0/2 W/DW, CIDToGIDMap, ToUnicode bfchar/bfrange (including UTF-16 surrogate pairs and multi-character mappings). Unknown mappings remain None; no guessed Unicode for arbitrary CIDs. CMap usecmap, predefined non-Identity CMaps, full Adobe Glyph List, MacRoman/Symbol encodings, Standard14 built-in metrics, vertical advances W2/DW2, Type3 and embedded TrueType/CFF outlines remain unsupported. CMap parsing does not execute PostScript; each map is capped at 4 MiB input and 65,536 mappings per kind. No existing API changes, no new dependencies.
+
 ## Remaining
-Encryption, font decoding/ToUnicode, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
+Encryption, complete font encoding/metrics and outlines, page-level text extraction, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 
 ## Deferred iOS validation (B-line core only)
 Routine GitHub Actions currently runs Windows and Ubuntu only. iOS device cross-build and simulator jobs are deferred to keep iteration fast. The scripts below remain available for future manual validation; the previous workflow is preserved in commit `685ec546d6c82c1163e0cba6f92201357fd06b39`. Re-enable after core parsing and rendering stabilize. Planned iOS jobs:
