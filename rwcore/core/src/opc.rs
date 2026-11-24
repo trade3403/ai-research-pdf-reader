@@ -403,3 +403,123 @@ fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperti
     }
     out
 }
+
+
+/// A style definition preserves direct properties, not effective formatting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleDefinition {
+    pub kind: String,
+    pub based_on: Option<String>,
+    pub is_default: bool,
+    pub paragraph: DirectParagraphProperties,
+    pub run: DirectRunProperties,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyleCatalog {
+    pub styles: std::collections::BTreeMap<String, StyleDefinition>,
+}
+impl StyleCatalog {
+    /// Parent-first chain, with a fixed depth budget and explicit invalid links.
+    pub fn chain(&self, id: &str) -> Result<Vec<&StyleDefinition>, Error> {
+        let mut chain = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut current = Some(id);
+        let mut kind: Option<&str> = None;
+        while let Some(key) = current {
+            if !seen.insert(key) { return Err(Error::Invalid("cyclic style inheritance")); }
+            if chain.len() >= 128 { return Err(Error::Limit("style inheritance depth")); }
+            let style = self.styles.get(key).ok_or(Error::Invalid("missing base style"))?;
+            if kind.is_some_and(|k| k != style.kind.as_str()) {
+                return Err(Error::Invalid("cross-kind style inheritance"));
+            }
+            kind = Some(style.kind.as_str());
+            chain.push(style);
+            current = style.based_on.as_deref();
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+}
+/// Parse standalone styles.xml. Does not apply defaults, toggle semantics or formatting.
+pub fn parse_styles(bytes: &[u8], limits: Limits) -> Result<StyleCatalog, Error> {
+    if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
+    let tree = xml(bytes, limits)?;
+    let root = tree.root_element();
+    let ns = root.tag_name().namespace().ok_or(Error::Invalid("styles namespace"))?;
+    if !matches!(ns, WORD | WORD_STRICT) || !named(root, ns, "styles") {
+        return Err(Error::Invalid("styles root"));
+    }
+    let mut catalog = StyleCatalog::default();
+    for node in root.children().filter(|n| named(*n, ns, "style")) {
+        let id = node.attribute((ns, "styleId")).filter(|s| !s.is_empty())
+            .ok_or(Error::Invalid("missing style ID"))?;
+        let kind = node.attribute((ns, "type")).ok_or(Error::Invalid("missing style type"))?;
+        let is_default = match node.attribute((ns, "default")) {
+            None | Some("0" | "false" | "off") => false,
+            Some("1" | "true" | "on") => true,
+            _ => return Err(Error::Invalid("invalid default style flag")),
+        };
+        let mut style = StyleDefinition { kind: kind.to_owned(), based_on: None, is_default,
+            paragraph: Default::default(), run: Default::default() };
+        let mut seen = std::collections::BTreeSet::new();
+        for child in node.children().filter(|n| n.is_element()) {
+            let name = child.tag_name().name();
+            if child.tag_name().namespace() != Some(ns) || !matches!(name, "basedOn" | "pPr" | "rPr") { continue; }
+            if !seen.insert(name) { return Err(Error::Invalid("duplicate style property container")); }
+            match name {
+                "basedOn" => style.based_on = Some(child.attribute((ns, "val"))
+                    .filter(|s| !s.is_empty()).ok_or(Error::Invalid("missing base style ID"))?.to_owned()),
+                "pPr" => style.paragraph = parse_paragraph_node(child, ns),
+                "rPr" => style.run = parse_run_node(child, ns),
+                _ => unreachable!(),
+            }
+        }
+        if catalog.styles.insert(id.to_owned(), style).is_some() {
+            return Err(Error::Invalid("duplicate style ID"));
+        }
+    }
+    Ok(catalog)
+}
+
+#[cfg(test)]
+mod style_catalog_tests {
+    use super::*;
+    fn catalog(body: &str) -> Result<StyleCatalog, Error> {
+        parse_styles(format!("<w:styles xmlns:w='{WORD}'>{body}</w:styles>").as_bytes(), Limits::default())
+    }
+    #[test]
+    fn parent_first_and_direct_properties() {
+        let c = catalog("<w:style w:type='paragraph' w:styleId='A' w:default='1'><w:rPr><w:b/></w:rPr></w:style><w:style w:type='paragraph' w:styleId='B'><w:basedOn w:val='A'/><w:pPr><w:jc w:val='center'/></w:pPr></w:style>").unwrap();
+        let chain = c.chain("B").unwrap();
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].is_default);
+        assert_eq!(chain[0].run.bold, Some(true));
+        assert_eq!(chain[1].paragraph.alignment, Some(ParagraphAlignment::Center));
+    }
+    #[test]
+    fn rejects_duplicate_ids() {
+        assert!(catalog("<w:style w:type='paragraph' w:styleId='A'/><w:style w:type='paragraph' w:styleId='A'/>").is_err());
+    }
+    #[test]
+    fn rejects_cycles_and_missing_links() {
+        let c = catalog("<w:style w:type='paragraph' w:styleId='A'><w:basedOn w:val='A'/></w:style><w:style w:type='paragraph' w:styleId='B'><w:basedOn w:val='C'/></w:style>").unwrap();
+        assert_eq!(c.chain("A"), Err(Error::Invalid("cyclic style inheritance")));
+        assert_eq!(c.chain("B"), Err(Error::Invalid("missing base style")));
+    }
+    #[test]
+    fn rejects_cross_kind_links() {
+        let c = catalog("<w:style w:type='character' w:styleId='A'/><w:style w:type='paragraph' w:styleId='B'><w:basedOn w:val='A'/></w:style>").unwrap();
+        assert_eq!(c.chain("B"), Err(Error::Invalid("cross-kind style inheritance")));
+    }
+    #[test]
+    fn bounds_inheritance_depth() {
+        let mut body = String::new();
+        for i in 0..129 {
+            body.push_str(&format!("<w:style w:type='paragraph' w:styleId='s{i}'>"));
+            if i > 0 { body.push_str(&format!("<w:basedOn w:val='s{}'/>", i-1)); }
+            body.push_str("</w:style>");
+        }
+        let c = catalog(&body).unwrap();
+        assert_eq!(c.chain("s128"), Err(Error::Limit("style inheritance depth")));
+    }
+}

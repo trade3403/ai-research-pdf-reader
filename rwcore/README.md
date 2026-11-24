@@ -61,3 +61,7 @@ CI #18 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/4543574
 ## C2.0 paragraph increment
 
 CI #19 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45453903857), revision e14b31fd2a5a6493c4b266db4adcb33c10735d0b: 40 tests passed per platform, zero failed or ignored (120 executions). Direct paragraph properties now attached to the model: style ID, alignment, spacing, signed left/right indentation, first-line/hanging indentation and pagination flags. Line value retains raw units (auto: 240ths of a line; exact/atLeast: twips); no effective layout is computed. Unsupported attributes and conflicting indentation diagnosed. Two new package tests (42 total pending CI). Next: style definitions and bounded inheritance. Real corpus and dependency audit remain outstanding.
+
+## C2.0 style catalog increment
+
+CI #20 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45468659633), revision a957af1d07216cd27f2f024da465efed9e643ee3: 42 tests passed per platform, zero failed or ignored (126 executions). Standalone styles.xml catalog parses direct properties, default flags and basedOn links. Parent-first traversal rejects cycles, missing and cross-kind links and chains beyond 128 entries. Five new tests (47 pending CI). Not yet integrated with DOCX relationship loading; docDefaults, toggle semantics, effective formatting and unsupported style metadata preservation remain pending. Real corpus and dependency audit remain outstanding.
