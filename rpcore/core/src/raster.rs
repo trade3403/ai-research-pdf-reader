@@ -250,8 +250,87 @@ fn disc(out:&mut Vec<Subpath>,p:Point,r:f64,count:&mut usize,b:&mut Budget)->Res
     let pts=(0..n).map(|i|{let t=std::f64::consts::TAU*i as f64/n as f64;add(p,[r*t.cos(),r*t.sin()])}).collect();
     polygon(out,pts,count,b)
 }
+// Split flattened device-space paths into continuous painted runs. Dash
+// lengths and phase are defined in stroke user space and uniformly scaled.
+// Zero-length elements (including dotted round-cap patterns) are deliberately
+// rejected in this first implementation rather than silently erased.
+fn dash_paths(paths:&[Subpath],s:&Stroke,scale:f64,budget:&mut Budget)->Result<Vec<Subpath>>{
+    let mut pattern:Vec<f64>=s.dash.iter().map(|x|x*scale).collect();
+    if pattern.iter().any(|v|!v.is_finite()||*v<=0.){
+        return Err(Error::Unsupported("zero or nonfinite dash length"));
+    }
+    if pattern.len()%2==1{let copy=pattern.clone();pattern.extend(copy);}
+    let period:f64=pattern.iter().sum();
+    let phase=s.dash_phase*scale;
+    if !period.is_finite()||period<=0.||!phase.is_finite()||phase<0.{
+        return Err(Error::Invalid("dash period or phase"));
+    }
+    let mut offset=phase%period;let mut initial=0;
+    while offset>=pattern[initial]{
+        offset-=pattern[initial];initial=(initial+1)%pattern.len();
+        if initial==0{offset=0.;break;}
+    }
+    let initial_remaining=pattern[initial]-offset;
+    let mut out=Vec::new();let mut work=0usize;let mut points=0usize;
+    fn flush(out:&mut Vec<Subpath>,run:&mut Vec<Point>){
+        if run.len()>=2{out.push(Subpath{points:std::mem::take(run),closed:false});}else{run.clear();}
+    }
+    for path in paths{
+        let mut p=path.points.clone();p.dedup();
+        if path.closed&&p.len()>1&&p.first()==p.last(){p.pop();}
+        if p.len()<2{
+            if initial%2==0&&path.points.len()>1{
+                points=points.checked_add(path.points.len()).ok_or(Error::Limit("dash points"))?;
+                if points>MAX_EDGES{return Err(Error::Limit("dash points"));}
+                out.push(Subpath{points:path.points.clone(),closed:false});
+            }
+            continue;
+        }
+        let start=out.len();let mut run=Vec::new();let mut idx=initial;let mut remaining=initial_remaining;
+        let n=p.len();let segments=if path.closed{n}else{n-1};
+        for i in 0..segments{
+            let a=p[i];let b=p[(i+1)%n];let delta=sub(b,a);let distance=len(delta);
+            if distance==0.{continue;}
+            if !distance.is_finite(){return Err(Error::Invalid("dash segment length"));}
+            let mut at=0.;
+            while at<distance{
+                budget.charge(1)?;work+=1;
+                if work>MAX_EDGES{return Err(Error::Limit("dash subdivisions"));}
+                let left=distance-at;let step=remaining.min(left);
+                let end=if step>=left{distance}else{at+step};
+                if end<=at{return Err(Error::Limit("dash precision"));}
+                let from=if at==0.{a}else{add(a,mul(delta,at/distance))};
+                let to=if end==distance{b}else{add(a,mul(delta,end/distance))};
+                if idx%2==0{
+                    if run.is_empty(){run.push(from);points+=1;}
+                    if run.last()!=Some(&to){run.push(to);points+=1;}
+                    if points>MAX_EDGES{return Err(Error::Limit("dash points"));}
+                }
+                at=end;
+                if step>=remaining{
+                    if idx%2==0{flush(&mut out,&mut run);}
+                    idx=(idx+1)%pattern.len();remaining=pattern[idx];
+                }else{remaining-=step;}
+            }
+        }
+        flush(&mut out,&mut run);
+        // Closed contours whose painted runs meet at the seam need a join,
+        // not two caps. Reconnect the last and first runs exactly once.
+        if path.closed&&out.len()>start{
+            let last=out.len()-1;
+            if out[start].points.first()==Some(&p[0])&&out[last].points.last()==Some(&p[0]){
+                if start==last{out[start].closed=true;}
+                else{
+                    let mut tail=out.pop().ok_or(Error::Invalid("dash seam"))?.points;
+                    tail.extend(out[start].points.iter().skip(1).copied());
+                    out[start].points=tail;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
 fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Result<Vec<Subpath>>{
-    if !s.dash.is_empty(){return Err(Error::Unsupported("dashed stroke rasterization"));}
     let m=view.compose(s.ctm)?;let [a,b,c,d,_,_]=m.0;
     let (sx,sy)=(a.hypot(b),c.hypot(d));
     // First implementation supports uniform scaling/rotation/reflection. No false
@@ -261,6 +340,8 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
     }
     let r=if s.width==0.{0.5}else{s.width*sx*0.5};
     if !r.is_finite()||r<=0.||r>1e6{return Err(Error::Limit("stroke radius"));}
+    let dashed;
+    let paths=if s.dash.is_empty(){paths}else{dashed=dash_paths(paths,s,sx,budget)?;&dashed};
     let mut out=Vec::new();let mut count=0usize;
     for path in paths{
         let mut p=path.points.clone();p.dedup();

@@ -36,7 +36,7 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
     assert!(matches!(d.render_page(&pages[0],Options::default(),10000),Err(Error::Invalid(_)|Error::Unsupported(_))));
     let b=d.render_page(&pages[0],Options{scale:1.,allow_missing_text:true},10000).unwrap();assert!(b.missing_text);
     assert!(d.render_page(&pages[0],Options{scale:1e9,allow_missing_text:true},10000).is_err());
-    let p=pdf(b"[2 1] 0 d 2 3 m 10 8 l S",0,false);let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
+    let p=pdf(b"[0 1] 0 d 2 3 m 10 8 l S",0,false);let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
 }
 #[test]fn png_integrity(){
     let b=render(b"1 0 0 rg 2 3 10 8 re f",0,false);let p=b.png().unwrap();assert_eq!(&p[..8],b"\x89PNG\r\n\x1a\n");
@@ -110,4 +110,41 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
     let b=render(b"q 4 0 0 4 2 3 cm /Im Do Q q 8 3 2 4 re W n 4 0 0 4 6 3 cm /Im Do Q",0,true);
     assert_eq!(pixel(&b,0,4),[255,0,0,255]);assert_eq!(pixel(&b,2,7),[255,255,0,255]);
     assert_eq!(pixel(&b,4,4),[255,255,255,255]);assert_eq!(pixel(&b,6,4),[0,255,0,255]);assert_eq!(pixel(&b,6,7),[255,255,0,255]);
+}
+
+#[test]fn dashed_stroke_period_phase_and_odd_pattern(){
+    let a=render(b"2 w [2 1] 0 d 2 7 m 12 7 l S",0,false);
+    let b=render(b"2 w 2 7 m 4 7 l 5 7 m 7 7 l 8 7 m 10 7 l 11 7 m 12 7 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    assert_eq!(pixel(&a,0,3),[0,0,0,255]);assert_eq!(pixel(&a,2,3),[255,255,255,255]);
+    let a=render(b"2 w [2 1] 7 d 2 7 m 12 7 l S",0,false);
+    let b=render(b"2 w 2 7 m 3 7 l 4 7 m 6 7 l 7 7 m 9 7 l 10 7 m 12 7 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    assert_eq!(render(b"[2] 0 d 2 7 m 12 7 l S",0,false).rgba,
+               render(b"[2 2] 0 d 2 7 m 12 7 l S",0,false).rgba);
+}
+#[test]fn dashed_stroke_joins_and_subpath_reset(){
+    let a=render(b"2 w 0 j [6 2] 0 d 3 4 m 7 4 l 7 8 l 11 8 l S",0,false);
+    let b=render(b"2 w 0 j 3 4 m 7 4 l 7 6 l 7 8 m 11 8 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    let a=render(b"2 w [3 2] 0 d 2 5 m 6 5 l 2 9 m 6 9 l S",0,false);
+    let b=render(b"2 w 2 5 m 5 5 l 2 9 m 5 9 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    // A 16-unit closed square: paint [0,6], [8,14], with no seam
+    // continuation for this phase; a long dash covers the whole contour.
+    let a=render(b"2 w [100 2] 0 d 4 5 4 4 re S",0,false);
+    let b=render(b"2 w 4 5 4 4 re S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    // [10 2] on a 16-unit contour wraps the final painted run at the seam.
+    let a=render(b"2 w [10 2] 0 d 4 5 4 4 re S",0,false);
+    let b=render(b"2 w 4 9 m 4 5 l 8 5 l 8 9 l 6 9 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+}
+#[test]fn dashed_stroke_uniform_ctm_and_limits(){
+    let a=render(b"q 2 0 0 2 0 0 cm 1 w [1 .5] 0 d 1 3.5 m 6 3.5 l S Q",0,false);
+    let b=render(b"2 w [2 1] 0 d 2 7 m 12 7 l S",0,false);
+    assert_eq!(a.rgba,b.rgba);
+    let p=pdf(b"[0.00001 0.00001] 0 d 2 7 m 12 7 l S",0,false);
+    let d=Document::open(&p).unwrap();
+    assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(Error::Limit(_))));
 }
