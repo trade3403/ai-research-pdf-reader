@@ -9,6 +9,7 @@ type StudioBridge = {
   azureKey(op:'save'|'has'|'remove',key?:string):Promise<boolean|void>;
   azureTranslate(request:{texts:string[];region:string;from:string;to:string}):Promise<{translations:string[]}>;
   docxSave(name:string,bytes:Uint8Array):Promise<string|null>;
+  backup(op:'create'|'verify'):Promise<{files:number;pdfs:number;bytes:number;externalReferences:number;path?:string}|null>;
   research(op:string,value?:unknown):Promise<unknown>;
   library(op:string,value?:unknown):Promise<unknown>;
   reader(op:string,value?:unknown):Promise<unknown>;

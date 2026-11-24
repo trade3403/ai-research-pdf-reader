@@ -553,6 +553,12 @@ export default function App() {
 
   // A live, consistent SQLite snapshot: VACUUM INTO uses SQLite's own snapshot mechanism.
   const backupData = useCallback(async () => {
+    const bridge=electronBridge();
+    if(bridge){
+      if(!window.confirm('备份已保存的科研数据库和 PDF 文件库，不包含密钥、ChatGPT 会话、浏览器偏好或未保存的编辑。请先保存正在编辑的文档。继续？'))return;
+      try{const result=await bridge.backup('create');if(result)notify('备份已生成并校验：'+result.pdfs+' 个 PDF，'+result.files+' 个数据文件'+(result.externalReferences?'；外部附件引用 '+result.externalReferences+' 条未打包':'')+'。'+result.path);}
+      catch(error){notify('备份失败：'+humanError(error),'error');}return;
+    }
     if (!isTauri()) { notify('数据库备份仅支持安装后的 Windows 软件', 'error'); return; }
     try {
       const [{ save }, { getDatabase }] = await Promise.all([
@@ -569,6 +575,11 @@ export default function App() {
   }, [notify]);
 
   const restoreData = useCallback(async () => {
+    const bridge=electronBridge();
+    if(bridge){
+      try{const result=await bridge.backup('verify');if(result)notify('备份校验通过：'+result.files+' 个文件，'+result.pdfs+' 个 PDF'+(result.externalReferences?'；'+result.externalReferences+' 条外部附件引用未打包':'')+'。本版仅验证，不覆盖现有数据。');}
+      catch(error){notify('备份校验失败：'+humanError(error),'error');}return;
+    }
     if (!isTauri()) { notify('数据库恢复仅支持安装后的 Windows 软件', 'error'); return; }
     if (!window.confirm('恢复将替换当前数据库中的文献、批注、科研记录和译文缓存。请先备份当前数据，确认继续选择备份文件吗？')) return;
     try {
@@ -598,7 +609,7 @@ export default function App() {
       <input ref={fileInput} className="hidden" type="file" accept="application/pdf,.pdf" multiple
         onChange={(event) => { if (event.target.files) void openBrowserFiles(event.target.files); }} />
       <header className="app-header">
-        <div className="brand"><div className="brand-icon"><BookOpen size={19}/></div><div><strong>Research PDF</strong><small>AI RESEARCH STUDIO · V0.5.9</small></div></div>
+        <div className="brand"><div className="brand-icon"><BookOpen size={19}/></div><div><strong>Research PDF</strong><small>AI RESEARCH STUDIO · {electronBridge()?'V0.6.4':'V0.5.9'}</small></div></div>
         <div className="header-actions"><div className="app-mode-switch">
           <button className={mode === 'library' ? 'active' : ''} onClick={() => setMode('library')}><LibraryBig size={16}/> 文献库</button>
           <button className={mode === 'reader' ? 'active' : ''} onClick={() => setMode('reader')}><BookOpen size={16}/> PDF 阅读</button>
@@ -606,7 +617,7 @@ export default function App() {
           <button className={mode === 'records' ? 'active' : ''} onClick={() => setMode('records')}><NotebookPen size={16}/> 科研记录</button>
           <button className={mode === 'word' ? 'active' : ''} onClick={() => setMode('word')}><FilePenLine size={16}/> Word 论文</button>
         {mode === 'word' && <button className={wordChatOpen ? 'active' : ''} aria-pressed={wordChatOpen} title="在 Word 右侧打开或关闭 ChatGPT 侧栏" onClick={() => setWordChatOpen(v => !v)}><MessageSquareText size={16}/> {wordChatOpen ? '关闭 ChatGPT 侧栏' : '打开 ChatGPT 侧栏'}</button>}
-        </div><button className="icon-button" title="完整数据库备份（含文献库、批注和科研记录，不包含原始 PDF）" onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title="从 SQLite 备份恢复（需重启）" onClick={() => void restoreData()}><DatabaseZap size={17}/></button><button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
+        </div><button className="icon-button" title={electronBridge()?"科研数据库及 PDF 文件库备份":"完整数据库备份（不包含原始 PDF）"} onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title={electronBridge()?"校验备份（不覆盖数据）":"从 SQLite 备份恢复（需重启）"} onClick={() => void restoreData()}><DatabaseZap size={17}/></button><button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
       </header>
       {(mode === 'reader' || mode === 'chat') && <>
       {!(mode === 'chat' && chatPdfCollapsed) && <>
@@ -742,7 +753,7 @@ export default function App() {
         {wordChatOpen && <>{chatResizeHandle}<ChatBrowserDock resizing={chatResizing} onClose={() => setWordChatOpen(false)} onNotify={notify} activeFingerprint={active?.fingerprint || null} activePage={active?.page || null} onCaptureText={text => {setPendingClip({body:text});setMode('records');}}/></>}
       </div>}
       {translationDraft && <TranslatorWorkspace source={translationDraft.source} label={translationDraft.label} onClose={() => setTranslationDraft(null)} onNotify={notify}/>}
-      <footer className="status-bar"><span><span className="status-dot"/> PDF.js 本地渲染</span><span>{active ? `${active.pdf.numPages} 页 · ${active.name}` : '尚未打开文档'}</span><span>{restoring ? '正在恢复上次阅读…' : 'AI Research PDF Reader · Electron 迁移预览 V0.6.3'}</span></footer>
+      <footer className="status-bar"><span><span className="status-dot"/> PDF.js 本地渲染</span><span>{active ? `${active.pdf.numPages} 页 · ${active.name}` : '尚未打开文档'}</span><span>{restoring ? '正在恢复上次阅读…' : 'AI Research PDF Reader · Electron 迁移预览 V0.6.4'}</span></footer>
       {toast && <div role="alert" className={`toast ${toast.tone}`}><CircleAlert size={17}/>{toast.text}<button title="关闭" onClick={() => setToast(null)}><X size={15}/></button></div>}
     </div>
   );

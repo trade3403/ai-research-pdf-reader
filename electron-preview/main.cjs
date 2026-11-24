@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, WebContentsView, protocol, n
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const {randomUUID}=require('node:crypto');
+const {createBackup,verifyBackup}=require('./backup.cjs');
 const {createKeyStore,translateBatch}=require('./azure-translator.cjs');
 const { pathToFileURL } = require('node:url');
 const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
@@ -152,6 +153,24 @@ ipcMain.handle('studio:docx-save',async(event,name,bytes)=>{
  const target=result.filePath;if(!target.toLowerCase().endsWith('.docx'))throw Error('Choose a .docx file');
  const tmp=path.join(path.dirname(target),'.studio-'+randomUUID()+'.tmp');
  try{await fs.writeFile(tmp,bytes,{flag:'wx'});await fs.rename(tmp,target);return target;}finally{await fs.rm(tmp,{force:true});}
+});
+let backupBusy=false;
+ipcMain.handle('studio:backup',(event,op)=>{
+ workspaceOnly(event);
+ if(!['create','verify'].includes(op))throw Error('Unsupported backup operation');
+ if(backupBusy||translating)throw Error('Finish current backup or translation first');
+ backupBusy=true;
+ return (async()=>{
+  try{
+   const selected=await dialog.showOpenDialog(win,{title:op==='create'?'选择备份保存位置':'选择需要校验的备份文件夹',properties:['openDirectory']});
+   if(selected.canceled||!selected.filePaths[0])return null;
+   if(op==='verify')return await verifyBackup(selected.filePaths[0]);
+   const profile=app.getPath('userData');
+   readerDb??=createReaderDb(path.join(profile,'reader-v062.sqlite'));
+   libraryDb??=createLibraryDb(path.join(profile,'library-v062.sqlite'));
+   return await createBackup({profile,parent:selected.filePaths[0],stores:[readerDb,libraryDb,getResearch()]});
+  }finally{backupBusy=false;}
+ })();
 });
 app.on('will-quit',()=>{if(researchDb){researchDb.close();researchDb=null;}if(readerDb){readerDb.close();readerDb=null;}if(libraryDb){libraryDb.close();libraryDb=null;}});
 app.whenReady().then(() => { registerWorkspace(); createWindow(); });

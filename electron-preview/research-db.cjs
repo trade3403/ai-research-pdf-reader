@@ -50,6 +50,6 @@ function createResearchDb(file){
  case 'translation.saveCache':{const t=translation(v);write('cache',t.cacheKey,t.createdAt,t);return null;}
  default:throw Error('Unsupported research operation');
  }}
- return {call,close:()=>db.close()};
+ return {call,snapshot:target=>db.prepare('VACUUM INTO ?').run(target),close:()=>db.close()};
 }
 module.exports={createResearchDb};

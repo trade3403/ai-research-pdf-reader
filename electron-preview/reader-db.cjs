@@ -46,6 +46,6 @@ function createReaderDb(file) {
       default: throw new Error('Unsupported reader operation');
     }
   }
-  return {call,close:()=>db.close()};
+  return {call,snapshot:target=>db.prepare('VACUUM INTO ?').run(target),close:()=>db.close()};
 }
 module.exports={createReaderDb};

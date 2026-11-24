@@ -1,6 +1,6 @@
 {
   "name": "research-studio-electron-preview",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "description": "Desktop migration preview; not feature complete",
   "main": "main.cjs",
@@ -34,7 +34,8 @@
       "pdf-vault.cjs",
       "library-db.cjs",
       "research-db.cjs",
-      "azure-translator.cjs"
+      "azure-translator.cjs",
+      "backup.cjs"
     ],
     "win": {
       "target": [
