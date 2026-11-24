@@ -8,7 +8,8 @@
 | D1.0 | 已通过 | 独立工程、基础数值/语料/元数据及 CPU CI |
 | D1.1 | 已通过 | 自主 Safetensors 子集解析、参考样本及 CPU CI |
 | D1.2a | 已通过 | Unigram Viterbi 内核、identity profile、参考样本 |
-| D1.2b | 未开始 | 真实 SPM、归一化及 Marian ID 兼容性 |
+| D1.2b1 | 待验证 | SPM protobuf 读取、ID 映射与真实文件探测 |
+| D1.2b2 | 未开始 | 完整归一化、Marian JSON、真实 token 对照 |
 | D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -47,8 +48,11 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.2a
 新增自主 Unigram Viterbi 分词内核、TSV 词表、identity 空白归一化、特殊 token、11 组由 SentencePiece 0.2.1 实际生成的合成参考结果及重建脚本。[技术文档](D1.2_TOKENIZER.md)。实际 Rust CI 已通过：[代码提交 3e36fc4](https://github.com/trade3403/ai-research-pdf-reader/commit/3e36fc4547d4ffcf445cba772fecfdc0443d8820)，[Actions run 45419019144](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45419019144) 结论 success；格式、Clippy、单元测试、Release 编译与自检通过。D1.2b 尚未完成，不增加整阶段完成数。
 
-## 下一阶段 D1.2b
-真实 SPM protobuf、目标模型 normalizer、Marian vocab.json 与 token ID 对照。
+## 当前阶段 D1.2b1
+新增有界 SPM protobuf 解析、词表与特殊 ID 校验、identity profile 执行适配、独立 Marian ID 映射、实际 SentencePiece 0.2.1 生成的二进制 fixture。真实候选模型文件在当前环境下载失败，新增独立 Runner 探测（不下载权重）。CPU CI 待验证；完整 D1.2 仍未验收。
+
+## 下一阶段 D1.2b2
+依据真实模型元数据实现 compiled charsmap、Marian vocab.json、语言前缀和真实英中 token ID 对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

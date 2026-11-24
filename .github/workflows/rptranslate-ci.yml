@@ -39,3 +39,25 @@ jobs:
         run: cargo build --locked --offline --release -p rptranslate
       - name: Smoke test
         run: ./target/release/rptranslate self-check
+
+  model-tokenizer-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'D1.2b1')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download pinned public tokenizer files only
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/rp-tokenizer"
+          for file in source.spm target.spm vocab.json; do
+            curl --fail --location --max-time 40 --max-filesize 16777216 --output "$RUNNER_TEMP/rp-tokenizer/$file" "https://huggingface.co/Helsinki-NLP/opus-mt-en-zh/resolve/7b05ad2cd70ad11863b0fffc3327c13a26ab4f8a/$file"
+          done
+          sha256sum "$RUNNER_TEMP/rp-tokenizer/"*
+      - name: Inspect actual SPM metadata (not translation)
+        working-directory: rptranslate
+        run: |
+          cargo run --locked --offline -p rpmodel --example inspect_spm -- "$RUNNER_TEMP/rp-tokenizer/source.spm"
+          cargo run --locked --offline -p rpmodel --example inspect_spm -- "$RUNNER_TEMP/rp-tokenizer/target.spm"

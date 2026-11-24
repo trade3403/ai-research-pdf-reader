@@ -1,5 +1,6 @@
 //! Model metadata and bounded local weight-file reader.
 pub mod safetensors;
+pub mod spm;
 pub mod tokenizer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
