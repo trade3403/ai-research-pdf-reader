@@ -1,10 +1,11 @@
-# RWCore — C1.1 OPC package graph
+# RWCore — C1.2 container safety preflight
 
 Independent Rust workspace for research manuscripts, on feature/rwcore.
 The existing Tiptap Word editor remains unchanged. No Electron or RPCore integration in this milestone.
 
 ## Scope
 - Read-only, bounded ZIP/OPC input using general-purpose zip and roxmltree crates.
+- Independent ZIP32 structural preflight before decompression: central directory, local headers, CRC/size metadata consistency, data descriptors, record coverage, raw duplicate names and expansion budgets.
 - Resolve the main document from the root relationship, validate its declared content type and read the selected part.
 - Enumerate package parts, content types and relationship edges; classify style, font, image, numbering, theme and other resources.
 - Reject escaping paths, ambiguous URI forms, case-colliding visible ZIP names, duplicate relationship IDs, orphan relationship parts and dangling internal targets. External references are inert metadata only.
@@ -19,16 +20,16 @@ cargo run --manifest-path rwcore/Cargo.toml -p rwcore --example inspect -- sampl
 ```
 
 ## Boundaries
-Not a full OPC or DOCX implementation. Conservative ASCII URI subset (percent escapes, fragments, queries and case-mismatched lookups are rejected); UTF-8 XML only, basic paragraphs only. Resource detection is metadata only, not image decoding or style interpretation. Missing MIME declarations on non-main parts are exposed as None.
+Not a full OPC or DOCX implementation. Conservative URI subset (encoded UTF-8 and spaces accepted in canonical percent-encoded ZIP names; escaped ASCII delimiters/unreserved characters, fragments, queries and case-mismatched lookups rejected); UTF-8 XML only, basic paragraphs only. Resource detection is metadata only, not image decoding or style interpretation. Missing MIME declarations on non-main parts are exposed as None.
 No style resolution, tables, images, formulas, pagination, editing, export or layout fidelity yet.
-No macros executed, no extraction, no network access. Archive/part/entry/node limits and DTD rejection are initial defenses, not a security audit. ZIP library may normalize or collapse duplicate names before the application sees them; strict central-directory validation is deferred.
-Dependencies are provisional; generate and commit Cargo.lock after first successful CI, then review advisories and licenses. Never replace or overwrite a source DOCX.
+No macros executed, no extraction, no network access. Archive/part/entry/node limits and DTD rejection are initial defenses, not a security audit. Raw central-directory duplicate names are checked before the ZIP library can collapse them. ZIP32 only; reject ZIP64, multi-disk, encryption, unknown flags, alternate path extras, unindexed data and compression methods other than stored/deflate. Valid but unusual ZIPs may be rejected. Structural preflight does not verify the payload CRC of unused parts; selected parts are read with the ZIP library and a declared-size cap. Default per-entry limit 8 MiB applies to all entries, aggregate declared expansion 128 MiB, ratio 1000:1 plus 1 MiB grace. These are conservative, not a security guarantee.
+Dependencies are provisional; CI now generates Cargo.lock, prints the dependency tree, builds/tests with --locked, and publishes the lockfile artifact. Commit the verified lockfile and remove per-run resolution before release; advisory and license audit remain pending. Never replace or overwrite a source DOCX.
 No claim of Word compatibility or GUI testing.
 
 ## Roadmap
 C1.0 foundations and bounded read-only probe.
 C1.1 OPC graph and bounded URI resolution implemented in source; build and real corpus not yet verified.
-C1.2 strict ZIP central-directory/local-header validation, URI compatibility, lockfile and dependency review, real DOCX corpus regression.
+C1.2 ZIP32 structural preflight, bounded expansion and conservative encoded URI support implemented in source. Build, real corpus and dependency audit remain gates.
 C2 styles, numbering, sections, tables, media and unsupported-node preservation.
 C3 transactions, selection and undo; C4 typography; C5 pagination; C6 advanced layout;
 C7 math; C8 citations/fields; C9 DOCX writer; C10 reference comparison and safety; C11 Electron integration.
@@ -45,3 +46,10 @@ cargo run --manifest-path rwcore/Cargo.toml -p rwcore --example corpus_probe -- 
 ```
 
 The probe reports package/edge/block/warning counts and nonzero exit on parse errors. Success means the supported subset was read, not that layout or content fidelity was achieved. Full ZIP integrity validation, dependency lockfile and real-world corpus results remain pending.
+
+## C1.2 validation and remaining gates
+
+- 13 additional synthetic ZIP/URI cases in core/tests/zip_guard.rs (33 total source test cases).
+- No real DOCX corpus was supplied; run corpus_probe against representative legal local Word files (Word, LibreOffice, SCI templates, images, equations, sections, Chinese/English) and record failures without uploading document contents.
+- CI success has not been verified. Lockfile artifact is configured but not yet committed. No complete security audit or DOCX compatibility claim.
+- C2.0 next after foundation verification: WordprocessingML paragraph/run properties, styles and inheritance, explicit diagnostics for unsupported properties; then tables and sections.
