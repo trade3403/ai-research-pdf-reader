@@ -90,7 +90,11 @@ pub enum Command{
     BeginGroup{opacity:f64,blend:BlendMode},
     /// Non-isolated RGB group with inherited backdrop.
     BeginNonIsolatedGroup{opacity:f64,blend:BlendMode},
+    BeginKnockoutGroup{opacity:f64,blend:BlendMode,isolated:bool},
     EndGroup,
+    BeginSoftMask,
+    EndSoftMask{luminosity:bool,backdrop:[f64;3]},
+    ClearSoftMask,
     /// Current nonstroking color, needed by stencil images.
     StencilColor(Color),
     Paint{path:Path,fill:Option<(Color,FillRule)>,stroke:Option<Stroke>},
@@ -112,12 +116,12 @@ pub struct DisplayList{
 }
 #[derive(Clone)]
 struct State{
-    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,blend:BlendMode,
+    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,blend:BlendMode,knockout:bool,in_mask:bool,
 }
 impl Default for State{
     fn default()->Self{
         Self{ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
-            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.,blend:BlendMode::Normal}
+            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.,blend:BlendMode::Normal,knockout:false,in_mask:false}
     }
 }
 impl State{
@@ -216,22 +220,20 @@ impl<'d,'a> Engine<'d,'a>{
                 let group_isolated=if let Some(group)=dict.get(b"Group".as_slice()){
                     let group=crate::dict(self.doc.dereference(group)?)?;
                     if !matches!(group.get(b"S".as_slice()).map(|v|self.doc.dereference(v)).transpose()?,Some(Object::Name(n)) if n==b"Transparency"){return Err(Error::Unsupported("Form group subtype"));}
-                    let mut isolated=false;
+                    let mut isolated=false;let mut knockout=false;
                     for (k,v) in &group{
                         let v=self.doc.dereference(v)?;
                         match k.as_slice(){
                             b"Type" if matches!(&v,Object::Name(n) if n==b"Group")=>{},
                             b"S" if matches!(&v,Object::Name(n) if n==b"Transparency")=>{},
                             b"I"=>if let Object::Bool(v)=v{isolated=v;}else{return Err(Error::Invalid("group I"));},
-                            b"K" if v==Object::Bool(false)=>{},
-                            b"K" if v==Object::Bool(true)=>return Err(Error::Unsupported("knockout transparency group")),
-                            b"K"=>return Err(Error::Invalid("group K")),
+                            b"K"=>if let Object::Bool(v)=v{knockout=v;}else{return Err(Error::Invalid("group K"));},
                             b"CS" if matches!(&v,Object::Name(n) if n==b"DeviceRGB")=>{},
                             b"CS"=>return Err(Error::Unsupported("non-RGB transparency group color space")),
                             _=>return Err(Error::Unsupported("transparency group parameter")),
                         }
                     }
-                    Some(isolated)
+                    Some((isolated,knockout))
                 }else{None};
                 if let Some(v)=dict.get(b"FormType".as_slice()){
                     if number(v)?!=1.{return Err(Error::Unsupported("FormType"));}
@@ -248,8 +250,9 @@ impl<'d,'a> Engine<'d,'a>{
                 self.bytes_left-=data.len();
                 let ops=content::parse(&data)?;
                 self.command(Command::Save)?;
-                if let Some(isolated)=group_isolated{
-                    self.command(if isolated{Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend}}else{Command::BeginNonIsolatedGroup{opacity:s.fill_alpha,blend:s.blend}})?;
+                if let Some((isolated,knockout))=group_isolated{
+                    child.knockout=knockout;
+                    self.command(if knockout{Command::BeginKnockoutGroup{opacity:s.fill_alpha,blend:s.blend,isolated}}else if isolated{Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend}}else{Command::BeginNonIsolatedGroup{opacity:s.fill_alpha,blend:s.blend}})?;
                     child.fill_alpha=1.;child.stroke_alpha=1.;child.blend=BlendMode::Normal;
                 }
                 self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
@@ -285,7 +288,63 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("graphics complex color space")),
         }
     }
-    fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State)->Result<()>{
+    fn soft_mask(&mut self,resources:Option<&Object>,v:Object,s:&State,depth:usize)->Result<()>{
+        if s.in_mask||s.knockout{return Err(Error::Unsupported("nested or knockout graphics soft mask"));}
+        if depth>=MAX_FORMS{return Err(Error::Limit("soft mask depth"));}
+        let d=crate::dict(v)?;
+        let mut luminosity=false;let mut backdrop=[0.;3];
+        for (k,v) in &d{
+            let v=self.doc.dereference(v)?;
+            match k.as_slice(){
+                b"Type" if matches!(v,Object::Name(n) if n==b"Mask")=>{},
+                b"S"=>match v{Object::Name(n) if n==b"Alpha"=>{},Object::Name(n) if n==b"Luminosity"=>luminosity=true,_=>return Err(Error::Unsupported("soft mask subtype"))},
+                b"G"=>{},
+                b"TR" if matches!(v,Object::Name(n) if n==b"Identity")=>{},
+                b"BC"=>{let Object::Array(a)=v else{return Err(Error::Invalid("soft mask BC"));};backdrop=nums(&a)?;if backdrop.iter().any(|v|!(0.0..=1.0).contains(v)){return Err(Error::Invalid("soft mask BC range"));}}
+                _=>return Err(Error::Unsupported("soft mask parameter or transfer function")),
+            }
+        }
+        if !d.contains_key(b"S".as_slice()){return Err(Error::Invalid("soft mask subtype"));}
+        let id=crate::reference(d.get(b"G".as_slice()))?;
+        if !self.active.insert(id){return Err(Error::Invalid("soft mask cycle"));}
+        let result=(||{
+            let stream=self.doc.resolve(id.0,id.1)?;
+            let Object::Stream{dict,..}=&stream else{return Err(Error::Invalid("soft mask Form"));};
+            if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==b"Form"){return Err(Error::Invalid("soft mask Form subtype"));}
+            let group=crate::dict(self.doc.dereference(dict.get(b"Group".as_slice()).ok_or(Error::Invalid("soft mask group"))?)?)?;
+            for (k,v) in &group{
+                let v=self.doc.dereference(v)?;
+                match k.as_slice(){
+                    b"Type" if matches!(v,Object::Name(n) if n==b"Group")=>{},
+                    b"S" if matches!(v,Object::Name(n) if n==b"Transparency")=>{},
+                    b"I" if v==Object::Bool(true)=>{},
+                    b"K" if v==Object::Bool(false)=>{},
+                    b"CS" if matches!(v,Object::Name(n) if n==b"DeviceRGB")=>{},
+                    _=>return Err(Error::Unsupported("soft mask requires isolated RGB non-knockout group")),
+                }
+            }
+            if !matches!(group.get(b"I".as_slice()).map(|v|self.doc.dereference(v)).transpose()?,Some(Object::Bool(true)))||
+                !matches!(group.get(b"S".as_slice()).map(|v|self.doc.dereference(v)).transpose()?,Some(Object::Name(n)) if n==b"Transparency")||
+                !matches!(group.get(b"CS".as_slice()).map(|v|self.doc.dereference(v)).transpose()?,Some(Object::Name(n)) if n==b"DeviceRGB"){
+                return Err(Error::Unsupported("soft mask requires isolated RGB non-knockout group"));
+            }
+            if let Some(v)=dict.get(b"FormType".as_slice()){if number(v)?!=1.{return Err(Error::Unsupported("soft mask FormType"));}}
+            let mut child=s.clone();child.in_mask=true;child.fill_alpha=1.;child.stroke_alpha=1.;child.blend=BlendMode::Normal;
+            if let Some(v)=dict.get(b"Matrix".as_slice()){
+                let Object::Array(a)=self.doc.dereference(v)? else{return Err(Error::Invalid("soft mask Matrix"));};
+                child.ctm=child.ctm.compose(Matrix(nums(&a)?))?;
+            }
+            let bbox=self.doc.rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("soft mask BBox"))?)?;
+            let mut p=Current::default();self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;
+            let data=crate::filters::decode(&stream,self.bytes_left)?;self.bytes_left-=data.len();let ops=content::parse(&data)?;
+            self.command(Command::BeginSoftMask)?;
+            self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
+            self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
+            self.command(Command::EndSoftMask{luminosity,backdrop})
+        })();
+        self.active.remove(&id);result
+    }
+    fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State,depth:usize)->Result<()>{
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("ExtGState Resources"))?)?)?;
         let states=crate::dict(self.doc.dereference(r.get(b"ExtGState".as_slice()).ok_or(Error::Invalid("ExtGState dictionary"))?)?)?;
         let d=crate::dict(self.doc.dereference(states.get(n).ok_or(Error::Invalid("ExtGState name"))?)?)?;
@@ -301,7 +360,8 @@ impl<'d,'a> Engine<'d,'a>{
                         _=>None,
                     }.ok_or(Error::Unsupported("blend mode"))?;
                 },
-                b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{},
+                b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{self.command(Command::ClearSoftMask)?;}
+                b"SMask" if matches!(&v,Object::Dict(_))=>{if !crate::dict(v.clone())?.contains_key(b"G".as_slice()){return Err(Error::Unsupported("ExtGState graphics soft mask"));}self.soft_mask(resources,v,s,depth)?;}
                 b"AIS" if v==Object::Bool(false)=>{},
                 b"TK" if v==Object::Bool(true)=>{},
                 b"LW"=>{let x=number(&v)?;if x<0.{return Err(Error::Invalid("ExtGState line width"));}s.stroke.width=x;}
@@ -367,6 +427,7 @@ impl<'d,'a> Engine<'d,'a>{
                 b"S"|b"s"|b"f"|b"F"|b"f*"|b"B"|b"B*"|b"b"|b"b*"|b"n"=>{
                     arity(a,0)?;
                     let fill=match w{b"f"|b"F"|b"B"|b"b"=>Some(FillRule::NonZero),b"f*"|b"B*"|b"b*"=>Some(FillRule::EvenOdd),_=>None};
+                    if s.knockout&&matches!(w,b"B"|b"B*"|b"b"|b"b*"){return Err(Error::Unsupported("combined fill stroke in knockout"));}
                     self.finish(&mut p,&s,fill,matches!(w,b"S"|b"s"|b"B"|b"B*"|b"b"|b"b*"),matches!(w,b"s"|b"b"|b"b*"))?;
                 }
                 b"w"=>{let v=nums::<1>(a)?[0];if v<0.{return Err(Error::Invalid("line width"));}s.stroke.width=v;}
@@ -389,8 +450,9 @@ impl<'d,'a> Engine<'d,'a>{
                 b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
                 b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
                 b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
-                b"Do"=>{arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth)?;}
+                b"Do"=>{if s.knockout||s.in_mask{return Err(Error::Unsupported("XObject inside path-only knockout or soft mask"));}arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth)?;}
                 b"BT"|b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""=> {
+                    if s.knockout||s.in_mask{return Err(Error::Unsupported("text inside path-only knockout or soft mask"));}
                     match w{
                         b"BT"=>{arity(a,0)?;if in_text{return Err(Error::Invalid("nested BT"));}in_text=true;}
                         b"ET"=>{arity(a,0)?;if !in_text{return Err(Error::Invalid("ET without BT"));}in_text=false;}
@@ -403,7 +465,7 @@ impl<'d,'a> Engine<'d,'a>{
                 b"BMC"|b"BDC"|b"EMC"|b"MP"|b"DP"=>self.warning(Warning::MarkedContentNotInterpreted),
                 b"ri"=>{arity(a,1)?;name(&a[0])?;}
                 b"i"=>{let v=nums::<1>(a)?[0];if !(0.0..=100.).contains(&v){return Err(Error::Invalid("flatness"));}}
-                b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s)?;}
+                b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s,depth)?;}
                 b"sh"=>return Err(Error::Unsupported("shading")),
                 _=>return Err(Error::Unsupported("graphics operator")),
             }

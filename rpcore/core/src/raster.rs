@@ -251,11 +251,13 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
 // The cap counts all live offscreen buffers, excluding the existing root surface.
 const MAX_GROUP_BYTES:usize=128*1024*1024;
 const MAX_GROUP_DEPTH:usize=8;
+// Cumulative generated mask bytes per render, even if earlier masks were dropped.
+const MAX_SOFT_MASK_BYTES:usize=64*1024*1024;
 struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
-    coverage:Option<Vec<f32>>,
+    coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Vec<u8>>>,page_clip:Arc<Vec<u8>>}
 impl Surface{
     fn mark_coverage(&mut self,index:usize,alpha:f64){
         if let Some(coverage)=self.groups.last_mut().and_then(|g|g.coverage.as_mut()){
@@ -263,8 +265,9 @@ impl Surface{
             coverage[index]=(alpha+a*(1.-alpha)) as f32;
         }
     }
+    fn mask_factor(&self,i:usize)->f64{self.soft_mask.as_ref().map_or(1.,|m|f64::from(m[i])/255.)}
     fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
-        let alpha=alpha.clamp(0.,1.);
+        let alpha=(alpha*self.mask_factor(i/3)).clamp(0.,1.);
         if alpha==0.{return;}
         self.mark_coverage(i/3,alpha);
         let ab=self.alpha.as_ref().map_or(1.,|a|f64::from(a[i/3]));
@@ -283,7 +286,7 @@ impl Surface{
         }
         if let Some(a)=&mut self.alpha{a[i/3]=ao as f32;}
     }
-    fn begin_group(&mut self,opacity:f64,blend:BlendMode,isolated:bool)->Result<()>{
+    fn begin_group(&mut self,opacity:f64,blend:BlendMode,isolated:bool,knockout:bool)->Result<()>{
         let pixels=self.w*self.h;
         let used=self.groups.iter().map(|g|if g.coverage.is_some(){44}else{28}).sum::<usize>();
         if self.groups.len()>=MAX_GROUP_DEPTH||(used+if isolated{28}else{44})*pixels>MAX_GROUP_BYTES{return Err(Error::Limit("transparency group buffers"));}
@@ -292,7 +295,7 @@ impl Surface{
         let alpha=if isolated{vec![0.;pixels*4]}else{self.alpha.clone().unwrap_or_else(||vec![1.;pixels*4])};
         let parent=GroupLayer{samples:std::mem::replace(&mut self.samples,colors),
             alpha:self.alpha.replace(alpha),opacity,blend,stack_depth:self.stack.len(),
-            coverage:if isolated{None}else{Some(vec![0.;pixels*4])}};
+            coverage:if isolated{None}else{Some(vec![0.;pixels*4])},knockout,soft_mask:self.soft_mask.take()};
         self.groups.push(parent);
         self.fill_alpha=1.;self.stroke_alpha=1.;self.blend_mode=BlendMode::Normal;
         Ok(())
@@ -302,12 +305,12 @@ impl Surface{
         if self.stack.len()!=parent.stack_depth{return Err(Error::Invalid("group graphics stack"));}
         let colors=std::mem::replace(&mut self.samples,parent.samples);
         let alpha=std::mem::replace(&mut self.alpha,parent.alpha).ok_or(Error::Invalid("missing group alpha"))?;
-        self.blend_mode=parent.blend;
+        self.blend_mode=parent.blend;self.soft_mask=parent.soft_mask;
         self.budget.charge(self.w*self.h*if parent.coverage.is_some(){8}else{4})?;
         // Group coverage includes clip and BBox; no repeated clip on exit.
         if let Some(coverage)=parent.coverage{
             for (i,&ag) in coverage.iter().enumerate(){
-                let ag=f64::from(ag);let scale=parent.opacity;
+                let ag=f64::from(ag);let scale=parent.opacity*self.mask_factor(i);
                 if ag<=0.||scale<=0.{continue;}
                 let ab=self.alpha.as_ref().map_or(1.,|a|f64::from(a[i]));
                 let ar=f64::from(alpha[i]);let at=i*3;
@@ -325,7 +328,7 @@ impl Surface{
                     // Recover the group contribution in premultiplied space.
                     // RGB8 intermediate precision can affect small coverage.
                     let c=std::array::from_fn(|k|((f64::from(colors[at+k])*ar-f64::from(self.samples[at+k])*ab*(1.-ag))/ag).round().clamp(0.,255.)as u8);
-                    self.blend(at,c,ag*scale);
+                    self.blend(at,c,ag*parent.opacity);
                 }
             }
         }else{
@@ -335,13 +338,54 @@ impl Surface{
         }
         Ok(())
     }
+    fn begin_soft_mask(&mut self)->Result<()>{
+        if self.mask_clip.is_some(){return Err(Error::Unsupported("nested soft mask"));}
+        let n=self.w*self.h*4;
+        if n>MAX_SOFT_MASK_BYTES-self.mask_bytes{return Err(Error::Limit("soft mask bytes"));}
+        self.mask_bytes+=n;
+        self.begin_group(1.,BlendMode::Normal,true,false)?;
+        self.mask_clip=Some(std::mem::replace(&mut self.clip,Arc::clone(&self.page_clip)));
+        Ok(())
+    }
+    fn end_soft_mask(&mut self,luminosity:bool,backdrop:[f64;3])->Result<()>{
+        let parent=self.groups.pop().ok_or(Error::Invalid("soft mask group stack"))?;
+        if self.stack.len()!=parent.stack_depth{return Err(Error::Invalid("soft mask graphics stack"));}
+        let colors=std::mem::replace(&mut self.samples,parent.samples);
+        let alpha=std::mem::replace(&mut self.alpha,parent.alpha).ok_or(Error::Invalid("soft mask alpha"))?;
+        self.clip=self.mask_clip.take().ok_or(Error::Invalid("soft mask clip"))?;
+        self.budget.charge(self.w*self.h*4)?;
+        let mut values=Vec::with_capacity(alpha.len());
+        for (i,&a) in alpha.iter().enumerate(){
+            let a=f64::from(a);
+            let v=if luminosity{
+                let c=std::array::from_fn::<_,3,_>(|k|a*f64::from(colors[i*3+k])/255.+(1.-a)*backdrop[k]);
+                0.3*c[0]+0.59*c[1]+0.11*c[2]
+            }else{a};
+            values.push((v.clamp(0.,1.)*255.).round()as u8);
+        }
+        self.soft_mask=Some(Arc::new(values));self.blend_mode=parent.blend;
+        // ExtGState emits the caller's constant opacity and blend immediately
+        // after mask creation. Old soft mask is intentionally replaced.
+        Ok(())
+    }
+    fn knockout_sample(&mut self,i:usize){
+        let Some(g)=self.groups.last_mut().filter(|g|g.knockout) else{return;};
+        let a=self.alpha.as_mut().expect("group alpha");
+        if let Some(coverage)=g.coverage.as_mut(){
+            coverage[i/3]=0.;
+            self.samples[i..i+3].copy_from_slice(&g.samples[i..i+3]);
+            a[i/3]=g.alpha.as_ref().map_or(1.,|a|a[i/3]);
+        }else{
+            self.samples[i..i+3].fill(0);a[i/3]=0.;
+        }
+    }
     fn paint(&mut self,mask:&Coverage,c:[u8;3],alpha:f64)->Result<()>{
         self.budget.charge(mask.w*mask.h*4)?;
         for row in 0..mask.h{
             let base=(mask.y+row)*self.w+mask.x;
             for col in 0..mask.w{
                 let i=base+col;let m=mask.data[row*mask.w+col]&self.clip[i];
-                for s in 0..4{if m&(1<<s)!=0{self.blend(i*12+s*3,c,alpha);}}
+                for s in 0..4{if m&(1<<s)!=0{let at=i*12+s*3;self.knockout_sample(at);self.blend(at,c,alpha);}}
             }
         }Ok(())
     }
@@ -369,7 +413,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new()};
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip.clone()),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:Arc::new(clip)};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -377,14 +421,18 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
         match c{
             Command::Save=>{
                 if s.stack.len()>=64||(s.stack.len()+2)*w*h>MAX_CLIP_BYTES{return Err(Error::Limit("raster clip stack"));}
-                s.stack.push((Arc::clone(&s.clip),s.fill_alpha,s.stroke_alpha,s.blend_mode));text.save();
+                s.stack.push((Arc::clone(&s.clip),s.fill_alpha,s.stroke_alpha,s.blend_mode,s.soft_mask.clone()));text.save();
             }
-            Command::Restore=>{let (clip,fa,sa,bm)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;s.blend_mode=bm;text.restore()?;}
+            Command::Restore=>{let (clip,fa,sa,bm,sm)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;s.blend_mode=bm;s.soft_mask=sm;text.restore()?;}
             Command::Opacity{fill,stroke}=>{s.fill_alpha=*fill;s.stroke_alpha=*stroke;}
             Command::Blend(b)=>s.blend_mode=*b,
-            Command::BeginGroup{opacity,blend}=>s.begin_group(*opacity,*blend,true)?,
-            Command::BeginNonIsolatedGroup{opacity,blend}=>s.begin_group(*opacity,*blend,false)?,
+            Command::BeginGroup{opacity,blend}=>s.begin_group(*opacity,*blend,true,false)?,
+            Command::BeginNonIsolatedGroup{opacity,blend}=>s.begin_group(*opacity,*blend,false,false)?,
+            Command::BeginKnockoutGroup{opacity,blend,isolated}=>s.begin_group(*opacity,*blend,*isolated,true)?,
             Command::EndGroup=>s.end_group()?,
+            Command::BeginSoftMask=>s.begin_soft_mask()?,
+            Command::EndSoftMask{luminosity,backdrop}=>s.end_soft_mask(*luminosity,*backdrop)?,
+            Command::ClearSoftMask=>s.soft_mask=None,
             Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
