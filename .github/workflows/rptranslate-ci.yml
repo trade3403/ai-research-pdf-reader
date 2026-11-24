@@ -43,7 +43,7 @@ jobs:
   model-tokenizer-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'D1.2b1')
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.2b1') || contains(github.event.head_commit.message, 'D1.2b2a'))
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,3 +61,20 @@ jobs:
         run: |
           cargo run --locked --offline -p rpmodel --example inspect_spm -- "$RUNNER_TEMP/rp-tokenizer/source.spm"
           cargo run --locked --offline -p rpmodel --example inspect_spm -- "$RUNNER_TEMP/rp-tokenizer/target.spm"
+
+      - name: Verify pinned tokenizer checksums
+        run: |
+          cd "$RUNNER_TEMP/rp-tokenizer"
+          sha256sum -c <<'EOF'
+          5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8  source.spm
+          81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052  target.spm
+          f1832ca38f7aa158b9a944ff583e4901e6b37d9d4ad9241f03838e636e9cfb03  vocab.json
+          EOF
+      - name: Compare actual model normalization
+        if: contains(github.event.head_commit.message, 'D1.2b2a')
+        working-directory: rptranslate
+        run: |
+          python3 -m venv "$RUNNER_TEMP/spm-reference"
+          "$RUNNER_TEMP/spm-reference/bin/pip" install --disable-pip-version-check --only-binary=:all: sentencepiece==0.2.1
+          cargo build --locked --offline -p rpmodel --example normalize_spm
+          "$RUNNER_TEMP/spm-reference/bin/python" crates/rpmodel/tests/check_real_normalization.py "$RUNNER_TEMP/rp-tokenizer"

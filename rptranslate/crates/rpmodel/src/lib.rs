@@ -1,4 +1,5 @@
 //! Model metadata and bounded local weight-file reader.
+pub mod normalization;
 pub mod safetensors;
 pub mod spm;
 pub mod tokenizer;
