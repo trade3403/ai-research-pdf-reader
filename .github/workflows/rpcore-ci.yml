@@ -1,0 +1,30 @@
+name: RPCore bootstrap CI
+on:
+  push:
+    branches: [feature/rpcore-bootstrap, main]
+    paths: ['rpcore/**', '.github/workflows/rpcore-ci.yml']
+  pull_request:
+    paths: ['rpcore/**', '.github/workflows/rpcore-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path rpcore/Cargo.toml --locked
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-${{ matrix.os }}
+          path: |
+            rpcore/target/release/rpcore
+            rpcore/target/release/rpcore.exe
+          if-no-files-found: error
