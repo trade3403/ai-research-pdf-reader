@@ -7,6 +7,11 @@ use crate::{graphics::{Path,Segment},text::{Matrix,Point},Error,Result};
 pub struct GlyphGeometry{
     pub code:Vec<u8>,
     pub unicode:Option<String>,
+    /// True when a resolved native Type1/CFF name supplied missing Unicode.
+    /// PDF ToUnicode and PDF encoding mappings retain precedence.
+    pub unicode_from_embedded_name:bool,
+    /// Actual resolved embedded simple-font name; not a substitute or CID.
+    pub embedded_glyph_name:Option<Vec<u8>>,
     pub cid:Option<u32>,
     pub base_font:Option<Vec<u8>>,
     pub font_resource:Vec<u8>,
@@ -81,7 +86,7 @@ impl Collector{
         outline_bounds(path,m)
     }
     pub(super) fn push(&mut self,g:GlyphGeometry)->Result<()>{
-        let n=g.code.len()+g.unicode.as_ref().map_or(0,String::len)+g.base_font.as_ref().map_or(0,Vec::len)+g.font_resource.len();
+        let n=g.code.len()+g.unicode.as_ref().map_or(0,String::len)+g.base_font.as_ref().map_or(0,Vec::len)+g.font_resource.len()+g.embedded_glyph_name.as_ref().map_or(0,Vec::len);
         self.bytes=self.bytes.checked_add(n).ok_or(Error::Limit("glyph geometry bytes"))?;
         if self.bytes>16*1024*1024||self.glyphs.len()>=100_000{return Err(Error::Limit("glyph geometry output"));}
         self.glyphs.push(g);Ok(())

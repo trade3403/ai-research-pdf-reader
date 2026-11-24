@@ -71,6 +71,16 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
                     println!("math_geometry=ok\nselected={}\nmapped={}\nscripts={}\nfractions={}\nradicals={}",
                         m.glyph_indices.len(),m.glyph_indices.iter().filter(|&&i|g.glyphs[i].unicode.as_ref().is_some_and(|s|!s.is_empty())).count(),
                         m.scripts.len(),m.fractions.len(),m.radicals.len());
+                    println!("embedded_name_mapped={}",m.glyph_indices.iter().filter(|&&i|g.glyphs[i].unicode_from_embedded_name).count());
+                    for &i in &m.glyph_indices{
+                        let x=&g.glyphs[i];
+                        println!("glyph_diag_{i}=code={:?}; font={:?}; name={:?}; unicode={:?}; fallback={}; origin={:?}; advance={:?}; em={:?}; bounds={:?}; command={}",
+                            x.code,x.base_font.as_ref().map(|n|String::from_utf8_lossy(n)),x.embedded_glyph_name.as_ref().map(|n|String::from_utf8_lossy(n)),
+                            x.unicode,x.unicode_from_embedded_name,x.origin,x.advance_end,x.em_matrix.0,x.outline_bounds,x.command_index);
+                    }
+                    println!("script_diag={:?}",m.scripts);
+                    println!("fraction_diag={:?}",m.fractions);
+                    println!("radical_diag={:?}",m.radicals);
                     println!("substituted_fonts={}",g.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(","));
                     if m.glyph_indices.is_empty(){Err(Error::Unsupported("empty selected formula"))}
                     else{match rpcore::raster::math_tree::build_tree(&g,&m){

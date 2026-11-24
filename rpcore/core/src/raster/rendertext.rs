@@ -19,7 +19,36 @@ fn grid_baseline(mut device:Matrix,fm:Matrix)->Matrix{
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
 enum Outline{Tt(TrueType),SimpleTt(TrueType,[Option<u16>;256]),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool),ReplacementType1(Type1)}
-struct Face{font:Font,outline:Outline}
+struct Face{
+    font:Font,outline:Outline,
+    embedded_names:[Option<Vec<u8>>;256],
+    embedded_unicode:[Option<String>;256],
+}
+impl Face{
+    fn new(font:Font,outline:Outline)->Self{
+        let mut names:[Option<Vec<u8>>;256]=std::array::from_fn(|_|None);
+        match &outline{
+            Outline::Type1(t,diff,standard)=>{
+                for code in 0..=255u8{
+                    names[code as usize]=diff.get(&code).map(Vec::as_slice)
+                        .or_else(||if *standard{standard_name(code)}else{t.glyph_name(code)}).map(<[u8]>::to_vec);
+                }
+            }
+            Outline::Cff(c,map) if !c.is_cid()&&font.standard_face().is_none()=>{
+                // The resolved map includes all PDF encoding overrides. Reverse
+                // only the at-most-256 selected IDs, in one bounded charset pass.
+                let mut codes:BTreeMap<u16,Vec<usize>>=BTreeMap::new();
+                for (i,gid) in map.iter().enumerate(){if let Some(id)=gid{codes.entry(*id).or_default().push(i);}}
+                for (gid,name) in c.named_glyphs(){
+                    if let Some(indices)=codes.get(&gid){for &i in indices{names[i]=Some(name.to_vec());}}
+                }
+            }
+            _=>{}
+        }
+        let embedded_unicode=std::array::from_fn(|i|names[i].as_deref().and_then(crate::fonts::glyph_name_unicode));
+        Self{font,outline,embedded_names:names,embedded_unicode}
+    }
+}
 fn differences(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<BTreeMap<u8,Vec<u8>>>{
     let Object::Dict(enc)=doc.dereference(d.get(b"Encoding".as_slice()).ok_or(Error::Invalid("missing Encoding dictionary"))?)? else{return Err(Error::Invalid("Encoding dictionary"));};
     let Object::Array(a)=doc.dereference(enc.get(b"Differences".as_slice()).ok_or(Error::Unsupported("CFF Differences required"))?)? else{return Err(Error::Invalid("CFF Differences"));};
@@ -194,7 +223,7 @@ impl TextRenderer{
                 };
                 self.font_bytes+=program.len();
                 if !self.substituted.contains(&face){self.substituted.push(face);}
-                let f=Arc::new(Face{font,outline});if let Some(id)=id{self.indirect_fonts.insert(id,Arc::clone(&f));}self.fonts.insert(cache_key,Arc::clone(&f));return Ok(f);
+                let f=Arc::new(Face::new(font,outline));if let Some(id)=id{self.indirect_fonts.insert(id,Arc::clone(&f));}self.fonts.insert(cache_key,Arc::clone(&f));return Ok(f);
             }
         }
         let cid=if matches!(font.kind,FontKind::Type0Cid0|FontKind::Type0Cid2){
@@ -235,7 +264,7 @@ impl TextRenderer{
             let names=if c.is_cid(){[None;256]}else{cff_mapping(doc,&d,&c)?};
             Outline::Cff(c,names)
         };
-        let f=Arc::new(Face{font,outline});
+        let f=Arc::new(Face::new(font,outline));
         if let Some(id)=id{self.indirect_fonts.insert(id,Arc::clone(&f));}self.fonts.insert(cache_key,Arc::clone(&f));Ok(f)
     }
     fn next_line(&mut self,x:f64,y:f64)->Result<()>{self.line=self.line.compose(Matrix::translation(x,y))?;self.tm=self.line;Ok(())}
@@ -301,8 +330,16 @@ impl TextRenderer{
             let advance=(width/1000.*self.state.size+self.state.tc+word)*self.state.scale;
             if let Some(g)=&mut self.geometry{
                 let m=ctm.compose(self.tm)?;
+                // Only use a native name after a visible glyph's outline has
+                // been successfully resolved. Never override a PDF Unicode map.
+                let (embedded_glyph_name,fallback)=if glyph.code.len()==1&&self.state.mode!=3{
+                    let i=glyph.code[0]as usize;
+                    (f.embedded_names[i].clone(),f.embedded_unicode[i].clone())
+                }else{(None,None)};
+                let unicode_from_embedded_name=glyph.unicode.is_none()&&fallback.is_some();
+                let unicode=glyph.unicode.or(fallback);
                 g.push(GlyphGeometry{
-                    code:glyph.code,unicode:glyph.unicode,cid:glyph.cid,base_font:f.font.base_font.clone(),
+                    code:glyph.code,unicode,unicode_from_embedded_name,embedded_glyph_name,cid:glyph.cid,base_font:f.font.base_font.clone(),
                     font_resource:self.state.font_resource.clone(),font_resource_owner:self.state.font_owner,
                     form_scope:g.scope,command_index:g.command_index,origin:m.point([0.,self.state.rise])?,
                     advance_end:m.point([advance,self.state.rise])?,em_matrix:em,rendering_mode:self.state.mode,outline_bounds:bounds,

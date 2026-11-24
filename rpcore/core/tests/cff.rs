@@ -127,3 +127,23 @@ fn otto(cff:&[u8])->Vec<u8>{
     let mut b=wrapped.clone();b[12..16].copy_from_slice(b"CFF2");assert!(Cff::parse_opentype(&b).is_err());
     let mut b=wrapped.clone();b.pop();assert!(Cff::parse_opentype(&b).is_err());
 }
+
+#[test]fn native_cff_geometry_uses_resolved_names_not_codes(){
+    let f=fixture::encoded_font(3,[34,35],2,&[0,2,66,65]);
+    let p=fixture::pdf_with_font(false,b"BT /F1 20 Tf 10 20 Td (AB) Tj ET",f,"");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let g=d.page_glyph_geometry(&pages[0],10000,None).unwrap();
+    assert_eq!(g.glyphs[0].unicode.as_deref(),Some("B"));
+    assert_eq!(g.glyphs[1].unicode.as_deref(),Some("A"));
+    assert_eq!(g.glyphs[0].embedded_glyph_name.as_deref(),Some(b"B".as_slice()));
+    assert!(g.glyphs.iter().all(|x|x.unicode_from_embedded_name));
+    let f=fixture::encoded_font(3,[34,35],2,&[0,2,66,65]);
+    let p=fixture::pdf_with_font(false,b"BT /F1 20 Tf 10 20 Td (AB) Tj ET",f,"/Encoding /StandardEncoding");
+    let d=Document::open(&p).unwrap();
+    let g=d.page_glyph_geometry(&d.pages().unwrap()[0],10000,None).unwrap();
+    assert_eq!(g.glyphs[0].unicode.as_deref(),Some("A"));
+    assert!(!g.glyphs[0].unicode_from_embedded_name);
+    let p=fixture::pdf(true,b"BT /F1 20 Tf 10 20 Td <002a> Tj ET");
+    let d=Document::open(&p).unwrap();let g=d.page_glyph_geometry(&d.pages().unwrap()[0],10000,None).unwrap();
+    assert_eq!(g.glyphs[0].unicode,None);assert_eq!(g.glyphs[0].embedded_glyph_name,None);
+}

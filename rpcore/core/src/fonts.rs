@@ -83,6 +83,13 @@ fn glyph_name(n:&[u8])->Option<String>{
     };
     Some(special.to_owned())
 }
+/// Conservative Adobe-name lookup, independent of a character code.
+/// No inference from numeric CIDs, glyph IDs, subset names, or outline shape.
+pub(crate) fn glyph_name_unicode(n:&[u8])->Option<String>{
+    let stem=n.split(|&b|b==b'.').next()?;
+    glyph_name(n).or_else(||standard::StandardFont::Helvetica.unicode(stem))
+        .or_else(||standard::StandardFont::Symbol.unicode(stem))
+}
 fn base_char(base:Base,c:u8)->Option<String>{
     let ch=match base{
         Base::Unknown|Base::MacRoman|Base::MacExpert|Base::Symbol|Base::Ding=>return None,
@@ -113,7 +120,7 @@ impl Simple{
                                 Object::Name(n)=>{
                                     let i=next.ok_or(Error::Invalid("font Differences start"))?;
                                     if i>255{return Err(Error::Invalid("font Differences range"));}
-                                    out.differences.insert(i as u8,glyph_name(&n));out.names.insert(i as u8,n);next=Some(i+1);
+                                    out.differences.insert(i as u8,glyph_name_unicode(&n));out.names.insert(i as u8,n);next=Some(i+1);
                                 }
                                 _=>return Err(Error::Invalid("font Differences item")),
                             }
@@ -133,9 +140,9 @@ impl Simple{
     fn unicode(&self,c:u8)->Option<String>{
         if let Some(f)=self.standard{
             // Respect explicit Differences, including unknown glyph names.
-            return self.name(c).and_then(|n|f.unicode(n).or_else(||glyph_name(n)));
+            return self.name(c).and_then(|n|f.unicode(n).or_else(||glyph_name_unicode(n)));
         }
-        match self.differences.get(&c){Some(v)=>v.clone(),None=>base_char(self.base,c).or_else(||self.name(c).and_then(glyph_name))}
+        match self.differences.get(&c){Some(v)=>v.clone(),None=>base_char(self.base,c).or_else(||self.name(c).and_then(glyph_name_unicode))}
     }
 }
 fn cid_widths(doc:&Document<'_>,d:&Dict)->Result<(BTreeMap<u32,f64>,Option<f64>)>{

@@ -304,6 +304,10 @@ impl Cff{
     pub fn glyph_count(&self)->usize{self.chars.len()}
     pub fn font_matrix(&self)->Matrix{self.matrix}
     pub fn glyph_for_cid(&self,cid:u32)->Option<u16>{if self.cid{self.keys.get(&u16::try_from(cid).ok()?).copied()}else{None}}
+    /// Names of non-CID glyphs paired with their actual glyph IDs.
+    pub(crate) fn named_glyphs(&self)->impl Iterator<Item=(u16,&[u8])>+'_{
+        self.names.iter().map(|(name,&gid)|(gid,name.as_slice()))
+    }
     pub fn glyph_for_name(&self,name:&[u8])->Option<u16>{self.names.get(name).copied()}
     /// Resolve a simple font's built-in code; CID fonts have no byte encoding.
     pub fn glyph_for_code(&self,code:u8)->Option<u16>{self.encoding[code as usize]}

@@ -36,7 +36,7 @@ def invoke(probe, path, page, rect, font_dir):
     fields = dict(line.split("=",1) for line in p.stdout.splitlines() if "=" in line)
     if fields.get("status") not in KNOWN:
         return {"status":"protocol_error"}
-    for key in ("selected","mapped","scripts","fractions","radicals","engine_ms"):
+    for key in ("selected","mapped","scripts","fractions","radicals","embedded_name_mapped","engine_ms"):
         if key in fields:
             try:
                 fields[key] = int(fields[key])
@@ -44,6 +44,8 @@ def invoke(probe, path, page, rect, font_dir):
                 return {"status":"protocol_error"}
     if fields["status"] == "ok" and (not fields.get("latex") or fields.get("math_tree")!="ok" or not fields.get("selected")):
         return {"status":"protocol_error"}
+    # Selected-region diagnostics only; never full-page text.
+    fields["glyph_diagnostics"] = {k.removeprefix("glyph_diag_"):fields.pop(k) for k in list(fields) if k.startswith("glyph_diag_")}
     fields["wall_ms"] = round((time.monotonic()-start)*1000)
     return fields
 
@@ -85,16 +87,28 @@ def report_md(report):
     lines=["# RPCore real-paper formula benchmark","",
            "Manually selected normalized CropBox regions. Exact transcription comparison ignores whitespace only; not mathematical equivalence or automatic formula detection.",
            "Strict and explicit URW runs are scored separately. All cases, including rejected and failed cases, remain in the denominator.","",
-           "| Case | Font mode | Page | Result | Selected | Mapped | Scripts | Fractions | Roots | Reason |",
-           "|---|---|---:|---|---:|---:|---:|---:|---:|---|"]
+           "| Case | Font mode | Page | Result | Selected | Mapped | Name fallback | Scripts | Fractions | Roots | Reason |",
+           "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|"]
     for row in report["rows"]:
         v=row["result"]
-        fields=[row["id"],row["font_mode"],row["page"],row["outcome"],v.get("selected","—"),v.get("mapped","—"),v.get("scripts","—"),v.get("fractions","—"),v.get("radicals","—"),v.get("reason","—")]
+        fields=[row["id"],row["font_mode"],row["page"],row["outcome"],v.get("selected","—"),v.get("mapped","—"),v.get("embedded_name_mapped","—"),v.get("scripts","—"),v.get("fractions","—"),v.get("radicals","—"),v.get("reason","—")]
         lines.append("| "+" | ".join(str(x).replace("|",r"\|").replace("\n"," ") for x in fields)+" |")
     lines+=["","## Summary",""]
     for mode,counts in report["counts"].items():
         lines.append(f"- {mode}: {counts.get('exact_match',0)}/{sum(counts.values())} exact matches; {json.dumps(counts,sort_keys=True)}")
-    lines+=["","Reference and candidate LaTeX, source hashes and timings are in report.json. No threshold for fidelity is enforced."]
+    lines+=["","## Strict-mode selected-region diagnostics",""]
+    for row in report["rows"]:
+        if row["font_mode"]!="strict":
+            continue
+        v=row["result"]
+        lines.append(f"### {row['id']}")
+        # Debug format is escaped as literal code; avoid raw HTML/TeX in Markdown.
+        for key in ("latex","script_diag","fraction_diag","radical_diag"):
+            if key in v:
+                lines.append(f"- {key}: "+str(v[key]).replace("\n"," ").replace("<","&lt;").replace(">","&gt;"))
+        for i,diag in list(v.get("glyph_diagnostics",{}).items())[:64]:
+            lines.append(f"- glyph {i}: "+diag.replace("\n"," ").replace("<","&lt;").replace(">","&gt;"))
+    lines+=["","Reference and candidate LaTeX, selected-region glyph diagnostics, source hashes and timings are in report.json. No threshold for fidelity is enforced."]
     return "\n".join(lines)+"\n"
 
 def main():
