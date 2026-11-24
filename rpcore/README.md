@@ -40,6 +40,9 @@ The existing `filters::decode(&Object, limit)` API is unchanged. Final output is
 
 Render a supported page: `cargo run --manifest-path rpcore/Cargo.toml --release -- input.pdf --render 1 output.png 1.5`. Generate a real synthetic PDF and its rendered PNG: `cargo run --manifest-path rpcore/Cargo.toml --release --example render_demo -- rpcore/target/render-demo`. CI uploads the pair per platform. Not a GUI or a real-paper rendering claim.
 
+## B10.2 TrueType contract
+`fonts::truetype::TrueType::parse(Vec<u8>)` parses bounded sfnt head/maxp/loca/glyf/hhea/hmtx; `outline(gid)` emits cubic paths from on/off-curve points and implied quadratic midpoints, with XY-offset compound glyph transforms and cycle/depth/point budgets. `horizontal_metrics(gid)` exposes font advances and bearings; PDF W/DW still governs text spacing. Strict `render_page` renders horizontal embedded Type0 CIDFontType2 page text via CIDToGIDMap and FontFile2, retaining text operators, matrices, spacing, rise, fill/stroke and invisible mode. No hinting, checksums, TrueType simple-font cmap/name mapping, point-attached compound glyphs, Form text, vertical text, CFF/Type1 or system-font substitution yet. Explicit `allow_missing_text=true` remains a graphics-only preview, skipping all text with the missing_text flag. Maximum 16 MiB per embedded font, 32 MiB total font bytes, 16 fonts, 100k points per glyph and 16 recursion depth. Glyphs are rasterized by the native B10.1 path engine; performance remains prototype-level.
+
 ## Remaining
 Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, complete graphics/color interpretation, full rasterization and text rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 

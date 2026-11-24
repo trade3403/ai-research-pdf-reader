@@ -29,6 +29,7 @@ jobs:
             rpcore/target/release/rpcore.exe
           if-no-files-found: error
       - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example render_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example truetype_demo -- rpcore/target/render-demo
       - uses: actions/upload-artifact@v4
         with:
           name: rpcore-render-demo-${{ matrix.os }}

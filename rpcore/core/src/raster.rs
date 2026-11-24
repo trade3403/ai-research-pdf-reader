@@ -2,6 +2,7 @@
 use crate::{graphics::{Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,Segment,Stroke},text::{Matrix,Point},Document,Error,Object,PageInfo,Result};
 use std::sync::Arc;
 mod png;
+mod rendertext;
 const MAX_PIXELS:usize=4_000_000;
 const MAX_SIDE:usize=8192;
 const MAX_EDGES:usize=200_000;
@@ -247,14 +248,15 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
     let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default()};
     let mut missing_text=false;
+    let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
         s.budget.charge(1)?;
         match c{
             Command::Save=>{
                 if s.stack.len()>=64||(s.stack.len()+2)*w*h>MAX_CLIP_BYTES{return Err(Error::Limit("raster clip stack"));}
-                s.stack.push(Arc::clone(&s.clip));
+                s.stack.push(Arc::clone(&s.clip));text.save();
             }
-            Command::Restore=>s.clip=s.stack.pop().ok_or(Error::Invalid("raster restore"))?,
+            Command::Restore=>{s.clip=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;text.restore()?;}
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
                 let mut m=mask(&p,*rule,w,h,&mut s.budget)?;
@@ -267,9 +269,11 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
                 if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&mut s.budget)?;s.paint(&m,rgb(st.color))?;}
             }
             Command::Image{object_id,ctm}=>s.image(doc,*object_id,view.compose(*ctm)?)?,
-            Command::Text{..}=>{
-                if !opt.allow_missing_text{return Err(Error::Unsupported("font outline rasterization"));}
-                missing_text=true;
+            Command::Text{operation,ctm,fill,stroke,scope}=>{
+                // Explicit preview mode skips all text, as in B10.1. Strict mode never silently skips.
+                if opt.allow_missing_text{missing_text=true;continue;}
+                if scope.is_some(){return Err(Error::Unsupported("Form text rasterization"));}
+                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke)?;
             }
         }
     }

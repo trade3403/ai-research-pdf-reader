@@ -252,3 +252,5 @@ impl Document<'_>{
         Font::load(self,get(&fonts,resource_name).ok_or(Error::Invalid("font resource name"))?)
     }
 }
+
+pub mod truetype;

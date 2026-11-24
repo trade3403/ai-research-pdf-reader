@@ -33,7 +33,7 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
 }
 #[test]fn strict_missing_and_limits(){
     let p=pdf(b"BT /F1 10 Tf (A) Tj ET",0,false);let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
-    assert!(matches!(d.render_page(&pages[0],Options::default(),10000),Err(Error::Unsupported(_))));
+    assert!(matches!(d.render_page(&pages[0],Options::default(),10000),Err(Error::Invalid(_)|Error::Unsupported(_))));
     let b=d.render_page(&pages[0],Options{scale:1.,allow_missing_text:true},10000).unwrap();assert!(b.missing_text);
     assert!(d.render_page(&pages[0],Options{scale:1e9,allow_missing_text:true},10000).is_err());
     let p=pdf(b"[2 1] 0 d 2 3 m 10 8 l S",0,false);let d=Document::open(&p).unwrap();assert!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000).is_err());
