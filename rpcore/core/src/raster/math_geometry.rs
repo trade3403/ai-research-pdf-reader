@@ -105,10 +105,19 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
         if h>em*0.2||w>em*16.{continue;}
         fractions.push(FractionCandidate{rule_command_index:i,rule_bounds:b,numerator,denominator});
     }
+    // Precompute fraction membership for constant-time pair checks.
+    // At most 256 accepted rules, four u64 words per side and glyph.
+    let mut membership=vec![([0u64;4],[0u64;4]);items.len()];
+    for (fi,f) in fractions.iter().enumerate(){
+        for (ii,g) in items.iter().enumerate(){
+            if f.numerator.contains(&g.index){membership[ii].0[fi/64]|=1u64<<(fi%64);}
+            if f.denominator.contains(&g.index){membership[ii].1[fi/64]|=1u64<<(fi%64);}
+        }
+    }
     let mut scripts=Vec::new();
-    for g in &items{
+    for (gi,g) in items.iter().enumerate(){
         let mut best:Option<(f64,usize,ScriptKind)>=None;let mut ambiguous=false;
-        for b in &items{
+        for (bi,b) in items.iter().enumerate(){
             if g.index==b.index||geometry.glyphs[g.index].form_scope!=geometry.glyphs[b.index].form_scope{continue;}
             let ratio=g.em/b.em;
             if !(0.35..=0.82).contains(&ratio){continue;}
@@ -117,8 +126,7 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
             let kind=if (0.22..=0.95).contains(&dy){ScriptKind::Superscript}
                 else if (-0.65..=-0.15).contains(&dy){ScriptKind::Subscript}else{continue;};
             // Do not reinterpret numerator/denominator pairs as scripts.
-            if fractions.iter().any(|f|(f.numerator.contains(&b.index)&&f.denominator.contains(&g.index))||
-                (f.denominator.contains(&b.index)&&f.numerator.contains(&g.index))){continue;}
+            if (0..4).any(|k|(membership[bi].0[k]&membership[gi].1[k])!=0||(membership[bi].1[k]&membership[gi].0[k])!=0){continue;}
             let score=dx.abs()+(dy.abs()-0.4).abs()*0.2;
             match best{
                 None=>{best=Some((score,b.index,kind));ambiguous=false;}
