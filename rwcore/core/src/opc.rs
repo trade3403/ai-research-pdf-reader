@@ -142,3 +142,142 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
     }
     Ok(document)
 }
+
+
+// C2.0 first independent increment: typed direct run properties.
+// Style inheritance and attachment to the document tree are subsequent increments.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DirectRunProperties {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub size_half_points: Option<u32>,
+    pub color_rgb: Option<[u8; 3]>,
+    pub automatic_color: bool,
+    pub ascii_font: Option<String>,
+    pub east_asia_font: Option<String>,
+    pub style_id: Option<String>,
+    pub diagnostics: Vec<String>,
+}
+
+fn on_off(node: Node<'_, '_>, ns: &str) -> Option<bool> {
+    match node.attribute((ns, "val")) {
+        None | Some("true" | "1" | "on") => Some(true),
+        Some("false" | "0" | "off") => Some(false),
+        _ => None,
+    }
+}
+
+/// Parse a standalone w:rPr element, without applying defaults or inheritance.
+/// Unknown and malformed properties remain explicit diagnostics.
+pub fn parse_direct_run_properties(bytes: &[u8], limits: Limits) -> Result<DirectRunProperties, Error> {
+    if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
+    let tree = xml(bytes, limits)?;
+    let root = tree.root_element();
+    let ns = root.tag_name().namespace().ok_or(Error::Invalid("run property namespace"))?;
+    if !matches!(ns, WORD | WORD_STRICT) || !named(root, ns, "rPr") {
+        return Err(Error::Invalid("run property root"));
+    }
+    let mut out = DirectRunProperties::default();
+    let mut seen = std::collections::HashSet::new();
+    for node in root.children().filter(|n| n.is_element()) {
+        let name = node.tag_name().name();
+        if node.tag_name().namespace() != Some(ns) {
+            out.diagnostics.push(format!("Unsupported foreign run property: {name}"));
+            continue;
+        }
+        if !seen.insert(name) {
+            out.diagnostics.push(format!("Duplicate run property: {name}"));
+            continue;
+        }
+        let val = node.attribute((ns, "val"));
+        let valid = match name {
+            "b" => { out.bold = on_off(node, ns); out.bold.is_some() }
+            "i" => { out.italic = on_off(node, ns); out.italic.is_some() }
+            "sz" => {
+                out.size_half_points = val.and_then(|s| s.parse::<u32>().ok()).filter(|v| *v > 0);
+                out.size_half_points.is_some()
+            }
+            "color" => {
+                if node.attribute((ns, "themeColor")).is_some() {
+                    out.diagnostics.push("Theme color resolution not implemented".into());
+                }
+                if val == Some("auto") {
+                    out.automatic_color = true;
+                    true
+                } else {
+                    out.color_rgb = val.filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .and_then(|s| u32::from_str_radix(s, 16).ok())
+                        .map(|v| [(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+                    out.color_rgb.is_some()
+                }
+            }
+            "rFonts" => {
+                out.ascii_font = node.attribute((ns, "ascii")).filter(|s| !s.is_empty()).map(str::to_owned);
+                out.east_asia_font = node.attribute((ns, "eastAsia")).filter(|s| !s.is_empty()).map(str::to_owned);
+                for attr in node.attributes() {
+                    if attr.namespace() != Some(ns) || !matches!(attr.name(), "ascii" | "eastAsia") {
+                        out.diagnostics.push(format!("Unsupported font attribute: {}", attr.name()));
+                    }
+                }
+                true
+            }
+            "rStyle" => {
+                out.style_id = val.filter(|s| !s.is_empty()).map(str::to_owned);
+                out.style_id.is_some()
+            }
+            _ => {
+                out.diagnostics.push(format!("Unsupported run property: {name}"));
+                continue;
+            }
+        };
+        if !valid { out.diagnostics.push(format!("Invalid run property: {name}")); }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod direct_property_tests {
+    use super::*;
+    fn parse(inner: &str) -> DirectRunProperties {
+        let input = format!("<w:rPr xmlns:w=\"{WORD}\">{inner}</w:rPr>");
+        parse_direct_run_properties(input.as_bytes(), Limits::default()).unwrap()
+    }
+    #[test]
+    fn direct_values_and_explicit_false() {
+        let p = parse("<w:b/><w:i w:val=\"0\"/><w:sz w:val=\"24\"/><w:color w:val=\"12aBff\"/>");
+        assert_eq!(p.bold, Some(true));
+        assert_eq!(p.italic, Some(false));
+        assert_eq!(p.size_half_points, Some(24));
+        assert_eq!(p.color_rgb, Some([18,171,255]));
+        assert!(p.diagnostics.is_empty());
+    }
+    #[test]
+    fn absent_and_auto_are_distinct() {
+        assert_eq!(parse("").bold, None);
+        assert!(parse("<w:color w:val=\"auto\"/>").automatic_color);
+        assert!(!parse("").automatic_color);
+    }
+    #[test]
+    fn malformed_duplicate_and_unknown_are_diagnosed() {
+        let p = parse("<w:b w:val=\"maybe\"/><w:b/><w:sz w:val=\"0\"/><w:color w:val=\"中abc\"/><w:u/>");
+        assert_eq!(p.bold, None);
+        assert_eq!(p.size_half_points, None);
+        assert_eq!(p.color_rgb, None);
+        assert_eq!(p.diagnostics.len(), 5);
+    }
+    #[test]
+    fn font_and_style_ids_preserve_unicode() {
+        let p = parse("<w:rFonts w:ascii=\"Arial\" w:eastAsia=\"宋体\"/><w:rStyle w:val=\"Strong\"/>");
+        assert_eq!(p.ascii_font.as_deref(), Some("Arial"));
+        assert_eq!(p.east_asia_font.as_deref(), Some("宋体"));
+        assert_eq!(p.style_id.as_deref(), Some("Strong"));
+    }
+    #[test]
+    fn strict_namespace_and_limits() {
+        let s = format!("<w:rPr xmlns:w=\"{WORD_STRICT}\"><w:b/></w:rPr>");
+        assert_eq!(parse_direct_run_properties(s.as_bytes(), Limits::default()).unwrap().bold, Some(true));
+        let limits = Limits { max_part_bytes: 1, ..Limits::default() };
+        assert_eq!(parse_direct_run_properties(s.as_bytes(), limits), Err(Error::Limit("part bytes")));
+        assert!(parse_direct_run_properties(b"<rPr/>", Limits::default()).is_err());
+    }
+}
