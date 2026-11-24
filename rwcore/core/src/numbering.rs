@@ -1,4 +1,4 @@
-//! C2.1: bounded numbering definitions, not yet a label generator.
+//! C2.1: bounded numbering definitions and initial list label calculation.
 use crate::opc::{xml, named, Error, Limits};
 use roxmltree::Node;
 use std::collections::{BTreeMap, BTreeSet};
@@ -168,4 +168,132 @@ pub fn parse_numbering(bytes: &[u8], limits: Limits) -> Result<NumberingCatalog,
         }
     }
     Ok(catalog)
+}
+
+
+impl NumberingCatalog {
+    /// Full level replacement followed by a separate startOverride, if present.
+    pub fn effective_level(&self, num_id: u32, index: u8) -> Result<NumberingLevel, Error> {
+        if num_id == 0 || index > 8 { return Err(Error::Invalid("invalid numbering reference")); }
+        let instance = self.instances.get(&num_id).ok_or(Error::Invalid("missing numbering instance"))?;
+        let abstract_num = self.abstracts.get(&instance.abstract_id).ok_or(Error::Invalid("missing abstract numbering definition"))?;
+        let over = instance.overrides.get(&index);
+        let mut level = over.and_then(|o| o.level.as_ref()).or_else(|| abstract_num.levels.get(&index))
+            .ok_or(Error::Invalid("missing numbering level"))?.clone();
+        if let Some(start) = over.and_then(|o| o.start) { level.start = Some(start); }
+        Ok(level)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumberingLabel {
+    pub text: String,
+    /// Layout suffix is separate from the label text.
+    pub suffix: String,
+    pub value: u32,
+}
+
+/// One ordered traversal with independent state per list instance.
+/// Failed label generation never advances counters.
+#[derive(Debug, Default)]
+pub struct NumberingCounter {
+    counters: BTreeMap<u32, [Option<u32>; 9]>,
+}
+
+fn start_value(level: &NumberingLevel) -> u32 { level.start.unwrap_or(0) }
+
+fn format_value(value: u32, kind: &str) -> Result<String, Error> {
+    match kind {
+        "decimal" => Ok(value.to_string()),
+        "decimalZero" => Ok(format!("{value:02}")),
+        "upperLetter" | "lowerLetter" => {
+            if value == 0 { return Err(Error::Invalid("zero letter number")); }
+            // Repeated-letter scheme: A..Z, AA..ZZ, AAA...
+            let repeats = (value - 1) / 26 + 1;
+            if repeats > 256 { return Err(Error::Limit("letter numbering length")); }
+            let base = if kind == "upperLetter" { b'A' } else { b'a' };
+            let ch = char::from(base + ((value - 1) % 26) as u8);
+            Ok(ch.to_string().repeat(repeats as usize))
+        }
+        "upperRoman" | "lowerRoman" => {
+            if !(1..=3999).contains(&value) { return Err(Error::Unsupported("Roman number outside 1..3999")); }
+            let mut n = value;
+            let mut text = String::new();
+            for (amount, symbol) in [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),(50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")] {
+                while n >= amount { n -= amount; text.push_str(symbol); }
+            }
+            if kind == "lowerRoman" { text.make_ascii_lowercase(); }
+            Ok(text)
+        }
+        _ => Err(Error::Unsupported("numbering format")),
+    }
+}
+
+impl NumberingCounter {
+    /// Advance an explicit effective reference; zero suppresses numbering.
+    /// Initial restart subset: restart when the trigger level or a higher
+    /// ancestor appears, except when explicitly disabled by restart=0.
+    /// Unvisited ancestors use their start values for display only.
+    /// Unsupported metadata is not interpreted; callers must inspect diagnostics.
+    pub fn next_label(&mut self, catalog: &NumberingCatalog, num_id: u32, index: u8)
+        -> Result<Option<NumberingLabel>, Error>
+    {
+        if num_id == 0 { return Ok(None); }
+        let level = catalog.effective_level(num_id, index)?;
+        let mut state = self.counters.get(&num_id).copied().unwrap_or([None; 9]);
+        let i = usize::from(index);
+        let value = match state[i] {
+            Some(v) => v.checked_add(1).ok_or(Error::Limit("numbering counter overflow"))?,
+            None => start_value(&level),
+        };
+        state[i] = Some(value);
+        let kind = level.format.as_deref().unwrap_or("decimal");
+        let pattern = level.text.as_deref().unwrap_or("");
+        if pattern.len() > 4096 { return Err(Error::Limit("numbering template length")); }
+        let suffix = match level.suffix.as_deref().unwrap_or("tab") {
+            s @ ("tab" | "space" | "nothing") => s.to_owned(),
+            _ => return Err(Error::Unsupported("numbering suffix")),
+        };
+        let mut text = String::new();
+        if kind == "bullet" {
+            text.push_str(pattern);
+        } else if kind != "none" {
+            format_value(value, kind)?;
+            let mut chars = pattern.chars().peekable();
+            // Cache formatted references to avoid repeated clones of large level data.
+            let mut rendered: [Option<String>; 9] = Default::default();
+            while let Some(ch) = chars.next() {
+                if ch == '%' {
+                    if let Some(digit @ '1'..='9') = chars.peek().copied() {
+                        chars.next();
+                        let k = digit as u8 - b'1';
+                        if k <= index {
+                            let slot = &mut rendered[usize::from(k)];
+                            if slot.is_none() {
+                                let referenced = catalog.effective_level(num_id, k)?;
+                                let v = state[usize::from(k)].unwrap_or_else(|| start_value(&referenced));
+                                *slot = Some(format_value(v, referenced.format.as_deref().unwrap_or("decimal"))?);
+                            }
+                            text.push_str(slot.as_deref().unwrap_or_default());
+                        }
+                    } else { text.push(ch); }
+                } else { text.push(ch); }
+                if text.len() > 16384 { return Err(Error::Limit("numbering label length")); }
+            }
+        }
+        let instance = catalog.instances.get(&num_id).ok_or(Error::Invalid("missing numbering instance"))?;
+        let abstract_num = catalog.abstracts.get(&instance.abstract_id).ok_or(Error::Invalid("missing abstract numbering definition"))?;
+        for k in index+1..=8 {
+            if !abstract_num.levels.contains_key(&k) &&
+                !instance.overrides.get(&k).is_some_and(|o| o.level.is_some()) { continue; }
+            let deeper = catalog.effective_level(num_id, k)?;
+            let trigger = deeper.restart.unwrap_or(k);
+            if trigger > k { return Err(Error::Invalid("numbering restart level")); }
+            if trigger != 0 && index < trigger {
+                state[usize::from(k)] = None;
+            }
+        }
+        self.counters.insert(num_id, state);
+        Ok(Some(NumberingLabel { text, suffix, value }))
+    }
 }

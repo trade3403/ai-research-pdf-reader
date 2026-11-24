@@ -78,3 +78,78 @@ fn external_numbering_is_inert() {
     assert!(d.numbering.is_none());
     assert!(d.diagnostics.iter().any(|d| d.message.contains("External numbering")));
 }
+
+
+#[test]
+fn effective_level_override_and_missing_reference() {
+    let c = parse_numbering(xml(BODY).as_bytes(), Limits::default()).unwrap();
+    assert_eq!(c.effective_level(7,0).unwrap().start, Some(3));
+    assert!(c.effective_level(7,8).is_err());
+    assert!(c.effective_level(0,0).is_err());
+    let body = "<w:abstractNum w:abstractNumId='0'><w:lvl w:ilvl='0'><w:numFmt w:val='decimal'/><w:lvlText w:val='%1.'/></w:lvl></w:abstractNum><w:num w:numId='7'><w:abstractNumId w:val='0'/><w:lvlOverride w:ilvl='0'><w:startOverride w:val='9'/><w:lvl w:ilvl='0'><w:numFmt w:val='bullet'/><w:lvlText w:val='•'/></w:lvl></w:lvlOverride></w:num>";
+    let c = parse_numbering(xml(body).as_bytes(), Limits::default()).unwrap();
+    let l = c.effective_level(7,0).unwrap();
+    assert_eq!(l.start, Some(9));
+    assert_eq!(l.text.as_deref(), Some("•"));
+}
+#[test]
+fn counter_multilevel_and_restart() {
+    use rwcore::numbering::NumberingCounter;
+    let body = BODY.replace("<w:lvl w:ilvl='1'>", "<w:lvl w:ilvl='1'><w:start w:val='1'/>");
+    let c = parse_numbering(xml(&body).as_bytes(), Limits::default()).unwrap();
+    let mut s = NumberingCounter::default();
+    for (index, expected) in [(0,"3."),(1,"3.a"),(1,"3.b"),(0,"4."),(1,"4.a")] {
+        assert_eq!(s.next_label(&c,7,index).unwrap().unwrap().text, expected);
+    }
+    assert!(s.next_label(&c,0,0).unwrap().is_none());
+}
+#[test]
+fn counter_never_restart_and_independent_instances() {
+    use rwcore::numbering::NumberingCounter;
+    let body = BODY.replace("<w:lvl w:ilvl='1'>", "<w:lvl w:ilvl='1'><w:start w:val='1'/><w:lvlRestart w:val='0'/>");
+    let body = format!("{body}<w:num w:numId='8'><w:abstractNumId w:val='0'/></w:num>");
+    let c = parse_numbering(xml(&body).as_bytes(), Limits::default()).unwrap();
+    let mut s = NumberingCounter::default();
+    for (id,index,expected) in [(7,0,"3."),(7,1,"3.a"),(8,0,"1."),(7,0,"4."),(7,1,"4.b"),(8,1,"1.a")] {
+        assert_eq!(s.next_label(&c,id,index).unwrap().unwrap().text, expected);
+    }
+}
+#[test]
+fn counter_formats_and_suffix() {
+    use rwcore::numbering::NumberingCounter;
+    for (kind,start,pattern,expected) in [
+        ("decimalZero",3,"%1","03"),("upperLetter",27,"%1","AA"),
+        ("lowerLetter",28,"%1","bb"),("upperRoman",49,"%1","XLIX"),
+        ("lowerRoman",9,"%1","ix"),("bullet",1,"•","•"),("none",1,"%1","")
+    ] {
+        let body = format!("<w:abstractNum w:abstractNumId='0'><w:lvl w:ilvl='0'><w:start w:val='{start}'/><w:numFmt w:val='{kind}'/><w:lvlText w:val='{pattern}'/><w:suff w:val='space'/></w:lvl></w:abstractNum><w:num w:numId='1'><w:abstractNumId w:val='0'/></w:num>");
+        let c = parse_numbering(xml(&body).as_bytes(), Limits::default()).unwrap();
+        let label = NumberingCounter::default().next_label(&c,1,0).unwrap().unwrap();
+        assert_eq!(label.text, expected);
+        assert_eq!(label.suffix, "space");
+    }
+}
+#[test]
+fn counter_errors_do_not_advance() {
+    use rwcore::numbering::NumberingCounter;
+    let bad = BODY.replace("w:val='decimal'", "w:val='custom'");
+    let bad = parse_numbering(xml(&bad).as_bytes(), Limits::default()).unwrap();
+    let good = parse_numbering(xml(BODY).as_bytes(), Limits::default()).unwrap();
+    let mut s = NumberingCounter::default();
+    assert!(s.next_label(&bad,7,0).is_err());
+    assert_eq!(s.next_label(&good,7,0).unwrap().unwrap().text,"3.");
+    assert!(s.next_label(&good,7,9).is_err());
+    assert_eq!(s.next_label(&good,7,0).unwrap().unwrap().text,"4.");
+}
+#[test]
+fn counter_overflow_and_label_budget() {
+    use rwcore::numbering::NumberingCounter;
+    let max = BODY.replace("w:val='3'", "w:val='4294967295'");
+    let c = parse_numbering(xml(&max).as_bytes(), Limits::default()).unwrap();
+    let mut s = NumberingCounter::default();
+    assert_eq!(s.next_label(&c,7,0).unwrap().unwrap().value,u32::MAX);
+    assert_eq!(s.next_label(&c,7,0),Err(Error::Limit("numbering counter overflow")));
+    let huge = BODY.replace("%1.", &"x".repeat(4097));
+    let c = parse_numbering(xml(&huge).as_bytes(), Limits::default()).unwrap();
+    assert_eq!(NumberingCounter::default().next_label(&c,7,0),Err(Error::Limit("numbering template length")));
+}
