@@ -12,7 +12,7 @@
     "test:gui": "node scripts/gui-smoke.cjs"
   },
   "devDependencies": {
-    "electron": "^39.0.0",
+    "electron": "44.11.5",
     "electron-builder": "^26.0.12",
     "playwright": "^1.56.0"
   },

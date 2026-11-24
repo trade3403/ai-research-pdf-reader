@@ -5,3 +5,6 @@ Initial dependency ranges must be resolved and lockfile committed before release
 
 ## 0.6.1 migration slice
 Build root React using npm install and npm run build, then in electron-preview run npm install, npm run workspace and npm start. Default window now loads the actual existing React build via a restricted studio:// protocol. --shell-preview retains the original isolated test shell. React uses existing browser fallback storage and HTML file input, not native SQLite. ChatGPT in React remains fallback only; the earlier isolated view is available in shell-preview. No old data migration yet. PDF.js remains transitional. GUI evidence captures actual Electron renderer frames while opening a generated PDF; it is not full desktop video, not proof of other features or RPCore. Production release still requires lockfiles and real Windows validation.
+
+## Chromium compatibility fix
+GUI run 45322531691 showed a real page error: `this[#n].getOrInsertComputed is not a function`. Electron 39 was too old for the current PDF.js APIs. Pin Electron 44.11.5 (Chromium 152); retain sandbox/CSP and actual PDF rendering assertions, add runtime capability diagnostics. Revalidate on official Windows CI. This is a transitional PDF.js compatibility fix, not RPCore integration.
