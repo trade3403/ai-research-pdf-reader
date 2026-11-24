@@ -8,10 +8,10 @@ fn classify(e:Error){
 }
 fn run()->Result<(),Box<dyn std::error::Error>>{
     let mut args=std::env::args_os().skip(1);
-    let path=args.next().ok_or("usage: corpus_probe FILE inspect|content|text|render [PAGE [OUTPUT.png]]")?;
+    let path=args.next().ok_or("usage: corpus_probe FILE inspect|content|text|render|math [PAGE [OUTPUT.png or normalized rectangle]]")?;
     let stage=args.next().ok_or("missing stage")?.into_string().map_err(|_|"invalid stage")?;
     let page=if stage=="inspect"{None}else{Some(args.next().ok_or("missing page")?.into_string().map_err(|_|"invalid page")?.parse::<usize>()?)};
-    let output=args.next();if args.next().is_some()||output.is_some()&&stage!="render"{return Err("unexpected arguments".into());}
+    let output=args.next();if args.next().is_some()||output.is_some()&&!matches!(stage.as_str(),"render"|"math"){return Err("unexpected arguments".into());}
     let start=Instant::now();let mut bytes=Vec::new();
     std::fs::File::open(path)?.take((rpcore::MAX_BYTES+1)as u64).read_to_end(&mut bytes)?;
     if bytes.len()>rpcore::MAX_BYTES{classify(Error::Limit("input bytes"));return Ok(());}
@@ -56,6 +56,34 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
         "text"=>doc.page_text(p,MAX_CONTENT_BYTES).map(|v|{
             println!("glyphs={}\nmapped={}\nwarnings={}",v.glyphs.len(),v.glyphs.iter().filter(|g|g.unicode.as_ref().is_some_and(|s|!s.is_empty())).count(),v.warnings.len());
         }),
+        "math"=>{
+            // Normalized top-left CropBox rectangle, independent of page dimensions.
+            let raw=output.ok_or("missing math region")?.into_string().map_err(|_|"invalid math region")?;
+            let v:Vec<f64>=raw.split(',').map(str::parse::<f64>).collect::<Result<_,_>>()?;
+            let r:[f64;4]=v.try_into().map_err(|_|"math region needs four coordinates")?;
+            if r.iter().any(|v|!v.is_finite()||*v<0.||*v>1.)||r[0]>=r[2]||r[1]>=r[3]{return Err("invalid normalized math region".into());}
+            let view=rpcore::raster::PageViewport::new(p,1.)?;
+            let [w,h]=view.content_size();
+            let region=view.view_rect_to_pdf([r[0]*w,r[1]*h,r[2]*w,r[3]*h])?;
+            let fonts=std::env::var_os("RPCORE_STANDARD_FONT_DIR").map(|dir|urw::load(std::path::Path::new(&dir))).transpose()?;
+            match doc.page_math_geometry(p,MAX_CONTENT_BYTES,fonts.as_ref(),region){
+                Ok((g,m))=>{
+                    println!("math_geometry=ok\nselected={}\nmapped={}\nscripts={}\nfractions={}\nradicals={}",
+                        m.glyph_indices.len(),m.glyph_indices.iter().filter(|&&i|g.glyphs[i].unicode.as_ref().is_some_and(|s|!s.is_empty())).count(),
+                        m.scripts.len(),m.fractions.len(),m.radicals.len());
+                    println!("substituted_fonts={}",g.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(","));
+                    if m.glyph_indices.is_empty(){Err(Error::Unsupported("empty selected formula"))}
+                    else{match rpcore::raster::math_tree::build_tree(&g,&m){
+                        Ok(t)=>{
+                            println!("math_tree=ok");
+                            t.to_latex(&g).map(|latex|println!("latex={latex}"))
+                        }
+                        Err(e)=>Err(e),
+                    }}
+                }
+                Err(e)=>Err(e),
+            }
+        },
         "render"=>match if let Some(dir)=std::env::var_os("RPCORE_STANDARD_FONT_DIR"){
             let fonts=urw::load(std::path::Path::new(&dir))?;
             doc.render_page_with_text_quality(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,Some(&fonts),quality).map(|v|{

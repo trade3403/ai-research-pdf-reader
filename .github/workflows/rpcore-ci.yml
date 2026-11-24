@@ -149,3 +149,28 @@ jobs:
           if [ -f rpcore/target/visual-fine-72dpi-report/report.md ]; then cat rpcore/target/visual-fine-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/visual-grid-72dpi-report/report.md ]; then cat rpcore/target/visual-grid-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/visual-area-72dpi-report/report.md ]; then cat rpcore/target/visual-area-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-formulas:
+    # Observational transcription benchmark, independent of raster quality.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fonts-urw-base35
+      - run: python3 rpcore/corpus/test_formula_benchmark.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: |
+          mkdir -p rpcore/target/formula-report
+          dpkg-query -W fonts-urw-base35 > rpcore/target/formula-report/font-package.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/formula-report/font-sha256.txt
+          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report --font-dir /usr/share/fonts/opentype/urw-base35
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-real-paper-formulas
+          path: rpcore/target/formula-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/formula-report/report.md ]; then cat rpcore/target/formula-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi

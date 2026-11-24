@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "coordinate_system": "normalized top-left CropBox; visually annotated from pinned arXiv PDFs; not source-TeX equivalence",
+  "cases": [
+    {
+      "id": "attention-eq1",
+      "paper": "transformer",
+      "page": 4,
+      "rect": [
+        0.35,
+        0.582,
+        0.65,
+        0.625
+      ],
+      "expected": [
+        "Attention(Q,K,V)=softmax(\\frac{Q{K}^{T}}{\\sqrt{{d}_{k}}})V"
+      ],
+      "note": "Equation (1); fraction, root, superscript and subscript. Excludes equation number."
+    },
+    {
+      "id": "ffn-eq2",
+      "paper": "transformer",
+      "page": 5,
+      "rect": [
+        0.36,
+        0.711,
+        0.642,
+        0.737
+      ],
+      "expected": [
+        "FFN(x)=max(0,x{W}_{1}+{b}_{1}){W}_{2}+{b}_{2}"
+      ],
+      "note": "Equation (2); multi-character row and subscripts."
+    },
+    {
+      "id": "resnet-eq1",
+      "paper": "resnet",
+      "page": 3,
+      "rect": [
+        0.194,
+        0.785,
+        0.357,
+        0.81
+      ],
+      "expected": [
+        "y=F(x,\\{{W}_{i}\\})+x."
+      ],
+      "note": "Equation (1); typography intentionally reduced to plain F and letters; style not scored."
+    },
+    {
+      "id": "resnet-eq2",
+      "paper": "resnet",
+      "page": 3,
+      "rect": [
+        0.606,
+        0.327,
+        0.79,
+        0.35
+      ],
+      "expected": [
+        "y=F(x,\\{{W}_{i}\\})+{W}_{s}x."
+      ],
+      "note": "Equation (2); typography intentionally reduced to plain F and letters; style not scored."
+    }
+  ]
+}
