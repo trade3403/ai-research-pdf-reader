@@ -39,6 +39,10 @@ pub struct Stroke{
 #[derive(Debug,Clone,PartialEq)]
 pub enum Command{
     Save,Restore,
+    /// Normal source-over constant opacity, retained in drawing order.
+    Opacity{fill:f64,stroke:f64},
+    /// Current nonstroking color, needed by stencil images.
+    StencilColor(Color),
     Paint{path:Path,fill:Option<(Color,FillRule)>,stroke:Option<Stroke>},
     /// Intersect current clipping region; path is applied after any painting.
     Clip{path:Path,rule:FillRule},
@@ -58,12 +62,12 @@ pub struct DisplayList{
 }
 #[derive(Clone)]
 struct State{
-    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,
+    ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,
 }
 impl Default for State{
     fn default()->Self{
         Self{ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
-            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray}
+            stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.}
     }
 }
 impl State{
@@ -155,6 +159,7 @@ impl<'d,'a> Engine<'d,'a>{
         match name(dict.get(b"Subtype".as_slice()).ok_or(Error::Invalid("XObject subtype"))?)?{
             b"Image"=>{
                 self.warning(Warning::ImageRenderingDeferred);
+                if matches!(dict.get(b"ImageMask".as_slice()),Some(Object::Bool(true))){self.command(Command::StencilColor(s.fill))?;}
                 self.command(Command::Image{object_id:id,ctm:s.ctm})
             }
             b"Form"=>{
@@ -182,13 +187,31 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("XObject subtype")),
         }
     }
+    fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State)->Result<()>{
+        let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("ExtGState Resources"))?)?)?;
+        let states=crate::dict(self.doc.dereference(r.get(b"ExtGState".as_slice()).ok_or(Error::Invalid("ExtGState dictionary"))?)?)?;
+        let d=crate::dict(self.doc.dereference(states.get(n).ok_or(Error::Invalid("ExtGState name"))?)?)?;
+        for (k,v) in &d{
+            let v=self.doc.dereference(v)?;
+            match k.as_slice(){
+                b"Type" if matches!(&v,Object::Name(n) if n==b"ExtGState")=>{},
+                b"ca"|b"CA"=>{let a=number(&v)?;if !(0.0..=1.0).contains(&a){return Err(Error::Invalid("ExtGState alpha"));}if k==b"ca"{s.fill_alpha=a;}else{s.stroke_alpha=a;}}
+                b"BM" if matches!(&v,Object::Name(n) if n==b"Normal"||n==b"Compatible")=>{},
+                b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{},
+                b"AIS" if v==Object::Bool(false)=>{},
+                b"TK" if v==Object::Bool(true)=>{},
+                _=>return Err(Error::Unsupported("ExtGState parameter")),
+            }
+        }
+        self.command(Command::Opacity{fill:s.fill_alpha,stroke:s.stroke_alpha})
+    }
     fn run(&mut self,ops:&[Operation],resources:Option<&Object>,mut s:State,depth:usize,scope:Option<(u32,u16)>)->Result<()>{
         let mut stack=Vec::new();let mut p=Current::default();let mut in_text=false;
         for op in ops{
             self.ops+=1;if self.ops>MAX_OPS{return Err(Error::Limit("cumulative graphics operations"));}
             let a=&op.operands;let w=op.operator.as_slice();
             // Text clipping changes later graphics. Do not pretend it was applied.
-            if in_text&&!matches!(w,b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""|b"BDC"|b"BMC"|b"EMC"|b"MP"|b"DP"|b"g"|b"G"|b"rg"|b"RG"|b"k"|b"K"|b"CS"|b"cs"|b"SC"|b"SCN"|b"sc"|b"scn"){
+            if in_text&&!matches!(w,b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""|b"BDC"|b"BMC"|b"EMC"|b"MP"|b"DP"|b"g"|b"G"|b"rg"|b"RG"|b"k"|b"K"|b"CS"|b"cs"|b"SC"|b"SCN"|b"sc"|b"scn"|b"gs"){
                 return Err(Error::Invalid("graphics operator in text object"));
             }
             match w{
@@ -242,7 +265,7 @@ impl<'d,'a> Engine<'d,'a>{
                 b"BMC"|b"BDC"|b"EMC"|b"MP"|b"DP"=>self.warning(Warning::MarkedContentNotInterpreted),
                 b"ri"=>{arity(a,1)?;name(&a[0])?;}
                 b"i"=>{let v=nums::<1>(a)?[0];if !(0.0..=100.).contains(&v){return Err(Error::Invalid("flatness"));}}
-                b"gs"=>return Err(Error::Unsupported("ExtGState graphics")),
+                b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s)?;}
                 b"sh"=>return Err(Error::Unsupported("shading")),
                 _=>return Err(Error::Unsupported("graphics operator")),
             }

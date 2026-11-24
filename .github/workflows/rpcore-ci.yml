@@ -32,6 +32,7 @@ jobs:
       - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example truetype_demo -- rpcore/target/render-demo
       - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example cff_demo -- rpcore/target/render-demo
       - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example type1_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example image_demo -- rpcore/target/render-demo
       - uses: actions/upload-artifact@v4
         with:
           name: rpcore-render-demo-${{ matrix.os }}

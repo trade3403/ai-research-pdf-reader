@@ -3,6 +3,7 @@ use crate::{graphics::{Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,
 use std::sync::Arc;
 mod png;
 mod rendertext;
+mod images;
 const MAX_PIXELS:usize=4_000_000;
 const MAX_SIDE:usize=8192;
 const MAX_EDGES:usize=200_000;
@@ -195,34 +196,20 @@ fn stroke_paths(paths:&[Subpath],s:&Stroke,view:Matrix,budget:&mut Budget)->Resu
     }
     Ok(out)
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<Arc<Vec<u8>>>,budget:Budget}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3]}
 impl Surface{
-    fn paint(&mut self,mask:&[u8],c:[u8;3])->Result<()>{
+    fn blend(&mut self,i:usize,c:[u8;3],alpha:f64){
+        if alpha>=1.{self.samples[i..i+3].copy_from_slice(&c);}
+        else if alpha>0.{for (k,&v) in c.iter().enumerate(){self.samples[i+k]=(f64::from(v)*alpha+f64::from(self.samples[i+k])*(1.-alpha)).round() as u8;}}
+    }
+    fn paint(&mut self,mask:&[u8],c:[u8;3],alpha:f64)->Result<()>{
         self.budget.charge(self.w*self.h*4)?;
         for (i,&m) in mask.iter().enumerate(){
-            let m=m&self.clip[i];for s in 0..4{if m&(1<<s)!=0{self.samples[i*12+s*3..i*12+s*3+3].copy_from_slice(&c);}}
+            let m=m&self.clip[i];for s in 0..4{if m&(1<<s)!=0{self.blend(i*12+s*3,c,alpha);}}
         }Ok(())
     }
     fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix)->Result<()>{
-        let o=doc.resolve(id.0,id.1)?;
-        let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("image stream"));};
-        for k in [b"Mask".as_slice(),b"SMask",b"Decode",b"ImageMask",b"SMaskInData"]{if dict.contains_key(k){return Err(Error::Unsupported("image mask or decode array"));}}
-        let int=|k:&[u8]|->Result<usize>{
-            match dict.get(k){Some(Object::Number(n)) if *n>=1.&&*n<=MAX_SIDE as f64&&n.fract()==0.=>Ok(*n as usize),_=>Err(Error::Invalid("image dimension"))}
-        };
-        let (iw,ih)=(int(b"Width")?,int(b"Height")?);
-        if iw*ih>MAX_PIXELS{return Err(Error::Limit("image pixels"));}
-        if int(b"BitsPerComponent")?!=8{return Err(Error::Unsupported("image sample depth"));}
-        let channels=match dict.get(b"ColorSpace".as_slice()){
-            Some(Object::Name(n)) if n==b"DeviceGray"=>1,
-            Some(Object::Name(n)) if n==b"DeviceRGB"=>3,
-            Some(Object::Name(n)) if n==b"DeviceCMYK"=>4,
-            _=>return Err(Error::Unsupported("image color space")),
-        };
-        if matches!(dict.get(b"Interpolate".as_slice()),Some(Object::Bool(true))){return Err(Error::Unsupported("image interpolation"));}
-        let expected=iw*ih*channels;self.budget.charge(expected)?;
-        let data=crate::filters::decode(&o,expected)?;
-        if data.len()!=expected{return Err(Error::Invalid("image sample count"));}
+        let img=images::load(doc,id,&mut self.budget)?;
         let inv=inverse(m)?;
         let corners=[m.point([0.,0.])?,m.point([1.,0.])?,m.point([0.,1.])?,m.point([1.,1.])?];
         let lo=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::INFINITY,f64::min);
@@ -235,10 +222,12 @@ impl Surface{
             if self.clip[i]&(1<<s)==0{continue;}
             let [u,v]=inv.point([(x as f64+0.5)*0.5,(y as f64+0.5)*0.5])?;
             if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
-            let ix=(u*iw as f64).floor() as usize;let iy=(((1.-v)*ih as f64).floor() as usize).min(ih-1);
-            let j=(iy*iw+ix)*channels;
-            let c=match channels{1=>[data[j];3],3=>[data[j],data[j+1],data[j+2]],_=>rgb(Color::Cmyk([data[j] as f64/255.,data[j+1] as f64/255.,data[j+2] as f64/255.,data[j+3] as f64/255.]))};
-            self.samples[i*12+s*3..i*12+s*3+3].copy_from_slice(&c);
+            let ix=((u*img.w as f64).floor() as usize).min(img.w-1);
+            let iy=(((1.-v)*img.h as f64).floor() as usize).min(img.h-1);
+            let p=iy*img.w+ix;
+            let color=if img.stencil{self.stencil}else{[img.rgb[p*3],img.rgb[p*3+1],img.rgb[p*3+2]]};
+            let alpha=img.alpha.as_ref().map_or(1.,|a|f64::from(a[p])/255.)*self.fill_alpha;
+            self.blend(i*12+s*3,color,alpha);
         }}Ok(())
     }
 }
@@ -246,7 +235,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default()};
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3]};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -254,9 +243,11 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
         match c{
             Command::Save=>{
                 if s.stack.len()>=64||(s.stack.len()+2)*w*h>MAX_CLIP_BYTES{return Err(Error::Limit("raster clip stack"));}
-                s.stack.push(Arc::clone(&s.clip));text.save();
+                s.stack.push((Arc::clone(&s.clip),s.fill_alpha,s.stroke_alpha));text.save();
             }
-            Command::Restore=>{s.clip=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;text.restore()?;}
+            Command::Restore=>{let (clip,fa,sa)=s.stack.pop().ok_or(Error::Invalid("raster restore"))?;s.clip=clip;s.fill_alpha=fa;s.stroke_alpha=sa;text.restore()?;}
+            Command::Opacity{fill,stroke}=>{s.fill_alpha=*fill;s.stroke_alpha=*stroke;}
+            Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
                 let mut m=mask(&p,*rule,w,h,&mut s.budget)?;
@@ -265,8 +256,8 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options)->Resul
             }
             Command::Paint{path,fill,stroke}=>{
                 let p=flatten(path,view,&mut s.budget)?;
-                if let Some((c,rule))=fill{let m=mask(&p,*rule,w,h,&mut s.budget)?;s.paint(&m,rgb(*c))?;}
-                if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&mut s.budget)?;s.paint(&m,rgb(st.color))?;}
+                if let Some((c,rule))=fill{let m=mask(&p,*rule,w,h,&mut s.budget)?;s.paint(&m,rgb(*c),s.fill_alpha)?;}
+                if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&mut s.budget)?;s.paint(&m,rgb(st.color),s.stroke_alpha)?;}
             }
             Command::Image{object_id,ctm}=>s.image(doc,*object_id,view.compose(*ctm)?)?,
             Command::Text{operation,ctm,fill,stroke,scope}=>{
