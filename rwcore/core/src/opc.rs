@@ -1,4 +1,4 @@
-//! Minimal OPC reader. Only the conventional Word main part is accepted in C1.0.
+//! Bounded Word XML reader using the C1.1 OPC package graph.
 use crate::model::{Block, Diagnostic, Document, Paragraph, Run};
 use roxmltree::{Document as Xml, Node};
 use std::{fmt, io::{Cursor, Read}};
@@ -6,11 +6,6 @@ use zip::ZipArchive;
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const WORD_STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
-const REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
-const CT: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
-const OFFICE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-const OFFICE_STRICT: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument";
-const MAIN_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -34,6 +29,7 @@ pub enum Error {
     Io(String),
     MissingPart(&'static str),
     DuplicatePart(String),
+    MissingNamedPart(String),
     Xml(String),
     Unsupported(&'static str),
     Invalid(&'static str),
@@ -44,15 +40,20 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-fn xml<'a>(bytes: &'a [u8], limits: Limits) -> Result<Xml<'a>, Error> {
+pub(crate) fn xml<'a>(bytes: &'a [u8], limits: Limits) -> Result<Xml<'a>, Error> {
     let s = std::str::from_utf8(bytes).map_err(|_| Error::Unsupported("non-UTF-8 XML"))?;
     Xml::parse_with_options(s, roxmltree::ParsingOptions {
         allow_dtd: false, nodes_limit: limits.max_xml_nodes, ..Default::default()
     }).map_err(|e| Error::Xml(e.to_string()))
 }
 
-fn part(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &'static str, limits: Limits) -> Result<Vec<u8>, Error> {
-    let mut file = zip.by_name(name).map_err(|_| Error::MissingPart(name))?;
+pub(crate) fn part(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limits: Limits) -> Result<Vec<u8>, Error> {
+    let mut file = zip.by_name(name).map_err(|_| match name {
+        "[Content_Types].xml" => Error::MissingPart("[Content_Types].xml"),
+        "_rels/.rels" => Error::MissingPart("_rels/.rels"),
+        "word/document.xml" => Error::MissingPart("word/document.xml"),
+        _ => Error::MissingNamedPart(name.to_owned()),
+    })?;
     if file.is_dir() { return Err(Error::Invalid("part is directory")); }
     if file.size() > limits.max_part_bytes as u64 { return Err(Error::Limit("part bytes")); }
     let bound = (limits.max_part_bytes as u64).saturating_add(1);
@@ -62,7 +63,7 @@ fn part(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &'static str, limits: Limits)
     Ok(bytes)
 }
 
-fn named(node: Node<'_, '_>, ns: &str, name: &str) -> bool {
+pub(crate) fn named(node: Node<'_, '_>, ns: &str, name: &str) -> bool {
     node.is_element() && node.tag_name().namespace() == Some(ns) && node.tag_name().name() == name
 }
 
@@ -70,9 +71,7 @@ fn warn(document: &mut Document, message: impl Into<String>) {
     document.diagnostics.push(Diagnostic { message: message.into() });
 }
 
-/// No file extraction, network access, macro execution or writes.
-/// Not a complete OPC implementation: nonconventional targets are explicit errors.
-pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
+pub(crate) fn open_archive(bytes: &[u8], limits: Limits) -> Result<ZipArchive<Cursor<&[u8]>>, Error> {
     if bytes.len() > limits.max_archive_bytes { return Err(Error::Limit("archive bytes")); }
     let mut zip = ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Zip(e.to_string()))?;
     if zip.len() > limits.max_entries { return Err(Error::Limit("archive entries")); }
@@ -86,26 +85,14 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
         }
         if !seen.insert(name.clone()) { return Err(Error::DuplicatePart(name)); }
     }
-    let ct_bytes = part(&mut zip, "[Content_Types].xml", limits)?;
-    let ct = xml(&ct_bytes, limits)?;
-    if !named(ct.root_element(), CT, "Types") { return Err(Error::Invalid("content types root")); }
-    let mut types = ct.root_element().children().filter(|n|
-        named(*n, CT, "Override") && n.attribute("PartName") == Some("/word/document.xml"));
-    if types.next().and_then(|n| n.attribute("ContentType")) != Some(MAIN_TYPE) || types.next().is_some() {
-        return Err(Error::Unsupported("main part content type"));
-    }
-    let rel_bytes = part(&mut zip, "_rels/.rels", limits)?;
-    let rel = xml(&rel_bytes, limits)?;
-    if !named(rel.root_element(), REL, "Relationships") { return Err(Error::Invalid("relationships root")); }
-    let mut offices = rel.root_element().children().filter(|n|
-        named(*n, REL, "Relationship") && matches!(n.attribute("Type"), Some(OFFICE | OFFICE_STRICT)));
-    let main = offices.next().ok_or(Error::Invalid("officeDocument relationship"))?;
-    if offices.next().is_some() { return Err(Error::Invalid("multiple officeDocument relationships")); }
-    if !matches!(main.attribute("TargetMode"), None | Some("Internal")) ||
-        !matches!(main.attribute("Target"), Some("word/document.xml" | "/word/document.xml")) {
-        return Err(Error::Unsupported("external or nonconventional main part"));
-    }
-    let main_bytes = part(&mut zip, "word/document.xml", limits)?;
+    Ok(zip)
+}
+
+/// No file extraction, network access, macro execution or writes.
+pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
+    let mut zip = open_archive(bytes, limits)?;
+    let graph = crate::package::graph(&mut zip, limits)?;
+    let main_bytes = part(&mut zip, &graph.main_part, limits)?;
     let tree = xml(&main_bytes, limits)?;
     let root = tree.root_element();
     let ns = root.tag_name().namespace().ok_or(Error::Invalid("document namespace"))?;
