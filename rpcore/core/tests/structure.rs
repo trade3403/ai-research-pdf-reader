@@ -35,3 +35,51 @@ fn truncated_stream() {
     let bytes=pdf(&[b"<< /Type /Catalog /Pages 2 0 R >>",b"<< /Length 999999 >>\nstream\nabc\nendstream"]);
     assert!(Document::open(&bytes).unwrap().resolve(2,0).is_err());
 }
+
+#[test]
+fn indirect_length_and_ordered_contents() {
+    let bytes = pdf(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>",
+        b"<< /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R] >>",
+        b"<< /Length 6 0 R >>\nstream\nBT /F1 12 Tf\nendstream",
+        b"<< /Length 19 /Filter /ASCIIHexDecode >>\nstream\n28486929546a204554>\nendstream",
+        b"7 0 R",
+        b"12",
+    ]);
+    let doc = Document::open(&bytes).unwrap();
+    let page = &doc.pages().unwrap()[0];
+    // Second stream decodes to "(Hi)Tj ET".
+    assert_eq!(doc.page_content(page, 100).unwrap(), b"BT /F1 12 Tf\n(Hi)Tj ET");
+    assert_eq!(doc.page_operations(page, 100).unwrap().len(), 4);
+    assert!(doc.page_content(page, 12).is_err());
+}
+#[test]
+fn indirect_length_cycles_and_non_scalar() {
+    let bytes = pdf(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Length 3 0 R >>\nstream\nabc\nendstream",
+        b"2 0 R",
+        b"<< /Length 5 0 R >>\nstream\nabc\nendstream",
+        b"1.5",
+    ]);
+    let doc = Document::open(&bytes).unwrap();
+    assert!(doc.resolve(2,0).is_err());
+    assert!(doc.resolve(4,0).is_err());
+}
+#[test]
+fn page_operations_and_blank_page() {
+    let bytes = pdf(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 612 792] >>",
+        b"<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>",
+        b"<< /Type /Page /Parent 2 0 R >>",
+        b"<< /Length 12 >>\nstream\nBT (Hi) Tj Q\nendstream",
+    ]);
+    let doc = Document::open(&bytes).unwrap();
+    let pages = doc.pages().unwrap();
+    let ops = doc.page_operations(&pages[0], 100).unwrap();
+    assert_eq!(ops[1].operator, b"Tj");
+    assert_eq!(ops[1].operands, vec![Object::String(b"Hi".to_vec())]);
+    assert!(doc.page_operations(&pages[1], 100).unwrap().is_empty());
+}

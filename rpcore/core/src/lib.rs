@@ -279,7 +279,7 @@ impl<'a> Document<'a> {
             let map = dict(value)?;
             let length = match map.get(b"Length".as_slice()) {
                 Some(Object::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= MAX_BYTES as f64 => *n as usize,
-                Some(Object::Ref(_, _)) => return Err(Error::Unsupported("indirect stream length")),
+                Some(Object::Ref(id, gen)) => self.stream_length(*id, *gen)?,
                 _ => return Err(Error::Invalid("stream length")),
             };
             match p.bytes.get(p.pos) {
@@ -296,6 +296,28 @@ impl<'a> Document<'a> {
         }
         p.expect(b"endobj")?;
         Ok(value)
+    }
+    // Length objects must be scalar objects, not streams. Resolve iteratively
+    // so malicious self-references cannot recurse through stream parsing.
+    fn stream_length(&self, mut id: u32, mut gen: u16) -> Result<usize> {
+        let mut seen = BTreeSet::new();
+        for _ in 0..MAX_DEPTH {
+            if !seen.insert((id, gen)) { return Err(Error::Invalid("stream length cycle")); }
+            let off = *self.offsets.get(&(id,gen)).ok_or(Error::Invalid("missing length object"))?;
+            let mut p = Parser::new(self.bytes, off);
+            if p.uint()? != id as usize || p.uint()? != gen as usize {
+                return Err(Error::Invalid("length object identity"));
+            }
+            p.expect(b"obj")?;
+            let value = p.object(0)?;
+            p.expect(b"endobj")?;
+            match value {
+                Object::Number(n) if n >= 0.0 && n.fract() == 0.0 && n <= MAX_BYTES as f64 => return Ok(n as usize),
+                Object::Ref(next, generation) => { id = next; gen = generation; }
+                _ => return Err(Error::Invalid("stream length object")),
+            }
+        }
+        Err(Error::Limit("stream length reference depth"))
     }
     pub fn page_count(&self) -> Result<usize> {
         let catalog = dict(self.resolve(self.root.0,self.root.1)?)?;
@@ -442,3 +464,5 @@ impl Document<'_> {
     }
 }
 pub mod filters;
+
+pub mod content;
