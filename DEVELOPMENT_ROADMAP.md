@@ -45,3 +45,7 @@
 ## V0.6.x 及以后：自主 Rust PDF 核心 RPCore
 
 新增独立研发主线，核心版本与应用版本分别管理。先完成 PDF 解析、图形渲染和字符坐标闭环，再研发科研布局、公式、表格及性能优化。现有 V0.5.9 应用作为迁移与测试基线；最终不依赖完整第三方 PDF 引擎。详细计划见 [RPCore 研发路线](docs/RPCORE_ROADMAP.md) 和 [功能架构](docs/RPCORE_ARCHITECTURE.md)。各阶段须通过 [验收门槛](docs/RPCORE_VALIDATION.md)，未验证能力不得标注为已实现。
+
+## 当前架构决策：双主线并行研发
+
+A 线：Electron + 自带 Chromium，迁移并验证 V0.5.9 全部功能。B 线：自主 Rust RPCore，独立于桌面框架。V0.6.0 壳迁移预览、V0.6.1 功能验收、V0.7.x 核心实验接入、V0.8.x 科研交互、V0.9.x 性能优化、V1.0 正式发布（均为目标，依验收调整）。参见 [Electron 迁移](docs/ELECTRON_MIGRATION.md) 与 [云端编译](docs/CLOUD_BUILD_PLAN.md)。不依赖自建编译机，保留 Tauri 基线至迁移验收。

@@ -3,7 +3,8 @@
 
 ## 分层
 ```text
-React / Tauri UI（保留）
+React / Electron + Chromium UI（计划迁移）
+    | 隔离 preload / main process / worker IPC
     | 类型化 IPC：文档 ID、页号、视口、任务 ID
 Rust RPCore facade / worker / cache
     | selection / search / annotation / layout
