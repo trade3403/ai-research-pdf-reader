@@ -27,6 +27,9 @@ fn merge_paragraph(out: &mut DirectParagraphProperties, layer: &DirectParagraphP
     macro_rules! copy { ($($f:ident),*) => { $(if layer.$f.is_some() { out.$f = layer.$f; })* }; }
     copy!(alignment, before_twips, after_twips, line, line_rule, left_twips, right_twips,
           keep_next, keep_lines, page_break_before);
+    // Keep the two raw values independent. numId=0 is a distinct disabling value.
+    if layer.num_id.is_some() { out.num_id = layer.num_id; }
+    if layer.num_level.is_some() { out.num_level = layer.num_level; }
     if let Some(v) = layer.hanging_twips {
         out.hanging_twips = Some(v);
         out.first_line_twips = None;

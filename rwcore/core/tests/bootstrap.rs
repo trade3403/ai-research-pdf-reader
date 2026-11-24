@@ -124,3 +124,45 @@ fn paragraph_properties_report_invalid_and_duplicate_values() {
     assert_eq!(p.properties.keep_next, None);
     assert_eq!(doc.diagnostics.len(), 8);
 }
+
+
+#[test]
+fn reads_numbered_paragraphs_and_explicit_cancellation() {
+    let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="8"/><w:numId w:val="42"/></w:numPr></w:pPr><w:r><w:t>Methods</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr></w:p><w:p/></w:body></w:document>"#;
+    let doc = read_docx(&fixture(xml, REL), Limits::default()).unwrap();
+    let Block::Paragraph(a) = &doc.blocks[0] else { panic!("paragraph expected") };
+    let Block::Paragraph(b) = &doc.blocks[1] else { panic!("paragraph expected") };
+    let Block::Paragraph(c) = &doc.blocks[2] else { panic!("paragraph expected") };
+    assert_eq!((a.properties.num_id, a.properties.num_level), (Some(42), Some(8)));
+    assert_eq!((b.properties.num_id, b.properties.num_level), (Some(0), None));
+    assert_eq!((c.properties.num_id, c.properties.num_level), (None, None));
+    assert!(doc.diagnostics.is_empty());
+}
+
+#[test]
+fn malformed_numbering_is_diagnosed_without_inventing_defaults() {
+    let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="9"/><w:numId w:val="-1"/><w:numId w:val="5"/><w:ins/></w:numPr></w:pPr></w:p></w:body></w:document>"#;
+    let doc = read_docx(&fixture(xml, REL), Limits::default()).unwrap();
+    let Block::Paragraph(p) = &doc.blocks[0] else { panic!("paragraph expected") };
+    assert_eq!((p.properties.num_id, p.properties.num_level), (None, None));
+    assert_eq!(doc.diagnostics.len(), 4);
+}
+
+#[test]
+fn numbering_references_survive_style_cascade_and_cancellation() {
+    use rwcore::{resolve_formatting, Paragraph, Run};
+    use rwcore::opc::parse_styles;
+    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="List" w:default="1"><w:pPr><w:numPr><w:numId w:val="12"/><w:ilvl w:val="2"/></w:numPr></w:pPr></w:style></w:styles>"#;
+    let catalog = parse_styles(styles, Limits::default()).unwrap();
+    let mut p = Paragraph::default();
+    let r = Run::default();
+    let props = resolve_formatting(&catalog, &p, &r).unwrap().paragraph;
+    assert_eq!((props.num_id, props.num_level), (Some(12), Some(2)));
+    p.properties.num_id = Some(0);
+    let props = resolve_formatting(&catalog, &p, &r).unwrap().paragraph;
+    assert_eq!(props.num_id, Some(0));
+    p.properties.num_id = Some(24);
+    p.properties.num_level = Some(0);
+    let props = resolve_formatting(&catalog, &p, &r).unwrap().paragraph;
+    assert_eq!((props.num_id, props.num_level), (Some(24), Some(0)));
+}

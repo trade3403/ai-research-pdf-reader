@@ -342,6 +342,10 @@ pub struct DirectParagraphProperties {
     pub keep_next: Option<bool>,
     pub keep_lines: Option<bool>,
     pub page_break_before: Option<bool>,
+    /// List instance; zero explicitly suppresses inherited numbering.
+    pub num_id: Option<u32>,
+    /// List depth 0..=8; absent remains unspecified.
+    pub num_level: Option<u8>,
     pub diagnostics: Vec<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +387,38 @@ fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperti
             "keepNext" => { out.keep_next = on_off(node, ns); out.keep_next.is_some() }
             "keepLines" => { out.keep_lines = on_off(node, ns); out.keep_lines.is_some() }
             "pageBreakBefore" => { out.page_break_before = on_off(node, ns); out.page_break_before.is_some() }
+            "numPr" => {
+                let mut children = std::collections::HashSet::new();
+                for item in node.children().filter(|n| n.is_element()) {
+                    let key = item.tag_name().name();
+                    if item.tag_name().namespace() != Some(ns) || !matches!(key, "numId" | "ilvl") {
+                        out.diagnostics.push(format!("Unsupported numbering property: {key}"));
+                        continue;
+                    }
+                    if !children.insert(key) {
+                        out.diagnostics.push(format!("Duplicate numbering property: {key}"));
+                        continue;
+                    }
+                    let value = item.attribute((ns, "val"));
+                    let valid = match key {
+                        "numId" => {
+                            out.num_id = value.and_then(|s| s.parse::<u32>().ok());
+                            out.num_id.is_some()
+                        }
+                        "ilvl" => {
+                            out.num_level = value.and_then(|s| s.parse::<u8>().ok()).filter(|v| *v <= 8);
+                            out.num_level.is_some()
+                        }
+                        _ => unreachable!(),
+                    };
+                    if !valid { out.diagnostics.push(format!("Invalid numbering property: {key}")); }
+                }
+                // Keep an empty container diagnostic; no implicit cancellation.
+                if !node.children().any(|n| n.is_element()) {
+                    out.diagnostics.push("Empty numbering property container".into());
+                }
+                true
+            }
             "spacing" | "ind" => {
                 for a in node.attributes() {
                     let v = a.value();
