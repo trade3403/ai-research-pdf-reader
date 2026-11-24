@@ -56,10 +56,11 @@ pub(crate) fn part(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limits: Limi
     })?;
     if file.is_dir() { return Err(Error::Invalid("part is directory")); }
     if file.size() > limits.max_part_bytes as u64 { return Err(Error::Limit("part bytes")); }
-    let bound = (limits.max_part_bytes as u64).saturating_add(1);
+    let expected = file.size();
+    let bound = expected.saturating_add(1);
     let mut bytes = Vec::new();
     (&mut file).take(bound).read_to_end(&mut bytes).map_err(|e| Error::Io(e.to_string()))?;
-    if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
+    if bytes.len() as u64 != expected { return Err(Error::Invalid("expanded part size mismatch")); }
     Ok(bytes)
 }
 
@@ -72,8 +73,9 @@ fn warn(document: &mut Document, message: impl Into<String>) {
 }
 
 pub(crate) fn open_archive(bytes: &[u8], limits: Limits) -> Result<ZipArchive<Cursor<&[u8]>>, Error> {
-    if bytes.len() > limits.max_archive_bytes { return Err(Error::Limit("archive bytes")); }
+    let expected_count = crate::zip_guard::validate_zip(bytes, limits)?;
     let mut zip = ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Zip(e.to_string()))?;
+    if zip.len() != expected_count { return Err(Error::Invalid("ZIP reader entry count disagreement")); }
     if zip.len() > limits.max_entries { return Err(Error::Limit("archive entries")); }
     let mut seen = std::collections::HashSet::new();
     for i in 0..zip.len() {
