@@ -86,3 +86,28 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
     assert_eq!(pixel(&b,0,399),[0,0,0,255]);assert_eq!(pixel(&b,1,399),[255,255,255,255]);
     assert_eq!(pixel(&b,20,397),[0,0,0,255]);assert_eq!(pixel(&b,499,0),[255,255,255,255]);
 }
+
+#[test]fn large_paths_under_tiny_clip_do_not_scan_whole_page(){
+    // 2000 full-page paths under a 2x2 pixel clip: clipping before the
+    // scan conversion avoids >1.6 billion covered subsample visits.
+    let mut data=b"q 2.02 3.02 0.04 0.04 re W n\n".to_vec();
+    for _ in 0..2000{data.extend_from_slice(b"2 3 10 8 re f\n");}
+    data.extend_from_slice(b"Q");
+    let p=pdf(&data,0,false);let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],Options{scale:50.,allow_missing_text:false},100000).unwrap();
+    assert_eq!(pixel(&b,1,398),[0,0,0,255]);assert_eq!(pixel(&b,2,397),[0,0,0,255]);
+    assert_eq!(pixel(&b,0,399),[255,255,255,255]);assert_eq!(pixel(&b,100,100),[255,255,255,255]);
+}
+#[test]fn clipped_winding_preserves_edges_outside_clip(){
+    for op in ["f","f*"]{
+        let data=format!("q 5 5 2 2 re W n -100 -100 200 200 re {op} Q");
+        let b=render(data.as_bytes(),0,false);
+        assert_eq!(pixel(&b,3,4),[0,0,0,255]);assert_eq!(pixel(&b,4,5),[0,0,0,255]);
+        assert_eq!(pixel(&b,2,4),[255,255,255,255]);
+    }
+}
+#[test]fn decoded_image_reuse_respects_transform_and_clip(){
+    let b=render(b"q 4 0 0 4 2 3 cm /Im Do Q q 8 3 2 4 re W n 4 0 0 4 6 3 cm /Im Do Q",0,true);
+    assert_eq!(pixel(&b,0,4),[255,0,0,255]);assert_eq!(pixel(&b,2,7),[255,255,0,255]);
+    assert_eq!(pixel(&b,4,4),[255,255,255,255]);assert_eq!(pixel(&b,6,4),[0,255,0,255]);assert_eq!(pixel(&b,6,7),[255,255,0,255]);
+}

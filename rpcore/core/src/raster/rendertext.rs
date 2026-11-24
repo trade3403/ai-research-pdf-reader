@@ -1,5 +1,5 @@
 //! Native horizontal TrueType, CFF1 and traditional Type1 font rendering.
-use super::{StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
+use super::{Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
 use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,CmapKind,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
@@ -116,13 +116,13 @@ fn type1_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<(BTreeMa
 #[derive(Clone)]
 struct State{face:Option<Arc<Face>>,size:f64,scale:f64,tc:f64,tw:f64,leading:f64,rise:f64,mode:u8}
 impl Default for State{fn default()->Self{Self{face:None,size:0.,scale:1.,tc:0.,tw:0.,leading:0.,rise:0.,mode:0}}}
-pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<(Option<(u32,u16)>,Vec<u8>),Arc<Face>>,indirect_fonts:BTreeMap<(u32,u16),Arc<Face>>,font_bytes:usize,glyphs:usize,substituted:Vec<StandardFont>}
+pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<(Option<(u32,u16)>,Vec<u8>),Arc<Face>>,indirect_fonts:BTreeMap<(u32,u16),Arc<Face>>,font_bytes:usize,glyphs:usize,substituted:Vec<StandardFont>,outlines:BTreeMap<(usize,Vec<u8>),(Arc<Path>,Matrix)>,outline_segments:usize}
 fn arity(a:&[Object],n:usize)->Result<()>{if a.len()==n{Ok(())}else{Err(Error::Invalid("render text operand count"))}}
 fn num(v:&Object)->Result<f64>{if let Object::Number(n)=v{if n.is_finite()&&n.abs()<=1e12{return Ok(*n);}}Err(Error::Invalid("render text number"))}
 fn nums<const N:usize>(a:&[Object])->Result<[f64;N]>{arity(a,N)?;let mut o=[0.;N];for(i,v)in a.iter().enumerate(){o[i]=num(v)?;}Ok(o)}
 fn string(v:&Object)->Result<&[u8]>{if let Object::String(s)=v{Ok(s)}else{Err(Error::Invalid("render text string"))}}
 impl TextRenderer{
-    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),indirect_fonts:BTreeMap::new(),font_bytes:0,glyphs:0,substituted:Vec::new()}}
+    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),indirect_fonts:BTreeMap::new(),font_bytes:0,glyphs:0,substituted:Vec::new(),outlines:BTreeMap::new(),outline_segments:0}}
     pub(super) fn save(&mut self){self.stack.push(self.state.clone());}
     pub(super) fn restore(&mut self)->Result<()>{self.state=self.stack.pop().ok_or(Error::Invalid("text graphics stack"))?;Ok(())}
     pub(super) fn substituted_fonts(&self)->Vec<StandardFont>{self.substituted.clone()}
@@ -213,7 +213,12 @@ impl TextRenderer{
             self.glyphs+=1;if self.glyphs>100_000{return Err(Error::Limit("render glyph count"));}
             let width=glyph.width.ok_or(Error::Unsupported("missing render glyph width"))?;
             if self.state.mode!=3{
-                let (outline,fm)=match &f.outline{
+                // Face objects live in the page font cache for the entire render.
+                // The Arc address and PDF code identify a stable outline; CTM,
+                // color, opacity and clipping remain per-instance.
+                let key=(Arc::as_ptr(&f) as usize,glyph.code.clone());
+                let (outline,fm)=if let Some((p,m))=self.outlines.get(&key){(Arc::clone(p),*m)}else{
+                    let (p,m)=match &f.outline{
                     Outline::Tt(tt)=>{let gid=glyph.glyph_id.ok_or(Error::Unsupported("missing render glyph ID"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
                     Outline::SimpleTt(tt,map)=>{let gid=map[glyph.code[0] as usize].ok_or(Error::Unsupported("missing simple TrueType glyph mapping"))?;let u=1./f64::from(tt.units_per_em());(tt.outline(gid)?,Matrix([u,0.,0.,u,0.,0.]))}
                     Outline::ReplacementType1(t)=>{
@@ -229,12 +234,19 @@ impl TextRenderer{
                         let gid=if c.is_cid(){glyph.cid.and_then(|id|c.glyph_for_cid(id))}else{names[glyph.code[0] as usize]}.ok_or(Error::Unsupported("missing CFF glyph mapping"))?;
                         (c.outline(gid)?,c.font_matrix())
                     }
+                    };
+                    let p=Arc::new(p);
+                    if self.outlines.len()<4096&&p.len()<=200_000-self.outline_segments{
+                        self.outline_segments+=p.len();
+                        self.outlines.insert(key,(Arc::clone(&p),m));
+                    }
+                    (p,m)
                 };
                 let unit=self.state.size;
                 let m=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?.compose(fm)?;
                 let paths=flatten(&outline,m,&mut s.budget)?;
-                if matches!(self.state.mode,0|2){let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&mut s.budget)?;s.paint(&mask,rgb(fill),s.fill_alpha)?;}
-                if matches!(self.state.mode,1|2){let paths=stroke_paths(&paths,stroke,view,&mut s.budget)?;let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&mut s.budget)?;s.paint(&mask,rgb(stroke.color),s.stroke_alpha)?;}
+                if matches!(self.state.mode,0|2){let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(fill),s.fill_alpha)?;}
+                if matches!(self.state.mode,1|2){let paths=stroke_paths(&paths,stroke,view,&mut s.budget)?;let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(stroke.color),s.stroke_alpha)?;}
             }
             let word=if glyph.code==b" "{self.state.tw}else{0.};
             let advance=(width/1000.*self.state.size+self.state.tc+word)*self.state.scale;

@@ -78,11 +78,11 @@ fn inverse(m:Matrix)->Result<Matrix>{
     if inv.0.iter().any(|v|!v.is_finite()){return Err(Error::Limit("inverse transform"));}
     Ok(inv)
 }
-#[derive(Default)]
-struct Budget{work:usize}
+struct Budget{work:usize,stage:&'static str}
+impl Default for Budget{fn default()->Self{Self{work:0,stage:"raster work (setup)"}}}
 impl Budget{fn charge(&mut self,n:usize)->Result<()>{
-    self.work=self.work.checked_add(n).ok_or(Error::Limit("raster work"))?;
-    if self.work>MAX_WORK{return Err(Error::Limit("raster work"));}Ok(())
+    self.work=self.work.checked_add(n).ok_or(Error::Limit(self.stage))?;
+    if self.work>MAX_WORK{return Err(Error::Limit(self.stage));}Ok(())
 }}
 #[derive(Debug)]
 struct Subpath{points:Vec<Point>,closed:bool}
@@ -158,14 +158,16 @@ impl Coverage{
         Ok(Self{x,y,w,h,data})
     }
 }
-fn mask(paths:&[Subpath],rule:FillRule,w:usize,h:usize,budget:&mut Budget)->Result<Coverage>{
+fn mask(paths:&[Subpath],rule:FillRule,w:usize,h:usize,clip:&Coverage,budget:&mut Budget)->Result<Coverage>{
     let e=edges(paths)?;
     if e.is_empty(){return Ok(Coverage::empty());}
     budget.charge(e.len())?;
     let lo=|i:usize|e.iter().map(|(a,b)|a[i].min(b[i])).fold(f64::INFINITY,f64::min);
     let hi=|i:usize|e.iter().map(|(a,b)|a[i].max(b[i])).fold(f64::NEG_INFINITY,f64::max);
-    let (sx0,sx1)=(span_bound(lo(0),w*2),span_bound(hi(0),w*2));
-    let (sy0,sy1)=(span_bound(lo(1),h*2),span_bound(hi(1),h*2));
+    // Restrict the output rectangle before allocating or scanning. Edges
+    // outside the horizontal clip still contribute to the winding number.
+    let (sx0,sx1)=(span_bound(lo(0),w*2).max(clip.x*2),span_bound(hi(0),w*2).min((clip.x+clip.w)*2));
+    let (sy0,sy1)=(span_bound(lo(1),h*2).max(clip.y*2),span_bound(hi(1),h*2).min((clip.y+clip.h)*2));
     if sx0>=sx1||sy0>=sy1{return Ok(Coverage::empty());}
     let (x,y)=(sx0/2,sy0/2);
     let (mw,mh)=(sx1.div_ceil(2)-x,sy1.div_ceil(2)-y);
@@ -176,8 +178,8 @@ fn mask(paths:&[Subpath],rule:FillRule,w:usize,h:usize,budget:&mut Budget)->Resu
     // rather than accumulating incremental floating-point drift.
     let mut events=Vec::with_capacity(e.len());
     for (a,b) in e{
-        let first=span_bound(a[1].min(b[1]),h*2);
-        let last=span_bound(a[1].max(b[1]),h*2);
+        let first=span_bound(a[1].min(b[1]),h*2).max(sy0);
+        let last=span_bound(a[1].max(b[1]),h*2).min(sy1);
         if first<last{events.push((first,last,a,b));}
     }
     budget.charge(events.len().saturating_mul(1+usize::BITS as usize-events.len().max(1).leading_zeros() as usize))?;
@@ -285,7 +287,7 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize}
 impl Surface{
     fn mark_coverage(&mut self,index:usize,alpha:f64){
         if let Some(coverage)=self.groups.last_mut().and_then(|g|g.coverage.as_mut()){
@@ -418,7 +420,17 @@ impl Surface{
         }Ok(())
     }
     fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix)->Result<()>{
-        let img=images::load(doc,id,&mut self.budget)?;
+        self.budget.stage="raster work (image decode)";
+        let img=if let Some(img)=self.image_cache.get(&id){Arc::clone(img)}else{
+            let img=Arc::new(images::load(doc,id,&mut self.budget)?);
+            let bytes=img.rgb.capacity()+img.alpha.as_ref().map_or(0,Vec::capacity);
+            // No eviction/reload churn, no caching unbounded numbers of tiny images.
+            if self.image_cache.len()<128&&bytes<=32*1024*1024-self.image_cache_bytes{
+                self.image_cache_bytes+=bytes;self.image_cache.insert(id,Arc::clone(&img));
+            }
+            img
+        };
+        self.budget.stage="raster work (image sampling)";
         let inv=inverse(m)?;
         let corners=[m.point([0.,0.])?,m.point([1.,0.])?,m.point([0.,1.])?,m.point([1.,1.])?];
         let lo=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::INFINITY,f64::min);
@@ -443,10 +455,19 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
     let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip};
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
+        s.budget.stage=match c{
+            Command::Clip{..}=>"raster work (clip)",
+            Command::Paint{..}=>"raster work (path)",
+            Command::Image{..}=>"raster work (image)",
+            Command::Text{..}=>"raster work (text)",
+            Command::BeginGroup{..}|Command::BeginNonIsolatedGroup{..}|Command::BeginKnockoutGroup{..}|Command::EndGroup=>"raster work (group)",
+            Command::BeginSoftMask|Command::EndSoftMask{..}=>"raster work (soft mask)",
+            _=>"raster work (state)",
+        };
         s.budget.charge(1)?;
         match c{
             Command::Save=>{
@@ -466,13 +487,13 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
             Command::StencilColor(c)=>s.stencil=rgb(*c),
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
-                let m=mask(&p,*rule,w,h,&mut s.budget)?;
+                let m=mask(&p,*rule,w,h,&s.clip,&mut s.budget)?;
                 s.clip=Arc::new(m.intersect_clip(&s.clip,&mut s.budget)?);
             }
             Command::Paint{path,fill,stroke}=>{
                 let p=flatten(path,view,&mut s.budget)?;
-                if let Some((c,rule))=fill{let m=mask(&p,*rule,w,h,&mut s.budget)?;s.paint(&m,rgb(*c),s.fill_alpha)?;}
-                if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&mut s.budget)?;s.paint(&m,rgb(st.color),s.stroke_alpha)?;}
+                if let Some((c,rule))=fill{let m=mask(&p,*rule,w,h,&s.clip,&mut s.budget)?;s.paint(&m,rgb(*c),s.fill_alpha)?;}
+                if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&s.clip,&mut s.budget)?;s.paint(&m,rgb(st.color),s.stroke_alpha)?;}
             }
             Command::Image{object_id,ctm}=>s.image(doc,*object_id,view.compose(*ctm)?)?,
             Command::Text{operation,ctm,fill,stroke,resource_owner,..}=>{
