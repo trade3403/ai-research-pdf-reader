@@ -60,11 +60,42 @@ fn kind(value: &str) -> ResourceKind {
     }
 }
 
-// Deliberately conservative URI subset. Encoded names, queries and fragments
-// require a future standards-complete canonicalizer; never guess their meaning.
+// Safe subset of OPC part URI syntax: encoded spaces and UTF-8 only.
+// Reject encoded ASCII delimiters, unreserved bytes, traversal and double encoding.
+fn hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b-b'0'),
+        b'a'..=b'f' => Some(b-b'a'+10),
+        b'A'..=b'F' => Some(b-b'A'+10),
+        _ => None,
+    }
+}
+fn canonical_segment(s: &str) -> Option<String> {
+    if s.is_empty() || s.ends_with('.') { return None; }
+    let mut canonical = String::new();
+    let mut decoded = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            let value = hex(*bytes.get(i+1)?)? * 16 + hex(*bytes.get(i+2)?)?;
+            if value != b' ' && value < 128 { return None; }
+            decoded.push(value);
+            use std::fmt::Write;
+            write!(&mut canonical, "%{value:02X}").ok()?;
+            i += 3;
+        } else if b.is_ascii_alphanumeric() || b"-._~!$&'()+,;=@".contains(&b) {
+            canonical.push(char::from(b));
+            decoded.push(b);
+            i += 1;
+        } else { return None; }
+    }
+    if std::str::from_utf8(&decoded).ok()?.chars().any(char::is_control) { return None; }
+    Some(canonical)
+}
 fn safe_segment(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~!$&'()+,;=@".contains(&b))
-        && !s.ends_with('.')
+    canonical_segment(s).as_deref() == Some(s)
 }
 pub fn resolve_target(source: &str, target: &str) -> Result<String, Error> {
     if target.is_empty() || target.starts_with("//") || target.ends_with('/') {
@@ -76,7 +107,7 @@ pub fn resolve_target(source: &str, target: &str) -> Result<String, Error> {
             return Err(Error::Invalid("invalid source part"));
         }
         if !target.starts_with('/') {
-            segments.extend(source.split('/'));
+            segments.extend(source.split('/').map(str::to_owned));
             segments.pop();
         }
     }
@@ -84,8 +115,7 @@ pub fn resolve_target(source: &str, target: &str) -> Result<String, Error> {
         match s {
             "." => {},
             ".." => { segments.pop().ok_or(Error::Invalid("target escapes package"))?; },
-            _ if safe_segment(s) => segments.push(s),
-            _ => return Err(Error::Unsupported("internal URI outside supported subset")),
+            _ => segments.push(canonical_segment(s).ok_or(Error::Unsupported("internal URI outside supported subset"))?),
         }
     }
     if segments.is_empty() { return Err(Error::Invalid("empty resolved target")); }
@@ -137,7 +167,8 @@ pub(crate) fn graph(archive: &mut ZipArchive<Cursor<&[u8]>>, limits: Limits) -> 
         if named(n, CT, "Override") {
             let raw = required(n, "PartName")?;
             if !raw.starts_with('/') { return Err(Error::Invalid("override part name")); }
-            let name = raw[1..].to_owned();
+            let name = raw[1..].split('/').map(canonical_segment).collect::<Option<Vec<_>>>()
+                .ok_or(Error::Unsupported("override part URI"))?.join("/");
             if overrides.insert(name, mime).is_some() { return Err(Error::Invalid("duplicate content type override")); }
         } else if named(n, CT, "Default") {
             let ext = required(n, "Extension")?.to_ascii_lowercase();
