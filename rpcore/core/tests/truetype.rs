@@ -328,3 +328,28 @@ fn text_color_order_invisible_and_preview(){
     m.fractions[0].numerator_fraction=Some(m.fractions[1].rule_command_index);
     assert!(build_tree(&g,&m).is_err());
 }
+
+#[test]fn math_shallow_tex_subscript_with_advance_alignment(){
+    use rpcore::raster::{math_tree::build_tree,math_geometry::ScriptKind};
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 7 Tf 1 0 0 1 16.5 38.506 Tm <0002> Tj ET");
+    let d=Document::open(&p).unwrap();
+    let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert_eq!(m.scripts.len(),1);assert_eq!(m.scripts[0].kind,ScriptKind::Subscript);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),"{O}_{D}");
+    // Shallow displacement with a large gap is not a script.
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 7 Tf 1 0 0 1 19 38.506 Tm <0002> Tj ET");
+    let d=Document::open(&p).unwrap();
+    let (_,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert!(m.scripts.is_empty());
+}
+#[test]fn math_fraction_inherits_raised_script(){
+    use rpcore::raster::math_tree::build_tree;
+    // Numerator base baseline 48, superscript 52. A centered rule's
+    // nearest-baseline row initially includes the base but not its script.
+    let p=fixture::pdf(b"BT /F1 10 Tf 43 48 Td <0001> Tj /F1 7 Tf 1 0 0 1 49.5 52 Tm <0002> Tj /F1 10 Tf 1 0 0 1 46 35 Tm <0003> Tj ET 40 44 17 .5 re f");
+    let d=Document::open(&p).unwrap();
+    let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[35.,30.,60.,70.]).unwrap();
+    assert_eq!(m.fractions.len(),1);assert_eq!(m.fractions[0].numerator,vec![0,1]);
+    assert_eq!(m.fractions[0].denominator,vec![2]);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\frac{{O}^{D}}{o}");
+}

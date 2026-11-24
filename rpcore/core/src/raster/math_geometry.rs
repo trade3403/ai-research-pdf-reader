@@ -197,7 +197,12 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
             let dy=(g.y-b.y)/b.em;let dx=(g.x-b.advance_x)/b.em;
             if !(-0.3..=0.45).contains(&dx)||g.x<=b.x{continue;}
             let kind=if (0.22..=0.95).contains(&dy){ScriptKind::Superscript}
-                else if (-0.65..=-0.15).contains(&dy){ScriptKind::Subscript}else{continue;};
+                else if (-0.65..=-0.15).contains(&dy)
+                    // Real TeX 10/7 point scripts can be only 0.14996 em
+                    // below the baseline. Admit shallow displacement only
+                    // with a strong size change and close advance alignment.
+                    ||((-0.15..=-0.12).contains(&dy)&&(0.55..=0.78).contains(&ratio)&&dx.abs()<=0.12)
+                    {ScriptKind::Subscript}else{continue;};
             // Do not reinterpret numerator/denominator pairs as scripts.
             if (0..4).any(|k|(membership[bi].0[k]&membership[gi].1[k])!=0||(membership[bi].1[k]&membership[gi].0[k])!=0){continue;}
             let score=dx.abs()+(dy.abs()-0.4).abs()*0.2;
@@ -229,5 +234,39 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
         if membership[ai]!=membership[bi]{continue;}
         attached.insert(b.index,(base,kind));scripts.push(ScriptCandidate{base,script:b.index,kind});
     }
+    // Expand fraction rows with the scripts of their existing base glyphs.
+    // Work from larger bases to smaller ones so nested scripts inherit all
+    // ancestor row memberships. A script may extend a row only when its
+    // outline is on the same side of the rule and horizontally within it.
+    // Never move a glyph out of an already assigned different row.
+    let by_index:std::collections::BTreeMap<usize,usize>=items.iter().enumerate().map(|(i,g)|(g.index,i)).collect();
+    scripts.sort_by(|a,b|items[by_index[&b.base]].em.total_cmp(&items[by_index[&a.base]].em).then(a.script.cmp(&b.script)));
+    for s in &scripts{
+        let bi=by_index[&s.base];let si=by_index[&s.script];let g=items[si];let base=items[bi];
+        if membership[bi]==membership[si]{continue;}
+        if membership[si]!=([0u64;4],[0u64;4]){continue;}
+        // A radical is still an independent candidate. Do not steal its glyphs
+        // into a fraction until radical/fraction nesting has explicit ownership.
+        if radicals.iter().any(|r|r.symbol==g.index||r.radicand.contains(&g.index)){continue;}
+        let mut valid=true;
+        for (fi,f) in fractions.iter().enumerate(){
+            let mask=1u64<<(fi%64);let above=membership[bi].0[fi/64]&mask!=0;let below=membership[bi].1[fi/64]&mask!=0;
+            if !above&&!below{continue;}
+            let b=f.rule_bounds;
+            if (above&&g.bounds[1]<b[3])||(below&&g.bounds[3]>b[1])
+                ||g.bounds[0]<b[0]-base.em*0.1||g.bounds[2]>b[2]+base.em*0.1{
+                valid=false;break;
+            }
+        }
+        if !valid{continue;}
+        for (fi,f) in fractions.iter_mut().enumerate(){
+            let mask=1u64<<(fi%64);
+            if membership[bi].0[fi/64]&mask!=0{f.numerator.push(g.index);}
+            if membership[bi].1[fi/64]&mask!=0{f.denominator.push(g.index);}
+        }
+        membership[si]=membership[bi];
+    }
+    // Preserve display-list order of relationship records for API callers.
+    scripts.sort_by_key(|s|s.script);
     Ok(MathRegion{region,glyph_indices:indices,scripts,fractions,radicals})
 }
