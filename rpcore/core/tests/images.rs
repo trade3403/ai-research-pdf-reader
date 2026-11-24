@@ -4,12 +4,15 @@ fn close(a:u8,b:u8){assert!((i32::from(a)-i32::from(b)).abs()<=2,"{a} != {b}");}
 fn render(p:&[u8])->Bitmap{let d=Document::open(p).unwrap();d.render_page(&d.pages().unwrap()[0],Options::default(),10000).unwrap()}
 fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
 #[test]fn baseline_jpeg_and_ac(){
+    assert_eq!(fixture::gray().len(),161);assert_eq!(fixture::rgb().len(),291);assert_eq!(fixture::gradient().len(),165);
     let a=jpeg::decode(&fixture::gray(),1000,Transform::Auto).unwrap();assert_eq!((a.width,a.height,a.channels),(9,9,1));assert!(a.data.iter().all(|&v|v==85));
     let a=jpeg::decode(&fixture::rgb(),1000,Transform::Auto).unwrap();assert_eq!((a.width,a.height,a.channels),(17,9,3));
     for p in a.data.chunks_exact(3){for (&v,t) in p.iter().zip([200,39,70]){close(v,t);}}
     let a=jpeg::decode(&fixture::gradient(),1000,Transform::Auto).unwrap();for (&v,t) in a.data[..8].iter().zip([1,30,61,90,121,149,181,210]){close(v,t);}
 }
 #[test]fn jpeg_invalid_and_limit(){
+    let mut zero=fixture::gray();let q=zero.windows(2).position(|v|v==[255,219]).unwrap();zero[q+5]=0;
+    assert!(matches!(jpeg::decode(&zero,1000,Transform::Auto),Err(rpcore::Error::Invalid("JPEG zero quantizer"))));
     let mut d=fixture::gray();d.truncate(d.len()-2);assert!(jpeg::decode(&d,1000,Transform::Auto).is_err());
     let d=fixture::rgb();assert!(jpeg::decode(&d,100,Transform::Auto).is_err());
     let mut d=fixture::gray();let i=d.windows(2).position(|a|a==[255,192]).unwrap();d[i+1]=194;assert!(jpeg::decode(&d,1000,Transform::Auto).is_err());

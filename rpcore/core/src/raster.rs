@@ -1,5 +1,5 @@
 //! Independent CPU rasterizer. 2x2 sample coverage, opaque white background.
-use crate::{graphics::{Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,Segment,Stroke},text::{Matrix,Point},Document,Error,Object,PageInfo,Result};
+use crate::{graphics::{Color,Command,DisplayList,FillRule,LineCap,LineJoin,Path,Segment,Stroke},text::{Matrix,Point},Document,Error,PageInfo,Result};
 use std::sync::Arc;
 mod png;
 mod rendertext;
