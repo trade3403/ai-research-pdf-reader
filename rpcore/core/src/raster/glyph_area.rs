@@ -56,7 +56,7 @@ pub(super) fn coverage(paths:&[Subpath],clip:&Coverage,budget:&mut Budget)->Resu
             hits.push((a[0]+(y-a[1])/(b[1]-a[1])*(b[0]-a[0]),if b[1]>a[1]{1}else{-1}));
         }
         hits.sort_unstable_by(|a,b|a.0.total_cmp(&b.0));
-        let mut winding=0i32;let mut prev=0.;
+        let mut winding=0i32;let mut prev:f64=0.;
         for &(x,delta)in &hits{
             if winding!=0{
                 let l=prev.max(x0 as f64);let r=x.min(x1 as f64);

@@ -145,3 +145,20 @@ fn text_color_order_invisible_and_preview(){
     let b=d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Area).unwrap().bitmap;
     assert_eq!(pixel(&b,11,65),[0,0,0,255]);assert_eq!(pixel(&b,15,64),[255,255,255,255]);assert_eq!(pixel(&b,20,65),[255,255,255,255]);
 }
+
+#[test]fn math_style_rise_and_spacing_match_explicit_positions(){
+    use rpcore::raster::TextQuality;
+    let relative=fixture::pdf(b"BT /F1 10 Tf 80 Tz 1 Tc 10 20 Td <0001> Tj 5 Ts /F1 5 Tf <0002> Tj 0 Ts /F1 10 Tf [120 <0001>] TJ ET");
+    let absolute=fixture::pdf(b"BT /F1 10 Tf 80 Tz 1 0 0 1 10 20 Tm <0001> Tj /F1 5 Tf 1 0 0 1 16 25 Tm <0002> Tj /F1 10 Tf 1 0 0 1 18.44 20 Tm <0001> Tj ET");
+    let a=Document::open(&relative).unwrap();let b=Document::open(&absolute).unwrap();
+    let ap=a.pages().unwrap();let bp=b.pages().unwrap();
+    let text=a.page_text(&ap[0],10000).unwrap();
+    assert_eq!(text.glyphs.len(),3);
+    for (g,expected) in text.glyphs.iter().zip([[10.,20.],[16.,25.],[18.44,20.]]){
+        for axis in 0..2{assert!((g.origin[axis]-expected[axis]).abs()<1e-9);}
+    }
+    for q in [TextQuality::Standard,TextQuality::Fine,TextQuality::Area]{
+        let render=|d:&Document<'_>,p:&rpcore::PageInfo|d.render_page_with_text_quality(p,Options::default(),10000,None,q).unwrap().bitmap;
+        assert_eq!(render(&a,&ap[0]),render(&b,&bp[0]),"{q:?}");
+    }
+}
