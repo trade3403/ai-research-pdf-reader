@@ -22,8 +22,8 @@ The demo may use unsupported structures; failure is explicit.
 ## Remaining
 Flate, predictors, xref/object streams, incremental updates, encryption, font decoding/ToUnicode, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 
-## iOS CI (B-line core only)
-GitHub Actions preserves Windows and Ubuntu tests and adds separate Apple Silicon macOS-hosted iOS jobs:
+## Deferred iOS validation (B-line core only)
+Routine GitHub Actions currently runs Windows and Ubuntu only. iOS device cross-build and simulator jobs are deferred to keep iteration fast. The scripts below remain available for future manual validation; the previous workflow is preserved in commit `685ec546d6c82c1163e0cba6f92201357fd06b39`. Re-enable after core parsing and rendering stabilize. Planned iOS jobs:
 - Device: cross-compile the test executables for `aarch64-apple-ios` (without running them), build and upload the release Rust library.
 - Simulator: boot an installed iPhone simulator, run the Rust unit/integration test executables using `xcrun simctl spawn` through Cargo's target runner, then build and upload the `aarch64-apple-ios-sim` release library.
 - Simulator startup or test failure fails its own job. Neither job implies a signed iOS app, a physical-device test, a Swift/C ABI, or App Store readiness.
