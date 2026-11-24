@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('studio', Object.freeze({
   chatExternal: () => ipcRenderer.invoke('preview:chat-external'),
   pdfStore: bytes => ipcRenderer.invoke('studio:pdf-store',bytes),
   pdfRead: token => ipcRenderer.invoke('studio:pdf-read',token),
+  research: (op,value) => ipcRenderer.invoke('studio:research',op,value),
   library: (op,value) => ipcRenderer.invoke('studio:library',op,value),
   reader: (op,value) => ipcRenderer.invoke('studio:reader',op,value)
 }));

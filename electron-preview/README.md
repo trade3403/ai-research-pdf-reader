@@ -14,3 +14,6 @@ Native ChatGPT WebContentsView is connected to the React dock; bounds follow its
 
 ### V0.6.2 second slice
 User-selected PDF files are copied to a SHA-256 addressed private vault (100 MiB limit, verified on reopen). Only vault IDs can be read through IPC; no arbitrary filesystem reads. Reader restores up to four recent managed files after restart. Library metadata, collections and per-page substring search use a separate native SQLite database with transactional browser-preview migration. Original PDFs are not modified; deleting library entries does not delete vault files. Vault garbage collection, full backups and V0.5.9 migration remain pending. GUI regression adds real library import and process restart. PDF.js remains transitional.
+
+## V0.6.3 first slice
+Native SQLite stores research clips, editable Word JSON manuscripts, translation preferences/glossary/cache and local usage counters, with independent one-time transactional imports from browser preview storage. Original browser keys are retained. No arbitrary SQL IPC. Azure API keys and live online requests are deliberately not migrated in this slice; cached translations remain usable. Unit tests cover rollback, reopen, preserved creation date and atomic quota. GUI smoke extends to research clip and Word draft save. V0.5.9 Tauri database migration, complete backup and native export remain pending.

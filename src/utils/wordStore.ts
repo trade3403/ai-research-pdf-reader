@@ -1,3 +1,4 @@
+import { electronBridge } from './electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import type { JSONContent } from '@tiptap/core';
 import { getDatabase } from './readerStore';
@@ -82,7 +83,14 @@ async function init(): Promise<void> {
   })().catch(e => { initializing = null; throw e; });
   return initializing;
 }
+let migrated:Promise<unknown>|null=null;
+async function nativeWord<T>(op:string,v?:unknown):Promise<T>{
+ const b=electronBridge();if(!b)throw Error('Native word store unavailable');
+ if(!migrated)migrated=b.research('word.import',browserList()).catch(e=>{migrated=null;throw e;});
+ await migrated;return b.research(op,v) as Promise<T>;
+}
 export async function listManuscripts(): Promise<Manuscript[]> {
+  if(electronBridge())return nativeWord<Manuscript[]>('word.list');
   if (!isTauri()) return browserList().sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
   await init(); const db=await getDatabase();
   const rows=await db.select<ManuscriptRow[]>('SELECT * FROM word_manuscripts ORDER BY updated_at DESC LIMIT 400');
@@ -90,6 +98,7 @@ export async function listManuscripts(): Promise<Manuscript[]> {
 }
 export async function saveManuscript(doc: Manuscript): Promise<void> {
   const content=check(doc);
+  if(electronBridge()){await nativeWord('word.save',doc);return;}
   if (!isTauri()) {
     localStorage.setItem(LOCAL_KEY,JSON.stringify([doc,...browserList().filter(d=>d.id!==doc.id)].slice(0,200)));
     return;
@@ -104,6 +113,7 @@ export async function saveManuscript(doc: Manuscript): Promise<void> {
     [doc.id,doc.title,content,doc.sourcePath,doc.pageSize,doc.marginMm,doc.createdAt,doc.updatedAt,doc.citationStyle||'numeric',doc.lineSpacing||1.5,doc.headerText||'',doc.footerText||'']);
 }
 export async function deleteManuscript(id: string): Promise<void> {
+  if(electronBridge()){await nativeWord('word.delete',id);return;}
   if(!isTauri()) {localStorage.setItem(LOCAL_KEY,JSON.stringify(browserList().filter(d=>d.id!==id)));return;}
   await init();const db=await getDatabase();await db.execute('DELETE FROM word_manuscripts WHERE id=$1',[id]);
 }

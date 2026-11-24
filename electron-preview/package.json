@@ -1,6 +1,6 @@
 {
   "name": "research-studio-electron-preview",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "description": "Desktop migration preview; not feature complete",
   "main": "main.cjs",
@@ -32,7 +32,8 @@
       "workspace/**/*",
       "reader-db.cjs",
       "pdf-vault.cjs",
-      "library-db.cjs"
+      "library-db.cjs",
+      "research-db.cjs"
     ],
     "win": {
       "target": [

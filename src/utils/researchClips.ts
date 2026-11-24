@@ -1,3 +1,4 @@
+import { electronBridge } from './electronBridge';
 import { isTauri } from '@tauri-apps/api/core';
 import { getDatabase } from './readerStore';
 
@@ -88,7 +89,14 @@ async function initClips(): Promise<void> {
   return initializing;
 }
 
+let migrated:Promise<unknown>|null=null;
+async function nativeClip<T>(op:string,v?:unknown):Promise<T>{
+ const b=electronBridge();if(!b)throw Error('Native research store unavailable');
+ if(!migrated)migrated=b.research('clip.import',browserLoad()).catch(e=>{migrated=null;throw e;});
+ await migrated;return b.research(op,v) as Promise<T>;
+}
 export async function listClips(): Promise<ResearchClip[]> {
+  if(electronBridge())return nativeClip<ResearchClip[]>('clip.list');
   if (!isTauri()) return browserLoad().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   await initClips();
   const db = await getDatabase();
@@ -99,6 +107,7 @@ export async function listClips(): Promise<ResearchClip[]> {
 /** Upsert keeps the original creation timestamp when editing a saved record. */
 export async function saveClip(clip: ResearchClip): Promise<ResearchClip> {
   const safe = normalizeClip(clip);
+  if(electronBridge())return nativeClip<ResearchClip>('clip.save',safe);
   if (!isTauri()) {
     browserWrite([safe, ...browserLoad().filter(c => c.id !== safe.id)]);
     return safe;
@@ -118,6 +127,7 @@ export async function saveClip(clip: ResearchClip): Promise<ResearchClip> {
 }
 
 export async function deleteClip(id: string): Promise<void> {
+  if(electronBridge()){await nativeClip('clip.delete',id);return;}
   if (!isTauri()) { browserWrite(browserLoad().filter(x => x.id !== id)); return; }
   await initClips();
   const db = await getDatabase();

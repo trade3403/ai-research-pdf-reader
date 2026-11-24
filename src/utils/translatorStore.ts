@@ -1,3 +1,4 @@
+import { electronBridge } from './electronBridge';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getDatabase } from './readerStore';
 import { assembleResearchTranslation, splitResearchMarkup, translationPayload } from './translationMarkup';
@@ -48,7 +49,18 @@ function cleanSettings(s:TranslatorSettings):TranslatorSettings {
   return {...s,region,glossary};
 }
 
+let migrated:Promise<unknown>|null=null;
+async function nativeTranslation<T>(op:string,v?:unknown):Promise<T>{
+ const b=electronBridge();if(!b)throw Error('Native translation store unavailable');
+ if(!migrated)migrated=b.research('translation.import',{
+  settings:cleanSettings(browserRead(LOCAL_SETTINGS,FALLBACK)),
+  cache:Object.values(browserRead<Record<string,SavedTranslation>>(LOCAL_CACHE,{})),
+  usage:browserRead<Record<string,number>>(LOCAL_USAGE,{})
+ }).catch(e=>{migrated=null;throw e;});
+ await migrated;return b.research(op,v) as Promise<T>;
+}
 export async function loadTranslatorSettings():Promise<TranslatorSettings>{
+  if(electronBridge())return cleanSettings((await nativeTranslation<TranslatorSettings|null>('translation.settings'))||FALLBACK);
   if(!isTauri())return cleanSettings(browserRead(LOCAL_SETTINGS,FALLBACK));
   await ensureStore(); const db=await getDatabase();
   const rows=await db.select<Array<{region:string;source_lang:string;target_lang:string;monthly_limit:number;glossary:string}>>('SELECT * FROM translation_preferences WHERE id=1');
@@ -59,6 +71,7 @@ export async function loadTranslatorSettings():Promise<TranslatorSettings>{
 
 export async function saveTranslatorSettings(input:TranslatorSettings):Promise<TranslatorSettings>{
   const s=cleanSettings(input);
+  if(electronBridge())return nativeTranslation<TranslatorSettings>('translation.saveSettings',s);
   if(!isTauri()){browserWrite(LOCAL_SETTINGS,s);return s;}
   await ensureStore();const db=await getDatabase();
   await db.execute(`INSERT INTO translation_preferences(id,region,source_lang,target_lang,monthly_limit,glossary)
@@ -70,6 +83,7 @@ export async function saveTranslatorSettings(input:TranslatorSettings):Promise<T
 }
 
 export async function setAzureTranslatorKey(key:string):Promise<void>{
+  if(electronBridge())throw new Error('Electron 安全密钥存储尚未接入，请勿将 Key 保存在普通数据库中。');
   if(!isTauri())throw new Error('仅 Windows 桌面安装版支持安全保存 Azure Key');
   if(key.length<8||key.length>256)throw new Error('API Key 格式不正确');
   await invoke('translator_save_key',{key});
@@ -88,6 +102,7 @@ export function monthId(date = new Date()): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}`;
 }
 export async function getMonthlyUsage(month=monthId()):Promise<number>{
+  if(electronBridge())return nativeTranslation<number>('translation.usage',month);
   if(!isTauri())return browserRead<Record<string,number>>(LOCAL_USAGE,{})[month]||0;
   await ensureStore();const db=await getDatabase();
   const rows=await db.select<Array<{used_chars:number}>>('SELECT used_chars FROM translation_usage WHERE month=$1',[month]);
@@ -95,6 +110,7 @@ export async function getMonthlyUsage(month=monthId()):Promise<number>{
 }
 async function reserveUsage(chars:number,limit:number,month:string):Promise<void>{
   if(chars===0)return;
+  if(electronBridge()){await nativeTranslation('translation.reserve',{chars,limit,month});return;}
   if(!isTauri()){
     const usage=browserRead<Record<string,number>>(LOCAL_USAGE,{});
     if((usage[month]||0)+chars>limit)throw new Error('超过本月本机翻译预算，请下月再试或调整预算设置');
@@ -111,12 +127,14 @@ async function hashText(text:string):Promise<string>{
   return Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('');
 }
 async function fetchCached(cacheKey:string):Promise<SavedTranslation|null>{
+  if(electronBridge())return nativeTranslation<SavedTranslation|null>('translation.cache',cacheKey);
   if(!isTauri())return browserRead<Record<string,SavedTranslation>>(LOCAL_CACHE,{})[cacheKey]||null;
   await ensureStore();const db=await getDatabase();
   const rows=await db.select<Array<{cache_key:string;source_text:string;translated_text:string;source_lang:string;target_lang:string;created_at:string}>>('SELECT * FROM translation_cache WHERE cache_key=$1',[cacheKey]);
   return rows.length?{cacheKey,source:rows[0].source_text,translated:rows[0].translated_text,from:rows[0].source_lang,to:rows[0].target_lang,createdAt:rows[0].created_at}:null;
 }
 async function persistCached(item:SavedTranslation):Promise<void>{
+  if(electronBridge()){await nativeTranslation('translation.saveCache',item);return;}
   if(!isTauri()){const old=browserRead<Record<string,SavedTranslation>>(LOCAL_CACHE,{});browserWrite(LOCAL_CACHE,{...old,[item.cacheKey]:item});return;}
   await ensureStore();const db=await getDatabase();
   await db.execute(`INSERT OR REPLACE INTO translation_cache(cache_key,source_text,translated_text,source_lang,target_lang,created_at)
@@ -132,6 +150,7 @@ export async function translateResearchContent(source:string,settings:Translator
   const month=monthId();
   const cached=await fetchCached(cacheKey);
   if(cached)return {result:cached,cached:true,used:await getMonthlyUsage(month),month,limit:s.monthlyLimit};
+  if(electronBridge())throw new Error('Electron 已支持本地译文缓存；Azure 在线请求与安全密钥将在下一批接入。');
   if(!isTauri())throw new Error('请在 Windows 安装版中使用 Azure 翻译');
   const segments=splitResearchMarkup(text,s.glossary);
   const inputs=translationPayload(segments);
