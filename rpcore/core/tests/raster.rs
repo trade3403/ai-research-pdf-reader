@@ -61,3 +61,28 @@ fn pixel(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]
     assert_eq!(pixel(&b,0,7),[128,128,128,255]);assert_eq!(pixel(&b,1,7),[128,128,128,255]);
     assert_eq!(pixel(&b,2,7),[255,255,255,255]);assert_eq!(pixel(&b,0,0),[255,255,255,255]);
 }
+
+#[test]fn repeated_local_clips_keep_large_page_within_budget(){
+    // 3000 clips on a 500x400 page formerly charged 600m units for
+    // full-page allocations alone. The actual clips are 2x2 pixels.
+    let data=b"q 2.02 3.02 0.04 0.04 re W n 0 g 2.02 3.02 0.04 0.04 re f Q\n".repeat(3000);
+    let p=pdf(&data,0,false);let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],Options{scale:50.,allow_missing_text:false},300000).unwrap();
+    assert_eq!(pixel(&b,1,398),[0,0,0,255]);assert_eq!(pixel(&b,100,100),[255,255,255,255]);
+}
+#[test]fn local_nested_clip_and_image(){
+    let b=render(b"q 2.5 3 3 4 re W n q 3 3 1 4 re W n 0 g 2 3 10 8 re f Q 4 0 0 4 2 3 cm /Im Do Q",0,true);
+    assert_eq!(pixel(&b,0,4),[255,128,128,255]);
+    assert_eq!(pixel(&b,1,4),[255,0,0,255]);assert_eq!(pixel(&b,2,4),[0,255,0,255]);
+    assert_eq!(pixel(&b,3,4),[128,255,128,255]);assert_eq!(pixel(&b,4,4),[255,255,255,255]);
+}
+#[test]fn active_edges_many_separated_rectangles(){
+    let mut data=String::new();
+    for y in 0..200{for x in 0..20{
+        data.push_str(&format!("{} {} 0.02 0.02 re ",2.+x as f64*0.4,3.+y as f64*0.04));
+    }}data.push_str("f");
+    let p=pdf(data.as_bytes(),0,false);let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],Options{scale:50.,allow_missing_text:false},300000).unwrap();
+    assert_eq!(pixel(&b,0,399),[0,0,0,255]);assert_eq!(pixel(&b,1,399),[255,255,255,255]);
+    assert_eq!(pixel(&b,20,397),[0,0,0,255]);assert_eq!(pixel(&b,499,0),[255,255,255,255]);
+}

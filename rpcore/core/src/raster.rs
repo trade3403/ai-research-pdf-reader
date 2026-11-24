@@ -136,16 +136,26 @@ fn span_bound(x:f64,max:usize)->usize{(x*2.-0.5).ceil().clamp(0.,max as f64) as 
 struct Coverage{x:usize,y:usize,w:usize,h:usize,data:Vec<u8>}
 impl Coverage{
     fn empty()->Self{Self{x:0,y:0,w:0,h:0,data:Vec::new()}}
-    fn intersect_clip(&self,clip:&[u8],w:usize,h:usize,budget:&mut Budget)->Result<Vec<u8>>{
-        // A clip is persistent and page-sized; only its intersecting rows need
-        // sample comparisons. Charge the full allocation, unlike transient masks.
-        budget.charge(w*h+self.w*self.h)?;
-        let mut out=vec![0;w*h];
-        for row in 0..self.h{
-            let base=(self.y+row)*w+self.x;
-            for col in 0..self.w{out[base+col]=self.data[row*self.w+col]&clip[base+col];}
+    fn bounds(&self,other:&Self)->(usize,usize,usize,usize){
+        let x=self.x.max(other.x);let y=self.y.max(other.y);
+        (x,y,(self.x+self.w).min(other.x+other.w).max(x),(self.y+self.h).min(other.y+other.h).max(y))
+    }
+    fn at(&self,x:usize,y:usize)->u8{
+        if x<self.x||y<self.y||x>=self.x+self.w||y>=self.y+self.h{0}
+        else{self.data[(y-self.y)*self.w+x-self.x]}
+    }
+    fn intersect_clip(&self,clip:&Self,budget:&mut Budget)->Result<Self>{
+        let (x,y,x1,y1)=self.bounds(clip);
+        if x==x1||y==y1{return Ok(Self::empty());}
+        let (w,h)=(x1-x,y1-y);
+        budget.charge(w*h)?;
+        let mut data=vec![0;w*h];
+        for row in 0..h{
+            let a=(y+row-self.y)*self.w+x-self.x;
+            let b=(y+row-clip.y)*clip.w+x-clip.x;
+            for col in 0..w{data[row*w+col]=self.data[a+col]&clip.data[b+col];}
         }
-        Ok(out)
+        Ok(Self{x,y,w,h,data})
     }
 }
 fn mask(paths:&[Subpath],rule:FillRule,w:usize,h:usize,budget:&mut Budget)->Result<Coverage>{
@@ -161,14 +171,31 @@ fn mask(paths:&[Subpath],rule:FillRule,w:usize,h:usize,budget:&mut Budget)->Resu
     let (mw,mh)=(sx1.div_ceil(2)-x,sy1.div_ceil(2)-y);
     budget.charge(mw*mh)?;
     let mut out=Coverage{x,y,w:mw,h:mh,data:vec![0;mw*mh]};
+    // Sort edges by their first covered subpixel row. Keep only edges
+    // intersecting the current row, computing x from original endpoints
+    // rather than accumulating incremental floating-point drift.
+    let mut events=Vec::with_capacity(e.len());
+    for (a,b) in e{
+        let first=span_bound(a[1].min(b[1]),h*2);
+        let last=span_bound(a[1].max(b[1]),h*2);
+        if first<last{events.push((first,last,a,b));}
+    }
+    budget.charge(events.len().saturating_mul(1+usize::BITS as usize-events.len().max(1).leading_zeros() as usize))?;
+    events.sort_unstable_by_key(|e|e.0);
+    let mut next=0;let mut active:Vec<usize>=Vec::new();
     let mut hits=Vec::<(f64,i32)>::new();
     for sy in sy0..sy1{
-        budget.charge(e.len())?;
+        budget.charge(active.len()+1)?;
+        active.retain(|&i|events[i].1>sy);
+        while next<events.len()&&events[next].0<=sy{
+            if events[next].1>sy{active.push(next);}
+            next+=1;
+        }
+        budget.charge(active.len())?;
         let y=(sy as f64+0.5)*0.5;hits.clear();
-        for &(a,b) in &e{
-            if y>=a[1].min(b[1])&&y<a[1].max(b[1]){
-                hits.push((a[0]+(y-a[1])/(b[1]-a[1])*(b[0]-a[0]),if b[1]>a[1]{1}else{-1}));
-            }
+        for &i in &active{
+            let (_,_,a,b)=events[i];
+            hits.push((a[0]+(y-a[1])/(b[1]-a[1])*(b[0]-a[0]),if b[1]>a[1]{1}else{-1}));
         }
         budget.charge(hits.len().saturating_mul(1+usize::BITS as usize-hits.len().max(1).leading_zeros() as usize))?;
         hits.sort_unstable_by(|a,b|a.0.total_cmp(&b.0));
@@ -258,7 +285,7 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Vec<u8>>,stack:Vec<(Arc<Vec<u8>>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Vec<u8>>>,page_clip:Arc<Vec<u8>>}
+struct Surface{w:usize,h:usize,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>}
 impl Surface{
     fn mark_coverage(&mut self,index:usize,alpha:f64){
         if let Some(coverage)=self.groups.last_mut().and_then(|g|g.coverage.as_mut()){
@@ -381,11 +408,11 @@ impl Surface{
         }
     }
     fn paint(&mut self,mask:&Coverage,c:[u8;3],alpha:f64)->Result<()>{
-        self.budget.charge(mask.w*mask.h*4)?;
-        for row in 0..mask.h{
-            let base=(mask.y+row)*self.w+mask.x;
-            for col in 0..mask.w{
-                let i=base+col;let m=mask.data[row*mask.w+col]&self.clip[i];
+        let (x,y,x1,y1)=mask.bounds(&self.clip);
+        self.budget.charge((x1-x)*(y1-y)*4)?;
+        for row in y..y1{
+            for col in x..x1{
+                let i=row*self.w+col;let m=mask.at(col,row)&self.clip.at(col,row);
                 for s in 0..4{if m&(1<<s)!=0{let at=i*12+s*3;self.knockout_sample(at);self.blend(at,c,alpha);}}
             }
         }Ok(())
@@ -396,12 +423,13 @@ impl Surface{
         let corners=[m.point([0.,0.])?,m.point([1.,0.])?,m.point([0.,1.])?,m.point([1.,1.])?];
         let lo=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::INFINITY,f64::min);
         let hi=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::NEG_INFINITY,f64::max);
-        let (x0,x1)=(span_bound(lo(0),self.w*2),span_bound(hi(0),self.w*2));
-        let (y0,y1)=(span_bound(lo(1),self.h*2),span_bound(hi(1),self.h*2));
+        let (x0,x1)=(span_bound(lo(0),self.w*2).max(self.clip.x*2),span_bound(hi(0),self.w*2).min((self.clip.x+self.clip.w)*2));
+        let (y0,y1)=(span_bound(lo(1),self.h*2).max(self.clip.y*2),span_bound(hi(1),self.h*2).min((self.clip.y+self.clip.h)*2));
+        if x0>=x1||y0>=y1{return Ok(());}
         self.budget.charge((x1-x0)*(y1-y0)*if img.interpolate{4}else{1})?;
         for y in y0..y1{for x in x0..x1{
             let i=y/2*self.w+x/2;let s=(y%2)*2+x%2;
-            if self.clip[i]&(1<<s)==0{continue;}
+            if self.clip.at(x/2,y/2)&(1<<s)==0{continue;}
             let [u,v]=inv.point([(x as f64+0.5)*0.5,(y as f64+0.5)*0.5])?;
             if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
             let (color,alpha)=img.sample(u,1.-v,self.stencil);
@@ -414,7 +442,8 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
-    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::new(clip.clone()),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:Arc::new(clip)};
+    let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
+    let mut s=Surface{w,h,samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -438,7 +467,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
             Command::Clip{path,rule}=>{
                 let p=flatten(path,view,&mut s.budget)?;
                 let m=mask(&p,*rule,w,h,&mut s.budget)?;
-                s.clip=Arc::new(m.intersect_clip(&s.clip,w,h,&mut s.budget)?);
+                s.clip=Arc::new(m.intersect_clip(&s.clip,&mut s.budget)?);
             }
             Command::Paint{path,fill,stroke}=>{
                 let p=flatten(path,view,&mut s.budget)?;
