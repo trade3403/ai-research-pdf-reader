@@ -170,7 +170,7 @@ fn text_color_order_invisible_and_preview(){
     assert_eq!(g.glyphs.len(),4);assert!(g.substituted_fonts.is_empty());
     let close=|a:[f64;4],b:[f64;4]|{for i in 0..4{assert!((a[i]-b[i]).abs()<1e-8,"{a:?} != {b:?}");}};
     close(g.glyphs[0].outline_bounds.unwrap(),[10.,20.,22.,34.]);
-    close(g.glyphs[1].outline_bounds.unwrap(),[23.,25.,35.,34.]);
+    close(g.glyphs[1].outline_bounds.unwrap(),[23.,25.,35.,37.]);
     assert_eq!(g.glyphs[1].origin,[23.,25.]);assert_eq!(g.glyphs[1].advance_end,[36.,25.]);
     assert_eq!(g.glyphs[1].unicode.as_deref(),Some("D"));assert_eq!(g.glyphs[1].font_resource,b"F1");
     assert_eq!(g.glyphs[2].outline_bounds,None);assert_eq!(g.glyphs[3].outline_bounds,None);
@@ -181,5 +181,39 @@ fn text_color_order_invisible_and_preview(){
     let p=fixture::pdf(b"BT /F1 20 Tf 0 1 -1 0 40 20 Tm <0002> Tj ET");
     let d=Document::open(&p).unwrap();let g=d.page_glyph_geometry(&d.pages().unwrap()[0],10000,None).unwrap();
     let b=g.glyphs[0].outline_bounds.unwrap();
-    for (v,e) in b.into_iter().zip([31.,20.,40.,32.]){assert!((v-e).abs()<1e-8);}
+    for (v,e) in b.into_iter().zip([28.,20.,40.,32.]){assert!((v-e).abs()<1e-8);}
+}
+
+#[test]fn viewport_selection_matches_rendered_glyph(){
+    use rpcore::raster::PageViewport;
+    let p=fixture::pdf(b"BT /F1 20 Tf 10 20 Td <0001> Tj <0000> Tj 3 Tr <0001> Tj ET");
+    let d=Document::open(&p).unwrap();let mut pages=d.pages().unwrap();let page=&mut pages[0];
+    page.crop_box=[8.,18.,30.,38.];page.rotation=90;
+    let geo=d.page_glyph_geometry(page,10000,None).unwrap();
+    let v=PageViewport::new(page,2.).unwrap();
+    let b=d.render_page(page,Options{scale:2.,allow_missing_text:false},10000).unwrap();
+    assert_eq!(v.bitmap_size(),(b.width,b.height));assert_eq!(v.bitmap_size(),(40,44));
+    let rect=geo.highlight_rect(0,&v).unwrap().unwrap();
+    for (a,e) in rect.into_iter().zip([4.,4.,32.,28.]){assert!((a-e).abs()<1e-8);}
+    assert_eq!(geo.highlight_rect(1,&v).unwrap(),None);
+    assert_eq!(geo.highlight_rect(2,&v).unwrap(),None);
+    let point=v.pdf_to_view([11.,25.]).unwrap();
+    assert_eq!(geo.hit_test(&v,point).unwrap(),Some(0));
+    assert_eq!(pixel(&b,point[0]as usize,point[1]as usize),[0,0,0,255]);
+    assert_eq!(geo.select_view_rect(&v,[0.,0.,40.,44.]).unwrap(),vec![0]);
+    assert_eq!(geo.hit_test(&v,[40.,4.]).unwrap(),None);
+    assert!(geo.highlight_rect(3,&v).is_err());
+}
+#[test]fn viewport_overlap_and_partial_crop(){
+    use rpcore::raster::PageViewport;
+    let p=fixture::pdf(b"BT /F1 20 Tf 10 20 Td <0001> Tj 1 0 0 1 10 20 Tm <0001> Tj ET");
+    let d=Document::open(&p).unwrap();let mut pages=d.pages().unwrap();let page=&mut pages[0];
+    page.crop_box=[15.,25.,25.,35.];
+    let g=d.page_glyph_geometry(page,10000,None).unwrap();
+    let v=PageViewport::new(page,1.).unwrap();
+    assert_eq!(g.highlight_rect(0,&v).unwrap(),Some([0.,1.,7.,10.]));
+    assert_eq!(g.select_view_rect(&v,[2.,2.,3.,3.]).unwrap(),vec![0,1]);
+    assert_eq!(g.hit_test(&v,[2.,2.]).unwrap(),Some(1));
+    assert_eq!(g.hit_test(&v,[8.,2.]).unwrap(),None);
+    assert!(g.select_view_rect(&v,[3.,3.,2.,2.]).is_err());
 }

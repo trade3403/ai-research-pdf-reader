@@ -6,6 +6,8 @@ mod rendertext;
 mod images;
 mod glyph_area;
 mod glyph_geometry;
+mod page_viewport;
+pub use page_viewport::PageViewport;
 pub use glyph_geometry::{GlyphGeometry,PageGlyphGeometry};
 use crate::fonts::standard::StandardFont;
 use std::collections::BTreeMap;

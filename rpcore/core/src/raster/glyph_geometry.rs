@@ -1,5 +1,6 @@
 //! Unhinted glyph outline geometry in unrotated PDF user space.
 //! Geometry is not a visibility/occlusion test, nor a math recognizer.
+use super::{PageViewport,page_viewport::validate_rect};
 use crate::{graphics::{Path,Segment},text::{Matrix,Point},Error,Result};
 
 #[derive(Debug,Clone,PartialEq)]
@@ -27,6 +28,43 @@ pub struct GlyphGeometry{
 pub struct PageGlyphGeometry{
     pub glyphs:Vec<GlyphGeometry>,
     pub substituted_fonts:Vec<crate::fonts::standard::StandardFont>,
+}
+impl PageGlyphGeometry{
+    /// Return the outline AABB in local view pixels, clipped to CropBox only.
+    /// This does not account for the content's clipping paths or occlusion.
+    /// The viewport must belong to the same page and desired render scale.
+    pub fn highlight_rect(&self,index:usize,view:&PageViewport)->Result<Option<[f64;4]>>{
+        let g=self.glyphs.get(index).ok_or(Error::Invalid("glyph geometry index"))?;
+        match g.outline_bounds{
+            Some(r)=>view.clip_rect(view.pdf_rect_to_view(r)?),
+            None=>Ok(None),
+        }
+    }
+    /// Return intersecting outline-box indices in display-list order.
+    /// Empty/invisible glyphs have no box; this is not semantic text selection.
+    pub fn select_view_rect(&self,view:&PageViewport,rect:[f64;4])->Result<Vec<usize>>{
+        validate_rect(rect)?;
+        let mut out=Vec::new();
+        for i in 0..self.glyphs.len(){
+            if let Some(b)=self.highlight_rect(i,view)?{
+                if b[0]<=rect[2]&&b[2]>=rect[0]&&b[1]<=rect[3]&&b[3]>=rect[1]{out.push(i);}
+            }
+        }
+        Ok(out)
+    }
+    /// Box hit test, not an exact painted-pixel test. For overlapping boxes
+    /// choose the last glyph in drawing order. No arbitrary nearest fallback.
+    pub fn hit_test(&self,view:&PageViewport,p:Point)->Result<Option<usize>>{
+        validate_rect([p[0],p[1],p[0],p[1]])?;
+        let [w,h]=view.content_size();
+        if p[0]<0.||p[1]<0.||p[0]>=w||p[1]>=h{return Ok(None);}
+        for i in (0..self.glyphs.len()).rev(){
+            if let Some(b)=self.highlight_rect(i,view)?{
+                if p[0]>=b[0]&&p[0]<=b[2]&&p[1]>=b[1]&&p[1]<=b[3]{return Ok(Some(i));}
+            }
+        }
+        Ok(None)
+    }
 }
 pub(super) struct Collector{
     pub(super) glyphs:Vec<GlyphGeometry>,
