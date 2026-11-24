@@ -74,3 +74,22 @@ fn text_color_order_invisible_and_preview(){
     let p=fixture::simple_pdf(b"BT /F1 20 Tf 10 20 Td (A) Tj ET",f,"/Encoding /WinAnsiEncoding",32);
     let d=Document::open(&p).unwrap();assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(Error::Unsupported("missing simple TrueType glyph mapping"))));
 }
+
+#[test]fn fine_glyph_coverage_recovers_subpixel_outline(){
+    use rpcore::raster::TextQuality;
+    let p=fixture::pdf(b"BT /F1 0.25 Tf 10 20 Td <0001> Tj ET");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let a=d.render_page(&pages[0],Options::default(),10000).unwrap();
+    let b=d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Fine).unwrap().bitmap;
+    assert_eq!(pixel(&a,10,69),[255,255,255,255]);
+    assert_eq!(pixel(&b,10,69),[239,239,239,255]);
+    assert_eq!(pixel(&b,11,69),[255,255,255,255]);
+    assert_eq!(d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Standard).unwrap().bitmap,a);
+}
+#[test]fn fine_glyph_respects_clip_and_opaque_interiors(){
+    use rpcore::raster::TextQuality;
+    let p=fixture::pdf(b"q 10 20 2 14 re W n BT /F1 20 Tf 10 20 Td <0001> Tj ET Q");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let b=d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Fine).unwrap().bitmap;
+    assert_eq!(pixel(&b,11,65),[0,0,0,255]);assert_eq!(pixel(&b,12,65),[255,255,255,255]);
+}

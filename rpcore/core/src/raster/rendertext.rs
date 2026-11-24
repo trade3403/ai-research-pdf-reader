@@ -1,5 +1,5 @@
 //! Native horizontal TrueType, CFF1 and traditional Type1 font rendering.
-use super::{Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
+use super::{TextQuality,Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
 use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,CmapKind,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
 const MAX_FONT_LOADS:usize=16;
@@ -244,9 +244,13 @@ impl TextRenderer{
                 };
                 let unit=self.state.size;
                 let m=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?.compose(fm)?;
+                if self.state.mode==0&&s.text_quality==TextQuality::Fine{
+                    s.paint_fine_glyph(&outline,m,rgb(fill),s.fill_alpha)?;
+                }else{
                 let paths=flatten(&outline,m,&mut s.budget)?;
                 if matches!(self.state.mode,0|2){let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(fill),s.fill_alpha)?;}
                 if matches!(self.state.mode,1|2){let paths=stroke_paths(&paths,stroke,view,&mut s.budget)?;let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(stroke.color),s.stroke_alpha)?;}
+                }
             }
             let word=if glyph.code==b" "{self.state.tw}else{0.};
             let advance=(width/1000.*self.state.size+self.state.tc+word)*self.state.scale;

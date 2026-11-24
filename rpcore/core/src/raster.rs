@@ -13,6 +13,10 @@ const MAX_WORK:usize=200_000_000;
 const MAX_CLIP_BYTES:usize=64*1024*1024;
 #[derive(Debug,Clone,Copy)]
 pub struct Options{pub scale:f64,pub allow_missing_text:bool}
+/// Optional higher precision coverage for filled glyphs. Existing vector, image,
+/// clipping and group surfaces remain 2x2; no hinting or subpixel RGB rendering.
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Default)]
+pub enum TextQuality{#[default] Standard, Fine}
 impl Default for Options{fn default()->Self{Self{scale:1.,allow_missing_text:false}}}
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub struct Bitmap{pub width:usize,pub height:usize,pub rgba:Vec<u8>,pub missing_text:bool}
@@ -301,7 +305,7 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize}
+struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize}
 impl Surface{
     fn local_index(&self,page_sample:usize)->Option<usize>{
         let p=page_sample/4;self.region.index(p%self.w,p/self.w,page_sample%4)
@@ -460,6 +464,29 @@ impl Surface{
             }
         }Ok(())
     }
+    // Each existing 2x2 surface sample receives the average of four
+    // fine samples within its quadrant. The coarse clip is deliberately
+    // retained; this is coverage AA, not full-scene 4x4 supersampling.
+    fn paint_fine_glyph(&mut self,outline:&Path,m:Matrix,c:[u8;3],alpha:f64)->Result<()>{
+        let m=Matrix([2.,0.,0.,2.,0.,0.]).compose(m)?;
+        let p=flatten(outline,m,&mut self.budget)?;
+        // mask() uses only the bounding rectangle of this argument.
+        let bounds=Coverage{x:self.clip.x*2,y:self.clip.y*2,w:self.clip.w*2,h:self.clip.h*2,data:Vec::new()};
+        let fine=mask(&p,FillRule::NonZero,self.w*2,self.h*2,&bounds,&mut self.budget)?;
+        if fine.w==0||fine.h==0{return Ok(());}
+        let x0=fine.x/2;let y0=fine.y/2;
+        let x1=(fine.x+fine.w).div_ceil(2);let y1=(fine.y+fine.h).div_ceil(2);
+        self.budget.charge((x1-x0)*(y1-y0)*4)?;
+        for y in y0..y1{for x in x0..x1{
+            let clip=self.clip.at(x,y);
+            for q in 0..4{
+                if clip&(1<<q)==0{continue;}
+                let n=fine.at(x*2+q%2,y*2+q/2).count_ones();
+                if n!=0{self.blend((y*self.w+x)*12+q*3,c,alpha*f64::from(n)/4.);}
+            }
+        }}
+        Ok(())
+    }
     fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix)->Result<()>{
         self.budget.stage="raster work (image decode)";
         let img=if let Some(img)=self.image_cache.get(&id){Arc::clone(img)}else{
@@ -491,12 +518,12 @@ impl Surface{
         }}Ok(())
     }
 }
-fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>)->Result<SubstitutedBitmap>{
+fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>,text_quality:TextQuality)->Result<SubstitutedBitmap>{
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
     let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
-    let mut s=Surface{w,h,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0};
+    let mut s=Surface{w,h,text_quality,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -557,13 +584,20 @@ impl Document<'_>{
         // Reject invalid viewport before decoding page content.
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
-        Ok(render(self,page,&list,options,None)?.bitmap)
+        Ok(render(self,page,&list,options,None,TextQuality::Standard)?.bitmap)
     }
     /// Explicit substitute outlines; caller must provide appropriately licensed,
     /// compatible font programs. Pixel equivalence to original fonts is not promised.
     pub fn render_page_with_standard_fonts(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:&StandardFontSet)->Result<SubstitutedBitmap>{
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
-        render(self,page,&list,options,Some(fonts))
+        render(self,page,&list,options,Some(fonts),TextQuality::Standard)
+    }
+    /// Opt-in glyph coverage quality, with optional caller-owned substitute fonts.
+    /// Fine mode averages 4x4 coverage into the existing 2x2 compositing grid.
+    pub fn render_page_with_text_quality(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:Option<&StandardFontSet>,quality:TextQuality)->Result<SubstitutedBitmap>{
+        viewport(page,options.scale)?;
+        let list=self.page_display_list(page,content_limit)?;
+        render(self,page,&list,options,fonts,quality)
     }
 }

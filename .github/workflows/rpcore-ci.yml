@@ -113,6 +113,12 @@ jobs:
           sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-72dpi-report/font-sha256.txt
           /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72
       - if: always()
+        run: |
+          mkdir -p rpcore/target/visual-fine-72dpi-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-fine-72dpi-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-fine-72dpi-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-fine-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --text-aa 4
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rpcore-visual-comparison
@@ -120,8 +126,10 @@ jobs:
             rpcore/target/visual-report/
             rpcore/target/visual-smoke-report/
             rpcore/target/visual-72dpi-report/
+            rpcore/target/visual-fine-72dpi-report/
           if-no-files-found: warn
       - if: always()
         run: |
           if [ -f rpcore/target/visual-report/report.md ]; then cat rpcore/target/visual-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/visual-72dpi-report/report.md ]; then cat rpcore/target/visual-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/visual-fine-72dpi-report/report.md ]; then cat rpcore/target/visual-fine-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
