@@ -1,0 +1,35 @@
+name: RWCore CI
+
+on:
+  push:
+    branches: [feature/rwcore, main]
+    paths:
+      - 'rwcore/**'
+      - '.github/workflows/rwcore-ci.yml'
+  pull_request:
+    paths:
+      - 'rwcore/**'
+      - '.github/workflows/rwcore-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rwcore
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup update stable
+      - name: Test
+        run: cargo +stable test --workspace --all-targets
+      - name: Build
+        run: cargo +stable build --workspace --release
