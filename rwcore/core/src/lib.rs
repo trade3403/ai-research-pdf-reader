@@ -11,3 +11,6 @@ pub use opc::{read_docx, Error, Limits};
 pub use package::{inspect_package, resolve_target, PackageGraph, Relationship, ResourceKind, Target};
 
 pub use zip_guard::validate_zip;
+
+pub mod formatting;
+pub use formatting::{resolve_formatting, EffectiveFormatting};
