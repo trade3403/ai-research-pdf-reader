@@ -445,11 +445,10 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
                 if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&mut s.budget)?;s.paint(&m,rgb(st.color),s.stroke_alpha)?;}
             }
             Command::Image{object_id,ctm}=>s.image(doc,*object_id,view.compose(*ctm)?)?,
-            Command::Text{operation,ctm,fill,stroke,scope}=>{
+            Command::Text{operation,ctm,fill,stroke,resource_owner,..}=>{
                 // Explicit preview mode skips all text, as in B10.1. Strict mode never silently skips.
                 if opt.allow_missing_text{missing_text=true;continue;}
-                if scope.is_some(){return Err(Error::Unsupported("Form text rasterization"));}
-                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke,substitutes)?;
+                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke,substitutes,*resource_owner)?;
             }
         }
     }

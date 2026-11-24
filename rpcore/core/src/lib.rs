@@ -324,7 +324,7 @@ impl Document<'_> {
         Err(Error::Limit("reference depth"))
     }
 
-    fn rectangle(&self, o: &Object) -> Result<[f64; 4]> {
+    fn rectangle_coordinates(&self, o: &Object) -> Result<[f64; 4]> {
         let Object::Array(values) = self.dereference(o)? else { return Err(Error::Invalid("page box array")); };
         if values.len() != 4 { return Err(Error::Invalid("page box size")); }
         let mut rect = [0.0; 4];
@@ -333,8 +333,18 @@ impl Document<'_> {
             if !n.is_finite() || n.abs() > 1e9 { return Err(Error::Limit("page coordinate")); }
             rect[i] = n;
         }
+        Ok(rect)
+    }
+    fn rectangle(&self, o: &Object) -> Result<[f64; 4]> {
+        let rect=self.rectangle_coordinates(o)?;
         if rect[2] <= rect[0] || rect[3] <= rect[1] { return Err(Error::Invalid("page box area")); }
         Ok(rect)
+    }
+    // Unlike a page viewport, a Form BBox may have zero area. Normalize
+    // opposite corners and leave degenerate rectangles as empty clips.
+    fn form_rectangle(&self,o:&Object)->Result<[f64;4]>{
+        let [x0,y0,x1,y1]=self.rectangle_coordinates(o)?;
+        Ok([x0.min(x1),y0.min(y1),x0.max(x1),y0.max(y1)])
     }
 
     pub fn pages(&self) -> Result<Vec<PageInfo>> {

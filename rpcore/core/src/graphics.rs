@@ -103,7 +103,7 @@ pub enum Command{
     /// Image reference and placement only. Image samples are not decoded here.
     Image{object_id:(u32,u16),ctm:Matrix},
     /// Text operators are retained in order, but glyph rendering is deferred.
-    Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>},
+    Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>,resource_owner:Option<(u32,u16)>},
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed,DeviceQualityHintNotInterpreted}
@@ -198,16 +198,16 @@ impl<'d,'a> Engine<'d,'a>{
         if let Some(rule)=p.clip.take(){self.command(Command::Clip{path,rule})?;}
         *p=Current::default();Ok(())
     }
-    fn xobject(&mut self,resources:Option<&Object>,n:&[u8],s:&State,depth:usize)->Result<()>{
+    fn xobject(&mut self,resources:Option<&Object>,n:&[u8],s:&State,depth:usize,resource_owner:Option<(u32,u16)>)->Result<()>{
         if depth>=MAX_FORMS{return Err(Error::Limit("form depth"));}
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("XObject Resources"))?)?)?;
         let x=crate::dict(self.doc.dereference(r.get(b"XObject".as_slice()).ok_or(Error::Invalid("XObject dictionary"))?)?)?;
         let id=crate::reference(x.get(n))?;
         if !self.active.insert(id){return Err(Error::Invalid("Form XObject cycle"));}
-        let result=self.xobject_inner(id,resources,s,depth);
+        let result=self.xobject_inner(id,resources,s,depth,resource_owner);
         self.active.remove(&id);result
     }
-    fn xobject_inner(&mut self,id:(u32,u16),resources:Option<&Object>,s:&State,depth:usize)->Result<()>{
+    fn xobject_inner(&mut self,id:(u32,u16),resources:Option<&Object>,s:&State,depth:usize,resource_owner:Option<(u32,u16)>)->Result<()>{
         let stream=self.doc.resolve(id.0,id.1)?;
         let Object::Stream{dict,..}=&stream else{return Err(Error::Invalid("XObject stream"));};
         match name(dict.get(b"Subtype".as_slice()).ok_or(Error::Invalid("XObject subtype"))?)?{
@@ -243,9 +243,9 @@ impl<'d,'a> Engine<'d,'a>{
                     let Object::Array(a)=self.doc.dereference(v)? else{return Err(Error::Invalid("Form Matrix"));};
                     child.ctm=child.ctm.compose(Matrix(nums(&a)?))?;
                 }
-                let bbox=self.doc.rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("Form BBox"))?)?;
+                let bbox=self.doc.form_rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("Form BBox"))?)?;
                 let mut p=Current::default();
-                self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;
+                if bbox[2]>bbox[0]&&bbox[3]>bbox[1]{self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;}
                 let data=crate::filters::decode(&stream,self.bytes_left)?;
                 self.bytes_left-=data.len();
                 let ops=content::parse(&data)?;
@@ -257,7 +257,8 @@ impl<'d,'a> Engine<'d,'a>{
                 }
                 self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
                 // Absent Resources may use the page's resource environment.
-                self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
+                let owner=if dict.contains_key(b"Resources".as_slice()){Some(id)}else{resource_owner};
+                self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id),owner)?;
                 if group_isolated.is_some(){self.command(Command::EndGroup)?;}
                 self.command(Command::Restore)
             }
@@ -288,7 +289,7 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("graphics complex color space")),
         }
     }
-    fn soft_mask(&mut self,resources:Option<&Object>,v:Object,s:&State,depth:usize)->Result<()>{
+    fn soft_mask(&mut self,resources:Option<&Object>,v:Object,s:&State,depth:usize,resource_owner:Option<(u32,u16)>)->Result<()>{
         if s.in_mask||s.knockout{return Err(Error::Unsupported("nested or knockout graphics soft mask"));}
         if depth>=MAX_FORMS{return Err(Error::Limit("soft mask depth"));}
         let d=crate::dict(v)?;
@@ -296,10 +297,10 @@ impl<'d,'a> Engine<'d,'a>{
         for (k,v) in &d{
             let v=self.doc.dereference(v)?;
             match k.as_slice(){
-                b"Type" if matches!(v,Object::Name(n) if n==b"Mask")=>{},
+                b"Type" if matches!(&v,Object::Name(n) if n==b"Mask")=>{},
                 b"S"=>match v{Object::Name(n) if n==b"Alpha"=>{},Object::Name(n) if n==b"Luminosity"=>luminosity=true,_=>return Err(Error::Unsupported("soft mask subtype"))},
                 b"G"=>{},
-                b"TR" if matches!(v,Object::Name(n) if n==b"Identity")=>{},
+                b"TR" if matches!(&v,Object::Name(n) if n==b"Identity")=>{},
                 b"BC"=>{let Object::Array(a)=v else{return Err(Error::Invalid("soft mask BC"));};backdrop=nums(&a)?;if backdrop.iter().any(|v|!(0.0..=1.0).contains(v)){return Err(Error::Invalid("soft mask BC range"));}}
                 _=>return Err(Error::Unsupported("soft mask parameter or transfer function")),
             }
@@ -315,11 +316,11 @@ impl<'d,'a> Engine<'d,'a>{
             for (k,v) in &group{
                 let v=self.doc.dereference(v)?;
                 match k.as_slice(){
-                    b"Type" if matches!(v,Object::Name(n) if n==b"Group")=>{},
-                    b"S" if matches!(v,Object::Name(n) if n==b"Transparency")=>{},
+                    b"Type" if matches!(&v,Object::Name(n) if n==b"Group")=>{},
+                    b"S" if matches!(&v,Object::Name(n) if n==b"Transparency")=>{},
                     b"I" if v==Object::Bool(true)=>{},
                     b"K" if v==Object::Bool(false)=>{},
-                    b"CS" if matches!(v,Object::Name(n) if n==b"DeviceRGB")=>{},
+                    b"CS" if matches!(&v,Object::Name(n) if n==b"DeviceRGB")=>{},
                     _=>return Err(Error::Unsupported("soft mask requires isolated RGB non-knockout group")),
                 }
             }
@@ -334,17 +335,18 @@ impl<'d,'a> Engine<'d,'a>{
                 let Object::Array(a)=self.doc.dereference(v)? else{return Err(Error::Invalid("soft mask Matrix"));};
                 child.ctm=child.ctm.compose(Matrix(nums(&a)?))?;
             }
-            let bbox=self.doc.rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("soft mask BBox"))?)?;
-            let mut p=Current::default();self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;
+            let bbox=self.doc.form_rectangle(dict.get(b"BBox".as_slice()).ok_or(Error::Invalid("soft mask BBox"))?)?;
+            let mut p=Current::default();if bbox[2]>bbox[0]&&bbox[3]>bbox[1]{self.rect(&mut p,child.ctm,[bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1]])?;}
             let data=crate::filters::decode(&stream,self.bytes_left)?;self.bytes_left-=data.len();let ops=content::parse(&data)?;
             self.command(Command::BeginSoftMask)?;
             self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
-            self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id))?;
+            let owner=if dict.contains_key(b"Resources".as_slice()){Some(id)}else{resource_owner};
+                self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id),owner)?;
             self.command(Command::EndSoftMask{luminosity,backdrop})
         })();
         self.active.remove(&id);result
     }
-    fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State,depth:usize)->Result<()>{
+    fn ext_gstate(&mut self,resources:Option<&Object>,n:&[u8],s:&mut State,depth:usize,resource_owner:Option<(u32,u16)>)->Result<()>{
         let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Invalid("ExtGState Resources"))?)?)?;
         let states=crate::dict(self.doc.dereference(r.get(b"ExtGState".as_slice()).ok_or(Error::Invalid("ExtGState dictionary"))?)?)?;
         let d=crate::dict(self.doc.dereference(states.get(n).ok_or(Error::Invalid("ExtGState name"))?)?)?;
@@ -361,7 +363,7 @@ impl<'d,'a> Engine<'d,'a>{
                     }.ok_or(Error::Unsupported("blend mode"))?;
                 },
                 b"SMask" if matches!(&v,Object::Name(n) if n==b"None")=>{self.command(Command::ClearSoftMask)?;}
-                b"SMask" if matches!(&v,Object::Dict(_))=>{if !crate::dict(v.clone())?.contains_key(b"G".as_slice()){return Err(Error::Unsupported("ExtGState graphics soft mask"));}self.soft_mask(resources,v,s,depth)?;}
+                b"SMask" if matches!(&v,Object::Dict(_))=>{if !crate::dict(v.clone())?.contains_key(b"G".as_slice()){return Err(Error::Unsupported("ExtGState graphics soft mask"));}self.soft_mask(resources,v,s,depth,resource_owner)?;}
                 b"AIS" if v==Object::Bool(false)=>{},
                 b"TK" if v==Object::Bool(true)=>{},
                 b"LW"=>{let x=number(&v)?;if x<0.{return Err(Error::Invalid("ExtGState line width"));}s.stroke.width=x;}
@@ -403,7 +405,7 @@ impl<'d,'a> Engine<'d,'a>{
         self.command(Command::Opacity{fill:s.fill_alpha,stroke:s.stroke_alpha})?;
         self.command(Command::Blend(s.blend))
     }
-    fn run(&mut self,ops:&[Operation],resources:Option<&Object>,mut s:State,depth:usize,scope:Option<(u32,u16)>)->Result<()>{
+    fn run(&mut self,ops:&[Operation],resources:Option<&Object>,mut s:State,depth:usize,scope:Option<(u32,u16)>,resource_owner:Option<(u32,u16)>)->Result<()>{
         let mut stack=Vec::new();let mut p=Current::default();let mut in_text=false;
         for op in ops{
             self.ops+=1;if self.ops>MAX_OPS{return Err(Error::Limit("cumulative graphics operations"));}
@@ -450,7 +452,7 @@ impl<'d,'a> Engine<'d,'a>{
                 b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
                 b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
                 b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
-                b"Do"=>{if s.knockout||s.in_mask{return Err(Error::Unsupported("XObject inside path-only knockout or soft mask"));}arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth)?;}
+                b"Do"=>{if s.knockout||s.in_mask{return Err(Error::Unsupported("XObject inside path-only knockout or soft mask"));}arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth,resource_owner)?;}
                 b"BT"|b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""=> {
                     if s.knockout||s.in_mask{return Err(Error::Unsupported("text inside path-only knockout or soft mask"));}
                     match w{
@@ -460,12 +462,12 @@ impl<'d,'a> Engine<'d,'a>{
                         _=>{}
                     }
                     self.warning(Warning::TextRenderingDeferred);
-                    self.command(Command::Text{operation:op.clone(),ctm:s.ctm,fill:s.fill,stroke:s.stroke(),scope})?;
+                    self.command(Command::Text{operation:op.clone(),ctm:s.ctm,fill:s.fill,stroke:s.stroke(),scope,resource_owner})?;
                 }
                 b"BMC"|b"BDC"|b"EMC"|b"MP"|b"DP"=>self.warning(Warning::MarkedContentNotInterpreted),
                 b"ri"=>{arity(a,1)?;name(&a[0])?;}
                 b"i"=>{let v=nums::<1>(a)?[0];if !(0.0..=100.).contains(&v){return Err(Error::Invalid("flatness"));}}
-                b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s,depth)?;}
+                b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s,depth,resource_owner)?;}
                 b"sh"=>return Err(Error::Unsupported("shading")),
                 _=>return Err(Error::Unsupported("graphics operator")),
             }
@@ -483,7 +485,7 @@ impl Document<'_>{
         let ops=content::parse(&data)?;
         let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new()},
             active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len()};
-        e.run(&ops,page.resources.as_ref(),State::default(),0,None)?;
+        e.run(&ops,page.resources.as_ref(),State::default(),0,None,None)?;
         Ok(e.out)
     }
 }

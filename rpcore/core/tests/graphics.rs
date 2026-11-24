@@ -100,3 +100,12 @@ fn cumulative_form_budget(){
         assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Unsupported(s)) if s==reason));
     }
 }
+
+#[test]fn form_box_normalized_or_empty(){
+    let f=stream("/Subtype /Form /BBox [10 10 0 0]",b"0 0 10 10 re f");
+    let l=list(b"/Fm Do",vec![f]);
+    assert!(matches!(&l.commands[1],Command::Clip{path,..} if path[0]==Segment::Move([0.,0.])));
+    let f=stream("/Subtype /Form /BBox [0 0 0 10]",b"0 0 10 10 re f");
+    let l=list(b"/Fm Do",vec![f]);
+    assert!(matches!(&l.commands[1],Command::Clip{path,..} if path.is_empty()));
+}
