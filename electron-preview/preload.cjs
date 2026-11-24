@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('studio', Object.freeze({
   azureKey: (op,key) => ipcRenderer.invoke('studio:azure-key',op,key),
   azureTranslate: request => ipcRenderer.invoke('studio:azure-translate',request),
   docxSave: (name,bytes) => ipcRenderer.invoke('studio:docx-save',name,bytes),
+  restoreStatus: () => ipcRenderer.invoke('studio:restore-status'),
   backup: op => ipcRenderer.invoke('studio:backup',op),
   research: (op,value) => ipcRenderer.invoke('studio:research',op,value),
   library: (op,value) => ipcRenderer.invoke('studio:library',op,value),

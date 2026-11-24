@@ -89,4 +89,4 @@ async function verifyBackup(dir){
  }
  return {files:names.size,pdfs,bytes,externalReferences};
 }
-module.exports={createBackup,verifyBackup,DB_NAMES};
+module.exports={createBackup,verifyBackup,DB_NAMES,validName,sqliteCheck,TABLES};

@@ -4,6 +4,10 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const {randomUUID}=require('node:crypto');
 const {createBackup,verifyBackup}=require('./backup.cjs');
+const {stageRestore,stageRollback,activatePending,state}=require('./restore.cjs');
+let dataRoot=null;
+const primaryInstance=app.requestSingleInstanceLock();
+if(!primaryInstance)app.quit();
 const {createKeyStore,translateBatch}=require('./azure-translator.cjs');
 const { pathToFileURL } = require('node:url');
 const { isTrustedLocal, isChatOrigin } = require('./policy.cjs');
@@ -126,14 +130,14 @@ ipcMain.handle('studio:chat-close',(event,owner)=>{
 ipcMain.handle('studio:reader',(event,op,value)=>{
   authorize(event);
   if(event.senderFrame.url!==workspaceUrl) throw new Error('Workspace only');
-  if(!readerDb) readerDb=createReaderDb(path.join(app.getPath('userData'),'reader-v062.sqlite'));
+  if(!readerDb) readerDb=createReaderDb(path.join(dataRoot,'reader-v062.sqlite'));
   return readerDb.call(op,value);
 });
 function workspaceOnly(event){authorize(event);if(event.senderFrame.url!==workspaceUrl)throw Error('Workspace only');}
-ipcMain.handle('studio:pdf-store',async(event,bytes)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.store(bytes);});
-ipcMain.handle('studio:pdf-read',async(event,token)=>{workspaceOnly(event);vault??=createVault(path.join(app.getPath('userData'),'pdf-vault'));return vault.read(token);});
-ipcMain.handle('studio:library',(event,op,value)=>{workspaceOnly(event);libraryDb??=createLibraryDb(path.join(app.getPath('userData'),'library-v062.sqlite'));return libraryDb.call(op,value);});
-function getResearch(){return researchDb??=createResearchDb(path.join(app.getPath('userData'),'research-v063.sqlite'));}
+ipcMain.handle('studio:pdf-store',async(event,bytes)=>{workspaceOnly(event);vault??=createVault(path.join(dataRoot,'pdf-vault'));return vault.store(bytes);});
+ipcMain.handle('studio:pdf-read',async(event,token)=>{workspaceOnly(event);vault??=createVault(path.join(dataRoot,'pdf-vault'));return vault.read(token);});
+ipcMain.handle('studio:library',(event,op,value)=>{workspaceOnly(event);libraryDb??=createLibraryDb(path.join(dataRoot,'library-v062.sqlite'));return libraryDb.call(op,value);});
+function getResearch(){return researchDb??=createResearchDb(path.join(dataRoot,'research-v063.sqlite'));}
 ipcMain.handle('studio:research',(event,op,value)=>{workspaceOnly(event);if(op==='translation.reserve')throw Error('Quota reservation is main-process only');return getResearch().call(op,value);});
 function keys(){return createKeyStore(path.join(app.getPath('userData'),'secrets','azure.dpapi'),safeStorage);}
 ipcMain.handle('studio:azure-key',(event,op,key)=>{workspaceOnly(event);const k=keys();switch(op){case 'save':return k.save(key);case 'has':return k.has();case 'remove':return k.remove();default:throw Error('Unsupported key operation');}});
@@ -157,15 +161,24 @@ ipcMain.handle('studio:docx-save',async(event,name,bytes)=>{
 let backupBusy=false;
 ipcMain.handle('studio:backup',(event,op)=>{
  workspaceOnly(event);
- if(!['create','verify'].includes(op))throw Error('Unsupported backup operation');
+ if(!['create','verify','restore','rollback'].includes(op))throw Error('Unsupported backup operation');
  if(backupBusy||translating)throw Error('Finish current backup or translation first');
  backupBusy=true;
  return (async()=>{
   try{
+   const appProfile=app.getPath('userData');
+   if(op==='rollback')return await stageRollback(appProfile);
    const selected=await dialog.showOpenDialog(win,{title:op==='create'?'选择备份保存位置':'选择需要校验的备份文件夹',properties:['openDirectory']});
    if(selected.canceled||!selected.filePaths[0])return null;
    if(op==='verify')return await verifyBackup(selected.filePaths[0]);
-   const profile=app.getPath('userData');
+   const profile=dataRoot;
+   if(op==='restore'){
+    readerDb??=createReaderDb(path.join(profile,'reader-v062.sqlite'));
+    libraryDb??=createLibraryDb(path.join(profile,'library-v062.sqlite'));getResearch();
+    return await stageRestore(appProfile,selected.filePaths[0]);
+   }
+   const relative=path.relative(await fs.realpath(appProfile),await fs.realpath(selected.filePaths[0]));
+   if(relative===''||(!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)))throw Error('Choose backup outside application profile');
    readerDb??=createReaderDb(path.join(profile,'reader-v062.sqlite'));
    libraryDb??=createLibraryDb(path.join(profile,'library-v062.sqlite'));
    return await createBackup({profile,parent:selected.filePaths[0],stores:[readerDb,libraryDb,getResearch()]});
@@ -173,5 +186,11 @@ ipcMain.handle('studio:backup',(event,op)=>{
  })();
 });
 app.on('will-quit',()=>{if(researchDb){researchDb.close();researchDb=null;}if(readerDb){readerDb.close();readerDb=null;}if(libraryDb){libraryDb.close();libraryDb=null;}});
-app.whenReady().then(() => { registerWorkspace(); createWindow(); });
+ipcMain.handle('studio:restore-status',async event=>{workspaceOnly(event);const p=await state(app.getPath('userData'));return {canRollback:p.previous!==null};});
+if(primaryInstance)app.whenReady().then(async()=>{
+ const profile=app.getPath('userData');await fs.mkdir(profile,{recursive:true});
+ const activated=await activatePending(profile);dataRoot=activated.root;
+ registerWorkspace();createWindow();
+ if(activated.error)dialog.showErrorBox('恢复失败，原数据已保留',activated.error);
+}).catch(error=>{dialog.showErrorBox('科研数据库启动失败',String(error.message||error));app.quit();});
 app.on('window-all-closed', () => app.quit());

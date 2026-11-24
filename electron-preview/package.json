@@ -35,7 +35,8 @@
       "library-db.cjs",
       "research-db.cjs",
       "azure-translator.cjs",
-      "backup.cjs"
+      "backup.cjs",
+      "restore.cjs"
     ],
     "win": {
       "target": [

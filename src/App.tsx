@@ -574,11 +574,24 @@ export default function App() {
     } catch (error) { notify(`备份失败：${humanError(error)}`, 'error'); }
   }, [notify]);
 
+  const verifyNativeBackup = useCallback(async()=>{
+    const bridge=electronBridge();if(!bridge)return;
+    try{const result=await bridge.backup('verify');if(result)notify('备份校验通过：'+result.files+' 个文件，'+result.pdfs+' 个 PDF'+(result.externalReferences?'；'+result.externalReferences+' 条外部附件引用未打包':''));}
+    catch(error){notify('备份校验失败：'+humanError(error),'error');}
+  },[notify]);
+  const rollbackNativeData=useCallback(async()=>{
+    const bridge=electronBridge();if(!bridge)return;
+    try{if(!(await bridge.restoreStatus()).canRollback){notify('没有可回滚的数据版本','error');return;}
+      if(!window.confirm('下次重启将切换到上一个数据版本，当前版本完整保留。请先保存编辑内容。继续？'))return;
+      const result=await bridge.backup('rollback');if(result?.scheduled)notify('已安排回滚，请完全退出并重新启动软件。');
+    }catch(error){notify('回滚准备失败：'+humanError(error),'error');}
+  },[notify]);
   const restoreData = useCallback(async () => {
     const bridge=electronBridge();
     if(bridge){
-      try{const result=await bridge.backup('verify');if(result)notify('备份校验通过：'+result.files+' 个文件，'+result.pdfs+' 个 PDF'+(result.externalReferences?'；'+result.externalReferences+' 条外部附件引用未打包':'')+'。本版仅验证，不覆盖现有数据。');}
-      catch(error){notify('备份校验失败：'+humanError(error),'error');}return;
+      if(!window.confirm('将选定备份恢复为下次启动的数据版本，原数据库及 PDF 完整保留，可回滚。请先保存正在编辑的文档。继续？'))return;
+      try{const result=await bridge.backup('restore');if(result?.scheduled)notify('已安排恢复，请完全退出并重新启动软件。原数据保留。'+(result.externalReferences?' 外部附件未打包：'+result.externalReferences+' 条。':''));}
+      catch(error){notify('恢复准备失败：'+humanError(error),'error');}return;
     }
     if (!isTauri()) { notify('数据库恢复仅支持安装后的 Windows 软件', 'error'); return; }
     if (!window.confirm('恢复将替换当前数据库中的文献、批注、科研记录和译文缓存。请先备份当前数据，确认继续选择备份文件吗？')) return;
@@ -617,7 +630,7 @@ export default function App() {
           <button className={mode === 'records' ? 'active' : ''} onClick={() => setMode('records')}><NotebookPen size={16}/> 科研记录</button>
           <button className={mode === 'word' ? 'active' : ''} onClick={() => setMode('word')}><FilePenLine size={16}/> Word 论文</button>
         {mode === 'word' && <button className={wordChatOpen ? 'active' : ''} aria-pressed={wordChatOpen} title="在 Word 右侧打开或关闭 ChatGPT 侧栏" onClick={() => setWordChatOpen(v => !v)}><MessageSquareText size={16}/> {wordChatOpen ? '关闭 ChatGPT 侧栏' : '打开 ChatGPT 侧栏'}</button>}
-        </div><button className="icon-button" title={electronBridge()?"科研数据库及 PDF 文件库备份":"完整数据库备份（不包含原始 PDF）"} onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title={electronBridge()?"校验备份（不覆盖数据）":"从 SQLite 备份恢复（需重启）"} onClick={() => void restoreData()}><DatabaseZap size={17}/></button><button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
+        </div><button className="icon-button" title={electronBridge()?"科研数据库及 PDF 文件库备份":"完整数据库备份（不包含原始 PDF）"} onClick={() => void backupData()}><DatabaseBackup size={17}/></button><button className="icon-button" title={electronBridge()?"恢复备份（重启生效）":"从 SQLite 备份恢复（需重启）"} onClick={() => void restoreData()}><DatabaseZap size={17}/></button>{electronBridge()&&<><button className="icon-button" title="校验备份（不覆盖数据）" onClick={()=>void verifyNativeBackup()}><FileSearch2 size={17}/></button><button className="icon-button" title="回滚上一个数据版本" onClick={()=>void rollbackNativeData()}><Clock3 size={17}/></button></>}<button className="button translator-settings-shortcut" title="翻译配置和术语词典" onClick={() => setTranslationDraft({source:'',label:'翻译设置'})}><Languages size={15}/> 翻译设置</button><span className="mode-label">本地科研工作站</span><button className="icon-button" title="切换主题" onClick={() => setDarkMode((old) => !old)}>{darkMode ? <Sun size={18}/> : <Moon size={18}/>}</button></div>
       </header>
       {(mode === 'reader' || mode === 'chat') && <>
       {!(mode === 'chat' && chatPdfCollapsed) && <>
