@@ -1,0 +1,37 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Only the trusted local main webview may access PDF files, SQLite and clipboard; remote ChatGPT view has no Tauri capabilities.",
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "fs:allow-read-file",
+    "dialog:allow-save",
+    "sql:default",
+    "sql:allow-execute",
+    "core:webview:allow-create-webview",
+    "core:webview:allow-set-webview-position",
+    "core:webview:allow-set-webview-size",
+    "core:webview:allow-webview-position",
+    "core:webview:allow-webview-size",
+    "core:webview:allow-webview-close",
+    "core:webview:allow-webview-hide",
+    "core:webview:allow-webview-show",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://chatgpt.com/"
+        },
+        {
+          "url": "https://chat.openai.com/"
+        }
+      ]
+    }
+  ],
+  "webviews": [
+    "main"
+  ]
+}
