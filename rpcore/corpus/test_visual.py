@@ -25,6 +25,27 @@ class VisualTests(unittest.TestCase):
         self.assertEqual(h.getpixel((1,1)),(255,0,0))
         self.assertEqual(c["worst_tiles"][0]["box"],[0,0,4,4])
 
+    def test_edge_shift_tolerance_does_not_change_raw_metrics(self):
+        a=Image.new("RGB",(9,9),"white")
+        b=a.copy()
+        a.putpixel((3,3),(0,0,0))
+        b.putpixel((4,4),(0,0,0))
+        c,_=compare(a,b)
+        self.assertEqual(c["ink_iou"],0)
+        self.assertEqual(c["reference_ink_missing_fraction"],1)
+        self.assertEqual(c["reference_ink_unmatched_1px_fraction"],0)
+        self.assertEqual(c["native_ink_unmatched_1px_fraction"],0)
+        self.assertLess(c["blurred_mae_rgb_0_255"],c["mae_rgb_0_255"])
+
+    def test_distant_missing_ink_not_hidden(self):
+        a=Image.new("RGB",(9,9),"white")
+        b=a.copy()
+        a.putpixel((1,1),(0,0,0))
+        b.putpixel((7,7),(0,0,0))
+        c,_=compare(a,b)
+        self.assertEqual(c["reference_ink_unmatched_1px_fraction"],1)
+        self.assertEqual(c["native_ink_unmatched_1px_fraction"],1)
+
     def test_no_silent_rescale(self):
         c,h=compare(Image.new("RGB",(2,2)),Image.new("RGB",(3,2)))
         self.assertEqual(c["status"],"dimension_mismatch")

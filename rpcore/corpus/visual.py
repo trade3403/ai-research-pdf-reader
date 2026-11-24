@@ -10,13 +10,13 @@ import subprocess
 import tempfile
 import time
 
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageStat, ImageFilter
 from run import download, invoke, sample_pages, MAX_DOWNLOAD
 
 MAX_PIXELS = 4_000_000
 MAX_PNG_BYTES = 32 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-DPI = 36  # corpus_probe currently renders at exactly 0.5 pixel per PDF point
+DPI = 36  # default; both engines receive the same requested DPI
 INK_THRESHOLD = 245
 DIFF_THRESHOLD = 16
 TILE = 64
@@ -50,6 +50,17 @@ def compare(native, reference):
     both = ImageChops.darker(na, nb).histogram()[255]
     union = ImageChops.lighter(na, nb).histogram()[255]
     native_ink, ref_ink = na.histogram()[255], nb.histogram()[255]
+    # Spatial tolerance is diagnostic only: dilate the opposite ink mask
+    # by one pixel (Chebyshev distance). Raw exact and IoU metrics remain.
+    # This distinguishes small edge shifts from unmatched ink far from any
+    # opposite ink, without moving, resizing or aligning either image.
+    near_native = na.filter(ImageFilter.MaxFilter(3))
+    near_reference = nb.filter(ImageFilter.MaxFilter(3))
+    ref_matched = ImageChops.darker(nb, near_native).histogram()[255]
+    native_matched = ImageChops.darker(na, near_reference).histogram()[255]
+    # Low-pass MAE is supplementary, not a replacement for raw MAE.
+    blurred = ImageChops.difference(native.filter(ImageFilter.GaussianBlur(1)),
+                                   reference.filter(ImageFilter.GaussianBlur(1)))
     tiles = []
     for y in range(0,h,TILE):
         for x in range(0,w,TILE):
@@ -73,15 +84,18 @@ def compare(native, reference):
         "ink_iou": round(both/union,6) if union else 1.0,
         "reference_ink_missing_fraction": round((ref_ink-both)/ref_ink,6) if ref_ink else 0.0,
         "native_extra_ink_fraction": round((native_ink-both)/native_ink,6) if native_ink else 0.0,
+        "reference_ink_unmatched_1px_fraction": round((ref_ink-ref_matched)/ref_ink,6) if ref_ink else 0.0,
+        "native_ink_unmatched_1px_fraction": round((native_ink-native_matched)/native_ink,6) if native_ink else 0.0,
+        "blurred_mae_rgb_0_255": round(sum(ImageStat.Stat(blurred).mean)/3,6),
         "worst_tiles": tiles[:10],
     }, heat
 
-def reference_render(exe, pdf, page, stem):
-    # Single page, crop box, 36 DPI. No resize or alignment trick in compare().
+def reference_render(exe, pdf, page, stem, dpi=DPI):
+    # Single page and crop box at requested DPI. No resize or alignment.
     start = time.monotonic()
     try:
         p = subprocess.run([str(exe), "-f",str(page),"-l",str(page),"-singlefile",
-                            "-cropbox","-r",str(DPI),"-png",str(pdf),str(stem)],
+                            "-cropbox","-r",str(dpi),"-png",str(pdf),str(stem)],
                            capture_output=True, timeout=20)
     except subprocess.TimeoutExpired:
         return {"status":"timeout"}
@@ -99,8 +113,8 @@ def compare_page(args, pdf, page, work, name):
     native=work/(name+"-native.png")
     ref=stem.with_suffix(".png")
     row={"page":page}
-    row["native"]=invoke(args.probe,pdf,"render",page,native,args.font_dir)
-    row["reference"]=reference_render(args.reference,pdf,page,stem)
+    row["native"]=invoke(args.probe,pdf,"render",page,native,args.font_dir,args.dpi)
+    row["reference"]=reference_render(args.reference,pdf,page,stem,args.dpi)
     if row["native"]["status"]!="ok" or row["reference"]["status"]!="ok":
         row["comparison"]={"status":"render_failed"}
         return row
@@ -125,21 +139,22 @@ def compare_page(args, pdf, page, work, name):
 
 def markdown(report):
     lines=["# RPCore visual comparison","",
-           "Independent Poppler reference, 36 DPI / 0.5 px per PDF point. No image rescaling.",
+           f"Independent Poppler reference, {report['dpi']} DPI / {report['dpi']/72:g} px per PDF point. No image rescaling.",
            "Comparison completion is not a visual-fidelity pass. Font replacement, hinting and anti-aliasing can affect pixel metrics.",
            "",f"Font mode: {report['font_mode']}. Reference: {report['reference_version']}","",
-           "| Paper | Page | Native | Reference | Comparison | RGB MAE (0–255) | Pixels Δ>16 | Ink IoU | Missing reference ink | Substituted faces |",
-           "|---|---:|---|---|---|---:|---:|---:|---:|---|"]
+           "| Paper | Page | Native | Reference | Comparison | RGB MAE (0–255) | Pixels Δ>16 | Ink IoU | Missing reference ink | Unmatched ref. ink (1 px) | Unmatched native ink (1 px) | Blurred MAE | Substituted faces |",
+           "|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|"]
     def pct(d,k):
         return f"{d[k]*100:.2f}%" if k in d else "—"
     for doc in report["documents"]:
         if not doc.get("pages"):
-            lines.append(f"| {doc['id']} | — | — | — | {doc['status']} | — | — | — | — | — |")
+            lines.append(f"| {doc['id']} | — | — | — | {doc['status']} | — | — | — | — | — | — | — | — |")
         for row in doc.get("pages",[]):
             c=row["comparison"];n=row["native"]
-            lines.append(f"| {doc['id']} | {row['page']} | {n['status']} | {row['reference']['status']} | {c['status']} | {c.get('mae_rgb_0_255','—')} | {pct(c,'fraction_gt16')} | {pct(c,'ink_iou')} | {pct(c,'reference_ink_missing_fraction')} | {n.get('substituted_fonts') or '—'} |")
+            lines.append(f"| {doc['id']} | {row['page']} | {n['status']} | {row['reference']['status']} | {c['status']} | {c.get('mae_rgb_0_255','—')} | {pct(c,'fraction_gt16')} | {pct(c,'ink_iou')} | {pct(c,'reference_ink_missing_fraction')} | {pct(c,'reference_ink_unmatched_1px_fraction')} | {pct(c,'native_ink_unmatched_1px_fraction')} | {c.get('blurred_mae_rgb_0_255','—')} | {n.get('substituted_fonts') or '—'} |")
     lines += ["",f"Compared pages: {report['compared']}/{report['selected']}.",
               "Worst 64×64 pixel tiles and source SHA-256 are in report.json.",
+              "One-pixel tolerance and Gaussian blur radius 1 are supplementary diagnostics, not accuracy thresholds; physical tolerance differs with DPI.",
               "No automatic accuracy threshold is asserted; inspect discrepancies before release."]
     return "\n".join(lines)+"\n"
 
@@ -150,6 +165,7 @@ def main():
     p.add_argument("--out",required=True,type=pathlib.Path)
     p.add_argument("--manifest",type=pathlib.Path,default=pathlib.Path(__file__).with_name("papers.json"))
     p.add_argument("--font-dir",type=pathlib.Path)
+    p.add_argument("--dpi",type=int,choices=(36,72,144),default=DPI)
     p.add_argument("--local",type=pathlib.Path)
     p.add_argument("--save-images",action="store_true",help="Local PDF only; confirm source permissions")
     a=p.parse_args()
@@ -166,7 +182,7 @@ def main():
     version=subprocess.run([str(a.reference),"-v"],capture_output=True,text=True,timeout=5)
     if version.returncode:
         p.error("reference version check failed")
-    report={"schema":1,"dpi":DPI,"font_mode":"explicit_urw" if a.font_dir else "strict",
+    report={"schema":2,"dpi":a.dpi,"ink_tolerance_pixels":1,"blur_radius_pixels":1,"font_mode":"explicit_urw" if a.font_dir else "strict",
             "reference_version":(version.stderr or version.stdout).splitlines()[0][:200],
             "ink_threshold":INK_THRESHOLD,"diff_threshold":DIFF_THRESHOLD,
             "documents":[],"selected":0,"compared":0}

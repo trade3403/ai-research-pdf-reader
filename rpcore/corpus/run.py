@@ -41,7 +41,7 @@ def download(url, path):
             raise ValueError("not a PDF")
     return size
 
-def invoke(exe, path, stage, page=None, png=None, font_dir=None):
+def invoke(exe, path, stage, page=None, png=None, font_dir=None, dpi=36):
     cmd = [str(exe), str(path), stage]
     if page is not None:
         cmd.append(str(page))
@@ -49,6 +49,11 @@ def invoke(exe, path, stage, page=None, png=None, font_dir=None):
         cmd.append(str(png))
     env = os.environ.copy()
     env.pop("RPCORE_STANDARD_FONT_DIR", None)
+    env.pop("RPCORE_RENDER_DPI", None)
+    if stage == "render":
+        if dpi not in (36, 72, 144):
+            raise ValueError("unsupported render DPI")
+        env["RPCORE_RENDER_DPI"] = str(dpi)
     if font_dir is not None and stage == "render":
         env["RPCORE_STANDARD_FONT_DIR"] = str(font_dir)
     start = time.monotonic()

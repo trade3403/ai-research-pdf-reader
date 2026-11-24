@@ -120,6 +120,9 @@ python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_pr
 ```
 Triptych order: native, reference, difference (white identical, red larger difference). Python comparison unit tests use original tiny images. CI fails if comparison is incomplete, not when pixel difference exceeds an unvalidated threshold. Real-paper visual metrics pending first run.
 
+## B10.5c2 multi-resolution and edge-tolerant visual diagnostics
+Run 45390227952: all five jobs passed; 9/9 visual pairs at 36 DPI. RGB MAE ranges 1.198499–16.544968; ink IoU ranges 41.98–73.82%. Low-resolution differences are not automatically glyph loss. Compare at 36 and 72 DPI in independent report directories; optional 144 DPI local runs retain the native work/pixel limits and may report unsupported/limit. Probe DPI is explicit (36/72/144), defaults to 36; regular corpus ignores inherited DPI settings. Reference receives the same DPI, no rescale. Add one-pixel Chebyshev-tolerant unmatched reference/native ink fractions and radius-1 Gaussian-blurred RGB MAE while retaining raw metrics and heatmaps; no registration/alignment or fidelity pass threshold. One pixel has different physical size at different DPI. Synthetic tests distinguish one-pixel shifts from distant missing ink. Public-paper images remain transient; only synthetic or local opt-in PNGs saved. Core algorithms unchanged in this diagnostic step. Prioritize actual rendering fixes based on 72 DPI and tolerance findings rather than assuming all discrepancies are anti-aliasing.
+
 ## Remaining
 Encryption, complete font encoding/metrics and outlines, complete page text coverage and layout order, complete graphics/color interpretation, full rasterization and text rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 

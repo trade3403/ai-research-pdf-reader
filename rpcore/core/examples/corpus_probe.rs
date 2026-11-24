@@ -21,6 +21,13 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
         println!("status=ok\npages={}\nbytes={}\nengine_ms={}",pages.len(),bytes.len(),start.elapsed().as_millis());return Ok(());
     }
     let p:&PageInfo=pages.get(page.unwrap().checked_sub(1).ok_or("page starts at 1")?).ok_or("page out of range")?;
+    let scale=if stage=="render"{
+        match std::env::var("RPCORE_RENDER_DPI"){
+            Ok(v)=>match v.as_str(){"36"=>0.5,"72"=>1.,"144"=>2.,_=>return Err("unsupported render DPI (36, 72, 144)".into())},
+            Err(std::env::VarError::NotPresent)=>0.5,
+            Err(e)=>return Err(e.into()),
+        }
+    }else{0.5};
     let result=match stage.as_str(){
         "content"=>doc.page_operations(p,MAX_CONTENT_BYTES).map(|v|println!("operations={}",v.len())),
         "text"=>doc.page_text(p,MAX_CONTENT_BYTES).map(|v|{
@@ -28,11 +35,11 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
         }),
         "render"=>match if let Some(dir)=std::env::var_os("RPCORE_STANDARD_FONT_DIR"){
             let fonts=urw::load(std::path::Path::new(&dir))?;
-            doc.render_page_with_standard_fonts(p,Options{scale:0.5,allow_missing_text:false},MAX_CONTENT_BYTES,&fonts).map(|v|{
+            doc.render_page_with_standard_fonts(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,&fonts).map(|v|{
                 let names=v.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(",");
                 println!("substituted_fonts={names}");v.bitmap
             })
-        }else{doc.render_page(p,Options{scale:0.5,allow_missing_text:false},MAX_CONTENT_BYTES)}{
+        }else{doc.render_page(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES)}{
             Ok(b)=>{
                 if b.missing_text{Err(Error::Invalid("strict render returned missing text"))}else{
                     let png=match b.png(){Ok(v)=>v,Err(e)=>{classify(e);return Ok(());}};
