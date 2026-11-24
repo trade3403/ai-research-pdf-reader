@@ -250,12 +250,13 @@ impl<'d,'a> Engine<'d,'a>{
                 self.bytes_left-=data.len();
                 let ops=content::parse(&data)?;
                 self.command(Command::Save)?;
+                // Clip the Form BBox before allocating its local transparency layer.
+                self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
                 if let Some((isolated,knockout))=group_isolated{
                     child.knockout=knockout;
                     self.command(if knockout{Command::BeginKnockoutGroup{opacity:s.fill_alpha,blend:s.blend,isolated}}else if isolated{Command::BeginGroup{opacity:s.fill_alpha,blend:s.blend}}else{Command::BeginNonIsolatedGroup{opacity:s.fill_alpha,blend:s.blend}})?;
                     child.fill_alpha=1.;child.stroke_alpha=1.;child.blend=BlendMode::Normal;
                 }
-                self.command(Command::Clip{path:p.segments,rule:FillRule::NonZero})?;
                 // Absent Resources may use the page's resource environment.
                 let owner=if dict.contains_key(b"Resources".as_slice()){Some(id)}else{resource_owner};
                 self.run(&ops,dict.get(b"Resources".as_slice()).or(resources),child,depth+1,Some(id),owner)?;

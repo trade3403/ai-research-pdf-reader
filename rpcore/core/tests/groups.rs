@@ -31,8 +31,8 @@ fn near(a:&[u8],b:[u8;4]){for (&x,y) in a.iter().zip(b){assert!((i32::from(x)-i3
     }
     let p=fixture::pdf(b"/G Do",fixture::GROUP,b"/G Do",b"","<< >>","<< >>");let d=Document::open(&p).unwrap();
     assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
-    let p=fixture::pdf(b"/G Do",fixture::GROUP,b"/N Do",b"0 0 1 rg 0 0 10 10 re f","<< >>","<< >>");let d=Document::open(&p).unwrap();
-    assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options{scale:100.,allow_missing_text:false},10000),Err(Error::Limit(_))));
+    let p=fixture::pdf(b"/G Do",NONISO,b"/N Do",b"0 0 1 rg 0 0 10 10 re f","<< >>","<< >>");let d=Document::open(&p).unwrap();
+    assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options{scale:100.,allow_missing_text:false},10000),Err(Error::Limit("transparency group buffers"))));
 }
 
 const NONISO:&str="<< /S /Transparency /I false /CS /DeviceRGB >>";
@@ -94,4 +94,25 @@ const NONISO:&str="<< /S /Transparency /I false /CS /DeviceRGB >>";
         let gs=format!("<< /SMask << /S /Alpha /G 5 0 R {extra} >> >>");
         let p=fixture::pdf(b"/Outer gs",g,body,b"",&gs,"<< >>");let d=Document::open(&p).unwrap();assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
     }
+}
+
+#[test]fn small_groups_repeated_on_large_page(){
+    let mut page=Vec::new();
+    for _ in 0..500{page.extend(b"q 0.1 0 0 0.1 5 5 cm /G Do Q\n");}
+    let p=fixture::pdf(&page,fixture::GROUP,b"1 0 0 rg 0 0 15 15 re f",b"","<< >>","<< >>");
+    let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],Options{scale:50.,allow_missing_text:false},100000).unwrap();
+    assert_eq!((b.width,b.height),(1000,1000));
+    assert_eq!(px(&b,260,730),[255,0,0,255]);assert_eq!(px(&b,249,730),[255,255,255,255]);
+}
+#[test]fn translated_nested_nonisolated_group_coordinates(){
+    let p=fixture::pdf_nested(b"0 1 0 rg 0 0 20 20 re f q 1 0 0 1 3 4 cm /G Do Q",NONISO,b"/Inner gs 1 0 0 rg 0 0 10 10 re f q 1 0 0 1 5 2 cm /N Do Q",b"0 0 1 rg 0 0 10 10 re f","<< >>","<< /ca 0.5 >>",NONISO);
+    let b=render(&p);
+    near(px(&b,4,13),[128,128,0,255]);near(px(&b,9,12),[64,64,128,255]);near(px(&b,16,12),[0,128,128,255]);assert_eq!(px(&b,1,12),[0,255,0,255]);
+}
+#[test]fn empty_group_and_local_mask_coordinates(){
+    let p=fixture::pdf(b"q 1 0 0 1 30 30 cm /G Do Q 0 g 0 0 1 1 re f",NONISO,b"1 0 0 rg 0 0 15 15 re f",b"","<< >>","<< >>");
+    let b=render(&p);assert_eq!(px(&b,0,19),[0,0,0,255]);assert_eq!(px(&b,10,10),[255,255,255,255]);
+    let p=fixture::pdf(b"q 1 0 0 1 3 4 cm /Outer gs /N Do Q",fixture::GROUP,b"0.5 g 0 0 5 10 re f",b"1 0 0 rg 0 0 10 10 re f","<< /SMask << /S /Luminosity /G 5 0 R >> >>","<< >>");
+    let b=render(&p);near(px(&b,4,13),[255,127,127,255]);assert_eq!(px(&b,9,13),[255,255,255,255]);
 }
