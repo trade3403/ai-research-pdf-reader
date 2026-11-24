@@ -106,6 +106,21 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
     if bodies.next().is_some() { return Err(Error::Invalid("duplicate body")); }
 
     let mut document = Document::default();
+    use crate::package::{ResourceKind, Target};
+    let mut styles = graph.relationships.iter().filter(|r|
+        r.source == graph.main_part && r.kind == ResourceKind::Styles);
+    if let Some(rel) = styles.next() {
+        if styles.next().is_some() {
+            return Err(Error::Invalid("multiple main document styles relationships"));
+        }
+        match &rel.target {
+            Target::Internal(name) => {
+                let bytes = part(&mut zip, name, limits)?;
+                document.styles = Some(parse_styles(&bytes, limits)?);
+            }
+            Target::External(_) => warn(&mut document, "External styles relationship ignored"),
+        }
+    }
     for node in body.children().filter(|n| n.is_element()) {
         if !named(node, ns, "p") {
             let name = node.tag_name().name().to_owned();
@@ -417,6 +432,8 @@ pub struct StyleDefinition {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StyleCatalog {
     pub styles: std::collections::BTreeMap<String, StyleDefinition>,
+    pub default_paragraph: DirectParagraphProperties,
+    pub default_run: DirectRunProperties,
 }
 impl StyleCatalog {
     /// Parent-first chain, with a fixed depth budget and explicit invalid links.
@@ -450,6 +467,22 @@ pub fn parse_styles(bytes: &[u8], limits: Limits) -> Result<StyleCatalog, Error>
         return Err(Error::Invalid("styles root"));
     }
     let mut catalog = StyleCatalog::default();
+    let mut defaults = root.children().filter(|n| named(*n, ns, "docDefaults"));
+    if let Some(d) = defaults.next() {
+        if defaults.next().is_some() { return Err(Error::Invalid("duplicate docDefaults")); }
+        for (wrapper, property) in [("pPrDefault", "pPr"), ("rPrDefault", "rPr")] {
+            let mut wrappers = d.children().filter(|n| named(*n, ns, wrapper));
+            if let Some(w) = wrappers.next() {
+                if wrappers.next().is_some() { return Err(Error::Invalid("duplicate default wrapper")); }
+                let mut props = w.children().filter(|n| named(*n, ns, property));
+                if let Some(p) = props.next() {
+                    if props.next().is_some() { return Err(Error::Invalid("duplicate default properties")); }
+                    if property == "pPr" { catalog.default_paragraph = parse_paragraph_node(p, ns); }
+                    else { catalog.default_run = parse_run_node(p, ns); }
+                }
+            }
+        }
+    }
     for node in root.children().filter(|n| named(*n, ns, "style")) {
         let id = node.attribute((ns, "styleId")).filter(|s| !s.is_empty())
             .ok_or(Error::Invalid("missing style ID"))?;

@@ -4,6 +4,8 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Document {
     pub blocks: Vec<Block>,
+    /// Parsed styles associated with the main document; direct formatting remains unchanged.
+    pub styles: Option<crate::opc::StyleCatalog>,
     pub diagnostics: Vec<Diagnostic>,
 }
 

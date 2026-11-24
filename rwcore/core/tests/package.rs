@@ -15,7 +15,7 @@ fn fixture(root: &str, resources: &str, extra: &[(&str, &str)]) -> Vec<u8> {
     let mut entries = vec![
         ("[Content_Types].xml", CT), ("_rels/.rels", root.as_str()),
         ("manuscript/main.xml", MAIN), ("manuscript/_rels/main.xml.rels", resources.as_str()),
-        ("manuscript/styles.xml", "<styles/>"), ("manuscript/fontTable.xml", "<fonts/>"),
+        ("manuscript/styles.xml", r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:jc w:val="center"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal" w:default="1"/></w:styles>"#), ("manuscript/fontTable.xml", "<fonts/>"),
         ("media/image.png", "placeholder")];
     entries.extend_from_slice(extra);
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -91,4 +91,30 @@ fn unknown_target_mode_is_error() {
     let resources = RESOURCES.replace("TargetMode=\"External\"", "TargetMode=\"Unknown\"");
     assert_eq!(inspect_package(&fixture(ROOT, &resources, &[]), Limits::default()),
         Err(Error::Invalid("invalid TargetMode")));
+}
+
+#[test]
+fn loads_related_styles_and_defaults() {
+    let doc = read_docx(&fixture(ROOT, RESOURCES, &[]), Limits::default()).unwrap();
+    let styles = doc.styles.unwrap();
+    assert_eq!(styles.default_run.size_half_points, Some(22));
+    assert_eq!(styles.default_paragraph.alignment, Some(rwcore::opc::ParagraphAlignment::Center));
+    assert!(styles.styles["Normal"].is_default);
+}
+#[test]
+fn unrelated_styles_are_not_loaded() {
+    let doc = read_docx(&fixture(ROOT, "", &[]), Limits::default()).unwrap();
+    assert!(doc.styles.is_none());
+}
+#[test]
+fn duplicate_styles_relationship_is_rejected() {
+    let resources = format!("{RESOURCES}<Relationship Id='s2' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles' Target='styles.xml'/>");
+    assert_eq!(read_docx(&fixture(ROOT, &resources, &[]), Limits::default()), Err(Error::Invalid("multiple main document styles relationships")));
+}
+#[test]
+fn external_styles_remain_inert() {
+    let resources = "<Relationship Id='s' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles' Target='https://example.org/styles.xml' TargetMode='External'/>";
+    let doc = read_docx(&fixture(ROOT, resources, &[]), Limits::default()).unwrap();
+    assert!(doc.styles.is_none());
+    assert!(doc.diagnostics.iter().any(|d| d.message.contains("External styles")));
 }

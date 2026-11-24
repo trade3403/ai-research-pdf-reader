@@ -65,3 +65,7 @@ CI #19 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/4545390
 ## C2.0 style catalog increment
 
 CI #20 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45468659633), revision a957af1d07216cd27f2f024da465efed9e643ee3: 42 tests passed per platform, zero failed or ignored (126 executions). Standalone styles.xml catalog parses direct properties, default flags and basedOn links. Parent-first traversal rejects cycles, missing and cross-kind links and chains beyond 128 entries. Five new tests (47 pending CI). Not yet integrated with DOCX relationship loading; docDefaults, toggle semantics, effective formatting and unsupported style metadata preservation remain pending. Real corpus and dependency audit remain outstanding.
+
+## C2.0 related styles and defaults increment
+
+CI #21 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45482971727), revision e90222e5f4ea06a4ed0dd9fb60955175ad38bb3c: 47 tests passed per platform, zero failed or ignored (141 executions). Main-document styles relationship now loads the bounded style catalog and docDefaults paragraph/run properties; unrelated parts are ignored, external styles remain inert and multiple styles relationships are rejected. Four package regressions (51 total pending CI). Effective formatting, toggle semantics, MIME validation of styles and unsupported default metadata preservation remain pending. Real corpus and dependency audit remain outstanding.
