@@ -14,9 +14,15 @@ const MAX_CLIP_BYTES:usize=64*1024*1024;
 #[derive(Debug,Clone,Copy)]
 pub struct Options{pub scale:f64,pub allow_missing_text:bool}
 /// Optional higher precision coverage for filled glyphs. Existing vector, image,
-/// clipping and group surfaces remain 2x2; no hinting or subpixel RGB rendering.
+/// clipping and group surfaces remain 2x2; no font bytecode or subpixel RGB rendering.
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Default)]
-pub enum TextQuality{#[default] Standard, Fine}
+pub enum TextQuality{
+    #[default] Standard,
+    Fine,
+    /// Experimental Fine coverage plus bounded horizontal baseline alignment.
+    /// Does not execute TrueType instructions or interpret Type1/CFF stem hints.
+    FineGrid,
+}
 impl Default for Options{fn default()->Self{Self{scale:1.,allow_missing_text:false}}}
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub struct Bitmap{pub width:usize,pub height:usize,pub rgba:Vec<u8>,pub missing_text:bool}

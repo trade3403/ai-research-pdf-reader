@@ -28,12 +28,21 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
             Err(e)=>return Err(e.into()),
         }
     }else{0.5};
-    let quality=if stage=="render"{
+    let mut quality=if stage=="render"{
         match std::env::var("RPCORE_TEXT_AA"){
             Ok(v)=>match v.as_str(){"2"=>TextQuality::Standard,"4"=>TextQuality::Fine,_=>return Err("unsupported text AA (2 or 4)".into())},
             Err(std::env::VarError::NotPresent)=>TextQuality::Standard,Err(e)=>return Err(e.into()),
         }
     }else{TextQuality::Standard};
+    if stage=="render"{
+        match std::env::var("RPCORE_TEXT_GRID"){
+            Ok(v) if v=="1"&&quality==TextQuality::Fine=>quality=TextQuality::FineGrid,
+            Ok(v) if v=="0"=>{},
+            Ok(_)=>return Err("grid fitting requires text AA 4 and grid 0 or 1".into()),
+            Err(std::env::VarError::NotPresent)=>{},
+            Err(e)=>return Err(e.into()),
+        }
+    }
     let result=match stage.as_str(){
         "content"=>doc.page_operations(p,MAX_CONTENT_BYTES).map(|v|println!("operations={}",v.len())),
         "text"=>doc.page_text(p,MAX_CONTENT_BYTES).map(|v|{

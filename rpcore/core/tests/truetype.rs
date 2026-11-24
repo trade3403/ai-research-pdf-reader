@@ -93,3 +93,35 @@ fn text_color_order_invisible_and_preview(){
     let b=d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,TextQuality::Fine).unwrap().bitmap;
     assert_eq!(pixel(&b,11,65),[0,0,0,255]);assert_eq!(pixel(&b,12,65),[255,255,255,255]);
 }
+
+#[test]fn experimental_grid_aligns_baseline_without_changing_advances(){
+    use rpcore::raster::TextQuality;
+    let p=fixture::pdf(b"BT /F1 8 Tf 10 20.4 Td [<0001> -100 <0002>] TJ ET");
+    let aligned=fixture::pdf(b"BT /F1 8 Tf 10 20 Td [<0001> -100 <0002>] TJ ET");
+    let d=Document::open(&p).unwrap();let e=Document::open(&aligned).unwrap();
+    let pages=d.pages().unwrap();let ep=e.pages().unwrap();
+    let render=|doc:&Document<'_>,page:&rpcore::PageInfo,q|doc.render_page_with_text_quality(page,Options::default(),10000,None,q).unwrap().bitmap;
+    let raw=render(&d,&pages[0],TextQuality::Fine);
+    let grid=render(&d,&pages[0],TextQuality::FineGrid);
+    assert_ne!(raw,grid);
+    assert_eq!(grid,render(&e,&ep[0],TextQuality::Fine));
+    let text=d.page_text(&pages[0],10000).unwrap();
+    assert_eq!(text.glyphs[0].origin,[10.,20.4]);
+    assert!((text.glyphs[1].origin[0]-16.).abs()<1e-9);
+    assert_eq!(text.glyphs[1].origin[1],20.4);
+}
+#[test]fn grid_skips_rise_rotation_large_text_and_stroke(){
+    use rpcore::raster::TextQuality;
+    for content in [
+        b"BT /F1 8 Tf 10 20.4 Td 1 Ts <0001> Tj ET".as_slice(),
+        b"BT /F1 8 Tf 0 1 -1 0 20.4 20.4 Tm <0001> Tj ET",
+        b"BT /F1 20 Tf 10 20.4 Td <0001> Tj ET",
+        b"BT /F1 8 Tf 10 20.4 Td 1 Tr <0001> Tj ET",
+        b"BT /F1 8 Tf -1 0 0 1 20 20.4 Tm <0001> Tj ET",
+        b"BT /F1 2 Tf 10 20.4 Td <0001> Tj ET",
+    ]{
+        let p=fixture::pdf(content);let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+        let render=|q|d.render_page_with_text_quality(&pages[0],Options::default(),10000,None,q).unwrap().bitmap;
+        assert_eq!(render(TextQuality::Fine),render(TextQuality::FineGrid),"{content:?}");
+    }
+}

@@ -2,6 +2,20 @@
 use super::{TextQuality,Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
 use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,CmapKind,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
+// Work in device space, before the font matrix. Only normal horizontal
+// text at 4–16 device pixels per em is eligible. A shared line baseline
+// moves by <=0.5 pixel; horizontal advances, font scaling and text matrices
+// are unchanged. Skip rotated/reflected/sheared and nonstandard font matrices.
+fn grid_baseline(mut device:Matrix,fm:Matrix)->Matrix{
+    let [a,b,c,d,_,y]=device.0;
+    let [fa,fb,fc,fd,fx,fy]=fm.0;
+    if a>0.&&d<0.&&(4.0..=16.0).contains(&-d)
+        && b==0.&&c==0.&&fa>0.&&fd>0.&&fb==0.&&fc==0.&&fx==0.&&fy==0.
+    {
+        device.0[5]=y.round();
+    }
+    device
+}
 const MAX_FONT_LOADS:usize=16;
 const MAX_FONT_TOTAL:usize=32*1024*1024;
 enum Outline{Tt(TrueType),SimpleTt(TrueType,[Option<u16>;256]),Cff(Cff,[Option<u16>;256]),Type1(Type1,BTreeMap<u8,Vec<u8>>,bool),ReplacementType1(Type1)}
@@ -243,8 +257,12 @@ impl TextRenderer{
                     (p,m)
                 };
                 let unit=self.state.size;
-                let m=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?.compose(fm)?;
-                if self.state.mode==0&&s.text_quality==TextQuality::Fine{
+                let mut device=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?;
+                if self.state.mode==0&&s.text_quality==TextQuality::FineGrid&&self.state.rise==0.{
+                    device=grid_baseline(device,fm);
+                }
+                let m=device.compose(fm)?;
+                if self.state.mode==0&&matches!(s.text_quality,TextQuality::Fine|TextQuality::FineGrid){
                     s.paint_fine_glyph(&outline,m,rgb(fill),s.fill_alpha)?;
                 }else{
                 let paths=flatten(&outline,m,&mut s.budget)?;

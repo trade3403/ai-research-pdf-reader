@@ -113,7 +113,7 @@ def compare_page(args, pdf, page, work, name):
     native=work/(name+"-native.png")
     ref=stem.with_suffix(".png")
     row={"page":page}
-    row["native"]=invoke(args.probe,pdf,"render",page,native,args.font_dir,args.dpi,args.text_aa)
+    row["native"]=invoke(args.probe,pdf,"render",page,native,args.font_dir,args.dpi,args.text_aa,args.text_grid)
     row["reference"]=reference_render(args.reference,pdf,page,stem,args.dpi)
     if row["native"]["status"]!="ok" or row["reference"]["status"]!="ok":
         row["comparison"]={"status":"render_failed"}
@@ -141,7 +141,7 @@ def markdown(report):
     lines=["# RPCore visual comparison","",
            f"Independent Poppler reference, {report['dpi']} DPI / {report['dpi']/72:g} px per PDF point. No image rescaling.",
            "Comparison completion is not a visual-fidelity pass. Font replacement, hinting and anti-aliasing can affect pixel metrics.",
-           "",f"Font mode: {report['font_mode']}. Text AA: {report['text_aa']}x{report['text_aa']}. Reference: {report['reference_version']}","",
+           "",f"Font mode: {report['font_mode']}. Text AA: {report['text_aa']}x{report['text_aa']}. Grid fitting: {report['text_grid']}. Reference: {report['reference_version']}","",
            "| Paper | Page | Native | Reference | Comparison | RGB MAE (0–255) | Pixels Δ>16 | Ink IoU | Missing reference ink | Unmatched ref. ink (1 px) | Unmatched native ink (1 px) | Blurred MAE | Substituted faces |",
            "|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|"]
     def pct(d,k):
@@ -165,11 +165,14 @@ def main():
     p.add_argument("--out",required=True,type=pathlib.Path)
     p.add_argument("--manifest",type=pathlib.Path,default=pathlib.Path(__file__).with_name("papers.json"))
     p.add_argument("--font-dir",type=pathlib.Path)
+    p.add_argument("--text-grid",action="store_true",help="Experimental small text baseline alignment; requires --text-aa 4")
     p.add_argument("--text-aa",type=int,choices=(2,4),default=2)
     p.add_argument("--dpi",type=int,choices=(36,72,144),default=DPI)
     p.add_argument("--local",type=pathlib.Path)
     p.add_argument("--save-images",action="store_true",help="Local PDF only; confirm source permissions")
     a=p.parse_args()
+    if a.text_grid and a.text_aa!=4:
+        p.error('--text-grid requires --text-aa 4')
     if a.save_images and not a.local:
         p.error("--save-images requires --local (source permissions)")
     a.probe=a.probe.resolve();a.reference=a.reference.resolve()
@@ -183,7 +186,7 @@ def main():
     version=subprocess.run([str(a.reference),"-v"],capture_output=True,text=True,timeout=5)
     if version.returncode:
         p.error("reference version check failed")
-    report={"schema":2,"dpi":a.dpi,"text_aa":a.text_aa,"ink_tolerance_pixels":1,"blur_radius_pixels":1,"font_mode":"explicit_urw" if a.font_dir else "strict",
+    report={"schema":2,"dpi":a.dpi,"text_aa":a.text_aa,"text_grid":a.text_grid,"ink_tolerance_pixels":1,"blur_radius_pixels":1,"font_mode":"explicit_urw" if a.font_dir else "strict",
             "reference_version":(version.stderr or version.stdout).splitlines()[0][:200],
             "ink_threshold":INK_THRESHOLD,"diff_threshold":DIFF_THRESHOLD,
             "documents":[],"selected":0,"compared":0}
