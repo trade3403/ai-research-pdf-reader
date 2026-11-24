@@ -1,0 +1,41 @@
+name: D line - RPTranslate CPU CI
+on:
+  push:
+    branches: [feature/rptranslate]
+    paths:
+      - 'rptranslate/**'
+      - '.github/workflows/rptranslate-ci.yml'
+  pull_request:
+    paths:
+      - 'rptranslate/**'
+      - '.github/workflows/rptranslate-ci.yml'
+permissions:
+  contents: read
+concurrency:
+  group: rptranslate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  cpu-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: rptranslate
+    env:
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --locked --offline --workspace --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked --offline --workspace
+      - name: Release CPU build
+        run: cargo build --locked --offline --release -p rptranslate
+      - name: Smoke test
+        run: ./target/release/rptranslate self-check

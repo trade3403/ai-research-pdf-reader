@@ -1,0 +1,4 @@
+[package]
+name = "rpinfer"
+version.workspace = true
+edition.workspace = true

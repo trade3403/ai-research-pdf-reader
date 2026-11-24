@@ -1,0 +1,9 @@
+[package]
+name = "rptranslate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rpdata = { path = "../rpdata" }
+rpinfer = { path = "../rpinfer" }
+rpmodel = { path = "../rpmodel" }

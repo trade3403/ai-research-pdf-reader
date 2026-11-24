@@ -1,0 +1,4 @@
+[package]
+name = "rpmodel"
+version.workspace = true
+edition.workspace = true
