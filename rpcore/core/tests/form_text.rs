@@ -50,3 +50,14 @@ const OWN:&str="/Resources << /Font << /F1 8 0 R >> /XObject << /N 6 0 R >> >>";
     let p=pdf(b"/N Do /G Do",b"/N Do",TEXT,OWN,"[0 0 45 40]");
     let b=render(&p);assert_eq!(px(&b,25,53),[255,255,255,255]);assert_eq!(px(&b,50,53),[0,0,0,255]);
 }
+
+#[test]fn geometry_preserves_form_scope_and_font_owner(){
+    let p=pdf(b"BT /F1 20 Tf 0 20 Td (A) Tj ET /G Do BT 70 20 Td (A) Tj ET",b"BT /F1 20 Tf 0 20 Td (A) Tj ET /N Do",TEXT,OWN,"[0 0 45 40]");
+    let d=Document::open(&p).unwrap();let g=d.page_glyph_geometry(&d.pages().unwrap()[0],10000,None).unwrap();
+    assert_eq!(g.glyphs.len(),4);
+    for (i,((scope,owner),x)) in [(None,None),(Some((5,0)),Some((5,0))),(Some((6,0)),Some((5,0))),(None,None)].into_iter().zip([0.,25.,45.,70.]).enumerate(){
+        let v=&g.glyphs[i];assert_eq!(v.form_scope,scope);assert_eq!(v.font_resource_owner,owner);
+        assert_eq!(v.origin,[x,20.]);assert!(v.outline_bounds.is_some());
+    }
+    assert!(g.glyphs.windows(2).all(|v|v[0].command_index<v[1].command_index));
+}

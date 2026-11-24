@@ -162,3 +162,24 @@ fn text_color_order_invisible_and_preview(){
         assert_eq!(render(&a,&ap[0]),render(&b,&bp[0]),"{q:?}");
     }
 }
+
+#[test]fn outline_geometry_curves_rise_and_empty_glyphs(){
+    let p=fixture::pdf(b"BT /F1 20 Tf 10 20 Td <0001> Tj 5 Ts <0002> Tj 0 Ts <0000> Tj 3 Tr <0001> Tj ET");
+    let d=Document::open(&p).unwrap();let pages=d.pages().unwrap();
+    let g=d.page_glyph_geometry(&pages[0],10000,None).unwrap();
+    assert_eq!(g.glyphs.len(),4);assert!(g.substituted_fonts.is_empty());
+    let close=|a:[f64;4],b:[f64;4]|{for i in 0..4{assert!((a[i]-b[i]).abs()<1e-8,"{a:?} != {b:?}");}};
+    close(g.glyphs[0].outline_bounds.unwrap(),[10.,20.,22.,34.]);
+    close(g.glyphs[1].outline_bounds.unwrap(),[23.,25.,35.,34.]);
+    assert_eq!(g.glyphs[1].origin,[23.,25.]);assert_eq!(g.glyphs[1].advance_end,[36.,25.]);
+    assert_eq!(g.glyphs[1].unicode.as_deref(),Some("D"));assert_eq!(g.glyphs[1].font_resource,b"F1");
+    assert_eq!(g.glyphs[2].outline_bounds,None);assert_eq!(g.glyphs[3].outline_bounds,None);
+    assert_eq!(g.glyphs[3].rendering_mode,3);
+    assert_eq!(g.glyphs[0].origin,d.page_text(&pages[0],10000).unwrap().glyphs[0].origin);
+}
+#[test]fn geometry_rotates_outline_not_em_box(){
+    let p=fixture::pdf(b"BT /F1 20 Tf 0 1 -1 0 40 20 Tm <0002> Tj ET");
+    let d=Document::open(&p).unwrap();let g=d.page_glyph_geometry(&d.pages().unwrap()[0],10000,None).unwrap();
+    let b=g.glyphs[0].outline_bounds.unwrap();
+    for (v,e) in b.into_iter().zip([31.,20.,40.,32.]){assert!((v-e).abs()<1e-8);}
+}

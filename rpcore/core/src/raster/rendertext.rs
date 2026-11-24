@@ -1,5 +1,5 @@
 //! Native horizontal TrueType, CFF1 and traditional Type1 font rendering.
-use super::{TextQuality,Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
+use super::{glyph_geometry::{Collector,GlyphGeometry,PageGlyphGeometry},DisplayList,Command,TextQuality,Path,StandardFontSet,Surface,Matrix,FillRule,Color,Stroke,Error,Result,flatten,mask,rgb,stroke_paths};
 use crate::{Document,PageInfo,Object,content::Operation,fonts::{standard::StandardFont,Font,FontKind,WritingMode,truetype::{TrueType,CmapKind,MAX_FONT_BYTES},cff::Cff,type1::{Type1,standard_name}}};
 use std::{collections::BTreeMap,sync::Arc};
 // Work in device space, before the font matrix. Only normal horizontal
@@ -128,18 +128,37 @@ fn type1_mapping(doc:&Document<'_>,d:&BTreeMap<Vec<u8>,Object>)->Result<(BTreeMa
     }
 }
 #[derive(Clone)]
-struct State{face:Option<Arc<Face>>,size:f64,scale:f64,tc:f64,tw:f64,leading:f64,rise:f64,mode:u8}
-impl Default for State{fn default()->Self{Self{face:None,size:0.,scale:1.,tc:0.,tw:0.,leading:0.,rise:0.,mode:0}}}
-pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<(Option<(u32,u16)>,Vec<u8>),Arc<Face>>,indirect_fonts:BTreeMap<(u32,u16),Arc<Face>>,font_bytes:usize,glyphs:usize,substituted:Vec<StandardFont>,outlines:BTreeMap<(usize,Vec<u8>),(Arc<Path>,Matrix)>,outline_segments:usize}
+struct State{face:Option<Arc<Face>>,font_resource:Vec<u8>,font_owner:Option<(u32,u16)>,size:f64,scale:f64,tc:f64,tw:f64,leading:f64,rise:f64,mode:u8}
+impl Default for State{fn default()->Self{Self{face:None,font_resource:Vec::new(),font_owner:None,size:0.,scale:1.,tc:0.,tw:0.,leading:0.,rise:0.,mode:0}}}
+pub(super) struct TextRenderer{state:State,stack:Vec<State>,tm:Matrix,line:Matrix,in_text:bool,fonts:BTreeMap<(Option<(u32,u16)>,Vec<u8>),Arc<Face>>,indirect_fonts:BTreeMap<(u32,u16),Arc<Face>>,font_bytes:usize,glyphs:usize,substituted:Vec<StandardFont>,outlines:BTreeMap<(usize,Vec<u8>),(Arc<Path>,Matrix)>,outline_segments:usize,geometry:Option<Collector>}
 fn arity(a:&[Object],n:usize)->Result<()>{if a.len()==n{Ok(())}else{Err(Error::Invalid("render text operand count"))}}
 fn num(v:&Object)->Result<f64>{if let Object::Number(n)=v{if n.is_finite()&&n.abs()<=1e12{return Ok(*n);}}Err(Error::Invalid("render text number"))}
 fn nums<const N:usize>(a:&[Object])->Result<[f64;N]>{arity(a,N)?;let mut o=[0.;N];for(i,v)in a.iter().enumerate(){o[i]=num(v)?;}Ok(o)}
 fn string(v:&Object)->Result<&[u8]>{if let Object::String(s)=v{Ok(s)}else{Err(Error::Invalid("render text string"))}}
 impl TextRenderer{
-    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),indirect_fonts:BTreeMap::new(),font_bytes:0,glyphs:0,substituted:Vec::new(),outlines:BTreeMap::new(),outline_segments:0}}
+    pub(super) fn new()->Self{Self{state:State::default(),stack:Vec::new(),tm:Matrix::IDENTITY,line:Matrix::IDENTITY,in_text:false,fonts:BTreeMap::new(),indirect_fonts:BTreeMap::new(),font_bytes:0,glyphs:0,substituted:Vec::new(),outlines:BTreeMap::new(),outline_segments:0,geometry:None}}
     pub(super) fn save(&mut self){self.stack.push(self.state.clone());}
     pub(super) fn restore(&mut self)->Result<()>{self.state=self.stack.pop().ok_or(Error::Invalid("text graphics stack"))?;Ok(())}
     pub(super) fn substituted_fonts(&self)->Vec<StandardFont>{self.substituted.clone()}
+    pub(super) fn collect_geometry(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,fonts:Option<&StandardFontSet>)->Result<PageGlyphGeometry>{
+        let mut text=Self::new();text.geometry=Some(Collector::new());
+        for (i,c) in list.commands.iter().enumerate(){
+            match c{
+                Command::Save=>text.save(),
+                Command::Restore=>text.restore()?,
+                Command::Text{operation,ctm,fill,stroke,scope,resource_owner}=>{
+                    let g=text.geometry.as_mut().ok_or(Error::Invalid("missing geometry collector"))?;
+                    g.command_index=i;g.scope=*scope;
+                    text.execute(doc,page,None,operation,Matrix::IDENTITY,*ctm,*fill,stroke,fonts,*resource_owner)?;
+                }
+                _=>{}
+            }
+        }
+        if text.in_text||!text.stack.is_empty(){return Err(Error::Invalid("unbalanced glyph geometry state"));}
+        let substituted_fonts=text.substituted_fonts();
+        let glyphs=text.geometry.take().ok_or(Error::Invalid("missing geometry collector"))?.glyphs;
+        Ok(PageGlyphGeometry{glyphs,substituted_fonts})
+    }
     fn load(&mut self,doc:&Document<'_>,page:&PageInfo,n:&[u8],substitutes:Option<&StandardFontSet>,owner:Option<(u32,u16)>)->Result<Arc<Face>>{
         let cache_key=(owner,n.to_vec());
         if let Some(f)=self.fonts.get(&cache_key){return Ok(Arc::clone(f));}
@@ -221,11 +240,14 @@ impl TextRenderer{
     }
     fn next_line(&mut self,x:f64,y:f64)->Result<()>{self.line=self.line.compose(Matrix::translation(x,y))?;self.tm=self.line;Ok(())}
     fn adjust(&mut self,n:f64)->Result<()>{self.tm=self.tm.compose(Matrix::translation(-n/1000.*self.state.size*self.state.scale,0.))?;Ok(())}
-    fn show(&mut self,s:&mut Surface,data:&[u8],view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke)->Result<()>{
+    fn show(&mut self,mut s:Option<&mut Surface>,data:&[u8],view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke)->Result<()>{
         let f=Arc::clone(self.state.face.as_ref().ok_or(Error::Invalid("no current render font"))?);
         for glyph in f.font.decode(data)?{
             self.glyphs+=1;if self.glyphs>100_000{return Err(Error::Limit("render glyph count"));}
             let width=glyph.width.ok_or(Error::Unsupported("missing render glyph width"))?;
+            let unit=self.state.size;
+            let em=if self.geometry.is_some(){ctm.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?}else{Matrix::IDENTITY};
+            let mut bounds=None;
             if self.state.mode!=3{
                 // Face objects live in the page font cache for the entire render.
                 // The Arc address and PDF code identify a stable outline; CTM,
@@ -256,7 +278,7 @@ impl TextRenderer{
                     }
                     (p,m)
                 };
-                let unit=self.state.size;
+                if let Some(s)=s.as_deref_mut(){
                 let mut device=view.compose(ctm)?.compose(self.tm)?.compose(Matrix([unit*self.state.scale,0.,0.,unit,0.,self.state.rise]))?;
                 if self.state.mode==0&&s.text_quality==TextQuality::FineGrid&&self.state.rise==0.{
                     device=grid_baseline(device,fm);
@@ -271,18 +293,30 @@ impl TextRenderer{
                 if matches!(self.state.mode,0|2){let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(fill),s.fill_alpha)?;}
                 if matches!(self.state.mode,1|2){let paths=stroke_paths(&paths,stroke,view,&mut s.budget)?;let mask=mask(&paths,FillRule::NonZero,s.w,s.h,&s.clip,&mut s.budget)?;s.paint(&mask,rgb(stroke.color),s.stroke_alpha)?;}
                 }
+                }else{
+                    bounds=self.geometry.as_mut().ok_or(Error::Invalid("missing geometry collector"))?.bounds(&outline,em.compose(fm)?)?;
+                }
             }
             let word=if glyph.code==b" "{self.state.tw}else{0.};
             let advance=(width/1000.*self.state.size+self.state.tc+word)*self.state.scale;
+            if let Some(g)=&mut self.geometry{
+                let m=ctm.compose(self.tm)?;
+                g.push(GlyphGeometry{
+                    code:glyph.code,unicode:glyph.unicode,cid:glyph.cid,base_font:f.font.base_font.clone(),
+                    font_resource:self.state.font_resource.clone(),font_resource_owner:self.state.font_owner,
+                    form_scope:g.scope,command_index:g.command_index,origin:m.point([0.,self.state.rise])?,
+                    advance_end:m.point([advance,self.state.rise])?,em_matrix:em,rendering_mode:self.state.mode,outline_bounds:bounds,
+                })?;
+            }
             self.tm=self.tm.compose(Matrix::translation(advance,0.))?;
         }Ok(())
     }
-    pub(super) fn execute(&mut self,doc:&Document<'_>,page:&PageInfo,s:&mut Surface,op:&Operation,view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke,substitutes:Option<&StandardFontSet>,owner:Option<(u32,u16)>)->Result<()>{
+    pub(super) fn execute(&mut self,doc:&Document<'_>,page:&PageInfo,mut s:Option<&mut Surface>,op:&Operation,view:Matrix,ctm:Matrix,fill:Color,stroke:&Stroke,substitutes:Option<&StandardFontSet>,owner:Option<(u32,u16)>)->Result<()>{
         let a=&op.operands;
         match op.operator.as_slice(){
             b"BT"=>{arity(a,0)?;if self.in_text{return Err(Error::Invalid("nested render BT"));}self.in_text=true;self.tm=Matrix::IDENTITY;self.line=Matrix::IDENTITY;}
             b"ET"=>{arity(a,0)?;if !self.in_text{return Err(Error::Invalid("render ET"));}self.in_text=false;}
-            b"Tf"=>{arity(a,2)?;let Object::Name(n)=&a[0] else{return Err(Error::Invalid("render font name"));};self.state.size=num(&a[1])?;self.state.face=Some(self.load(doc,page,n,substitutes,owner)?);}
+            b"Tf"=>{arity(a,2)?;let Object::Name(n)=&a[0] else{return Err(Error::Invalid("render font name"));};self.state.size=num(&a[1])?;self.state.face=Some(self.load(doc,page,n,substitutes,owner)?);self.state.font_resource=n.clone();self.state.font_owner=owner;}
             b"Tc"=>self.state.tc=nums::<1>(a)?[0],b"Tw"=>self.state.tw=nums::<1>(a)?[0],b"Tz"=>self.state.scale=nums::<1>(a)?[0]/100.,
             b"TL"=>self.state.leading=nums::<1>(a)?[0],b"Ts"=>self.state.rise=nums::<1>(a)?[0],
             b"Tr"=>{let v=nums::<1>(a)?[0];if !(0.0..=3.0).contains(&v)||v.fract()!=0.{return Err(Error::Unsupported("text render mode"));}self.state.mode=v as u8;}
@@ -290,10 +324,10 @@ impl TextRenderer{
             b"Td"=>{let [x,y]=nums(a)?;self.next_line(x,y)?;}
             b"TD"=>{let [x,y]=nums(a)?;self.state.leading=-y;self.next_line(x,y)?;}
             b"T*"=>{arity(a,0)?;self.next_line(0.,-self.state.leading)?;}
-            b"Tj"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.show(s,string(&a[0])?,view,ctm,fill,stroke)?;}
-            b"TJ"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}let Object::Array(items)=&a[0] else{return Err(Error::Invalid("render TJ"));};for v in items{match v{Object::String(b)=>self.show(s,b,view,ctm,fill,stroke)?,Object::Number(n)=>self.adjust(*n)?,_=>return Err(Error::Invalid("render TJ item"))}}}
-            b"'"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.next_line(0.,-self.state.leading)?;self.show(s,string(&a[0])?,view,ctm,fill,stroke)?;}
-            b"\""=>{arity(a,3)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.state.tw=num(&a[0])?;self.state.tc=num(&a[1])?;self.next_line(0.,-self.state.leading)?;self.show(s,string(&a[2])?,view,ctm,fill,stroke)?;}
+            b"Tj"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.show(s.as_deref_mut(),string(&a[0])?,view,ctm,fill,stroke)?;}
+            b"TJ"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}let Object::Array(items)=&a[0] else{return Err(Error::Invalid("render TJ"));};for v in items{match v{Object::String(b)=>self.show(s.as_deref_mut(),b,view,ctm,fill,stroke)?,Object::Number(n)=>self.adjust(*n)?,_=>return Err(Error::Invalid("render TJ item"))}}}
+            b"'"=>{arity(a,1)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.next_line(0.,-self.state.leading)?;self.show(s.as_deref_mut(),string(&a[0])?,view,ctm,fill,stroke)?;}
+            b"\""=>{arity(a,3)?;if !self.in_text{return Err(Error::Invalid("render text outside BT"));}self.state.tw=num(&a[0])?;self.state.tc=num(&a[1])?;self.next_line(0.,-self.state.leading)?;self.show(s.as_deref_mut(),string(&a[2])?,view,ctm,fill,stroke)?;}
             _=>return Err(Error::Unsupported("render text operator")),
         }Ok(())
     }

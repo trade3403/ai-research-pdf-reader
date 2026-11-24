@@ -5,6 +5,8 @@ mod png;
 mod rendertext;
 mod images;
 mod glyph_area;
+mod glyph_geometry;
+pub use glyph_geometry::{GlyphGeometry,PageGlyphGeometry};
 use crate::fonts::standard::StandardFont;
 use std::collections::BTreeMap;
 const MAX_PIXELS:usize=4_000_000;
@@ -592,7 +594,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
             Command::Text{operation,ctm,fill,stroke,resource_owner,..}=>{
                 // Explicit preview mode skips all text, as in B10.1. Strict mode never silently skips.
                 if opt.allow_missing_text{missing_text=true;continue;}
-                text.execute(doc,page,&mut s,operation,view,*ctm,*fill,stroke,substitutes,*resource_owner)?;
+                text.execute(doc,page,Some(&mut s),operation,view,*ctm,*fill,stroke,substitutes,*resource_owner)?;
             }
         }
     }
@@ -624,5 +626,12 @@ impl Document<'_>{
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
         render(self,page,&list,options,fonts,quality)
+    }
+    /// Strict unhinted outline geometry, without allocating or painting a bitmap.
+    /// Uses the supported display-list interpreter, including Form resources.
+    /// Does not test clipping, occlusion, stroke extents or semantic math roles.
+    pub fn page_glyph_geometry(&self,page:&PageInfo,content_limit:usize,fonts:Option<&StandardFontSet>)->Result<PageGlyphGeometry>{
+        let list=self.page_display_list(page,content_limit)?;
+        rendertext::TextRenderer::collect_geometry(self,page,&list,fonts)
     }
 }
