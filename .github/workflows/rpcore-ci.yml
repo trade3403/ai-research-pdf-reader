@@ -87,3 +87,33 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/font-report/report.md ]; then cat rpcore/target/font-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-visual:
+    # Reference engine and Pillow are test-only dependencies. Never packaged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends poppler-utils python3-pil fonts-urw-base35
+      - run: /usr/bin/python3 rpcore/corpus/test_visual.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe --example render_demo
+      - run: |
+          rpcore/target/release/examples/render_demo rpcore/target/visual-smoke
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-smoke-report --local rpcore/target/visual-smoke/rpcore-vector-demo.pdf --save-images
+      - run: |
+          mkdir -p rpcore/target/visual-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-report --font-dir /usr/share/fonts/opentype/urw-base35
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-visual-comparison
+          path: |
+            rpcore/target/visual-report/
+            rpcore/target/visual-smoke-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/visual-report/report.md ]; then cat rpcore/target/visual-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
