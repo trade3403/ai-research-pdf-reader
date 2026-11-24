@@ -446,7 +446,11 @@ mod tests {
             &[0],
             Error::UnsupportedDtype,
         );
-        rejected(r#"{"__metadata__":{"a":"x","a":"y"}}"#, &[], Error::Duplicate);
+        rejected(
+            r#"{"__metadata__":{"a":"x","a":"y"}}"#,
+            &[],
+            Error::Duplicate,
+        );
         rejected(r#"{"__metadata__":{"a":1}}"#, &[], Error::Header);
         rejected(r#"{"__metadata__":{"a":"\ud800"}}"#, &[], Error::Header);
         rejected("{}x", &[], Error::Header);
