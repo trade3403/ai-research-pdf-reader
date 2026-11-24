@@ -272,3 +272,35 @@ fn text_color_order_invisible_and_preview(){
     assert_eq!(m.scripts.len(),2);
     assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),"{O}^{{D}^{o}}");
 }
+
+#[test]fn math_tree_multi_glyph_script_row(){
+    use rpcore::raster::math_tree::build_tree;
+    let p=fixture::pdf(b"BT /F1 10 Tf 10 40 Td <0001> Tj /F1 6 Tf 1 0 0 1 16.5 45 Tm <000200030002> Tj ET");
+    let d=Document::open(&p).unwrap();
+    let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert_eq!(m.scripts.len(),3);
+    assert!(m.scripts.iter().all(|s|s.base==0));
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),"{O}^{DoD}");
+}
+#[test]fn math_tree_radical_requires_unicode_and_explicit_bar(){
+    use rpcore::raster::math_tree::build_tree;
+    // Replace one same-length UTF-16BE CMap value in the synthetic fixture;
+    // byte offsets and stream lengths remain unchanged.
+    let make=|content:&[u8]|{
+        let mut p=fixture::pdf(content);
+        let i=p.windows(6).position(|v|v==b"<004f>").unwrap();
+        p[i..i+6].copy_from_slice(b"<221a>");p
+    };
+    // Root fixture uses an O-shaped outline; this tests geometric association
+    // with a known Unicode radical, not recognition of an actual radical shape.
+    let p=make(b"BT /F1 12 Tf 10 40 Td <0001> Tj /F1 10 Tf 1 0 0 1 18 40 Tm <00020003> Tj ET 17 49 15 .4 re f");
+    let d=Document::open(&p).unwrap();
+    let (g,mut m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert_eq!(m.radicals.len(),1);assert_eq!(m.radicals[0].symbol,0);assert_eq!(m.radicals[0].radicand,vec![1,2]);
+    assert_eq!(build_tree(&g,&m).unwrap().to_latex(&g).unwrap(),r"\sqrt{Do}");
+    m.radicals.push(m.radicals[0].clone());assert!(build_tree(&g,&m).is_err());
+    let p=make(b"BT /F1 12 Tf 10 40 Td <0001> Tj /F1 10 Tf 1 0 0 1 18 40 Tm <00020003> Tj ET");
+    let d=Document::open(&p).unwrap();
+    let (g,m)=d.page_math_geometry(&d.pages().unwrap()[0],10000,None,[5.,30.,60.,60.]).unwrap();
+    assert!(m.radicals.is_empty());assert!(build_tree(&g,&m).unwrap().to_latex(&g).is_err());
+}

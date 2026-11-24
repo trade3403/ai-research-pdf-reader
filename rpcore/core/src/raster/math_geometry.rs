@@ -16,11 +16,19 @@ pub struct FractionCandidate{
     pub numerator:Vec<usize>,pub denominator:Vec<usize>,
 }
 #[derive(Debug,Clone,PartialEq)]
+pub struct RadicalCandidate{
+    pub symbol:usize,
+    pub rule_command_index:usize,
+    pub rule_bounds:[f64;4],
+    pub radicand:Vec<usize>,
+}
+#[derive(Debug,Clone,PartialEq)]
 pub struct MathRegion{
     pub region:[f64;4],
     pub glyph_indices:Vec<usize>,
     pub scripts:Vec<ScriptCandidate>,
     pub fractions:Vec<FractionCandidate>,
+    pub radicals:Vec<RadicalCandidate>,
 }
 #[derive(Clone,Copy)]
 struct Item{index:usize,bounds:[f64;4],x:f64,y:f64,advance_x:f64,em:f64}
@@ -90,13 +98,33 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
         if a<=0.||d<=0.||b1!=0.||c!=0.||g.advance_end[0]<g.origin[0]{continue;}
         items.push(Item{index:i,bounds:b,x:g.origin[0],y:g.origin[1],advance_x:g.advance_end[0],em:d});
     }
-    let mut fractions=Vec::new();let mut rule_count=0;
+    let mut fractions=Vec::new();let mut radicals=Vec::new();let mut rule_count=0;
     for (i,c) in list.commands.iter().enumerate(){
         let Some(b)=rule_bounds(c)else{continue;};
         let w=b[2]-b[0];let h=b[3]-b[1];
         if !contains(region,b)||h<=0.||w<h*6.{continue;}
         rule_count+=1;if rule_count>MAX_RULES{return Err(Error::Limit("math region rules"));}
         let numerator=row(&items,b,true);let denominator=row(&items,b,false);
+        // Explicit Unicode radical plus a separate overbar. Do not infer
+        // an arbitrary scope from the radical glyph alone.
+        if numerator.is_empty()&&!denominator.is_empty(){
+            for root in &items{
+                if geometry.glyphs[root.index].unicode.as_deref()!=Some("√"){continue;}
+                let em=root.em;
+                if (b[0]-root.bounds[2]).abs()>em*0.25||(b[1]-root.bounds[3]).abs()>em*0.25
+                    ||h>em*0.15||w>em*16.||b[2]<=root.bounds[2]{continue;}
+                if denominator.iter().any(|i|*i==root.index){continue;}
+                if !denominator.iter().all(|&i|{
+                    let g=&geometry.glyphs[i];
+                    g.form_scope==geometry.glyphs[root.index].form_scope
+                    &&g.outline_bounds.is_some_and(|a|a[0]>=root.bounds[2]-em*0.1&&a[2]<=b[2]+em*0.1)
+                    &&(g.origin[1]-root.y).abs()<=em*0.3
+                    &&g.unicode.as_deref()!=Some("√")
+                }){continue;}
+                if radicals.len()>=MAX_RULES{return Err(Error::Limit("math radicals"));}
+                radicals.push(RadicalCandidate{symbol:root.index,rule_command_index:i,rule_bounds:b,radicand:denominator.clone()});
+            }
+        }
         if numerator.is_empty()||denominator.is_empty(){continue;}
         // A rule must be narrow relative to neighboring glyphs and not an
         // arbitrarily long divider. This still cannot exclude all table rules.
@@ -118,7 +146,8 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
     for (gi,g) in items.iter().enumerate(){
         let mut best:Option<(f64,usize,ScriptKind)>=None;let mut ambiguous=false;
         for (bi,b) in items.iter().enumerate(){
-            if g.index==b.index||geometry.glyphs[g.index].form_scope!=geometry.glyphs[b.index].form_scope{continue;}
+            if g.index==b.index||geometry.glyphs[g.index].form_scope!=geometry.glyphs[b.index].form_scope||
+                geometry.glyphs[g.index].unicode.as_deref()==Some("√")||geometry.glyphs[b.index].unicode.as_deref()==Some("√"){continue;}
             let ratio=g.em/b.em;
             if !(0.35..=0.82).contains(&ratio){continue;}
             let dy=(g.y-b.y)/b.em;let dx=(g.x-b.advance_x)/b.em;
@@ -137,5 +166,24 @@ pub fn analyze_region(geometry:&PageGlyphGeometry,list:&DisplayList,region:[f64;
         }
         if !ambiguous{if let Some((_,base,kind))=best{scripts.push(ScriptCandidate{base,script:g.index,kind});}}
     }
-    Ok(MathRegion{region,glyph_indices:indices,scripts,fractions})
+    // Extend a detected script only along consecutive glyphs of the same
+    // text command, with matching baseline and em size. Do not absorb a
+    // glyph already assigned to another base or with a different fraction row.
+    let mut attached=std::collections::BTreeMap::new();
+    for s in &scripts{attached.insert(s.script,(s.base,s.kind));}
+    for pair in items.windows(2){
+        let (a,b)=(pair[0],pair[1]);
+        let Some(&(base,kind))=attached.get(&a.index)else{continue;};
+        if attached.contains_key(&b.index)||b.index!=a.index+1||b.x<=a.x{continue;}
+        let ga=&geometry.glyphs[a.index];let gb=&geometry.glyphs[b.index];
+        if ga.command_index!=gb.command_index||ga.form_scope!=gb.form_scope||ga.font_resource_owner!=gb.font_resource_owner
+            ||ga.font_resource!=gb.font_resource||gb.unicode.as_deref()==Some("√"){continue;}
+        if !(0.9..=1.1).contains(&(b.em/a.em))||(b.y-a.y).abs()>a.em*0.15
+            ||!(-0.15..=0.3).contains(&((b.x-a.advance_x)/a.em)){continue;}
+        let ai=items.iter().position(|g|g.index==a.index).ok_or(Error::Invalid("script item"))?;
+        let bi=ai+1;
+        if membership[ai]!=membership[bi]{continue;}
+        attached.insert(b.index,(base,kind));scripts.push(ScriptCandidate{base,script:b.index,kind});
+    }
+    Ok(MathRegion{region,glyph_indices:indices,scripts,fractions,radicals})
 }

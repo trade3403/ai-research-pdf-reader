@@ -13,18 +13,22 @@ pub enum MathNode{
     Row(Vec<MathNode>),
     Scripts{base:Box<MathNode>,sub:Option<Box<MathNode>>,sup:Option<Box<MathNode>>},
     Fraction{rule_command_index:usize,numerator:Box<MathNode>,denominator:Box<MathNode>},
+    Radical{symbol:usize,rule_command_index:usize,radicand:Box<MathNode>},
 }
 #[derive(Debug,Clone,PartialEq)]
 pub struct FormulaTree{pub root:MathNode}
 type RowId=Option<(usize,bool)>;
-type Children=BTreeMap<usize,(Option<usize>,Option<usize>)>;
+type Children=BTreeMap<usize,(Vec<usize>,Vec<usize>)>;
 
 fn glyph_node(i:usize,children:&Children,depth:usize)->Result<MathNode>{
     if depth>MAX_DEPTH{return Err(Error::Limit("math tree depth"));}
     let base=MathNode::Glyph{index:i};
-    let Some(&(sub,sup))=children.get(&i)else{return Ok(base);};
-    let child=|v:Option<usize>|->Result<Option<Box<MathNode>>>{
-        v.map(|j|glyph_node(j,children,depth+1).map(Box::new)).transpose()
+    let Some((sub,sup))=children.get(&i)else{return Ok(base);};
+    let child=|v:&[usize]|->Result<Option<Box<MathNode>>>{
+        if v.is_empty(){return Ok(None);}
+        if v.len()==1{return Ok(Some(Box::new(glyph_node(v[0],children,depth+1)?)));}
+        let nodes=v.iter().map(|&j|glyph_node(j,children,depth+1)).collect::<Result<Vec<_>>>()?;
+        Ok(Some(Box::new(MathNode::Row(nodes))))
     };
     Ok(MathNode::Scripts{base:Box::new(base),sub:child(sub)?,sup:child(sup)?})
 }
@@ -52,11 +56,11 @@ fn sorted_row(mut entries:Vec<(f64,MathNode)>)->MathNode{
 }
 /// Convert local candidate relationships to a tree. Disjoint fractions and
 /// nested scripts are supported. Ambiguous ownership, cross-row scripts,
-/// nested/overlapping fractions and multiple children for one script slot
+/// nested/overlapping fractions or radicals, and incompatible script rows
 /// are explicitly rejected, not resolved by guessing.
 pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
     if m.glyph_indices.is_empty(){return Err(Error::Invalid("empty formula tree"));}
-    if m.glyph_indices.len()>MAX_GLYPHS||m.scripts.len()>MAX_GLYPHS||m.fractions.len()>256{return Err(Error::Limit("math tree inputs"));}
+    if m.glyph_indices.len()>MAX_GLYPHS||m.scripts.len()>MAX_GLYPHS||m.fractions.len()>256||m.radicals.len()>256{return Err(Error::Limit("math tree inputs"));}
     let selected:BTreeSet<usize>=m.glyph_indices.iter().copied().collect();
     if selected.len()!=m.glyph_indices.len(){return Err(Error::Invalid("duplicate formula glyph"));}
     for &i in &selected{
@@ -83,18 +87,50 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
             }
         }
     }
+    let mut radical_symbols=BTreeSet::new();
+    for (ri,r) in m.radicals.iter().enumerate(){
+        if !rules.insert(r.rule_command_index)||r.radicand.is_empty()||!radical_symbols.insert(r.symbol)
+            ||g.glyphs.get(r.symbol).and_then(|a|a.unicode.as_deref())!=Some("√"){
+            return Err(Error::Invalid("invalid radical candidate"));
+        }
+        if r.radicand.len()>MAX_GLYPHS||r.rule_bounds.iter().any(|v|!v.is_finite())||
+            r.rule_bounds[0]>=r.rule_bounds[2]||r.rule_bounds[1]>=r.rule_bounds[3]{
+            return Err(Error::Invalid("radical rule or row bounds"));
+        }
+        for i in std::iter::once(r.symbol).chain(r.radicand.iter().copied()){
+            let o=owner.get_mut(&i).ok_or(Error::Invalid("radical glyph outside region"))?;
+            if o.is_some(){return Err(Error::Unsupported("overlapping radical or fraction candidates"));}
+            *o=Some((m.fractions.len()+ri,true));
+        }
+    }
     let mut children:Children=BTreeMap::new();let mut parents=BTreeSet::new();
     for s in &m.scripts{
         let a=owner.get(&s.base).ok_or(Error::Invalid("script base outside region"))?;
         let b=owner.get(&s.script).ok_or(Error::Invalid("script glyph outside region"))?;
-        if a!=b{return Err(Error::Unsupported("cross-row script candidate"));}
+        if a!=b||radical_symbols.contains(&s.base)||radical_symbols.contains(&s.script){return Err(Error::Unsupported("cross-row or radical symbol script candidate"));}
         // Strictly descending em size makes the graph acyclic.
         if g.glyphs[s.script].em_matrix.0[3]>=g.glyphs[s.base].em_matrix.0[3]||!parents.insert(s.script){
             return Err(Error::Unsupported("cyclic or shared math script"));
         }
         let slots=children.entry(s.base).or_default();
         let slot=match s.kind{ScriptKind::Subscript=>&mut slots.0,ScriptKind::Superscript=>&mut slots.1};
-        if slot.replace(s.script).is_some(){return Err(Error::Unsupported("multiple glyphs in script slot"));}
+        slot.push(s.script);
+    }
+    for (sub,sup) in children.values_mut(){
+        for slot in [sub,sup]{
+            slot.sort_by(|&a,&b|g.glyphs[a].origin[0].total_cmp(&g.glyphs[b].origin[0]).then(a.cmp(&b)));
+            for pair in slot.windows(2){
+                let a=&g.glyphs[pair[0]];let b=&g.glyphs[pair[1]];
+                let em=a.em_matrix.0[3];
+                if pair[1]!=pair[0]+1||a.command_index!=b.command_index||a.form_scope!=b.form_scope
+                    ||a.font_resource!=b.font_resource||a.font_resource_owner!=b.font_resource_owner
+                    ||b.origin[0]<=a.origin[0]||!(0.9..=1.1).contains(&(b.em_matrix.0[3]/em))
+                    ||(b.origin[1]-a.origin[1]).abs()>em*0.15
+                    ||!(-0.15..=0.3).contains(&((b.origin[0]-a.advance_end[0])/em)){
+                    return Err(Error::Unsupported("incompatible multi-glyph script row"));
+                }
+            }
+        }
     }
     let top:Vec<usize>=selected.iter().copied().filter(|i|owner[i].is_none()).collect();
     let mut entries=row_nodes(&top,g,&parents,&children)?;
@@ -104,6 +140,12 @@ pub fn build_tree(g:&PageGlyphGeometry,m:&MathRegion)->Result<FormulaTree>{
         if n.is_empty()||d.is_empty(){return Err(Error::Invalid("empty fraction row"));}
         entries.push((f.rule_bounds[0],MathNode::Fraction{rule_command_index:f.rule_command_index,
             numerator:Box::new(sorted_row(n)),denominator:Box::new(sorted_row(d))}));
+    }
+    for r in &m.radicals{
+        let nodes=row_nodes(&r.radicand,g,&parents,&children)?;
+        if nodes.is_empty(){return Err(Error::Invalid("empty radicand"));}
+        entries.push((g.glyphs[r.symbol].origin[0],MathNode::Radical{symbol:r.symbol,
+            rule_command_index:r.rule_command_index,radicand:Box::new(sorted_row(nodes))}));
     }
     Ok(FormulaTree{root:sorted_row(entries)})
 }
@@ -143,6 +185,10 @@ fn emit(n:&MathNode,g:&PageGlyphGeometry,out:&mut String,depth:usize,count:&mut 
             for (marker,child) in [('_',sub),('^',sup)]{
                 if let Some(c)=child{out.push(marker);out.push('{');emit(c,g,out,depth+1,count)?;out.push('}');}
             }
+        }
+        MathNode::Radical{symbol,radicand,..}=>{
+            if g.glyphs.get(*symbol).and_then(|a|a.unicode.as_deref())!=Some("√"){return Err(Error::Invalid("latex radical symbol"));}
+            out.push_str(r"\sqrt{");emit(radicand,g,out,depth+1,count)?;out.push('}');
         }
         MathNode::Fraction{numerator,denominator,..}=>{
             out.push_str(r"\frac{");emit(numerator,g,out,depth+1,count)?;out.push_str("}{");
