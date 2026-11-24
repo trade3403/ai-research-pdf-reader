@@ -21,6 +21,7 @@ pub struct Paragraph {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Run {
     pub text: String,
+    pub properties: crate::opc::DirectRunProperties,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

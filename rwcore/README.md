@@ -1,4 +1,4 @@
-# RWCore — C1.2 container safety preflight
+# RWCore — C2.0 direct run formatting
 
 Independent Rust workspace for research manuscripts, on feature/rwcore.
 The existing Tiptap Word editor remains unchanged. No Electron or RPCore integration in this milestone.
@@ -29,7 +29,7 @@ No claim of Word compatibility or GUI testing.
 ## Roadmap
 C1.0 foundations and bounded read-only probe.
 C1.1 OPC graph and bounded URI resolution implemented in source; build and real corpus not yet verified.
-C1.2 ZIP32 structural preflight, bounded expansion and conservative encoded URI support implemented in source. Build, real corpus and dependency audit remain gates.
+C1.2 ZIP32 structural preflight, bounded expansion and conservative encoded URI support implemented in source. Real corpus and dependency audit remain gates.
 C2 styles, numbering, sections, tables, media and unsupported-node preservation.
 C3 transactions, selection and undo; C4 typography; C5 pagination; C6 advanced layout;
 C7 math; C8 citations/fields; C9 DOCX writer; C10 reference comparison and safety; C11 Electron integration.
@@ -38,7 +38,7 @@ Use ECMA-376 / ISO/IEC 29500 as reference; share renderer-neutral interfaces wit
 ## C1.1 validation
 
 - 10 additional synthetic regression cases in core/tests/package.rs; 10 C1.0 cases retained.
-- Run the existing Linux/Windows/macOS CI matrix. No successful execution is asserted here.
+- Run the existing Linux/Windows/macOS CI matrix. CI #16 and #17 subsequently passed.
 - Local corpus command (use lawful local test documents, no upload):
 
 ```sh
@@ -51,5 +51,9 @@ The probe reports package/edge/block/warning counts and nonzero exit on parse er
 
 - 13 additional synthetic ZIP/URI cases in core/tests/zip_guard.rs (33 total source test cases).
 - No real DOCX corpus was supplied; run corpus_probe against representative legal local Word files (Word, LibreOffice, SCI templates, images, equations, sections, Chinese/English) and record failures without uploading document contents.
-- CI success has not been verified. Lockfile artifact is configured but not yet committed. No complete security audit or DOCX compatibility claim.
+- C1.2 CI #16 and locked CI #17 passed on all three platforms; Cargo.lock is committed. No complete security audit or DOCX compatibility claim.
 - C2.0 next after foundation verification: WordprocessingML paragraph/run properties, styles and inheritance, explicit diagnostics for unsupported properties; then tables and sections.
+
+## C2.0 continuation
+
+CI #18 (https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45435743540), tested revision 01fa37bae8056eb37571002de0178a94ffd75201: 38 passed, zero failed or ignored on each of Linux, Windows and macOS (114 executions). Direct run properties now attached to Run during DOCX parsing without reparsing XML; duplicate containers and invalid properties diagnosed. Two new package-level regressions, 40 source tests pending CI. Direct values only, no style inheritance. Next: paragraph properties and style resolution. Real corpus and dependency audit remain outstanding.

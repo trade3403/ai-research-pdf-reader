@@ -120,8 +120,19 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
                 continue;
             }
             let mut run = Run::default();
+            let mut property_seen = false;
             for item in child.children().filter(|n| n.is_element()) {
-                if named(item, ns, "t") {
+                if named(item, ns, "rPr") {
+                    if property_seen {
+                        warn(&mut document, "Duplicate run property container");
+                        continue;
+                    }
+                    property_seen = true;
+                    run.properties = parse_run_node(item, ns);
+                    for message in &run.properties.diagnostics {
+                        warn(&mut document, message.clone());
+                    }
+                } else if named(item, ns, "t") {
                     for text in item.children().filter(|n| n.is_text()) {
                         run.text.push_str(text.text().unwrap_or_default());
                     }
@@ -177,6 +188,10 @@ pub fn parse_direct_run_properties(bytes: &[u8], limits: Limits) -> Result<Direc
     if !matches!(ns, WORD | WORD_STRICT) || !named(root, ns, "rPr") {
         return Err(Error::Invalid("run property root"));
     }
+    Ok(parse_run_node(root, ns))
+}
+
+fn parse_run_node(root: Node<'_, '_>, ns: &str) -> DirectRunProperties {
     let mut out = DirectRunProperties::default();
     let mut seen = std::collections::HashSet::new();
     for node in root.children().filter(|n| n.is_element()) {
@@ -232,7 +247,7 @@ pub fn parse_direct_run_properties(bytes: &[u8], limits: Limits) -> Result<Direc
         };
         if !valid { out.diagnostics.push(format!("Invalid run property: {name}")); }
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
