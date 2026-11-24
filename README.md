@@ -1,3 +1,16 @@
+# AI Research PDF Reader / AI Research Scientist Studio
+
+## 新研发方向：RPCore 自主 Rust PDF 核心
+
+当前应用基线 V0.5.9，RPCore 尚处于规划阶段。计划依据 PDF 国际标准自主研发解析、渲染、字符坐标、划词、搜索及科研布局算法，不在最终产品中依赖 PDFium、MuPDF 或 PDF.js；现有应用功能在过渡期继续保留。
+
+- [研发路线与里程碑](docs/RPCORE_ROADMAP.md)
+- [功能需求与系统架构](docs/RPCORE_ARCHITECTURE.md)
+- [测试、安全与验收](docs/RPCORE_VALIDATION.md)
+- [规范、论文与算法研究](docs/RPCORE_RESEARCH.md)
+
+---
+
 ## V0.5.3 增量功能
 
 - PDF 划词后选择科研分析：自动准备带来源和页码的 ChatGPT 提示词。
