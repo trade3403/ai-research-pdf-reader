@@ -226,99 +226,14 @@ fn dict(o: Object) -> Result<BTreeMap<Vec<u8>, Object>> {
 fn reference(o: Option<&Object>) -> Result<(u32,u16)> {
     if let Some(Object::Ref(id,g)) = o { Ok((*id,*g)) } else { Err(Error::Invalid("reference expected")) }
 }
+mod xref;
 pub struct Document<'a> {
     bytes: &'a [u8],
-    offsets: BTreeMap<(u32,u16),usize>,
+    entries: BTreeMap<u32,xref::Entry>,
     root: (u32,u16),
+    object_stream_cache: std::sync::Mutex<Option<(u32,std::sync::Arc<xref::ObjectStream>)>>,
 }
 impl<'a> Document<'a> {
-    pub fn open(bytes: &'a [u8]) -> Result<Self> {
-        if bytes.len() > MAX_BYTES { return Err(Error::Limit("file size")); }
-        if !bytes.starts_with(b"%PDF-") { return Err(Error::Invalid("PDF header")); }
-        let start = bytes.windows(9).rposition(|w| w == b"startxref").ok_or(Error::Invalid("startxref"))?;
-        let mut tail = Parser::new(bytes,start+9);
-        let offset = tail.uint()?;
-        if offset >= bytes.len() { return Err(Error::Invalid("xref offset")); }
-        let mut p = Parser::new(bytes,offset);
-        if p.expect(b"xref").is_err() { return Err(Error::Unsupported("xref streams")); }
-        let mut offsets = BTreeMap::new();
-        let mut total = 0usize;
-        loop {
-            p.skip();
-            if p.starts(b"trailer") { p.expect(b"trailer")?; break; }
-            let first = p.uint()?;
-            let count = p.uint()?;
-            total = total.checked_add(count).ok_or(Error::Limit("xref"))?;
-            if total > MAX_OBJECTS { return Err(Error::Limit("xref")); }
-            for i in 0..count {
-                let id = u32::try_from(first.checked_add(i).ok_or(Error::Limit("object id"))?).map_err(|_| Error::Limit("object id"))?;
-                let off = p.uint()?;
-                let gen = u16::try_from(p.uint()?).map_err(|_| Error::Invalid("generation"))?;
-                match p.word()? {
-                    b"n" => { if off >= bytes.len() { return Err(Error::Invalid("object offset")); } if offsets.insert((id,gen),off).is_some() { return Err(Error::Invalid("duplicate xref")); } }
-                    b"f" => {},
-                    _ => return Err(Error::Invalid("xref entry")),
-                }
-            }
-        }
-        let trailer = dict(p.object(0)?)?;
-        if trailer.contains_key(b"Encrypt".as_slice()) { return Err(Error::Unsupported("encryption")); }
-        if trailer.contains_key(b"Prev".as_slice()) || trailer.contains_key(b"XRefStm".as_slice()) { return Err(Error::Unsupported("incremental/hybrid xref")); }
-        let root = reference(trailer.get(b"Root".as_slice()))?;
-        Ok(Self { bytes, offsets, root })
-    }
-    pub fn resolve(&self, id: u32, gen: u16) -> Result<Object> {
-        let off = *self.offsets.get(&(id,gen)).ok_or(Error::Invalid("missing object"))?;
-        let mut p = Parser::new(self.bytes,off);
-        if p.uint()? != id as usize || p.uint()? != gen as usize { return Err(Error::Invalid("object identity")); }
-        p.expect(b"obj")?;
-        let value = p.object(0)?;
-        p.skip();
-        if p.starts(b"stream") {
-            p.expect(b"stream")?;
-            let map = dict(value)?;
-            let length = match map.get(b"Length".as_slice()) {
-                Some(Object::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= MAX_BYTES as f64 => *n as usize,
-                Some(Object::Ref(id, gen)) => self.stream_length(*id, *gen)?,
-                _ => return Err(Error::Invalid("stream length")),
-            };
-            match p.bytes.get(p.pos) {
-                Some(b'\n') => p.pos += 1,
-                Some(b'\r') if p.bytes.get(p.pos + 1) == Some(&b'\n') => p.pos += 2,
-                _ => return Err(Error::Invalid("stream line ending")),
-            }
-            let end = p.pos.checked_add(length).ok_or(Error::Limit("stream"))?;
-            let data = p.bytes.get(p.pos..end).ok_or(Error::Invalid("truncated stream"))?.to_vec();
-            p.pos = end;
-            p.expect(b"endstream")?;
-            p.expect(b"endobj")?;
-            return Ok(Object::Stream { dict: map, data });
-        }
-        p.expect(b"endobj")?;
-        Ok(value)
-    }
-    // Length objects must be scalar objects, not streams. Resolve iteratively
-    // so malicious self-references cannot recurse through stream parsing.
-    fn stream_length(&self, mut id: u32, mut gen: u16) -> Result<usize> {
-        let mut seen = BTreeSet::new();
-        for _ in 0..MAX_DEPTH {
-            if !seen.insert((id, gen)) { return Err(Error::Invalid("stream length cycle")); }
-            let off = *self.offsets.get(&(id,gen)).ok_or(Error::Invalid("missing length object"))?;
-            let mut p = Parser::new(self.bytes, off);
-            if p.uint()? != id as usize || p.uint()? != gen as usize {
-                return Err(Error::Invalid("length object identity"));
-            }
-            p.expect(b"obj")?;
-            let value = p.object(0)?;
-            p.expect(b"endobj")?;
-            match value {
-                Object::Number(n) if n >= 0.0 && n.fract() == 0.0 && n <= MAX_BYTES as f64 => return Ok(n as usize),
-                Object::Ref(next, generation) => { id = next; gen = generation; }
-                _ => return Err(Error::Invalid("stream length object")),
-            }
-        }
-        Err(Error::Limit("stream length reference depth"))
-    }
     pub fn page_count(&self) -> Result<usize> {
         let catalog = dict(self.resolve(self.root.0,self.root.1)?)?;
         if catalog.get(b"Type".as_slice()) != Some(&Object::Name(b"Catalog".to_vec())) { return Err(Error::Invalid("catalog type")); }

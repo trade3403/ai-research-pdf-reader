@@ -2,7 +2,7 @@
 Independent, safe Rust prototype. No PDF engine dependencies. Not a production reader.
 
 ## Supported
-- Basic PDF objects, classic xref, catalog/page tree, inherited MediaBox/CropBox/Rotate/Resources.
+- Basic PDF objects, classic and stream xref, compressed objects, hybrid and incremental index revisions, catalog/page tree, inherited MediaBox/CropBox/Rotate/Resources.
 - Direct and indirect scalar stream lengths, bounded reference chains, raw/ASCIIHex/ASCII85/RunLength/Flate stream decoding, including zlib checksum verification.
 - TIFF predictor 2 and PNG predictors 10–15 (1/2/4/8/16-bit samples), aligned direct DecodeParms dictionaries/arrays; indirect filter parameters remain unsupported.
 - Page Contents stream or ordered stream array, bounded decoded output, lexical content operations (raw operands and operator bytes).
@@ -23,8 +23,11 @@ The demo may use unsupported structures; failure is explicit.
 ## B05 decoding contract
 The existing `filters::decode(&Object, limit)` API is unchanged. Final output is capped by the requested limit and 100 MiB; each intermediate filter stage is capped at 100 MiB (including predictor row tags). The decoder rejects malformed Huffman trees, invalid distances, truncated streams, invalid zlib checksums and preset dictionaries. No new Cargo dependencies. These are per-stage bounds, not a global resource sandbox.
 
+## B06 index contract
+`Document::open` and `resolve(id, generation)` retain their signatures. Index revisions merge newest-first by object number, including free tombstones; hybrid streams override same-revision table entries. XRef streams support direct W/Index/Size/Length and existing filters. Object streams validate their header, ID/index and object bounds; a mutex-protected single-container cache retains at most 16 MiB of decoded bytes plus its bounded index. Limits include 64 revisions and 100,000 cumulative entries (hybrid entries counted conservatively). No encryption, recovery scanning, indirect XRef bootstrap fields, or unknown xref entry types. Synthetic regression fixtures exercise compressed pages, hybrid and sparse incremental revisions, deleted objects and malformed indices. Real-world compatibility still needs corpus validation.
+
 ## Remaining
-Xref/object streams, incremental updates, encryption, font decoding/ToUnicode, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
+Encryption, font decoding/ToUnicode, graphics interpretation, rendering, resource graph expansion, global cumulative parsing/memory budgets and fuzzing. Existing parsing bounds are not a production sandbox.
 
 ## Deferred iOS validation (B-line core only)
 Routine GitHub Actions currently runs Windows and Ubuntu only. iOS device cross-build and simulator jobs are deferred to keep iteration fast. The scripts below remain available for future manual validation; the previous workflow is preserved in commit `685ec546d6c82c1163e0cba6f92201357fd06b39`. Re-enable after core parsing and rendering stabilize. Planned iOS jobs:
