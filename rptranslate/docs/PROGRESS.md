@@ -7,7 +7,7 @@
 | --- | --- | --- |
 | D1.0 | 已通过 | 独立工程、基础数值/语料/元数据及 CPU CI |
 | D1.1 | 已通过 | 自主 Safetensors 子集解析、参考样本及 CPU CI |
-| D1.2a | 待验证 | Unigram Viterbi 内核、identity profile、参考样本 |
+| D1.2a | 已通过 | Unigram Viterbi 内核、identity profile、参考样本 |
 | D1.2b | 未开始 | 真实 SPM、归一化及 Marian ID 兼容性 |
 | D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -30,7 +30,7 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 - 无外部 Rust crate，未使用在线翻译 API；合成 fixture 不是真实论文模型结果。
 
 ## 当前限制
-尚未加载真实预训练模型（已有 FP32/FP16/BF16 Safetensors 子集读取器），已有受限 Unigram 分词子集（待 CI），没有完整 Marian 分词兼容性、张量引擎、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
+尚未加载真实预训练模型（已有 FP32/FP16/BF16 Safetensors 子集读取器），已有受限 Unigram 分词子集（CPU CI 已通过），没有完整 Marian 分词兼容性、张量引擎、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
 
 ## D1.1 阶段要求
 实现安全、边界明确的 Safetensors 解析。先确认格式规范，定义头长度和张量数/维度/大小上限，解析元数据及 dtype、shape、offset，支持小 fixture 的 FP32/FP16/BF16，校验数据区域、字节序、越界、重叠、溢出和异常输入。与成熟实现对照；通过 CPU CI 后更新本文件。不要提前宣称可翻译。
@@ -45,7 +45,7 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 - 验收代码提交：[51bf64cf3fcb52dc0b8124e814d6c8c428cb3606](https://github.com/trade3403/ai-research-pdf-reader/commit/51bf64cf3fcb52dc0b8124e814d6c8c428cb3606)。[第三轮 GitHub Actions 45416917593](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45416917593) 已完成，结论 success；格式、Clippy、单元测试、Release 编译、自检全部通过。尚未验证真实大模型、其他 dtype、分片及性能。
 
 ## 当前阶段 D1.2a
-新增自主 Unigram Viterbi 分词内核、TSV 词表、identity 空白归一化、特殊 token、11 组由 SentencePiece 0.2.1 实际生成的合成参考结果及重建脚本。[技术文档](D1.2_TOKENIZER.md)。实际 Rust CI 待验证；D1.2b 尚未完成，不增加整阶段完成数。
+新增自主 Unigram Viterbi 分词内核、TSV 词表、identity 空白归一化、特殊 token、11 组由 SentencePiece 0.2.1 实际生成的合成参考结果及重建脚本。[技术文档](D1.2_TOKENIZER.md)。实际 Rust CI 已通过：[代码提交 3e36fc4](https://github.com/trade3403/ai-research-pdf-reader/commit/3e36fc4547d4ffcf445cba772fecfdc0443d8820)，[Actions run 45419019144](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45419019144) 结论 success；格式、Clippy、单元测试、Release 编译与自检通过。D1.2b 尚未完成，不增加整阶段完成数。
 
 ## 下一阶段 D1.2b
 真实 SPM protobuf、目标模型 normalizer、Marian vocab.json 与 token ID 对照。
