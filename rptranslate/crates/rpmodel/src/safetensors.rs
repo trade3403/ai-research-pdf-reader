@@ -339,16 +339,22 @@ impl<R: Read + Seek> SafeTensorReader<R> {
         self.reader.read_exact(&mut raw).map_err(|_| Error::Io)?;
         let values = match t.dtype {
             Dtype::F32 => raw
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect(),
             Dtype::F16 => raw
-                .chunks_exact(2)
-                .map(|b| half_to_f32(u16::from_le_bytes([b[0], b[1]])))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| half_to_f32(u16::from_le_bytes(*b)))
                 .collect(),
             Dtype::BF16 => raw
-                .chunks_exact(2)
-                .map(|b| f32::from_bits(u32::from(u16::from_le_bytes([b[0], b[1]])) << 16))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| f32::from_bits(u32::from(u16::from_le_bytes(*b)) << 16))
                 .collect(),
         };
         Ok(values)
