@@ -54,14 +54,14 @@ pub(crate) const ICC_PAGE_PROFILES:usize=16;
 #[derive(Debug)]
 pub(crate) enum IccTransform{
     Rgb(crate::icc::RgbMatrix),
-    Cmyk{tag:Vec<u8>,pcs:crate::icc::Signature},
+    Cmyk(crate::icc::OwnedCmykLut),
 }
 impl IccTransform{
-    pub(crate) fn components(&self)->usize{match self{Self::Rgb(_)=>3,Self::Cmyk{..}=>4}}
+    pub(crate) fn components(&self)->usize{match self{Self::Rgb(_)=>3,Self::Cmyk(_)=>4}}
     pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
         let xyz=match self{
             Self::Rgb(m)=>m.to_xyz_d50([v[0],v[1],v[2]])?,
-            Self::Cmyk{tag,pcs}=>crate::icc::CmykLut::parse(tag,*pcs)?.to_xyz_d50(v)?,
+            Self::Cmyk(lut)=>lut.to_xyz_d50(v)?,
         };
         let src=mv(BRADFORD,[0.9642,1.,0.8249]);let dst=mv(BRADFORD,D65);
         let cone=mv(BRADFORD,xyz);
@@ -98,7 +98,7 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
                 // Validate that physical PCS conversion is supported, not
                 // merely that the encoded LUT parses.
                 lut.to_xyz_d50([0.;4])?;
-                Ok(IccTransform::Cmyk{tag:p.tag(key).unwrap().to_vec(),pcs:p.pcs})
+                Ok(IccTransform::Cmyk(lut.to_owned_lut()))
             })
         }
         _=>Err(Error::Unsupported("ICC gray transform")),

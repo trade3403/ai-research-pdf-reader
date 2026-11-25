@@ -3,6 +3,9 @@
 import argparse
 import ctypes as C
 import hashlib
+import itertools
+import random
+import statistics
 import json
 import pathlib
 import struct as S
@@ -17,6 +20,16 @@ SAMPLES=[(0,0,0,0),(255,0,0,0),(0,255,0,0),(0,0,255,0),(0,0,0,255),
          (255,255,0,0),(0,255,255,0),(255,0,255,0),(64,128,192,32),
          (128,128,128,128),(32,0,128,64),(255,255,255,255)]
 
+# Retain original 12 swatches. Add an interior 3^4 grid, seeded irregular
+# samples and near-boundary values. Deduplicate with stable order.
+DENSE=list(dict.fromkeys(SAMPLES+list(itertools.product((17,113,239),repeat=4))))
+rng=random.Random(3403)
+DENSE=list(dict.fromkeys(DENSE+[tuple(rng.randrange(256) for _ in range(4)) for _ in range(35)]))
+assert len(DENSE)==128
+GATE_MAX=12
+GATE_MEAN=3.0
+GATE_P95=6
+# These are engineering RGB8 thresholds, not perceptual Delta E thresholds.
 def reference(lib,data,rows):
     buf=C.create_string_buffer(data)
     src=lib.cmsOpenProfileFromMem(buf,len(data));dst=lib.cmsCreate_sRGBProfile()
@@ -57,7 +70,8 @@ def main():
     a=p.parse_args();a.probe=a.probe.resolve();a.reference=a.reference.resolve()
     a.out.mkdir(parents=True,exist_ok=True)
     lib=lcms()
-    report={'schema':1,'profiles':[],'note':'Diagnostic LCMS relative colorimetric reference, no BPC; no numerical accuracy gate on real profiles. Native path must be identified explicitly.'}
+    report={'schema':2,'profiles':[],'gate':{'max':GATE_MAX,'mean_max_channel':GATE_MEAN,'p95_max_channel':GATE_P95},
+            'note':'LCMS relative colorimetric reference, no BPC. Require native A2B1 vector/image; RGB8 engineering thresholds, not Delta E.'}
     with tempfile.TemporaryDirectory(prefix='rpcore-print-') as tmp:
         work=pathlib.Path(tmp)
         for name,path in [('swop',a.swop),('fogra40',a.fogra)]:
@@ -67,45 +81,56 @@ def main():
                 if not 132<=path.stat().st_size<=16*1024*1024:raise ValueError('profile size')
                 data=path.read_bytes()
                 entry.update(metadata(data))
-                pdf=work/(name+'.pdf')
-                size,rows=make_pdf(pdf,data,4,SAMPLES,8)
-                ex=reference(lib,data,rows)
-                n,r,im,ri=render_pair(a,pdf,1,72,work,name,None)
-                entry.update(native=n,reference=r)
-                if im is None or ri is None or im.size!=size or ri.size!=size:
-                    raise ValueError('render or size mismatch')
-                native=(n.get('icc_vector_native'),n.get('icc_image_native'))
-                alt=(n.get('icc_vector_alternate'),n.get('icc_image_alternate'))
-                if native==('1','1') and alt==('0','0'):
-                    entry['path']='native'
-                elif native==('0','0') and alt==('1','1'):
-                    entry['path']='alternate'
-                else:raise ValueError('inconsistent ICC path diagnostics')
-                entry['diagnostics']=[v for k,v in sorted(n.items()) if k.startswith('icc_diag_')]
-                if len(entry['diagnostics'])!=2:raise ValueError('missing profile diagnostics')
-                for row,want in zip(rows,ex):
-                    nv,ns=zip(*(measure(im,tuple(box)) for box in row['boxes']))
-                    rv,rs=zip(*(measure(ri,tuple(box)) for box in row['boxes']))
-                    parity=max(error(nv[0],nv[1]),error(nv[0],nv[2]))
-                    alpha=error(nv[3],[round((v*128+255*127)/255) for v in nv[2]])
-                    entry['rows'].append({'raw':row['raw'],'lcms_rgb':want,'native_rgb':nv,'poppler_rgb':rv,
-                        'parity':parity,'alpha':alpha,'lcms_error':max(error(v,want) for v in nv[:3]),
-                        'poppler_error':max(error(x,y) for x,y in zip(nv,rv)),
-                        'pass':parity<=1 and alpha<=1 and max(ns)==0})
-                entry['status']='compared' if all(x['pass'] for x in entry['rows']) else 'parity_failed'
+                entry['renders']=[]
+                for bits in (8,16):
+                    samples=DENSE if bits==8 else [tuple(v*257+(1 if 0<v<255 else 0) for v in row) for row in DENSE]
+                    # 32 rows/page keeps 144 DPI well within raster limits.
+                    for offset in range(0,len(samples),32):
+                        pdf=work/(name+'.pdf')
+                        size,rows=make_pdf(pdf,data,4,samples[offset:offset+32],bits)
+                        ex=reference(lib,data,rows)
+                        for dpi in (72,144):
+                            label=f'{name}-{bits}-{offset}-{dpi}'
+                            n,r,im,ri=render_pair(a,pdf,1,dpi,work,label,None)
+                            entry['renders'].append({'case':label,'native':n,'reference':r})
+                            scale=dpi//72;expected_size=tuple(x*scale for x in size)
+                            if im is None or ri is None or im.size!=expected_size or ri.size!=expected_size:
+                                raise ValueError('render or size mismatch')
+                            native=(n.get('icc_vector_native'),n.get('icc_image_native'))
+                            alt=(n.get('icc_vector_alternate'),n.get('icc_image_alternate'))
+                            diag=[v for k,v in sorted(n.items()) if k.startswith('icc_diag_')]
+                            entry['diagnostics']=diag
+                            if native!=('1','1') or alt!=('0','0') or len(diag)!=2 or any(';cmyk_A2B1;' not in d for d in diag):
+                                entry['path']='alternate_or_wrong_intent'
+                                raise ValueError('native A2B1 required in both paths')
+                            entry['path']='native'
+                            for row,want in zip(rows,ex):
+                                boxes=[tuple(x*scale for x in box) for box in row['boxes']]
+                                nv,ns=zip(*(measure(im,box) for box in boxes))
+                                rv,rs=zip(*(measure(ri,box) for box in boxes))
+                                parity=max(error(nv[0],nv[1]),error(nv[0],nv[2]))
+                                alpha=error(nv[3],[round((v*128+255*127)/255) for v in nv[2]])
+                                entry['rows'].append({'case':label,'bits':bits,'dpi':dpi,'raw':row['raw'],'lcms_rgb':want,'native_rgb':nv,'poppler_rgb':rv,
+                                    'parity':parity,'alpha':alpha,'lcms_error':max(error(v,want) for v in nv[:3]),
+                                    'poppler_error':max(error(x,y) for x,y in zip(nv,rv)),
+                                    'pass':parity<=1 and alpha<=1 and max(ns)==0})
+                errors=sorted(r['lcms_error'] for r in entry['rows'])
+                metrics={'max':max(errors),'mean_max_channel':statistics.mean(errors),'p95_max_channel':errors[(95*len(errors)+99)//100-1]}
+                entry['metrics']=metrics
+                entry['status']='compared' if all(r['pass'] for r in entry['rows']) and metrics['max']<=GATE_MAX and metrics['mean_max_channel']<=GATE_MEAN and metrics['p95_max_channel']<=GATE_P95 else 'accuracy_failed'
             except (OSError,ValueError,RuntimeError) as e:
                 entry['reason']=str(e)[:300]
     (a.out/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
-    lines=['# Installed CMYK print profile compatibility','','| Profile | A2B0 / A2B1 | Path | Status | Samples | Max LCMS error |','|---|---|---|---|---:|---:|']
+    lines=['# Installed CMYK print profile compatibility','','| Profile | A2B0 / A2B1 | Path | Status | Samples | Max LCMS error | Mean max channel | P95 |','|---|---|---|---|---:|---:|---:|---:|']
     for e in report['profiles']:
         tags=e.get('tag_types',{})
-        lines.append(f"| {e['id']} | {tags.get('A2B0','—')} / {tags.get('A2B1','—')} | {e.get('path','—')} | {e['status']} | {len(e['rows'])} | {max((r['lcms_error'] for r in e['rows']),default='—')} |")
+        lines.append(f"| {e['id']} | {tags.get('A2B0','—')} / {tags.get('A2B1','—')} | {e.get('path','—')} | {e['status']} | {len(e['rows'])} | {max((r['lcms_error'] for r in e['rows']),default='—')} | {e.get('metrics',{}).get('mean_max_channel','—')} | {e.get('metrics',{}).get('p95_max_channel','—')} |")
         for d in e.get('diagnostics',[]):lines.append(f"\n- {e['id']}: {d}")
         if e.get('reason'):lines.append(f"\n- {e['id']}: {e['reason']}")
-    lines+=['','Alternate is not native compatibility. Color difference is diagnostic, not a printer accuracy score. No ICC files, embedded PDF or image artifacts exported.']
+    lines+=['',f"Native A2B1 mandatory. LCMS RGB8 max <= {GATE_MAX}, mean maximum channel <= {GATE_MEAN}, p95 <= {GATE_P95}; image/stroke parity <=1, alpha <=1 and uniform patches. Poppler diagnostic only. No ICC/PDF/images exported."]
     md='\n'.join(lines)+'\n'
     (a.out/'report.md').write_text(md);print(md)
-    return int(any(e['status']!='compared' or len(e['rows'])!=len(SAMPLES) for e in report['profiles']))
+    return int(any(e['status']!='compared' or len(e['rows'])!=len(DENSE)*4 or len(e.get('renders',[]))!=16 for e in report['profiles']))
 
 if __name__=='__main__':
     raise SystemExit(main())

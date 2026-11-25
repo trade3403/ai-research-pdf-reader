@@ -206,6 +206,22 @@ pub struct CmykLut<'a>{
     bytes:&'a [u8],pcs:Signature,word:usize,grid:usize,
     input_entries:usize,output_entries:usize,input:usize,clut:usize,output:usize,
 }
+/// Private, validated owned LUT for the PDF color path. The bytes and layout
+/// cannot be changed independently; borrowing it never reparses the tag.
+#[derive(Debug)]
+pub(crate) struct OwnedCmykLut{
+    bytes:Vec<u8>,pcs:Signature,word:usize,grid:usize,
+    input_entries:usize,output_entries:usize,input:usize,clut:usize,output:usize,
+}
+impl OwnedCmykLut{
+    fn view(&self)->CmykLut<'_>{
+        CmykLut{bytes:&self.bytes,pcs:self.pcs,word:self.word,grid:self.grid,
+            input_entries:self.input_entries,output_entries:self.output_entries,input:self.input,clut:self.clut,output:self.output}
+    }
+    pub(crate) fn to_xyz_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        self.view().to_xyz_d50(cmyk)
+    }
+}
 impl<'a> CmykLut<'a>{
     pub(crate) fn parse(b:&'a [u8],pcs:Signature)->Result<Self>{
         if b.len()<48||b[4..8]!=[0;4]||b[11]!=0{return Err(Error::Invalid("ICC LUT header"));}
@@ -236,6 +252,10 @@ impl<'a> CmykLut<'a>{
         if b.len()!=end{return Err(Error::Invalid("ICC LUT size"));}
         Ok(Self{bytes:b,pcs,word,grid,input_entries,output_entries,input,clut,output})
     }
+    pub(crate) fn to_owned_lut(&self)->OwnedCmykLut{
+        OwnedCmykLut{bytes:self.bytes.to_vec(),pcs:self.pcs,word:self.word,grid:self.grid,
+            input_entries:self.input_entries,output_entries:self.output_entries,input:self.input,clut:self.clut,output:self.output}
+    }
     pub fn pcs(&self)->Signature{self.pcs}
     pub fn encoding_bits(&self)->usize{self.word*8}
     fn value(&self,base:usize,index:usize)->f64{
@@ -261,14 +281,19 @@ impl<'a> CmykLut<'a>{
             let p=self.table(self.input,i,self.input_entries,cmyk[i])*(self.grid-1) as f64;
             low[i]=(p.floor() as usize).min(self.grid-2);frac[i]=p-low[i] as f64;
         }
+        let stride=[self.grid.pow(3),self.grid.pow(2),self.grid,1];
+        let base=(0..4).map(|i|low[i]*stride[i]).sum::<usize>();
         let mut out=[0.;3];
         for corner in 0..16{
-            let mut w=1.;let mut index=0;
+            let mut w=1.;let mut index=base;
             for i in 0..4{
                 let hi=(corner>>i)&1;
-                index=index*self.grid+low[i]+hi;
+                index+=hi*stride[i];
                 w*=if hi==1{frac[i]}else{1.-frac[i]};
             }
+            // Boundary samples need fewer nonzero corners; preserve the
+            // original summation order and weights for interior samples.
+            if w==0.{continue;}
             for (j,v) in out.iter_mut().enumerate(){*v+=w*self.value(self.clut,3*index+j);}
         }
         Ok(std::array::from_fn(|i|self.table(self.output,i,self.output_entries,out[i])))
@@ -468,5 +493,20 @@ mod tests{
         assert!(Curve::parse(&make(4,&[2.,1.,0.,-0.5,0.5,0.,0.])).is_err());
         assert!(Curve::parse(&make(4,&[2.,1.,0.,0.5,0.5])).is_err());
         assert!(Curve::parse(&make(5,&[])).is_err());
+    }
+    #[test]fn owned_lut_matches_borrowed_and_survives_source_drop(){
+        for word in [1,2]{
+            let b=lut_profile(word);
+            let mut lab=b.clone();lab[20..24].copy_from_slice(b"Lab ");
+            let p=Profile::parse(&lab).unwrap();let lut=p.cmyk_a2b0().unwrap();
+            let owned=lut.to_owned_lut();
+            for i in 0..=16{for j in 0..=16{
+                let x=[i as f64/16.,j as f64/16.,0.37,0.83];
+                assert_eq!(owned.to_xyz_d50(x).unwrap(),lut.to_xyz_d50(x).unwrap());
+            }}
+            drop(lut);drop(p);drop(lab);
+            assert!(owned.to_xyz_d50([0.1,0.2,0.3,0.4]).is_ok());
+            assert!(owned.to_xyz_d50([0.,0.,f64::NAN,0.]).is_err());
+        }
     }
 }
