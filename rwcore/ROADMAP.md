@@ -70,8 +70,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4b1 | GDEF header/directory and glyph class tables | Verified |
 | C4.4b2 | GDEF MarkGlyphSetsDef coverage sets | Verified (#110 after repair) |
 | C4.4b3 | Real GDEF class and mark-set references | Verified |
-| C4.4b4 | LookupFlag glyph eligibility and mark filtering | Source implemented; CI pending |
-| C4.4b5 | Real GSUB LookupFlag and GDEF references | Planned |
+| C4.4b4 | LookupFlag glyph eligibility and mark filtering | Verified |
+| C4.4b5 | Real GSUB LookupFlag and GDEF references | Source implemented; CI pending |
+| C4.4c1 | GSUB script/language/feature selection and ordered lookup plan | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
