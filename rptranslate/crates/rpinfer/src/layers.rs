@@ -36,7 +36,12 @@ impl Linear<'_> {
 
 /// Last-axis LayerNorm with population variance, FP64 statistics and affine
 /// parameters; epsilon must be finite and positive.
-pub fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, epsilon: f32) -> Result<Tensor, Error> {
+pub fn layer_norm(
+    x: &Tensor,
+    weight: &Tensor,
+    bias: &Tensor,
+    epsilon: f32,
+) -> Result<Tensor, Error> {
     let width = *x.shape().last().ok_or(Error::Shape)?;
     if width == 0 || weight.shape() != [width] || bias.shape() != [width] {
         return Err(Error::Shape);
@@ -185,26 +190,61 @@ mod tests {
         };
         let y = linear.forward(&x, Kernel::Auto).unwrap();
         assert_eq!(y.data(), &[59., 62., 140., 152.]);
-        assert_eq!(linear.forward(&w.permute(&[1, 0]).unwrap(), Kernel::Auto), Err(Error::Shape));
+        assert_eq!(
+            linear.forward(&w.permute(&[1, 0]).unwrap(), Kernel::Auto),
+            Err(Error::Shape)
+        );
     }
 
     #[test]
     fn numpy_cross_attention_and_residual_norm() {
         let x = t(&[2, 4], &[1., 2., 3., 4., 2., 0., 1., -1.]);
         let memory = t(&[3, 4], &[1., 0., 0., 1., 0., 1., 1., 0., 1., 1., 2., -1.]);
-        let wq = t(&[4, 4], &[1., 0., 0., 0., 0., 2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5]);
-        let wk = t(&[4, 4], &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]);
-        let wv = t(&[4, 4], &[2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1.]);
-        let wo = t(&[4, 4], &[1., 0., 1., 0., 0., 1., 0., 1., 1., 0., 0., 0., 0., 0., 0., 1.]);
+        let wq = t(
+            &[4, 4],
+            &[
+                1., 0., 0., 0., 0., 2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5,
+            ],
+        );
+        let wk = t(
+            &[4, 4],
+            &[
+                1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+            ],
+        );
+        let wv = t(
+            &[4, 4],
+            &[
+                2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1.,
+            ],
+        );
+        let wo = t(
+            &[4, 4],
+            &[
+                1., 0., 1., 0., 0., 1., 0., 1., 1., 0., 0., 0., 0., 0., 0., 1.,
+            ],
+        );
         let bq = t(&[4], &[0.5, 0., 0., 0.]);
         let bo = t(&[4], &[0.1, -0.2, 0.3, 0.]);
         let gain = t(&[4], &[1., 2., 0.5, 1.]);
         let shift = t(&[4], &[0., 0.1, 0., -0.1]);
         let mut layer = MultiHead {
-            q: Linear { weight: &wq, bias: Some(&bq) },
-            k: Linear { weight: &wk, bias: None },
-            v: Linear { weight: &wv, bias: None },
-            output: Linear { weight: &wo, bias: Some(&bo) },
+            q: Linear {
+                weight: &wq,
+                bias: Some(&bq),
+            },
+            k: Linear {
+                weight: &wk,
+                bias: None,
+            },
+            v: Linear {
+                weight: &wv,
+                bias: None,
+            },
+            output: Linear {
+                weight: &wo,
+                bias: Some(&bo),
+            },
             heads: 2,
         };
         let mask = Mask {
@@ -218,15 +258,45 @@ mod tests {
             Kernel::Parallel(4),
         ] {
             let y = layer.forward(&x, &memory, mask, kernel).unwrap();
-            close(y.data(), &[0.726_521_25, 0.984_418_2, 0.591_640_5, 0.330_238_46, 2.179_767_8, 0.203_003_57, 2.008_359_4, 0.257_183_3]);
+            close(
+                y.data(),
+                &[
+                    0.726_521_25,
+                    0.984_418_2,
+                    0.591_640_5,
+                    0.330_238_46,
+                    2.179_767_8,
+                    0.203_003_57,
+                    2.008_359_4,
+                    0.257_183_3,
+                ],
+            );
             let z = residual_norm(&x, &y, &gain, &shift, 1e-5).unwrap();
-            close(z.data(), &[-1.500_505_1, -0.264_280_83, 0.227_135_69, 1.128_374_1, 1.256_346_5, -1.356_179_5, 0.335_902_33, -1.300_061_3]);
+            close(
+                z.data(),
+                &[
+                    -1.500_505_1,
+                    -0.264_280_83,
+                    0.227_135_69,
+                    1.128_374_1,
+                    1.256_346_5,
+                    -1.356_179_5,
+                    0.335_902_33,
+                    -1.300_061_3,
+                ],
+            );
         }
-        let all = Mask { key_keep: Some(&[false; 3]), ..Mask::default() };
+        let all = Mask {
+            key_keep: Some(&[false; 3]),
+            ..Mask::default()
+        };
         let y = layer.forward(&x, &memory, all, Kernel::Auto).unwrap();
         assert_eq!(y.data(), &[0.1, -0.2, 0.3, 0., 0.1, -0.2, 0.3, 0.]);
         layer.heads = 3;
-        assert_eq!(layer.forward(&x, &memory, mask, Kernel::Auto), Err(Error::Shape));
+        assert_eq!(
+            layer.forward(&x, &memory, mask, Kernel::Auto),
+            Err(Error::Shape)
+        );
     }
 
     #[test]
@@ -234,11 +304,23 @@ mod tests {
         let x = t(&[2, 2], &[3., 3., f32::MAX, -f32::MAX]);
         let gain = t(&[2], &[1., 1.]);
         let shift = t(&[2], &[0., 0.]);
-        close(layer_norm(&x, &gain, &shift, 1e-5).unwrap().data(), &[0., 0., 1., -1.]);
+        close(
+            layer_norm(&x, &gain, &shift, 1e-5).unwrap().data(),
+            &[0., 0., 1., -1.],
+        );
         assert_eq!(layer_norm(&x, &gain, &shift, 0.), Err(Error::Shape));
-        assert_eq!(layer_norm(&x, &gain, &shift, f32::NAN), Err(Error::NonFinite));
-        assert_eq!(residual_norm(&x, &gain, &gain, &shift, 1e-5), Err(Error::Shape));
+        assert_eq!(
+            layer_norm(&x, &gain, &shift, f32::NAN),
+            Err(Error::NonFinite)
+        );
+        assert_eq!(
+            residual_norm(&x, &gain, &gain, &shift, 1e-5),
+            Err(Error::Shape)
+        );
         let empty = Tensor::zeros(&[0, 2]).unwrap();
-        assert_eq!(layer_norm(&empty, &gain, &shift, 1e-5).unwrap().shape(), &[0, 2]);
+        assert_eq!(
+            layer_norm(&empty, &gain, &shift, 1e-5).unwrap().shape(),
+            &[0, 2]
+        );
     }
 }
