@@ -103,3 +103,6 @@ pub use structure::{SplitAnchors,SplitPoint,JoinFormatting,StructureOp,Structure
 
 pub mod font;
 pub use font::{FontTag,FontFlavor,FontContainerKind,FontLimits,FontTableRecord,FontFace,FontContainer,parse_font};
+
+pub mod font_metrics;
+pub use font_metrics::{FontBounds,FontHead,TrueTypeMaxima,FontMaxp,HorizontalHeader,GlyphHorizontalMetric,FontMetricLimits,FontMetrics,FontScale,parse_font_metrics};

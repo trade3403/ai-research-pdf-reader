@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: ebaddc59e4aabc93e41dd4646be6aba5957f06ae
-- CI #63: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949
-- Verified: Ubuntu 340/340, Windows 340/340, macOS 340/340; total 1020/1020; zero failed/ignored; locked release builds passed.
-- Current stage: C4.1 native SFNT/TTC font directory parsing; 14 new synthetic regressions (354 per platform / 1062 executions expected, PENDING CI).
-- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C4.2a native head/maxp/hhea/hmtx metric parsing and unit conversions; cmap follows.
-- Scope: raw TrueType and OpenType CFF-flavored SFNT directory, TTC/OTC versions 1/2, borrowed table lookup, bounded checked offsets/counts, shared table validation, optional table checksum and raw DSIG exposure. No required-table or whole-font validation, glyph outlines, cmap, shaping, WOFF, font discovery, rendering, or real font corpus acceptance. C3 foundational editing verified, not full Word fidelity.
+- Last verified baseline: f0485362c0a67de8c586a6b6f3ad42634e604020
+- CI #64: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570061454
+- Verified: Ubuntu 354/354, Windows 354/354, macOS 354/354; total 1062/1062; zero failed/ignored; locked release builds passed.
+- Current stage: C4.2a native head/maxp/hhea/hmtx metrics and integer font scaling; 14 new synthetic regressions (368 per platform / 1104 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C4.2b bounded Unicode cmap format 4/12 mapping and glyph-ID validation.
+- Scope: strict metric-table lengths and versions, signed bounds/metrics, TrueType maxima, CFF maxp 0.5, borrowed hmtx with repeated final advance, signed rational twips and 26.6 pixel scaling with nearest ties away from zero. Default instance only; no cmap, outlines, vertical metrics, OS/2 metric selection, shaping, real font corpus or rendering.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.
