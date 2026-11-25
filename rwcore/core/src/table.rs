@@ -2,6 +2,7 @@
 use crate::{Block, Paragraph, Run, Error, Limits};
 use crate::opc::{xml, named, parse_paragraph_node, parse_run_node};
 use roxmltree::Node;
+use crate::table_properties::{Appearance, appearance_property};
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
@@ -13,6 +14,7 @@ const MAX_CELLS: usize = 65536;
 pub struct Table {
     /// Source grid widths, in integer twips; missing width stays unspecified.
     pub grid: Vec<Option<u32>>,
+    pub appearance: Appearance,
     pub rows: Vec<TableRow>,
     pub diagnostics: Vec<String>,
 }
@@ -33,6 +35,7 @@ pub struct TableCell {
     /// Raw span and merge markers. No logical merge resolution yet.
     pub grid_span: Option<u16>,
     pub vertical_merge: Option<VerticalMerge>,
+    pub appearance: Appearance,
 }
 
 fn bounded_columns(value: Option<&str>, positive: bool) -> Result<u16, Error> {
@@ -102,7 +105,7 @@ fn cell(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>) -> Result<Tabl
                         None | Some("continue") => VerticalMerge::Continue,
                         _ => return Err(Error::Invalid("invalid vertical merge marker")),
                     });
-                } else {
+                } else if !appearance_property(prop, ns, false, &mut out.appearance, warnings)? {
                     warnings.push(format!("Unsupported table cell property: {}",prop.tag_name().name()));
                 }
             }
@@ -153,7 +156,9 @@ pub(crate) fn parse_table_node(root: Node<'_, '_>, ns: &str) -> Result<Table, Er
             if props_seen { return Err(Error::Invalid("duplicate table properties")); }
             props_seen = true;
             for prop in child.children().filter(|n| n.is_element()) {
-                out.diagnostics.push(format!("Unsupported table property: {}",prop.tag_name().name()));
+                if !appearance_property(prop, ns, true, &mut out.appearance, &mut out.diagnostics)? {
+                    out.diagnostics.push(format!("Unsupported table property: {}",prop.tag_name().name()));
+                }
             }
         } else if named(child, ns, "tr") {
             if out.rows.len() >= MAX_ROWS { return Err(Error::Limit("table rows")); }

@@ -28,7 +28,7 @@ fn raw_merge_and_grid_offsets_preserved() {
 }
 #[test]
 fn opaque_nested_table_and_ragged_row_diagnostics() {
-    let t=table("<w:tblPr><w:tblBorders/></w:tblPr><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tbl/><w:p/></w:tc></w:tr>").unwrap();
+    let t=table("<w:tblPr><w:tblLook/></w:tblPr><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid><w:tr><w:tc><w:tbl/><w:p/></w:tc></w:tr>").unwrap();
     assert!(matches!(&t.rows[0].cells[0].blocks[0],Block::Unsupported{name} if name=="tbl"));
     assert_eq!(t.diagnostics.len(),3);
     assert_eq!(t.grid,vec![None,None]);

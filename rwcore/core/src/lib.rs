@@ -44,3 +44,6 @@ pub use table::{parse_table, Table, TableRow, TableCell, VerticalMerge};
 
 pub mod table_grid;
 pub use table_grid::{resolve_table_grid, LogicalTable, LogicalCell, MergeAnchor, CellAddress};
+
+pub mod table_properties;
+pub use table_properties::{Appearance, TableWidth, TableEdge, TableColor, TableBorder};
