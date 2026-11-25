@@ -3,6 +3,7 @@ pub mod attention;
 pub mod layers;
 pub mod matmul;
 pub mod tensor;
+pub mod transformer;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InferError {
