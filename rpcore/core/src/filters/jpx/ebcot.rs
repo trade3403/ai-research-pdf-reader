@@ -1,5 +1,5 @@
 //! JPEG 2000 Tier-1 context modelling for the baseline MQ coding style.
-//! Initial cleanup and first significance propagation for baseline MQ style.
+//! Initial cleanup, first significance propagation and refinement for baseline MQ style.
 use super::{geometry::Band,mq::{Context,Decoder}};
 use crate::{Error,Result};
 
@@ -194,6 +194,42 @@ pub fn decode_initial_and_propagation(data:&[u8],width:usize,height:usize,band:B
     Ok(b)
 }
 
+fn refinement(b:&mut Block,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Result<()>{
+    if plane>29{return Err(Error::Invalid("JPX EBCOT refinement plane"));}
+    let mask=1u32<<plane;
+    // Only coefficients significant before this bitplane may be refined.
+    // Check the plane before consuming decisions.
+    if b.coefficients.iter().any(|c|c.significant()&&!c.visited&&c.magnitude<2*mask){
+        return Err(Error::Invalid("JPX EBCOT refinement order"));
+    }
+    for top in (0..b.height).step_by(4){
+        for x in 0..b.width{
+            for y in top..(top+4).min(b.height){
+                let i=b.index(x,y)?;
+                let c=b.coefficients[i];
+                if !c.significant()||c.visited{continue;}
+                let (n,_,_)=b.neighbours(x,y)?;
+                let bit=read(magnitude_context(c.refined,n.h+n.v+n.d!=0))?;
+                if bit>1{return Err(Error::Invalid("JPX EBCOT refinement bit"));}
+                b.coefficients[i].magnitude=(c.magnitude&!mask)|(u32::from(bit)<<plane);
+                b.coefficients[i].refined=true;
+            }
+        }
+    }
+    Ok(())
+}
+/// Decode the first three passes of a baseline MQ codeblock with continuous
+/// arithmetic and context state. Lower-plane cleanup is not performed yet.
+pub fn decode_initial_through_refinement(data:&[u8],width:usize,height:usize,band:Band,plane:u8)->Result<Block>{
+    if !(1..=30).contains(&plane){return Err(Error::Invalid("JPX EBCOT refinement plane"));}
+    let mut cx=Contexts::new()?;
+    let mut mq=Decoder::new(data,4096*7)?;
+    let mut b=initial_cleanup(width,height,band,plane,|i|cx.decode(&mut mq,i))?;
+    propagation(&mut b,band,plane-1,|i|cx.decode(&mut mq,i))?;
+    refinement(&mut b,plane-1,|i|cx.decode(&mut mq,i))?;
+    Ok(b)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -328,5 +364,54 @@ mod tests{
         let mut b=Block::new(2,1).unwrap();
         b.make_significant(0,0,2,false).unwrap();
         assert!(propagation(&mut b,Band::Ll,1,|_|Err(Error::Invalid("test"))).is_err());
+    }
+
+    #[test]fn refinement_first_isolated_and_repeated(){
+        let mut b=Block::new(1,1).unwrap();
+        b.make_significant(0,0,3,true).unwrap();
+        refinement(&mut b,2,|cx|{assert_eq!(cx,14);Ok(1)}).unwrap();
+        let c=b.coefficient(0,0).unwrap();assert_eq!(c.magnitude(),12);assert!(c.refined());assert!(c.negative());
+        refinement(&mut b,1,|cx|{assert_eq!(cx,16);Ok(0)}).unwrap();
+        refinement(&mut b,0,|cx|{assert_eq!(cx,16);Ok(1)}).unwrap();
+        assert_eq!(b.coefficient(0,0).unwrap().magnitude(),13);
+    }
+    #[test]fn refinement_skip_new_significance(){
+        let mut b=Block::new(3,1).unwrap();
+        b.make_significant(0,0,3,false).unwrap();
+        let mut seq=[(5,1),(12,0),(5,0)].into_iter();
+        propagation(&mut b,Band::Ll,2,|cx|{let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)}).unwrap();
+        assert!(seq.next().is_none());
+        let mut calls=0;
+        refinement(&mut b,2,|cx|{calls+=1;assert_eq!(cx,15);Ok(1)}).unwrap();
+        assert_eq!(calls,1);assert_eq!(b.coefficient(0,0).unwrap().magnitude(),12);
+        assert_eq!(b.coefficient(1,0).unwrap().magnitude(),4);
+        assert!(!b.coefficient(1,0).unwrap().refined());
+        assert!(!b.coefficient(2,0).unwrap().significant());
+    }
+    #[test]fn refinement_stripe_order(){
+        let mut b=Block::new(2,5).unwrap();
+        for y in 0..5{for x in 0..2{b.make_significant(x,y,2,false).unwrap();}}
+        let mut bits=[0,1,0,1,1,0,1,0,1,0].into_iter();
+        refinement(&mut b,1,|cx|{assert_eq!(cx,15);Ok(bits.next().unwrap())}).unwrap();
+        assert!(bits.next().is_none());
+        assert_eq!(b.coefficients.iter().map(|c|c.magnitude()).collect::<Vec<_>>(),vec![4,6,6,4,4,6,6,4,6,4]);
+    }
+    #[test]fn refinement_empty_and_invalid(){
+        let mut b=Block::new(2,2).unwrap();
+        refinement(&mut b,0,|_|panic!("unexpected decision")).unwrap();
+        b.make_significant(0,0,2,false).unwrap();
+        assert!(refinement(&mut b,2,|_|panic!("invalid order")).is_err());
+        assert!(refinement(&mut b,30,|_|panic!("invalid plane")).is_err());
+        assert!(refinement(&mut b,1,|_|Ok(2)).is_err());
+        assert_eq!(b.coefficient(0,0).unwrap().magnitude(),4);
+        assert!(!b.coefficient(0,0).unwrap().refined());
+    }
+    #[test]fn refinement_mq_bridge_and_limits(){
+        assert!(decode_initial_through_refinement(&[],1,1,Band::Ll,1).is_err());
+        assert!(decode_initial_through_refinement(&[0,0],1,1,Band::Ll,0).is_err());
+        assert!(decode_initial_through_refinement(&[0,0],1,1,Band::Ll,31).is_err());
+        assert!(decode_initial_through_refinement(&[0,0],65,65,Band::Ll,1).is_err());
+        let b=decode_initial_through_refinement(&[0,0],1,1,Band::Ll,1).unwrap();
+        assert_eq!(b.coefficients.len(),1);
     }
 }
