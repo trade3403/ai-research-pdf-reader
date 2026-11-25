@@ -1,7 +1,30 @@
 //! Offline Rust conversion and complete owning model load probe.
 use rpinfer::mixed_model::{convert, MixedModel, PAYLOAD_BYTES};
-use rpmodel::quantized::Reader;
+use rpmodel::{
+    quantized::Reader,
+    sha256::{digest_reader, digest_reader_reference},
+};
 use std::{fs::File, path::Path, time::Instant};
+
+fn sha_reference(path: &Path) -> Result<(), String> {
+    let limit = 512 * 1024 * 1024;
+    let file = File::open(path).map_err(|e| format!("{e:?}"))?;
+    let start = Instant::now();
+    let expected = digest_reader_reference(file, limit).map_err(|e| format!("{e:?}"))?;
+    let reference_ms = start.elapsed().as_secs_f64() * 1000.;
+    let file = File::open(path).map_err(|e| format!("{e:?}"))?;
+    let start = Instant::now();
+    let actual = digest_reader(file, limit).map_err(|e| format!("{e:?}"))?;
+    let batch_ms = start.elapsed().as_secs_f64() * 1000.;
+    if expected != actual {
+        return Err("SHA256 batch mismatch".into());
+    }
+    println!(
+        "SHA_READ_REFERENCE PASS bytes={} digest={} reference_ms={reference_ms:.3} batch_ms={batch_ms:.3}",
+        actual.0, actual.1
+    );
+    Ok(())
+}
 
 fn batch_reference(root: &Path) -> Result<(), String> {
     let file = File::open(root.join("weights.rpq")).map_err(|e| format!("{e:?}"))?;
@@ -78,8 +101,9 @@ fn main() -> Result<(), String> {
             );
         }
         [mode, root] if mode == "batch-reference" => batch_reference(Path::new(root))?,
+        [mode, path] if mode == "sha-reference" => sha_reference(Path::new(path))?,
         _ => return Err(
-            "usage: mixed_model_reference convert SOURCE DEST | verify DEST | batch-reference DEST"
+            "usage: mixed_model_reference convert SOURCE DEST | verify DEST | batch-reference DEST | sha-reference FILE"
                 .into(),
         ),
     }

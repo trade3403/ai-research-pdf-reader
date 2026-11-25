@@ -31,6 +31,18 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run([str(exe), "verify", str(dest)], check=True, timeout=120)
     subprocess.run([str(exe), "batch-reference", str(dest)], check=True, timeout=120)
     qpath = dest / "weights.rpq"
+    for path in (package/"weights.safetensors", qpath, dest/"auxiliary.safetensors"):
+        report = subprocess.check_output([str(exe), "sha-reference", str(path)],
+                                         text=True, timeout=120).strip()
+        assert report.startswith("SHA_READ_REFERENCE PASS ")
+        fields = dict(field.split("=", 1) for field in report.split()[2:])
+        expected = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                expected.update(chunk)
+        assert int(fields["bytes"]) == path.stat().st_size
+        assert fields["digest"] == expected.hexdigest()
+        print(f"{report} file={path.name} hashlib_match=true", flush=True)
     q_elements = q_blocks = f_elements = 0
     with qpath.open("rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
         magic, version, count, index_size, payload = struct.unpack_from("<8sIIQQ", data)

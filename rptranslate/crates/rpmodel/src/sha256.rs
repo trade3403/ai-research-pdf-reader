@@ -54,8 +54,51 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
 }
 
 /// Return exact byte count and lowercase SHA-256 hex. Limit applies before
-/// hashing more bytes; buffered reads may read ahead by at most 64 KiB.
-pub fn digest_reader(reader: impl Read, limit: u64) -> io::Result<(u64, String)> {
+/// hashing more bytes; reads may read ahead by at most 64 KiB.
+/// Process full compression blocks directly in a bounded read buffer and
+/// carry only the final incomplete block between short reads.
+pub fn digest_reader(mut reader: impl Read, limit: u64) -> io::Result<(u64, String)> {
+    let mut state = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    let mut tail = 0;
+    loop {
+        let n = match reader.read(&mut buffer[tail..]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        total = total
+            .checked_add(n as u64)
+            .filter(|&v| v <= limit && v <= u64::MAX / 8)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "hash size limit"))?;
+        let used = tail + n;
+        let (blocks, remainder) = buffer[..used].as_chunks::<64>();
+        for block in blocks {
+            compress(&mut state, block);
+        }
+        tail = remainder.len();
+        buffer.copy_within(used - tail..used, 0);
+    }
+    let mut block = [0_u8; 64];
+    block[..tail].copy_from_slice(&buffer[..tail]);
+    block[tail] = 0x80;
+    if tail >= 56 {
+        compress(&mut state, &block);
+        block = [0; 64];
+    }
+    block[56..].copy_from_slice(&(total * 8).to_be_bytes());
+    compress(&mut state, &block);
+    Ok((total, state.iter().map(|v| format!("{v:08x}")).collect()))
+}
+
+/// Original per-block buffered reader retained for regression and timing.
+#[doc(hidden)]
+pub fn digest_reader_reference(reader: impl Read, limit: u64) -> io::Result<(u64, String)> {
     let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut state = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
@@ -100,6 +143,69 @@ pub fn digest_reader(reader: impl Read, limit: u64) -> io::Result<(u64, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Fragmented<'a> {
+        bytes: &'a [u8],
+        step: usize,
+        interrupt: bool,
+    }
+
+    impl Read for Fragmented<'_> {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            if self.interrupt {
+                self.interrupt = false;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.interrupt = true;
+            let n = self.bytes.len().min(out.len()).min(self.step);
+            out[..n].copy_from_slice(&self.bytes[..n]);
+            self.bytes = &self.bytes[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn batched_matches_reference_at_padding_and_buffer_boundaries() {
+        let data: Vec<u8> = (0..131_137).map(|i| (i % 251) as u8).collect();
+        for len in [0, 1, 55, 56, 63, 64, 65, 65_535, 65_536, 65_537, data.len()] {
+            let input = &data[..len];
+            let expected = digest_reader_reference(input, len as u64).unwrap();
+            for step in [1, 7, 63, 64, 65, 4093, 65_536] {
+                let reader = Fragmented {
+                    bytes: input,
+                    step,
+                    interrupt: true,
+                };
+                assert_eq!(digest_reader(reader, len as u64).unwrap(), expected);
+            }
+            if len > 0 {
+                assert_eq!(
+                    digest_reader(input, len as u64 - 1).unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batched_respects_take_and_propagates_read_failure() {
+        let mut input = b"abc trailing".as_slice();
+        let result = digest_reader((&mut input).take(3), 3).unwrap();
+        assert_eq!(result, digest_reader_reference(b"abc".as_slice(), 3).unwrap());
+        assert_eq!(input, b" trailing");
+
+        struct Failed;
+        impl Read for Failed {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let reader = b"abc".as_slice().chain(Failed);
+        assert_eq!(
+            digest_reader(reader, 100).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    }
 
     #[test]
     fn known_sha256_vectors_and_limits() {
