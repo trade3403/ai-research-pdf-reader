@@ -2,6 +2,7 @@
 //! This is NOT an entropy decoder and does not validate the tile payload.
 //! No external runtime dependencies; unsupported structures fail closed.
 use crate::{Error,Result,MAX_BYTES};
+pub mod codestream;
 
 const SIGNATURE:&[u8]=b"\x00\x00\x00\x0cjP  \x0d\x0a\x87\x0a";
 const MAX_BOXES:usize=4096;
