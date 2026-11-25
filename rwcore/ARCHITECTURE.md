@@ -64,3 +64,5 @@ C4.3h-2a verified CI #76: real_font.rs exercises unmodified ABeeZee Regular OFL 
 C4.3h-2b verified CI #77: real_font_reference.rs uses fixed 128 subdivisions per quadratic and independent per-sample winding via cross products, 8x8 sampling and expanded viewport. Test-only oracle shares parsed paths, not production flattening or scanline code. Explicit conservative alpha error gates.
 
 C4.3h-2c pending CI: independent offline JS raw glyf point/endpoint and nominal metric fixtures for ABeeZee Italic; production Rust comparison tests and smoke rendering.
+
+C4.3h-2d1 pending CI: independent JS raw SFNT/loca/glyf decoder recursively expands translation-only components and produces full ordered point/endpoint reference fixtures for Regular glyph IDs 6 and 81. Rust tests compare exact 16.16 coordinates.

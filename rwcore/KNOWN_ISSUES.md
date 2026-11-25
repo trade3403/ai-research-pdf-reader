@@ -56,3 +56,5 @@
 - C4.3h-2b pending CI: test oracle uses shared parsed paths, f64 dense polygon approximation, six cases from one font; not independent outline extraction or analytic coverage. Error thresholds are provisional engineering gates, not Word fidelity guarantees.
 
 - C4.3h-2c pending CI: two styles of one family only; independent simple points but no independent composite assembly or italic reference raster acceptance yet.
+
+- C4.3h-2d1: translation-only real composites; transformed and point-attached real reference fixtures, additional font families and broader corpus validation outstanding.
