@@ -35,3 +35,6 @@ pub use fields::{StoryField, FieldKind, FieldEncoding};
 
 pub mod page_numbers;
 pub use page_numbers::{PageNumberPlan, PageNumberContext, evaluate_page_field};
+
+pub mod page_structure;
+pub use page_structure::{PageStructurePlan, StructuredPage, EvaluatedField};
