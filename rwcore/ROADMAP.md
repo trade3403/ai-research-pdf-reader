@@ -59,8 +59,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4a7d | Real-font direct contextual references | Verified |
 | C4.4a7e1 | Glyph-based chained contextual format 1 | Verified |
 | C4.4a7e2 | Class-based chained contextual format 2 | Verified |
-| C4.4a7e3 | Coverage-based chained contextual format 3 | Source implemented; CI pending |
-| C4.4a7e4 | Real-font direct Type 6 reference acceptance | Planned |
+| C4.4a7e3 | Coverage-based chained contextual format 3 | Verified |
+| C4.4a7e4 | Real-font direct Type 6 reference acceptance | Source implemented; CI pending |
+| C4.4a8a | GSUB extension wrapper and target dispatch | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
