@@ -47,3 +47,6 @@ C4.4a7e4 source pending CI; parent CI #101 verified 673 tests per platform. Read
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4a8a source pending CI; parent CI #102 verified 675 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4a8b1 source pending CI; parent CI #103 verified 687 tests per platform. Native Type 7 reference deferred, not verified. Read DEV_STATE.md and verify exact HEAD; no concurrent writers.
