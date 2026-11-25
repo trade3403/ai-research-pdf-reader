@@ -183,8 +183,13 @@ D1.8e [45534854851](https://github.com/trade3403/ai-research-pdf-reader/actions/
 ## 当前阶段 D1.8f
 新增独立 Rust release 翻译基准：模型加载/分词会话初始化计时，2短句 beam1、Full/Cached 各3次交替计时（2 warmups 排除），目标序列严格一致；端到端 latency/输出Token/s（含EOS，非Decoder纯速度），median 与 full/cache latency ratio；Linux /usr/bin/time 单独 Rust 进程峰值RSS（含权重、warmup、质量请求，非Python）。6条自编科研短句 beam4、参考中文、数字多重集合匹配5项、术语/单位字符串备选12组、字符1..6 gram F2有效阶宏平均（非SacreBLEU），实际译文与上限标志逐条日志。质量观察不设虚构通过率或速度阈值，数字匹配不证明数量关系正确；非真实论文质量结论。先保留D1.8d/e全部门槛，之后执行基准。待CI。
 
-## 下一阶段 D1.9
-待 D1.8d/e/f 全部通过后，启动自主 INT8 量化格式、分块权重和精度验收。
+D1.8f [45535270286](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45535270286) 基础 format 2组失败，真实专项仍运行，未取得完整跨内核/译文/性能数据；本次修复2组差异，并将本分支CI concurrency cancel-in-progress 改false，避免反复中断旧验收。新提交含D1.8f标记，保留原全部门槛。D1.9a 数学模块先行独立预研，正式进入量化模型研发须等D1.8d/e/f全部通过。
+
+## D1.9a（独立预研，待验收）
+D1.9a 独立数学预研：BlockInt8 对称零点0、[-127,127]，按连续块 max_abs/127 FP32 scale，f64 中间、ties-to-even、尾块、全零 scale=1、极小 subnormal 与最大有限值安全处理；拒绝 -128、非有限/非正 scale、异常 shape/长度/预算/重建溢出，支持无复制 from_parts、有界局部反量化。块长1..4096、单实例最多16Mi elements，payload=len+4*ceil(len/block)。5组Rust单测、独立Python stdlib 12组位级对照 codes/scales/restored，误差界包含最终FP32舍入。尚不接真实模型、不改FP32计算路径、不代表量化推理或实际模型体积。
+
+## 下一阶段 D1.9b
+前置D1.8d/e/f及D1.9a通过后，自主量化权重格式与安全索引。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

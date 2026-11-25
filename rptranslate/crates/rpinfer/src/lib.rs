@@ -10,6 +10,7 @@ pub mod marian_generation;
 pub mod marian_model;
 pub mod marian_weights;
 pub mod matmul;
+pub mod quantization;
 pub mod search;
 pub mod seq2seq;
 pub mod tensor;

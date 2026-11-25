@@ -55,7 +55,10 @@ fn main() -> Result<(), String> {
                 if result.reached_limit || seconds <= 0. {
                     return Err("invalid benchmark generation".into());
                 }
-                if expected.as_ref().is_some_and(|ids| ids != &result.target_tokens) {
+                if expected
+                    .as_ref()
+                    .is_some_and(|ids| ids != &result.target_tokens)
+                {
                     return Err("benchmark token sequences differ".into());
                 }
                 let generated = result.target_tokens.len() - 1;
@@ -78,7 +81,12 @@ fn main() -> Result<(), String> {
                 Kernel::Auto,
             )
             .map_err(|e| format!("{e:?}"))?;
-        let hex = result.text.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let hex = result
+            .text
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         println!(
             "BENCH_QUALITY\t{case}\t{}\t{}\t{hex}",
             result.target_tokens.len() - 1,
