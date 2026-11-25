@@ -39,7 +39,8 @@ fn layout(shape: &[usize]) -> Result<(Vec<usize>, usize), Error> {
 
 fn buffer(size: usize) -> Result<Vec<f32>, Error> {
     let mut data = Vec::new();
-    data.try_reserve_exact(size).map_err(|_| Error::Allocation)?;
+    data.try_reserve_exact(size)
+        .map_err(|_| Error::Allocation)?;
     Ok(data)
 }
 
@@ -221,8 +222,8 @@ mod tests {
         assert_eq!(
             out.data(),
             &[
-                0., 4., 8., 12., 16., 20., 1., 5., 9., 13., 17., 21., 2., 6., 10., 14., 18.,
-                22., 3., 7., 11., 15., 19., 23.,
+                0., 4., 8., 12., 16., 20., 1., 5., 9., 13., 17., 21., 2., 6., 10., 14., 18., 22.,
+                3., 7., 11., 15., 19., 23.,
             ]
         );
         assert_eq!(t.permute(&[0, 0, 2]), Err(Error::Axis));
