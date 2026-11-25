@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #65, not full Word compatibility.
+Status below is baseline at CI #66, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -24,8 +24,9 @@ Status below is baseline at CI #65, not full Word compatibility.
 | C3.3c | Structural history and path-safe editor integration | Verified |
 | C4.1 | Font container and SFNT directory parsing | Verified |
 | C4.2a | Native font metrics and unit conversions | Verified |
-| C4.2b | Unicode cmap glyph mapping | Source implemented; CI pending |
-| C4.2c | Nominal glyph metrics and text measurement integration | Planned |
+| C4.2b | Unicode cmap glyph mapping | Verified |
+| C4.2c | Nominal glyph metrics and text measurement integration | Source implemented; CI pending |
+| C4.3a | Native TrueType loca/glyf simple outlines | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

@@ -109,3 +109,6 @@ pub use font_metrics::{FontBounds,FontHead,TrueTypeMaxima,FontMaxp,HorizontalHea
 
 pub mod font_cmap;
 pub use font_cmap::{CmapFormat,CmapSource,CmapLimits,UnicodeCmap,parse_unicode_cmap};
+
+pub mod font_measure;
+pub use font_measure::{MissingGlyphPolicy,MeasureUnit,MeasureLimits,MeasureOptions,NominalGlyph,NominalLineMetrics,TextMeasurement,NominalFont,parse_nominal_font};
