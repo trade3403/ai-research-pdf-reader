@@ -255,7 +255,7 @@ fn percentages(text: &str) -> BTreeMap<Option<&str>, usize> {
 fn repeated_suffix(previous: &str, current: &str) -> bool {
     let suffix = current.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
     suffix.chars().count() >= 7
-        && suffix.chars().any(|c| !c.is_ascii())
+        && !suffix.is_ascii()
         && previous.ends_with(suffix)
 }
 
