@@ -165,8 +165,18 @@ mod tests {
         close(
             p.data(),
             &[
-                0., 0., 1., 1., 0.841_470_96, 0.009_999_833, 0.540_302_3, 0.99995,
-                0.909_297_4, 0.019_998_666, -0.416_146_84, 0.9998,
+                0.,
+                0.,
+                1.,
+                1.,
+                0.841_470_96,
+                0.009_999_833,
+                0.540_302_3,
+                0.99995,
+                0.909_297_4,
+                0.019_998_666,
+                -0.416_146_84,
+                0.9998,
             ],
         );
         let tail = sinusoidal(2, 4, 1, 512).unwrap();
@@ -184,7 +194,10 @@ mod tests {
     #[test]
     fn activation_reference() {
         let x = t(&[3], &[-1., 0., 1.]);
-        assert_eq!(activate(&x, Activation::Relu).unwrap().data(), &[0., 0., 1.]);
+        assert_eq!(
+            activate(&x, Activation::Relu).unwrap().data(),
+            &[0., 0., 1.]
+        );
         close(
             activate(&x, Activation::GeluTanh).unwrap().data(),
             &[-0.158_808, 0., 0.841_192],
