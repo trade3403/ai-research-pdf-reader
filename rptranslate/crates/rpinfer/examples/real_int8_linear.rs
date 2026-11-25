@@ -1,5 +1,9 @@
 //! Compare independent actual checkpoint linear weights, no model activation claims.
-use rpinfer::{quantized_linear::{Int8Kernel, QuantizedLinear}, quantized_table::QuantizedTable, tensor::Tensor};
+use rpinfer::{
+    quantized_linear::{Int8Kernel, QuantizedLinear},
+    quantized_table::QuantizedTable,
+    tensor::Tensor,
+};
 use rpmodel::package;
 use std::{
     io::{self, BufWriter, Write},
@@ -47,7 +51,12 @@ fn main() -> Result<(), String> {
         let scalar = linear
             .forward_with(&input, false, Int8Kernel::Scalar)
             .map_err(|e| format!("{e:?}"))?;
-        if full.data().iter().zip(scalar.data()).any(|(a, b)| a.to_bits() != b.to_bits()) {
+        if full
+            .data()
+            .iter()
+            .zip(scalar.data())
+            .any(|(a, b)| a.to_bits() != b.to_bits())
+        {
             return Err("scalar and automatic kernel differ".into());
         }
         if last.data() != &full.data()[2 * outputs..] {

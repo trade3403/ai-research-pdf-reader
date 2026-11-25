@@ -216,20 +216,22 @@ mod tests {
         };
         let a: Vec<i8> = (0..MAX_BLOCK + 3).map(|_| next() as i8).collect();
         let b: Vec<i8> = (0..MAX_BLOCK + 5).map(|_| next() as i8).collect();
-        for len in [1, 2, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 4095, 4096] {
+        for len in [
+            1, 2, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 4095, 4096,
+        ] {
             let x = &a[1..1 + len];
             let y = &b[3..3 + len];
-            assert_eq!(
-                dot_i8_with(x, y, Int8Kernel::Auto),
-                dot_i8(x, y)
-            );
+            assert_eq!(dot_i8_with(x, y, Int8Kernel::Auto), dot_i8(x, y));
         }
         let high = vec![127; MAX_BLOCK];
         let low = vec![-127; MAX_BLOCK];
         assert_eq!(dot_i8_with(&high, &high, Int8Kernel::Auto), Ok(MAX_DOT));
         assert_eq!(dot_i8_with(&high, &low, Int8Kernel::Auto), Ok(-MAX_DOT));
         assert_eq!(dot_i8_with(&low, &low, Int8Kernel::Auto), Ok(MAX_DOT));
-        assert_eq!(dot_i8_with(&[-128], &[1], Int8Kernel::Auto), Err(Error::Shape));
+        assert_eq!(
+            dot_i8_with(&[-128], &[1], Int8Kernel::Auto),
+            Err(Error::Shape)
+        );
     }
 
     #[test]

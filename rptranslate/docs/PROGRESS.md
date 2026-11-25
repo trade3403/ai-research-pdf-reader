@@ -229,3 +229,5 @@ D1.9f RPModel-Mixed v1：固定审计profile的97个矩阵（共享词表+72注�
 - 下一阶段与进入条件：
 
 实际 FP32 专项验收：[45535270286/job/138940316695](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45535270286/job/138940316695) success，native32/8211233元素 max_abs=4.69684601e-5；portable24/3658488元素 max_abs=2.14576721e-5，max_cross=0（样本），512位置与4负例通过；REAL_TRANSLATION_REFERENCE PASS sentences=3 generations=6 hf_greedy=3 cli=1 invalid=3 max_score_error=7.17160084e-7；TRANSLATION_BASELINE PASS 12计时/2预热/6句，model_ms1444.469 session_ms26.833，RSS324.066MiB，cached3.116106/3.419395 output tokens/s，cache ratio1.075631/1.108269，number4/5（三次是中文数字），term12/12，mean_char_f2=72.914，capped0。质量观察而非全面质量通过；Hello world beam4 存在英文残留。该 run CPU format 失败，完整门槛仍需最新复测。D1.9a 首轮 CPU format 5组失败，本次修正；D1.9b 代码已提交，专项尚未执行。
+
+D1.9d 实际专项：[45537112727/job/138948023467](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45537112727/job/138948023467) success，REAL_INT8_LINEAR_REFERENCE PASS matrices=3 elements=12288 reference_max_abs=0 fp32_max_abs=0.0910242527 atol=1e-6 rtol=1e-6。仅真实权重/合成激活；整体CPU格式失败。D1.9e 45538079043 CPU format 4组失败，已修复，真实专项仍在运行。D1.9f 尚待CI。
