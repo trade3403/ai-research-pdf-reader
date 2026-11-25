@@ -74,3 +74,5 @@ C4.3h-2e1 pending CI: independent JS raw SFNT decoder derives exact ordered 16.1
 C4.3h-2e2a pending CI: four independent hand-calculated synthetic composite boundary regressions, general off-diagonal matrix with scaled offset and point attachment, nested half-LSB rounding, byte-index attachment after reflection. No runtime changes.
 
 C4.4a1 pending CI: font_coverage.rs bounded Coverage format 1 glyph list and format 2 ranges, strict ordering and contiguous index validation, binary search, exclusive glyph count and expansion bounds. No substitution execution.
+
+C4.4a2a pending CI: font_gsub.rs bounded GSUB 1.0/1.1 top-level directories, absolute child offsets, cumulative record and byte budgets; no child body, variation execution or substitution validation.

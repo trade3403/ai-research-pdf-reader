@@ -139,3 +139,6 @@ pub use font_compare::{BitmapComparison,compare_glyph_bitmaps};
 
 pub mod font_coverage;
 pub use font_coverage::{GlyphCoverage,parse_glyph_coverage};
+
+pub mod font_gsub;
+pub use font_gsub::{GsubRecord,GsubDirectory,GsubLimits,parse_gsub_directory};
