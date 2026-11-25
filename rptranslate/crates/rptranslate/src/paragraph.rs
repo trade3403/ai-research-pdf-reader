@@ -30,6 +30,7 @@ pub enum QualityIssue {
     Invalid,
     NumericMismatch,
     PercentageMismatch,
+    UnexpectedBoilerplate(String),
     MissingSurface(String),
     ExtraSurface(String),
     Conflict(String),
@@ -242,6 +243,9 @@ fn percentages(text: &str) -> BTreeMap<Option<&str>, usize> {
         while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
             start -= 1;
         }
+        if let Some(sign @ ('+' | '-' | '−')) = before[..start].chars().next_back() {
+            start -= sign.len_utf8();
+        }
         let value = &before[start..];
         let bound = value.as_bytes().last().is_some_and(u8::is_ascii_digit);
         *out.entry(bound.then_some(value)).or_insert(0) += 1;
@@ -273,6 +277,29 @@ fn repeated_clause(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Narrow source-aware checks for spurious phrases observed on the paper.
+fn unexpected_boilerplate(source: &str, output: &str) -> Option<&'static str> {
+    let lower = source.to_ascii_lowercase();
+    let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.contains("联合国日刊")
+        && !lower.contains("united nations")
+        && !lower.contains("un journal")
+        && !lower.contains("un daily")
+        && !source.contains("联合国")
+    {
+        return Some("联合国日刊");
+    }
+    if compact.starts_with("缩略语")
+        && !lower.contains("abbreviat")
+        && !lower.contains("acronym")
+        && !lower.contains("shorthand")
+        && !source.contains("缩略语")
+    {
+        return Some("缩略语");
+    }
+    None
 }
 
 /// Reject exact detected defects rather than deleting text or guessing fixes.
@@ -334,6 +361,9 @@ pub fn audit(source: &str, plan: &Plan, output: &str) -> Result<(), QualityIssue
         if let Some(bad) = conflicts.iter().find(|&&bad| output.contains(bad)) {
             return Err(QualityIssue::Conflict((*bad).into()));
         }
+    }
+    if let Some(phrase) = unexpected_boilerplate(source, output) {
+        return Err(QualityIssue::UnexpectedBoilerplate(phrase.into()));
     }
     if repeated_clause(output) {
         return Err(QualityIssue::RepeatedClause);
@@ -519,6 +549,58 @@ mod tests {
         assert_eq!(
             audit(source, &plan, "达到50，减少%。"),
             Err(QualityIssue::PercentageMismatch)
+        );
+    }
+
+    #[test]
+    fn signed_percentage_binding() {
+        assert_ne!(percentages("-50%"), percentages("50%"));
+        assert_ne!(percentages("+50%"), percentages("-50%"));
+        assert_ne!(percentages("−2.5%"), percentages("2.5%"));
+        assert_eq!(percentages("-50%"), percentages("-50 ％"));
+    }
+
+    #[test]
+    fn observed_boilerplate_requires_source_evidence() {
+        let s = "The result is stable.";
+        let p = Plan::prepare(s, &[]).unwrap();
+        assert_eq!(
+            audit(s, &p, "缩略语 结果稳定。"),
+            Err(QualityIssue::UnexpectedBoilerplate("缩略语".into()))
+        );
+        assert_eq!(
+            audit(s, &p, "结果 联 合 国 日 刊 稳定。"),
+            Err(QualityIssue::UnexpectedBoilerplate("联合国日刊".into()))
+        );
+        assert_eq!(audit(s, &p, "结果稳定。"), Ok(()));
+        assert_eq!(
+            unexpected_boilerplate("Abbreviations are listed.", "缩略语列表。"),
+            None
+        );
+        assert_eq!(
+            unexpected_boilerplate("United Nations journal", "联合国日刊"),
+            None
+        );
+    }
+
+    #[test]
+    fn boilerplate_candidate_falls_back_without_editing() {
+        let s = "The result is stable.";
+        let p = Plan::prepare(s, &[]).unwrap();
+        let chosen = select(s, &p, |strategy| {
+            if strategy == Strategy::Whole {
+                Ok("缩略语 结果稳定。".into())
+            } else {
+                Ok("结果稳定。".into())
+            }
+        });
+        let result = chosen.unwrap();
+        assert_eq!(result.strategy, Strategy::Constrained);
+        assert_eq!(result.text, "结果稳定。");
+        assert_eq!(result.rejected.len(), 1);
+        assert_eq!(
+            result.rejected[0].failure,
+            Failure::Quality(QualityIssue::UnexpectedBoilerplate("缩略语".into()))
         );
     }
 

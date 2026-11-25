@@ -77,6 +77,7 @@ fn main() -> Result<(), String> {
             if result.text.matches("0.1").count() != 1
                 || !result.text.contains("0.1 g")
                 || result.text.contains("0.1克")
+                || result.text.contains("缩略语")
                 || !result.text.contains("峰值加速度")
             {
                 return Err(format!("numeric duplication accepted: {result:?}"));

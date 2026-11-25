@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-25 D1.10g 基线 2fa70c175de7a25415489ecb12ffe3d09485f777 / [#102 / 45620641204](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45620641204) 全量 success；124 workspace + 56 portable = 180/180，数学12组/格式17拒绝，FP32/INT8各2段4片段、1数值审计、1预算负例。论文8样本成功6拒绝2，Whole1/Constrained0/ProtectedGaps5，仅词面。实际日志仍有缩略语、联合国日刊等无原文依据的疑似噪声，不能称语义准确。用户授权 D1.10h 首批：在现有段落候选审计加入窄范围原文证据检查（缩略语前缀、空白归一化联合国日刊）及百分号前附着正负号绑定，保留原审核/回退/拒绝，不改写译文、不改默认翻译。新增3组 Rust 回归，增强真实双精度数值专项的无缩略语门槛，保留接受或明确拒绝协议和所有历史CI。启发式可能误拒绝合法译文或漏检其他幻觉，未证明覆盖率提升，后续仍需人工语义评价。新提交待全量CI，未本地编译、不启动加载优化。
+
 2026-11-25 D1.10g 最新：[#100 / 45615115595](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595) 真实模型专项 success，CPU Clippy 失败已等价修复；[#101 / 45616691138](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45616691138) CPU [真实日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45616691138/job/139221264635) 显示 paragraph.rs:254 的三行布尔表达式因上次缩短后须合并为一行，按 rustfmt 日志逐字修复；不改变算法、不降低 Clippy 标准、不删除测试。#101 真实模型专项仍运行，未取消。新提交全量待验收，禁止提前推进后续阶段。
 
 2026-11-25 D1.10g 最新：[#98 / 45613637482](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482) 真实模型专项 success（FP32/INT8 各2段4片段、1数值审计、1负例；论文8样本成功6拒绝2，Whole1/Constrained0/ProtectedGaps5，仅词面，不代表语义准确率），CPU fmt 失败已修复。修复版 [#100 / 45615115595](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595) fmt 通过，CPU Clippy [实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595/job/139211191916) 在 paragraph.rs:258 报 needless_character_iteration；按日志将 suffix.chars().any(|c| !c.is_ascii()) 等价改为 !suffix.is_ascii()，不改变算法、不加 allow、不删测试。#100 真实专项仍运行，未主动取消。#99 已取消。保留所有历史专项触发标记，新提交全量待验收，禁止提前推进后续阶段。

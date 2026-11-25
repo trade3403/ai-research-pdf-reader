@@ -2,13 +2,14 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前只做 D1.10g 科研译文质量审计优化（首批）**。D1.10f #97 截图工作流成功；用户已授权进入下一阶段。未全量验收前不启动后续阶段或 D1.9i-l。
+- **当前只做 D1.10h 科研译文质量综合优化与验收（首批）**。D1.10f #97 截图工作流成功；用户已授权进入下一阶段。未全量验收前不启动后续阶段或 D1.9i-l。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 ubuntu CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
-- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10g 全量后依据用户最新授权推进。
+- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10h 全量后依据用户最新授权推进。
 
 ## 当前状态（最新优先）
+- 2026-11-25 D1.10g 基线 2fa70c175de7a25415489ecb12ffe3d09485f777 / [#102 / 45620641204](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45620641204) 全量 success；124 workspace + 56 portable = 180/180，数学12组/格式17拒绝，FP32/INT8各2段4片段、1数值审计、1预算负例。论文8样本成功6拒绝2，Whole1/Constrained0/ProtectedGaps5，仅词面。实际日志仍有缩略语、联合国日刊等无原文依据的疑似噪声，不能称语义准确。用户授权 D1.10h 首批：在现有段落候选审计加入窄范围原文证据检查（缩略语前缀、空白归一化联合国日刊）及百分号前附着正负号绑定，保留原审核/回退/拒绝，不改写译文、不改默认翻译。新增3组 Rust 回归，增强真实双精度数值专项的无缩略语门槛，保留接受或明确拒绝协议和所有历史CI。启发式可能误拒绝合法译文或漏检其他幻觉，未证明覆盖率提升，后续仍需人工语义评价。新提交待全量CI，未本地编译、不启动加载优化。
 - 2026-11-25 D1.10g 最新：[#100 / 45615115595](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595) 真实模型专项 success，CPU Clippy 失败已等价修复；[#101 / 45616691138](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45616691138) CPU [真实日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45616691138/job/139221264635) 显示 paragraph.rs:254 的三行布尔表达式因上次缩短后须合并为一行，按 rustfmt 日志逐字修复；不改变算法、不降低 Clippy 标准、不删除测试。#101 真实模型专项仍运行，未取消。新提交全量待验收，禁止提前推进后续阶段。
 - 2026-11-25 D1.10g 最新：[#98 / 45613637482](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482) 真实模型专项 success（FP32/INT8 各2段4片段、1数值审计、1负例；论文8样本成功6拒绝2，Whole1/Constrained0/ProtectedGaps5，仅词面，不代表语义准确率），CPU fmt 失败已修复。修复版 [#100 / 45615115595](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595) fmt 通过，CPU Clippy [实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45615115595/job/139211191916) 在 paragraph.rs:258 报 needless_character_iteration；按日志将 suffix.chars().any(|c| !c.is_ascii()) 等价改为 !suffix.is_ascii()，不改变算法、不加 allow、不删测试。#100 真实专项仍运行，未主动取消。#99 已取消。保留所有历史专项触发标记，新提交全量待验收，禁止提前推进后续阶段。
 - 2026-11-25 最新：D1.10f [#97 / 45582922442](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45582922442) 已直接核验 success；CPU 日志 122 workspace + 56 portable = 178/178，INT8 数学 12 组、RPQ8 格式 17 个拒绝，FP32/INT8 各2段4片段、1数值审计、1负例通过。D1.10g [#98 / 45613637482](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482) 的 [CPU 日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482/job/139203295512) 确认 paragraph.rs:526 两处 assert rustfmt 换行失败；Clippy/测试未执行，真实专项查询时仍运行。按日志仅修正两处断言格式，不改变算法和测试。最新 [#99 / 45614479395](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45614479395) 查询时 pending，尚无 jobs 或 commit status，未证明 Token 错误。现可使用 GitHub fetch GET https://api.github.com/repos/trade3403/ai-research-pdf-reader/actions/runs?branch=feature%2Frptranslate&event=push&per_page=5 直接获取 push Run ID；再用 /actions/runs/{id}/jobs 及 job logs 查询。不要使用仅返回 PR 的 commit workflow runs 包装器。状态回传已无必要，本次移除两个新增状态任务，工作流与 af64f5e 版本完全一致，保留原验收命令、条件、权限和全部提交触发标记。未取消已有 CI；新提交全量待验收，不开始下一阶段。
@@ -51,4 +52,4 @@
 用户问为何 INT8 1.8秒加载与FP32相近。实际源码：MixedModel::load先全文件hash_file，再quantized::Reader::open内SHA，QuantizedTable::load对1208136块逐一read_block，每块seek/read/临时Vec/validate；OfflineTranslator加载验证分词器、session再次初始化。候选优化 D1.9i 连续批量读取无每块分配；D1.9j 双重SHA单次扫描/加速；D1.9k mmap/零拷贝；D1.9l 模型常驻及分词器复用。0.3–0.6秒仅目标，保持安全完整性、真实位级对照及内存验收。待用户明确同意才做。后续D1.10b真实保护接入；D1.11真实论文、D1.12小规模训练与断点、D1.13 Windows工具；D2训练，D3集成。
 
 ## 新窗口提示
-继续 D 线路 RPTranslate 自主研发。读取 feature/rptranslate 的 rptranslate/HANDOFF.md，核对实际HEAD及CI日志。当前 D1.10g，先完成全量验收，按真实错误修复，不启用自动任务，不开发后续阶段或修改其他线路。
+继续 D 线路 RPTranslate 自主研发。读取 feature/rptranslate 的 rptranslate/HANDOFF.md，核对实际HEAD及CI日志。当前 D1.10h，先完成全量验收，按真实错误修复，不启用自动任务，不开发后续阶段或修改其他线路。
