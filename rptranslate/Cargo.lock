@@ -9,6 +9,9 @@ version = "0.1.0"
 [[package]]
 name = "rpinfer"
 version = "0.1.0"
+dependencies = [
+ "rpmodel",
+]
 
 [[package]]
 name = "rpmodel"

@@ -108,7 +108,7 @@ jobs:
   marian-forward-reference:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.6e') || contains(github.event.head_commit.message, 'D1.7b1') || contains(github.event.head_commit.message, 'D1.7b2'))
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.6e') || contains(github.event.head_commit.message, 'D1.7b1') || contains(github.event.head_commit.message, 'D1.7b2') || contains(github.event.head_commit.message, 'D1.8b'))
     defaults:
       run:
         working-directory: rptranslate

@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.6 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.7 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -24,13 +24,16 @@
 | D1.6e | 已通过 | 逐层精度与框架参考对照 |
 | D1.7a | 已通过 | Greedy/Beam、稳定 log-softmax、EOS 与长度控制 |
 | D1.7b1 | 已通过 | self/cross KV cache、增量 logits 与 Beam 分支 |
-| D1.7b2 | 待验证 | 独立搜索参考与实际 generation 配置适配 |
-| D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
+| D1.7b2 | 已通过 | 独立搜索参考与实际 generation 配置适配 |
+| D1.8a | 已通过 | 固定真实权重与元数据核验 |
+| D1.8b | 待验证 | 大词表分块读取、共享权重、投影 |
+| D1.8c–D1.8f | 未开始 | 真实权重映射、逐层对照、翻译与性能 |
+| D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 7/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 8/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -111,13 +114,16 @@ D1 里程碑完成 7/14（按阶段数统计，不是工作量百分比）。
 新增内部 Cache：每层 self K/V 追加单行、cross K/V 只投影一次并 Rc 共享、不可变父快照、显式目标 mask 与位置 offset、两代 beam 缓存及 256MiB KV payload 预算；新增 cached_logits、generate_cached，保留全 prefix 基准。测试缓存全序列/带 mask logits、1/2/4 beam token 与分数一致，扩展 PyTorch Marian 独立对照 cached_logits。实际验收：[修复代码 08be738](https://github.com/trade3403/ai-research-pdf-reader/commit/08be738a82ef91a8b278fe84546ae0e5712de81e)，[复测 45528484279](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45528484279) completed/success；首轮9组 rustfmt 修正；基础 CPU CI 与独立 PyTorch/Marian 对照通过，240张量、4744元素，整体 max_abs=4.76837158e-7，cached_logits max_abs=1.78813934e-7，1/2/4 beam 缓存与完整前缀一致。未测速度及真实模型。
 
 ## 当前阶段 D1.7b2
-新增 MarianGeneration 受限生成元数据映射（total max_length-1，min_length 对应 EOS 允许步，start/pad 独立、forced EOS 校验、显式 suppress）。独立 PyTorch 小模型全量候选参考对照 3组源输入×2设置×3 beam×2缓存路径；检查所有返回序列、EOS、累计 logp、长度归一分数，另直接 HF greedy generate 三组对照。独立 Runner 下载固定 OPUS-MT config.json/可选 generation_config.json，记录 SHA256、有效 generation 参数、支持字段映射与未支持 processor 检查；未下载权重。真实 HF beam scorer 不是等价目标，明确 early_stopping/完成池/强制 EOS 评分差异。首轮 Actions 45528748920 基础 CI 通过，独立生成36/36、84/84候选、HF greedy 3/3，max_score_error=2.50345785e-7；独立张量240/240、4744元素、max_abs=4.76837158e-7。但旧 revision 仅含 tokenizer，config.json 404。改用完整固定版本 a4193836671069f1f80ce341f9227a850ffb52d4（2023-01-24，早于 renormalize_logits=true 更新），真实配置复测待验收。 完整 D1.7 暂不增加计数。
+新增 MarianGeneration 受限生成元数据映射（total max_length-1，min_length 对应 EOS 允许步，start/pad 独立、forced EOS 校验、显式 suppress）。独立 PyTorch 小模型全量候选参考对照 3组源输入×2设置×3 beam×2缓存路径；检查所有返回序列、EOS、累计 logp、长度归一分数，另直接 HF greedy generate 三组对照。独立 Runner 下载固定 OPUS-MT config.json/可选 generation_config.json，记录 SHA256、有效 generation 参数、支持字段映射与未支持 processor 检查；未下载权重。真实 HF beam scorer 不是等价目标，明确 early_stopping/完成池/强制 EOS 评分差异。首轮 Actions 45528748920 基础 CI 通过，独立生成36/36、84/84候选、HF greedy 3/3，max_score_error=2.50345785e-7；独立张量240/240、4744元素、max_abs=4.76837158e-7。但旧 revision 仅含 tokenizer，config.json 404。改用完整固定版本 a4193836671069f1f80ce341f9227a850ffb52d4（2023-01-24，早于 renormalize_logits=true 更新），真实配置复测待验收。 实际验收：[a771f34](https://github.com/trade3403/ai-research-pdf-reader/commit/a771f34bde7e41843e7aa5ba3f8ee35e698b182f) / [Actions 45529283392](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45529283392) completed/success；独立生成36/36、84/84候选、HF greedy 3/3、max_score_error=3.14599827e-7。真实配置 start/pad=65000、EOS=0、beam=4、max_new=511、penalty=1、forced EOS、suppress=[65000]；HF beam scorer 差异保留。D1.7 通过。
 
 ## D1.8a 准备（待 D1.7b2 门槛）
-新增固定版本真实权重清单探测。前置 generation 核验通过后执行；重新验证旧 tokenizer SHA256，单次权重下载400MiB上限、官方 SHA256、CPU weights_only=True、逐张量检查。真实权重日志待验收，不计完成。
+新增固定版本真实权重清单探测。前置 generation 核验通过后执行；重新验证旧 tokenizer SHA256，单次权重下载400MiB上限、官方 SHA256、CPU weights_only=True、逐张量检查。D1.8a 实际验收同一 run 45529283392 成功：config.json 1403 bytes SHA256 bcae8ed74fed77fb51c58462b62397fee6b1a1a34aece79183a0dd02ad329e71；generation_config.json 293 bytes SHA256 524dc91570823feb51fbd33a35e5aee3050a4441bdf65e66f6f5e945e5838e40；3 tokenizer SHA256 均匹配。pytorch_model.bin 312087009 bytes SHA256 69a1d6ec829cee349360b3b677ac0aa99a7d88822d1a6578370029efffdca3f5；258 tensors、144569321 logical elements（含共享引用）、312033188 unique storage bytes、133122048 shared embedding bytes；FP32 finite、配置及主要 shape 检查通过。真实权重尚未由 Rust 运行。
 
-## 下一阶段 D1.8b
-根据真实权重清单实现大词表分块存储和有界自主加载。
+## 当前阶段 D1.8b
+新增 RowTable/ChunkedTable，有界分段读取 Safetensors（复用内部 rpmodel），共享 Encoder/Decoder/LM Head，单块<=1M元素，单表<=512MiB且调用者预算、保持 Tensor 64MiB。合成65001×512全词表 FP32、跨块查找与全词表投影、异常与小 Safetensors fixture，独立 PyTorch 合成模型改用分块表对照。CI 待验收，不加载真实权重或测真实速度。
+
+## 下一阶段 D1.8c
+固定真实 checkpoint 离线安全转换、共享权重去重、配置及 Marian 权重映射。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

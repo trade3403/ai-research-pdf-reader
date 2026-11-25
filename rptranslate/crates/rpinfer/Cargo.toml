@@ -5,3 +5,6 @@ edition.workspace = true
 
 [features]
 portable-only = []
+
+[dependencies]
+rpmodel = { path = "../rpmodel" }

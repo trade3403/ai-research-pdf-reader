@@ -7,11 +7,12 @@ use crate::{
     matmul::Kernel,
     search::{search, validate, Hypothesis, SearchConfig},
     tensor::{buffer, layout, Error, Tensor},
+    vocabulary::RowTable,
 };
 
 /// None ties the output weight to the decoder embedding table.
 pub struct OutputHead<'a> {
-    pub weight: Option<&'a Tensor>,
+    pub weight: Option<&'a dyn RowTable>,
     pub bias: Option<&'a Tensor>,
 }
 
@@ -21,7 +22,7 @@ impl OutputHead<'_> {
     pub fn project(
         &self,
         hidden: &Tensor,
-        decoder_embeddings: &Tensor,
+        decoder_embeddings: &dyn RowTable,
         last_only: bool,
     ) -> Result<Tensor, Error> {
         let &[rows, width] = hidden.shape() else {
@@ -48,7 +49,8 @@ impl OutputHead<'_> {
         let start = if last_only { (rows - 1) * width } else { 0 };
         let mut data = buffer(size)?;
         for row in hidden.data()[start..].chunks_exact(width) {
-            for (id, w) in weight.data().chunks_exact(width).enumerate() {
+            for id in 0..vocab {
+                let w = weight.row(id)?;
                 let mut sum = 0.0_f32;
                 for (&x, &y) in row.iter().zip(w) {
                     sum += x * y;

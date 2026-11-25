@@ -3,11 +3,12 @@ use crate::{
     layers::Linear,
     matmul::Kernel,
     tensor::{buffer, layout, Binary, Error, Tensor},
+    vocabulary::RowTable,
 };
 
 /// Gather rows from [vocab, hidden] with explicit embedding scaling.
 /// Padding is not silently zeroed: the checkpoint's actual row is used.
-pub fn embedding(table: &Tensor, ids: &[u32], scale: f32) -> Result<Tensor, Error> {
+pub fn embedding(table: &dyn RowTable, ids: &[u32], scale: f32) -> Result<Tensor, Error> {
     let &[vocab, hidden] = table.shape() else {
         return Err(Error::Shape);
     };
@@ -25,7 +26,7 @@ pub fn embedding(table: &Tensor, ids: &[u32], scale: f32) -> Result<Tensor, Erro
             return Err(Error::Index);
         }
         data.extend(
-            table.data()[id * hidden..(id + 1) * hidden]
+            table.row(id)?
                 .iter()
                 .map(|&x| x * scale),
         );
@@ -71,7 +72,7 @@ pub fn sinusoidal(
 
 /// The caller selects the model's scale, e.g. sqrt(hidden) or 1.
 pub fn input_embeddings(
-    table: &Tensor,
+    table: &dyn RowTable,
     ids: &[u32],
     scale: f32,
     offset: usize,

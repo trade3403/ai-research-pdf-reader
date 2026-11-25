@@ -9,6 +9,7 @@ use rpinfer::{
     seq2seq::{OutputHead, Seq2Seq},
     tensor::Tensor,
     transformer::{input_embeddings, Activation, FeedForward},
+    vocabulary::ChunkedTable,
 };
 use std::{collections::BTreeMap, io::Read};
 
@@ -124,7 +125,11 @@ fn main() {
             }
         })
         .collect();
-    let table = &w["model.shared.weight"];
+    let dense = &w["model.shared.weight"];
+    let table = ChunkedTable::from_rows(17, 8, 5, 17 * 8 * 4, |start, count| {
+        Ok(dense.data()[start * 8..(start + count) * 8].to_vec())
+    }).unwrap();
+    let table = &table;
     let scale = 8_f32.sqrt();
     let model = Seq2Seq {
         encoder: Encoder {

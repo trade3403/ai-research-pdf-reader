@@ -5,6 +5,7 @@ use crate::{
     matmul::Kernel,
     tensor::{Error, Tensor},
     transformer::{input_embeddings, FeedForward},
+    vocabulary::RowTable,
 };
 
 #[derive(Clone, Copy)]
@@ -84,7 +85,7 @@ pub fn encode_hidden(
 }
 
 pub struct Encoder<'a> {
-    pub embeddings: &'a Tensor,
+    pub embeddings: &'a dyn RowTable,
     pub embedding_scale: f32,
     pub max_positions: usize,
     pub layers: &'a [EncoderLayer<'a>],

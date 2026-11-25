@@ -9,6 +9,7 @@ pub mod search;
 pub mod seq2seq;
 pub mod tensor;
 pub mod transformer;
+pub mod vocabulary;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InferError {
