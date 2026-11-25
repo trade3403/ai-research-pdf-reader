@@ -20,7 +20,7 @@
 | D1.6a | 已通过 | Embedding、Marian 位置编码、激活与 FFN |
 | D1.6b | 已通过 | post-norm Encoder 单层、多层与源 mask |
 | D1.6c | 已通过 | post-norm Decoder、causal/self 与 cross attention |
-| D1.6d | 待验证 | Encoder-Decoder 联合前向、共享词嵌入、词表 logits |
+| D1.6d | 已通过 | Encoder-Decoder 联合前向、共享词嵌入、词表 logits |
 | D1.6e | 未开始 | 逐层精度与框架参考对照 |
 | D1.7 | 未开始 | Beam Search |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -97,7 +97,7 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 新增 DecoderLayer、目标因果 self attention、源 cross attention、各自残差 post-norm、FFN、1–64 层与显式源/目标 keep masks。完整 prefix 重算，未实现 KV cache；不自动 mask PAD（Marian 起始 token 可与 PAD 同 ID）。实际 NumPy 2.3.5 FP64 生成双层参考，比较首层 self/cross/最终输出与第二层输出，验证 prefix、未来 token、源和目标 padding mask 隔离。实际验收：首轮 [45526494539](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526494539) rustfmt 失败，按日志修正9组格式；[最终代码 6d55404](https://github.com/trade3403/ai-research-pdf-reader/commit/6d55404513ed7d0ad5cc9ca050b6dc9f50cd97d0)，[复测 45526552465](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526552465) completed/success。双层 Decoder 数值对照、因果隔离、prefix 一致性、源与目标 mask 隔离、embedding 入口及边界测试通过，workspace 格式、Clippy、单元测试、Release、自检和 portable-only 均通过。未加载真实权重、无 KV cache、未测推理速度。D1.6c 通过，完整 D1.6 尚未验收。
 
 ## 当前阶段 D1.6d
-新增 Seq2Seq 与 Encoded 源状态、复用源 memory 和独立 mask、共享 embedding 借用、tied/untied LM Head、全序列 logits、末行 logits 和稳定概率。输出 head 连续行点积、不转置整个词表，仍受 Tensor 与单次 MAC 上限。实际 NumPy 2.3.5 FP64 合成模型参考已生成；测试四种矩阵路径、源/目标不同长度、源 mask、prefix 一致性、异常与 untied 权重。CI 待验收。
+新增 Seq2Seq 与 Encoded 源状态、复用源 memory 和独立 mask、共享 embedding 借用、tied/untied LM Head、全序列 logits、末行 logits 和稳定概率。输出 head 连续行点积、不转置整个词表，仍受 Tensor 与单次 MAC 上限。实际 NumPy 2.3.5 FP64 合成模型参考已生成；测试四种矩阵路径、源/目标不同长度、源 mask、prefix 一致性、异常与 untied 权重。实际验收：首轮 [45526919951](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526919951) rustfmt 失败，按日志修正15组格式；[最终代码 0406dc6](https://github.com/trade3403/ai-research-pdf-reader/commit/0406dc6166ae459970ae7db18296864be92299c2)，[复测 45526983338](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526983338) completed/success。联合前向的 NumPy FP64 参考 memory/hidden/logits/probability、末行投影、源 mask、prefix 一致性、untied 输出权重及边界测试通过；workspace 格式、Clippy、单元测试、Release、自检及 portable-only 通过。D1.6d 通过，完整 D1.6 尚未验收。真实模型加载、KV cache、搜索及推理速度均未验证。
 
 ## 下一阶段 D1.6e
 独立成熟框架合成 Marian 模型逐层对照及 D1.6 整体验收；D1.7 再实现搜索。
