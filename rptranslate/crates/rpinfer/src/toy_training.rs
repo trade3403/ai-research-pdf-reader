@@ -42,14 +42,16 @@ fn evaluate(weights: &[f64; WEIGHTS]) -> Result<(f64, [f64; WEIGHTS]), Error> {
     let mut gradient = [0.0; WEIGHTS];
     for (x, target) in DATA {
         let mut logits = [0.0; CLASSES];
-        for (row, value) in weights.chunks_exact(FEATURES).zip(&mut logits) {
+        let (rows, _) = weights.as_chunks::<FEATURES>();
+        for (row, value) in rows.iter().zip(&mut logits) {
             *value = row.iter().zip(x).map(|(w, v)| w * v).sum();
         }
         let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let exp = logits.map(|v| (v - max).exp());
         let sum: f64 = exp.iter().sum();
         loss += max - logits[target] + sum.ln();
-        for (class, row) in gradient.chunks_exact_mut(FEATURES).enumerate() {
+        let (rows, _) = gradient.as_chunks_mut::<FEATURES>();
+        for (class, row) in rows.iter_mut().enumerate() {
             let error = exp[class] / sum - if class == target { 1.0 } else { 0.0 };
             for (g, v) in row.iter_mut().zip(x) {
                 *g += error * v;
