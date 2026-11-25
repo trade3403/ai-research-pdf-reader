@@ -180,4 +180,7 @@ pub mod font_reverse_subst;
 pub use font_reverse_subst::{ReverseSubstLimits,ReverseSubstitution,parse_reverse_substitution};
 
 pub mod font_gdef;
-pub use font_gdef::{GdefLimits,GdefDirectory,GdefGlyphClass,Gdef,parse_gdef_directory,parse_gdef};
+pub use font_gdef::{GdefLimits,GdefDirectory,GdefGlyphClass,Gdef,parse_gdef_directory,parse_gdef,parse_gdef_with_mark_set_limits};
+
+pub mod font_gdef_mark_sets;
+pub use font_gdef_mark_sets::{MarkGlyphSetLimits,MarkGlyphSets,parse_mark_glyph_sets};

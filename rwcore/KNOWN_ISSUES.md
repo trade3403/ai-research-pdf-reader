@@ -115,3 +115,5 @@
 - C4.4a8b2b: full observed Nastaliq native extension target inventory tests pending CI, not exhaustive Cartesian context matching or external shaper equivalence. Native extension target types/formats absent from this font remain covered only by prior synthetic/direct target tests. Type 8 original font reference still needed. Full lookup scheduling, nested execution, GDEF filtering, cluster handling and Word fidelity outstanding.
 
 - C4.4b1: directory and two ClassDefs only; MarkGlyphSetsDef, AttachList, LigCaretList and ItemVariationStore bodies remain undecoded. Child offsets are not validated extents; no lookup flag application or mark filtering yet. Native Type 8 sample, nested lookup execution, cluster handling, GPOS and full Word fidelity remain outstanding.
+
+- C4.4b2: mark-set membership does not imply GDEF Mark classification; lookup flag precedence and actual filtering not implemented. AttachList, LigCaretList and ItemVariationStore remain opaque. Real GDEF reference not yet checked, native Type 8 fixture still needed; full GSUB execution, GPOS, cluster handling and Word fidelity outstanding.

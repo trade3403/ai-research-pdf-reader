@@ -26,7 +26,7 @@ fn set(b:&mut [u8],i:usize,v:u16){b[2*i..2*i+2].copy_from_slice(&v.to_be_bytes()
     assert_eq!(x.mark_attachment_class(31),Some(0));
 }
 #[test]fn gdef_v12_directory(){
-    let b=bytes(&[1,2,0,14,18,0,22,0,0,0,0,0,0]);
+    let b=bytes(&[1,2,0,14,18,0,22,0,0,0,0,1,0]);
     let x=parse(&b).unwrap();let d=x.directory();
     assert_eq!(d.minor_version,2);
     assert_eq!(d.attach_list,Some(14));assert_eq!(d.lig_caret_list,Some(18));
@@ -91,7 +91,8 @@ fn set(b:&mut [u8],i:usize,v:u16){b[2*i..2*i+2].copy_from_slice(&v.to_be_bytes()
 }
 #[test]fn deferred_children_only_validate_entry(){
     let b=bytes(&[1,2,0,14,14,0,14,65535,65535]);
-    let x=parse(&b).unwrap();
-    assert_eq!(x.directory().attach_list,Some(14));
-    assert_eq!(x.directory().mark_glyph_sets_def,Some(14));
+    let d=parse_gdef_directory(&b,Default::default()).unwrap();
+    assert_eq!(d.attach_list,Some(14));
+    assert_eq!(d.mark_glyph_sets_def,Some(14));
+    assert!(parse(&b).is_err());
 }

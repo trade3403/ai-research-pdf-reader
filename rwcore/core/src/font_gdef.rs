@@ -1,6 +1,6 @@
-//! GDEF 1.0/1.2/1.3 directory and bounded glyph class definitions.
+//! GDEF 1.0/1.2/1.3 directory, bounded glyph class definitions and mark sets.
 //! Other child offsets are validated at the entry only, not decoded.
-use crate::{Error,GlyphClassDef,parse_glyph_class_def};
+use crate::{Error,GlyphClassDef,parse_glyph_class_def,MarkGlyphSets,MarkGlyphSetLimits,parse_mark_glyph_sets};
 
 #[derive(Debug,Clone,Copy)]
 pub struct GdefLimits{
@@ -29,8 +29,10 @@ pub struct Gdef{
     glyph_count:u32,
     glyph_classes:Option<GlyphClassDef>,
     mark_attach_classes:Option<GlyphClassDef>,
+    mark_sets:Option<MarkGlyphSets>,
 }
 impl Gdef{
+    pub fn mark_sets(&self)->Option<&MarkGlyphSets>{self.mark_sets.as_ref()}
     pub fn directory(&self)->&GdefDirectory{&self.directory}
     pub fn glyph_classes(&self)->Option<&GlyphClassDef>{self.glyph_classes.as_ref()}
     pub fn mark_attach_classes(&self)->Option<&GlyphClassDef>{self.mark_attach_classes.as_ref()}
@@ -103,7 +105,12 @@ fn class_cost(b:&[u8])->Result<(usize,u32),Error>{
         _=>Err(Error::Unsupported("gdef class format")),
     }
 }
+/// Parse class definitions and mark sets with their default independent budgets.
 pub fn parse_gdef(b:&[u8],glyph_count:u32,limits:GdefLimits)->Result<Gdef,Error>{
+    parse_gdef_with_mark_set_limits(b,glyph_count,limits,MarkGlyphSetLimits::default())
+}
+/// Explicit mark-set budgets; the GDEF parent byte limit still applies.
+pub fn parse_gdef_with_mark_set_limits(b:&[u8],glyph_count:u32,limits:GdefLimits,mark_limits:MarkGlyphSetLimits)->Result<Gdef,Error>{
     if glyph_count==0||glyph_count>65536{return Err(Error::Invalid("gdef glyph domain"));}
     let directory=parse_gdef_directory(b,limits)?;
     let mut records=limits.max_class_records;
@@ -118,5 +125,6 @@ pub fn parse_gdef(b:&[u8],glyph_count:u32,limits:GdefLimits)->Result<Gdef,Error>
     };
     let glyph_classes=decode(directory.glyph_class_def,5)?;
     let mark_attach_classes=decode(directory.mark_attach_class_def,256)?;
-    Ok(Gdef{directory,glyph_count,glyph_classes,mark_attach_classes})
+    let mark_sets=directory.mark_glyph_sets_def.map(|at|parse_mark_glyph_sets(&b[at..],glyph_count,mark_limits)).transpose()?;
+    Ok(Gdef{directory,glyph_count,glyph_classes,mark_attach_classes,mark_sets})
 }
