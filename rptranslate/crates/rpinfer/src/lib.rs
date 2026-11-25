@@ -11,6 +11,7 @@ pub mod marian_model;
 pub mod marian_weights;
 pub mod matmul;
 pub mod mixed_model;
+pub mod mixed_inference;
 pub mod quantization;
 pub mod quantized_linear;
 pub mod quantized_table;

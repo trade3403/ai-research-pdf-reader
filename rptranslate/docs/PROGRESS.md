@@ -213,8 +213,13 @@ D1.9e run45538079043 尚排队，D1.9d 45537112727 真实专项仍运行；D1.9c
 ## D1.9f（独立预研，待验收）
 D1.9f RPModel-Mixed v1：固定审计profile的97个矩阵（共享词表+72注意力投影+24 FFN）block64量化为RPQ8，159个Bias/LayerNorm/位置权重保留原FP32 Safetensors。77320704 codes、1208136 scales、687593 FP32元素，权重预算84903620 bytes（不含文件头、元数据、临时/RSS）。Rust convert 验证源RPModel，分批读FP32，保留紧凑量化矩阵，写新目录及固定manifest最后；失败需丢弃不完整目录。固定manifest绑定revision/source SHA、两个文件长度/摘要；五个元数据资产使用已固定SHA验证，严格索引及shape/block/dtype/count，所有block语义校验、所有F32有限；拥有型MixedModel提供matrix/auxiliary/config、共享别名指向同一对象、统一预算和资源释放。独立Python全量codes/scales/FP32位对照、元数据、完整目录大小、4篡改拒绝及恢复复验。无权重提交，无网络运行时，无完整量化神经网络适配或翻译速度承诺。SHA不是签名，稳定本地文件假设。待CI。
 
-## 下一阶段 D1.9g
-前序门槛通过后，量化Encoder/Decoder完整前向、生成及FP32质量精度对照。
+D1.9e [45538079043/job/138950535258](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45538079043/job/138950535258) 真实专项success：native/portable各24576元素bitwise，AVX2 Q/FC1/FC2 ratio=2.670087/2.624613/2.718530，portable约1倍；CPU format失败。D1.9f run45538582134仍执行，完整包尚未验收。
+
+## D1.9g（独立预研，待验收）
+D1.9g 独立混合推理：MixedSession 直接借用拥有型MixedModel 97个packed矩阵/159 FP32辅助，实际6+6层、8 heads、动态INT8线性Q/K/V/out与FFN、INT8共享LM head、单行反量化embedding、实际位置、FP32 attention/softmax/residual/norm/SiLU/KV，复用既有beam policy；source PAD mask、target显式mask、完整前缀和immutable KV snapshots共享cross，256MiB KV payload budget，Scalar/Auto独立选择。测试2组（显式target mask及真实英文token）、3种logits路径/encoder对照独立NumPy整数block及FP32参考，1e-4容差、cache/scalar位级要求、beam1/4各4步full/cache与独立排名/EOS/score；真实短句beam1混合及FP32 Rust实际译文/独立分词反分词、自然EOS。仅短样本不代表全论文质量；不改变正式FP32入口，性能与RSS待D1.9h。保留前序门槛，真实job timeout提高到15min。待CI。
+
+## 下一阶段 D1.9h
+前置全量验收后，量化文本接口及真实FP32/INT8速度、RSS、质量综合评估。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

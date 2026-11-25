@@ -33,7 +33,7 @@ impl Kv {
     }
 }
 
-fn append_row(old: &Tensor, row: &Tensor) -> Result<Tensor, Error> {
+pub(crate) fn append_row(old: &Tensor, row: &Tensor) -> Result<Tensor, Error> {
     let &[rows, width] = old.shape() else {
         return Err(Error::Shape);
     };

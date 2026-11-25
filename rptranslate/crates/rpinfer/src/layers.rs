@@ -192,7 +192,7 @@ impl MultiHead<'_> {
     }
 }
 
-fn head_slice(x: &Tensor, start: usize, width: usize) -> Result<Tensor, Error> {
+pub(crate) fn head_slice(x: &Tensor, start: usize, width: usize) -> Result<Tensor, Error> {
     let rows = x.shape()[0];
     let model = x.shape()[1];
     let mut data = buffer(rows * width)?;

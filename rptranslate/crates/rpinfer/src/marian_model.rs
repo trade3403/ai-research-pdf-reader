@@ -45,7 +45,7 @@ pub struct GenerationOptions {
     pub mode: GenerationMode,
 }
 
-fn search_options(
+pub(crate) fn search_options(
     config: &MarianConfig,
     options: GenerationOptions,
 ) -> Result<SearchConfig<'_>, Error> {

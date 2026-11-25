@@ -43,12 +43,12 @@ jobs:
       - name: Forced portable fallback tests
         run: cargo test --locked --offline -p rpinfer --features portable-only
       - name: Independent INT8 mathematical reference
-        if: contains(github.event.head_commit.message, 'D1.9a') || contains(github.event.head_commit.message, 'D1.9b') || contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9a') || contains(github.event.head_commit.message, 'D1.9b') || contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           cargo build --locked --offline --release -p rpinfer --example int8_reference
           python3 crates/rpinfer/tests/check_int8_reference.py target/release/examples/int8_reference
       - name: Independent RPQ8 binary format reference
-        if: contains(github.event.head_commit.message, 'D1.9b') || contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9b') || contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           cargo build --locked --offline --release -p rpmodel --example quantized_reference
           python3 crates/rpmodel/tests/check_quantized_format.py target/release/examples/quantized_reference
@@ -154,7 +154,7 @@ jobs:
 
   real-model-conversion:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7') || contains(github.event.head_commit.message, 'D1.8d') || contains(github.event.head_commit.message, 'D1.8e') || contains(github.event.head_commit.message, 'D1.8f'))
     defaults:
       run:
@@ -248,17 +248,17 @@ jobs:
           cargo build --locked --offline --release -p rptranslate --example benchmark_translation
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_translation_baseline.py "$RUNNER_TEMP/rpmodel-v1" target/release/examples/benchmark_translation
       - name: Compare actual packed shared vocabulary and tied projection
-        if: contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9c') || contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           cargo build --locked --offline --release -p rpinfer --example real_quantized_table
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_quantized_table.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_quantized_table
       - name: Compare actual INT8 linear integer dots and mixed accumulation
-        if: contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9d') || contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           cargo build --locked --offline --release -p rpinfer --example real_int8_linear
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_int8_linear.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_int8_linear
       - name: Benchmark actual INT8 Linear with AVX2 and portable fallback
-        if: contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9e') || contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           lscpu | grep -E 'Model name:|^CPU\(s\):' || true
           cargo build --locked --offline --release -p rpinfer --example int8_simd_bench
@@ -266,7 +266,13 @@ jobs:
           cargo build --locked --offline --release -p rpinfer --features portable-only --example int8_simd_bench
           target/release/examples/int8_simd_bench "$RUNNER_TEMP/rpmodel-v1" portable
       - name: Convert and verify full actual INT8 mixed model package
-        if: contains(github.event.head_commit.message, 'D1.9f')
+        if: contains(github.event.head_commit.message, 'D1.9f') || contains(github.event.head_commit.message, 'D1.9g')
         run: |
           cargo build --locked --offline --release -p rpinfer --example mixed_model_reference
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_mixed_model.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/mixed_model_reference
+      - name: Verify complete mixed Marian forward cache search and text
+        if: contains(github.event.head_commit.message, 'D1.9g')
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example mixed_inference_reference --example mixed_model_reference
+          target/release/examples/mixed_model_reference convert "$RUNNER_TEMP/rpmodel-v1" "$RUNNER_TEMP/rpmodel-mixed"
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_mixed_inference.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-mixed" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/mixed_inference_reference
