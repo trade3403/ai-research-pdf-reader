@@ -194,6 +194,8 @@ jobs:
           dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/chart-report/test-package-versions.txt
           sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/chart-report/font-sha256.txt
           /usr/bin/python3 rpcore/corpus/chart_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --font-dir /usr/share/fonts/opentype/urw-base35 --out rpcore/target/chart-report
+      - if: success() || failure()
+        run: /usr/bin/python3 rpcore/corpus/color_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/chart-report/colors
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -203,3 +205,4 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/chart-report/report.md ]; then cat rpcore/target/chart-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/chart-report/colors/report.md ]; then cat rpcore/target/chart-report/colors/report.md >> "$GITHUB_STEP_SUMMARY"; fi

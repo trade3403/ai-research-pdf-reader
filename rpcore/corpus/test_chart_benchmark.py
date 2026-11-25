@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 from PIL import Image
 from chart_benchmark import chart_metrics, pixel_box, load_cases, synthetic_pdf
+from color_benchmark import patches, fixture, measure, neutral_lab
 
 class ChartTests(unittest.TestCase):
     def test_color_union(self):
@@ -29,5 +30,15 @@ class ChartTests(unittest.TestCase):
             self.assertEqual(b,p.read_bytes())
             self.assertTrue(b.startswith(b"%PDF-1.4"))
             self.assertIn(b"/Half gs",b)
+    def test_color_patches(self):
+        rows=patches()
+        self.assertEqual(len(rows),36)
+        self.assertEqual(sum(x["expected"] is not None for x in rows),18)
+        self.assertEqual(neutral_lab(50),[119]*3)
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"patches.pdf"
+            self.assertEqual(fixture(p,rows),(288,288))
+            self.assertEqual(rows[0]["sample"],[16,16,32,32])
+            self.assertEqual(measure(Image.new("RGB",(288,288),(119,119,119)),rows[0]["sample"]),([119.]*3,0))
 if __name__=="__main__":
     unittest.main()
