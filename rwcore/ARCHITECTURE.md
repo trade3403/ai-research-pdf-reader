@@ -127,3 +127,5 @@ C4.4b1 pending CI: font_gdef.rs validates GDEF 1.0/1.2/1.3 directory, nullable r
 C4.4b2 pending CI: font_gdef_mark_sets.rs decodes Format 1 with 32-bit child offsets and shared Coverage parser. MarkGlyphSets provides ordered coverage and domain-checked membership queries. GDEF parsing now decodes present mark sets; parse_gdef_with_mark_set_limits allows separate explicit budgets without changing existing GdefLimits struct. Alias references charge cumulative budgets. Twelve new tests, no external dependency.
 
 C4.4b2 repair 1: empty Coverage format 2 (zero range records) remains legal, consistent with shared Coverage format 1 empty-table behavior. Test now explicitly checks empty format 2 membership and rejects unsupported format 3. No production code changes.
+
+C4.4b3 pending CI: real_gdef.rs independently decodes SFNT directory, GDEF offsets, dense ClassDef assignments and expanded coverage lists for seven existing real fonts, validates all 7006 glyphs and 30 mark sets, checks Abel absence, and pins counts/offsets. All real ClassDefs are format 2; coverage formats 1/2. Eight new tests, no production change or dependency.

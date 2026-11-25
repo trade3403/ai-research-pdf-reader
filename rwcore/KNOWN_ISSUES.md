@@ -119,3 +119,5 @@
 - C4.4b2: mark-set membership does not imply GDEF Mark classification; lookup flag precedence and actual filtering not implemented. AttachList, LigCaretList and ItemVariationStore remain opaque. Real GDEF reference not yet checked, native Type 8 fixture still needed; full GSUB execution, GPOS, cluster handling and Word fidelity outstanding.
 
 - C4.4b2 CI #109 failed due to a legal empty Coverage format 2 mutation incorrectly classified as malformed. Repair 1 fixes the expectation, preserves all regression cases including a true unsupported-format rejection, and requires fresh three-platform acceptance. Other limitations unchanged.
+
+- C4.4b3: selected real GDEF references cover three versions and ClassDef format 2 only (format 1 remains synthetically tested), no real Component class in these fixtures. ItemVariationStore offsets checked, bodies not decoded; no lookup flags, full shaping or external shaper equivalence yet. Native Type 8 and point-attachment fixtures remain outstanding.

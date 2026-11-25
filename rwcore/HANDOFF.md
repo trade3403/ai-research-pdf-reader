@@ -67,3 +67,6 @@ C4.4b1 source pending CI; parent CI #107 verified 706 tests per platform. Read D
 C4.4b2 source pending CI; parent CI #108 verified 718 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Native Type 8 reference still fixture-blocked. Recommended preventive new conversation handoff now.
 
 Latest C4.4b2 repair 1 pending CI: #109 failed identically on three platforms due to a test fixture expectation for legal empty Coverage format 2. Read DEV_STATE.md and CI_HISTORY.md. Preserve the 730-test/platform target and verify exact revision before proceeding to C4.4b3.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4b3 source pending CI; parent CI #110 verified 730 tests per platform. Repair 1 accepted. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Recommend preventive new conversation handoff now.
