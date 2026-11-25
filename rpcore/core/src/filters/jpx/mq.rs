@@ -120,7 +120,7 @@ mod tests{
             (0,0,"b6c22000000000000000000000000000000000000000000000000000000000003f"),
             (0,1,"15804000000000000000000000000000000000000000000000000000000000007f"),
             (1,0,"2b008000000000000000000000000000000000000000000000000000000000007f"),
-            (1,1,"746230000000000000000000000000000000000000000000000000000000003f"),
+            (1,1,"74623000000000000000000000000000000000000000000000000000000000003f"),
             (6,0,"fca2f000000000000000000000000000000000000000000000000000000000003f"),
             (6,1,"0000000000000000000000000000000000000000000000000000000000000000"),
             (14,0,"fca2f000000000000000000000000000000000000000000000000000000000003f"),
@@ -130,9 +130,10 @@ mod tests{
             (46,0,"ba577fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7f"),
             (46,1,"3955ff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7f"),
         ];
-        for (state,mps,hex) in vectors{
+        for ((state,mps,hex),expected_len) in vectors.into_iter().zip([33,33,33,33,33,32,33,32,41,41,35,34]){
             assert_eq!(hex.len()%2,0);
             let bytes:Vec<u8>=hex.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            assert_eq!(bytes.len(),expected_len);
             let mut d=Decoder::new(&bytes,256).unwrap();
             let mut c=Context::new(state,mps).unwrap();
             for i in 0..256{
