@@ -45,8 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             return Err("invalid cache prefix accepted".into());
         }
-        let full = encoded.logits(target, target_keep, false).map_err(|e| format!("{e:?}"))?;
-        let cached = encoded.cached_logits(target, target_keep).map_err(|e| format!("{e:?}"))?;
+        let full = encoded
+            .logits(target, target_keep, false)
+            .map_err(|e| format!("{e:?}"))?;
+        let cached = encoded
+            .cached_logits(target, target_keep)
+            .map_err(|e| format!("{e:?}"))?;
         for (&a, &b) in full.data().iter().zip(cached.data()) {
             if (a - b).abs() > 1e-4 + 1e-4 * a.abs() {
                 return Err("cache and full logits differ".into());
@@ -61,13 +65,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut generation = MarianGeneration::from_profile(&config.generation);
             generation.num_beams = width;
             generation.max_length = 5;
-            let search = generation.search_config(config.vocab).map_err(|e| format!("{e:?}"))?;
+            let search = generation
+                .search_config(config.vocab)
+                .map_err(|e| format!("{e:?}"))?;
             for (mode, result) in [
                 ("full", encoded.generate(search)),
                 ("cached", encoded.generate_cached(search)),
             ] {
                 for (rank, h) in result.map_err(|e| format!("{e:?}"))?.iter().enumerate() {
-                    let tokens = h.tokens.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+                    let tokens = h
+                        .tokens
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
                     writeln!(
                         out,
                         "{width}|{mode}|{rank}|{tokens}|{:.17}|{:.17}|{}",

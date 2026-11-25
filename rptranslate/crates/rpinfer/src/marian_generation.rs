@@ -53,7 +53,12 @@ impl<'a> MarianEncoded<'a> {
         self.embeddings.shared().shape()[0]
     }
 
-    pub fn logits(&self, prefix: &[u32], target_keep: Option<&[bool]>, last_only: bool) -> Result<Tensor, Error> {
+    pub fn logits(
+        &self,
+        prefix: &[u32],
+        target_keep: Option<&[bool]>,
+        last_only: bool,
+    ) -> Result<Tensor, Error> {
         self.decoder.logits(
             self.embeddings,
             prefix,
@@ -72,9 +77,7 @@ impl<'a> MarianEncoded<'a> {
         prefix: &[u32],
         target_keep: Option<&[bool]>,
     ) -> Result<Tensor, Error> {
-        if prefix.is_empty()
-            || target_keep.is_some_and(|m| m.len() != prefix.len() || !m[0])
-        {
+        if prefix.is_empty() || target_keep.is_some_and(|m| m.len() != prefix.len() || !m[0]) {
             return Err(Error::Shape);
         }
         let (_, size) = layout(&[prefix.len(), self.vocab()])?;
@@ -110,7 +113,9 @@ impl<'a> MarianEncoded<'a> {
         if config.max_new > self.embeddings.positions(Side::Decoder).shape()[0] {
             return Err(Error::Limit);
         }
-        search(self.vocab(), config, |prefix| self.logits(prefix, None, true))
+        search(self.vocab(), config, |prefix| {
+            self.logits(prefix, None, true)
+        })
     }
 
     pub fn generate_cached(&self, config: SearchConfig<'_>) -> Result<Vec<Hypothesis>, Error> {
