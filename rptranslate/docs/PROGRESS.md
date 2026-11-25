@@ -203,8 +203,13 @@ D1.9c run45536668981 CPU format 9组失败，真实专项仍运行，前置a/b/c
 ## D1.9d（独立预研，待验收）
 D1.9d 独立 QuantizedLinear：使用原 QuantizedTable 存储和行借用，W[out,in]；按权重块动态量化每输入行一次，signed INT8×INT8、INT32精确块内点积（4096*127²=66064384），FP32比例因子、f64乘积与跨块累加、FP32 bias后单次输出舍入（拒绝非有限），全/末行、维度与1<<30 MAC限额、仅一输入行量化scratch。不重新展开权重、不声称SIMD或模型速度。3组Rust测试（最大正/负点积、非法输入、跨块尺度/偏置、末行/溢出），真实原始Q投影512x512、FC1 2048x512、FC2 512x2048，3合成激活行/矩阵，独立NumPy整数点积及f64尺度参考12288元素，atol/rtol1e-6，FP32偏差按误差传播界检验并记录，不等同于真实模型激活或量化翻译。待CI。
 
-## 下一阶段 D1.9e
-前序全量验收通过后，开发AVX2 signed INT8点积优化与便携回退位级对照。
+D1.9c [45536668981/job/138945570654](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45536668981/job/138945570654) 真实专项 success：33280512 codes/520008 scales bitwise，RPQ8 file35360699 bytes、payload35360544，gather4096、logits195003元素，max_weight_error0.00306057185、quantized_reference_max_abs2.02655792e-6、fp32_logits_max_abs0.0460805893、fp32_argmax2/2。D1.9d 45537112727 基础format10组失败已修正，真实专项仍运行；a/b/d全量未验收。
+
+## D1.9e（独立预研，待验收）
+D1.9e AVX2 signed INT8 dot：每16个i8用128位非对齐加载、符号扩展为16个i16（256位），madd_epi16精确成8个i32、累加后横向求和，标量尾部；不使用饱和maddubs、不改变scale和FP64累加顺序。复用avx2_available运行时CPU/OS检测，portable-only编译去除intrinsics，forward默认Auto，forward_with明确Scalar/Auto，原dot_i8仍Scalar。新增非对齐/尾块/极值单测、真实d参考额外逐位Scalar对照，3个真实权重矩阵8合成激活行，native/portable各24576输出位级对照，预热、每内核5次交替计时取中位数，包含动态激活量化和FP64恢复，不含加载/转换，不声称端到端翻译加速。保留D1.8f和a–d门槛；待CI。
+
+## 下一阶段 D1.9f
+前序全量验收通过后，完整真实模型混合精度权重转换与模型包加载。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

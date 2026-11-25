@@ -1,9 +1,5 @@
 //! Compare independent actual checkpoint linear weights, no model activation claims.
-use rpinfer::{
-    quantized_linear::QuantizedLinear,
-    quantized_table::QuantizedTable,
-    tensor::Tensor,
-};
+use rpinfer::{quantized_linear::{Int8Kernel, QuantizedLinear}, quantized_table::QuantizedTable, tensor::Tensor};
 use rpmodel::package;
 use std::{
     io::{self, BufWriter, Write},
@@ -12,8 +8,7 @@ use std::{
 
 fn main() -> Result<(), String> {
     let path = std::env::args().nth(1).ok_or("missing model directory")?;
-    let (_, mut reader) =
-        package::open_profile(Path::new(&path)).map_err(|e| format!("{e:?}"))?;
+    let (_, mut reader) = package::open_profile(Path::new(&path)).map_err(|e| format!("{e:?}"))?;
     let mut out = BufWriter::new(io::stdout().lock());
     for (name, width, outputs) in [
         ("model.encoder.layers.0.self_attn.q_proj", 512, 512),
@@ -29,7 +24,8 @@ fn main() -> Result<(), String> {
         .map_err(|e| format!("{e:?}"))?;
         let bias = Tensor::new(
             &[outputs],
-            reader.read_f32(&format!("{name}.bias"), 0, outputs)
+            reader
+                .read_f32(&format!("{name}.bias"), 0, outputs)
                 .map_err(|e| format!("{e:?}"))?,
         )
         .map_err(|e| format!("{e:?}"))?;
@@ -40,9 +36,20 @@ fn main() -> Result<(), String> {
                 .collect(),
         )
         .map_err(|e| format!("{e:?}"))?;
-        let linear = QuantizedLinear { weight: &table, bias: Some(&bias) };
-        let full = linear.forward(&input, false).map_err(|e| format!("{e:?}"))?;
+        let linear = QuantizedLinear {
+            weight: &table,
+            bias: Some(&bias),
+        };
+        let full = linear
+            .forward(&input, false)
+            .map_err(|e| format!("{e:?}"))?;
         let last = linear.forward(&input, true).map_err(|e| format!("{e:?}"))?;
+        let scalar = linear
+            .forward_with(&input, false, Int8Kernel::Scalar)
+            .map_err(|e| format!("{e:?}"))?;
+        if full.data().iter().zip(scalar.data()).any(|(a, b)| a.to_bits() != b.to_bits()) {
+            return Err("scalar and automatic kernel differ".into());
+        }
         if last.data() != &full.data()[2 * outputs..] {
             return Err("last-only mismatch".into());
         }
