@@ -9,6 +9,7 @@ use rptranslate::{
     document::{self, Block, MAX_BLOCKS, MAX_INPUT_BYTES},
     glossary::Domain,
     offline::OfflineTranslator,
+    paragraph,
 };
 use std::{fs::File, io::Read, path::Path, time::Instant};
 
@@ -16,10 +17,24 @@ fn hex(text: &str) -> String {
     text.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn diagnostics(id: u32, phase: &str, error: &paragraph::Error) {
+    if let paragraph::Error::Rejected { attempts, .. } = error {
+        for attempt in attempts {
+            println!(
+                "ATTEMPT\t{id}\t{phase}\t{:?}\t{}",
+                attempt.strategy,
+                attempt.failure.category()
+            );
+        }
+    }
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let [root, precision, path] = args.as_slice() else {
-        return Err("usage: document_reference MODEL PRECISION INPUT.tsv".into());
+    let (root, precision, path, retry) = match args.as_slice() {
+        [root, precision, path] => (root, precision, path, false),
+        [root, precision, path, flag] if flag == "retry" => (root, precision, path, true),
+        _ => return Err("usage: document_reference MODEL PRECISION INPUT.tsv [retry]".into()),
     };
     let cap = MAX_INPUT_BYTES + MAX_BLOCKS * 16;
     let mut input = String::new();
@@ -53,31 +68,46 @@ fn main() -> Result<(), String> {
     let session = model.session().map_err(|e| format!("{e:?}"))?;
     let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
     let start = Instant::now();
-    let report = document::translate(
-        &session,
-        &blocks,
-        &engine,
-        Some(Domain::Geotechnical),
-        GenerationOptions {
-            beam_width: 1,
-            max_new: 128,
-            mode: GenerationMode::Cached,
-        },
-        Kernel::Auto,
-    )
-    .map_err(|e| format!("{e:?}"))?;
+    let options = GenerationOptions {
+        beam_width: 1,
+        max_new: 128,
+        mode: GenerationMode::Cached,
+    };
+    let (report, retries) = if retry {
+        let report = document::translate_with_retry(
+            &session,
+            &blocks,
+            &engine,
+            Some(Domain::Geotechnical),
+            options,
+            Kernel::Auto,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        (report.document, report.retries)
+    } else {
+        let report = document::translate(
+            &session,
+            &blocks,
+            &engine,
+            Some(Domain::Geotechnical),
+            options,
+            Kernel::Auto,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        (report, Vec::new())
+    };
     let seconds = start.elapsed().as_secs_f64();
     println!("DOCUMENT\t{precision}\t{load_ms:.6}\t{seconds:.9}");
-    for block in report.blocks {
+    for block in &report.blocks {
         let id = block.id;
-        match block.outcome {
+        match &block.outcome {
             Ok(result) => {
                 println!(
                     "ACCEPT\t{id}\t{}\t{}",
                     result.segments.len(),
                     hex(&result.text)
                 );
-                for segment in result.segments {
+                for segment in &result.segments {
                     println!(
                         "SEGMENT\t{id}\t{}\t{}\t{:?}\t{}",
                         segment.source.start,
@@ -89,6 +119,15 @@ fn main() -> Result<(), String> {
             }
             Err(error) => println!("REJECT\t{id}\t{}", hex(&format!("{error:?}"))),
         }
+    }
+    for block in &report.blocks {
+        if let Err(error) = &block.outcome {
+            diagnostics(block.id, "final", error);
+        }
+    }
+    for retry in retries {
+        println!("RETRY\t{}\t{}", retry.id, retry.recovered);
+        diagnostics(retry.id, "initial", &retry.initial);
     }
     Ok(())
 }

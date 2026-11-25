@@ -43,6 +43,25 @@ pub enum Failure {
     Quality(QualityIssue),
 }
 
+impl Failure {
+    /// Stable diagnostic categories; do not expose source or candidate text.
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::Generation(_) => "Generation",
+            Self::Quality(issue) => match issue {
+                QualityIssue::Invalid => "Invalid",
+                QualityIssue::NumericMismatch => "NumericMismatch",
+                QualityIssue::PercentageMismatch => "PercentageMismatch",
+                QualityIssue::UnexpectedBoilerplate(_) => "UnexpectedBoilerplate",
+                QualityIssue::MissingSurface(_) => "MissingSurface",
+                QualityIssue::ExtraSurface(_) => "ExtraSurface",
+                QualityIssue::Conflict(_) => "Conflict",
+                QualityIssue::RepeatedClause => "RepeatedClause",
+            },
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Attempt {
     pub strategy: Strategy,

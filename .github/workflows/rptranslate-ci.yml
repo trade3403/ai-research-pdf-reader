@@ -347,6 +347,6 @@ jobs:
           set -eu
           paper="$RUNNER_TEMP/rp-paper"
           cargo build --locked --offline --release -p rptranslate --example document_reference
-          timeout 900 /usr/bin/time -f %M -o "$paper/int8.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" > "$paper/int8.document"
+          timeout 900 /usr/bin/time -f %M -o "$paper/int8.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" retry > "$paper/int8.document"
           timeout 240 /usr/bin/time -f %M -o "$paper/fp32.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.document"
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_document_paper.py "$paper"

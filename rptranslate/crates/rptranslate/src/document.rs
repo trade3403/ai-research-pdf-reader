@@ -127,6 +127,98 @@ pub fn translate(
     })
 }
 
+/// First-pass failure is retained even when a retry succeeds.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RetryRecord {
+    pub id: u32,
+    pub initial: paragraph::Error,
+    pub recovered: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub document: DocumentTranslation,
+    pub retries: Vec<RetryRecord>,
+}
+
+pub const MAX_RETRIES: usize = 64;
+
+fn recover_with(
+    blocks: &[Block<'_>],
+    mut document: DocumentTranslation,
+    max_retries: usize,
+    mut run: impl FnMut(&str) -> Result<ParagraphTranslation, paragraph::Error>,
+) -> Result<RecoveryReport, Error> {
+    let mut output: usize = document
+        .blocks
+        .iter()
+        .filter_map(|block| block.outcome.as_ref().ok())
+        .map(|result| result.text.len())
+        .sum();
+    let mut retries = Vec::new();
+    for (block, result) in blocks.iter().zip(&mut document.blocks) {
+        if retries.len() >= max_retries.min(MAX_RETRIES) {
+            break;
+        }
+        let eligible = matches!(
+            &result.outcome,
+            Err(paragraph::Error::Rejected { attempts, .. })
+                if attempts.iter().any(|a| matches!(a.failure, paragraph::Failure::Quality(_)))
+        );
+        if !eligible {
+            continue;
+        }
+        let next = run(block.source);
+        if let Ok(ref translated) = next {
+            if !complete(block.source, translated) {
+                return Err(Error::InvalidCoverage(block.id));
+            }
+            output += translated.text.len();
+            if output > MAX_OUTPUT_BYTES {
+                return Err(Error::OutputLimit);
+            }
+        }
+        let recovered = next.is_ok();
+        let initial = std::mem::replace(&mut result.outcome, next)
+            .expect_err("only rejected outcomes are retried");
+        retries.push(RetryRecord {
+            id: block.id,
+            initial,
+            recovered,
+        });
+    }
+    Ok(RecoveryReport { document, retries })
+}
+
+/// Opt-in bounded retry of lexical failures only. The first pass is exactly
+/// the ordinary document path. Retry uses a wider beam, unchanged audit,
+/// domain, maximum output length and source ranges; no accepted block is
+/// regenerated. No retry for invalid input, plan errors or generation-only
+/// failures. With beam width other than one the retry is disabled.
+pub fn translate_with_retry(
+    session: &TextSession<'_>,
+    blocks: &[Block<'_>],
+    engine: &ContextEngine,
+    explicit: Option<Domain>,
+    options: GenerationOptions,
+    kernel: Kernel,
+) -> Result<RecoveryReport, Error> {
+    let document = translate(session, blocks, engine, explicit, options, kernel)?;
+    let max_retries = if options.beam_width == 1 { MAX_RETRIES } else { 0 };
+    recover_with(blocks, document, max_retries, |source| {
+        session.translate_paragraph(
+            source,
+            engine,
+            explicit,
+            GenerationOptions {
+                beam_width: 2,
+                ..options
+            },
+            kernel,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +310,73 @@ mod tests {
         result.segments[0].source = 0..source.len();
         result.text.push('!');
         assert!(!complete(source, &result));
+    }
+
+    fn rejection(quality: bool) -> paragraph::Error {
+        paragraph::Error::Rejected {
+            index: 0,
+            attempts: vec![paragraph::Attempt {
+                strategy: Strategy::Whole,
+                failure: if quality {
+                    paragraph::Failure::Quality(paragraph::QualityIssue::NumericMismatch)
+                } else {
+                    paragraph::Failure::Generation("failure".into())
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn retry_only_lexical_rejections_and_keep_original_failure() {
+        let blocks = [
+            Block { id: 1, source: "A" },
+            Block { id: 2, source: "B" },
+            Block { id: 3, source: "C" },
+            Block { id: 4, source: "D" },
+        ];
+        let first = translate_with(&blocks, |source| match source {
+            "A" => Ok(accepted(source)),
+            "B" | "D" => Err(rejection(true)),
+            _ => Err(rejection(false)),
+        })
+        .unwrap();
+        let result = recover_with(&blocks, first, 64, |source| match source {
+            "B" => Ok(accepted(source)),
+            "D" => Err(rejection(false)),
+            _ => panic!("ineligible retry"),
+        })
+        .unwrap();
+        assert_eq!(result.retries.len(), 2);
+        assert_eq!(result.retries[0].id, 2);
+        assert!(result.retries[0].recovered);
+        assert_eq!(result.retries[0].initial, rejection(true));
+        assert_eq!(result.document.blocks[0].outcome, Ok(accepted("A")));
+        assert_eq!(result.document.blocks[1].outcome, Ok(accepted("B")));
+        assert_eq!(result.document.blocks[2].outcome, Err(rejection(false)));
+        assert_eq!(result.document.blocks[3].outcome, Err(rejection(false)));
+        assert!(!result.retries[1].recovered);
+    }
+
+    #[test]
+    fn retry_budget_and_invalid_coverage() {
+        let blocks = [Block { id: 1, source: "A" }, Block { id: 2, source: "B" }];
+        let first = translate_with(&blocks, |_| Err(rejection(true))).unwrap();
+        let result = recover_with(&blocks, first, 1, |source| {
+            assert_eq!(source, "A");
+            Ok(accepted(source))
+        })
+        .unwrap();
+        assert_eq!(result.retries.len(), 1);
+        assert_eq!(result.document.blocks[1].outcome, Err(rejection(true)));
+        let first = translate_with(&blocks, |_| Err(rejection(true))).unwrap();
+        assert_eq!(
+            recover_with(&blocks, first, 1, |source| {
+                let mut result = accepted(source);
+                result.segments.clear();
+                Ok(result)
+            }),
+            Err(Error::InvalidCoverage(1))
+        );
     }
 
     #[test]
