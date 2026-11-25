@@ -55,3 +55,6 @@ pub use table_effective::{resolve_effective_cell, resolve_preferred_width, Effec
 
 pub mod table_borders;
 pub use table_borders::{TableBorderPlan, ThreeLineBorders};
+
+pub mod table_geometry;
+pub use table_geometry::{compute_table_geometry, compute_declared_grid_geometry, TableGeometry, CellGeometry, CellInsets};
