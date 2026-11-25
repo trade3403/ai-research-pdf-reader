@@ -1,5 +1,5 @@
-//! Scoped native reversible JPEG 2000 grayscale pixel reconstruction.
-//! Multiple tiles and quality layers, unsigned 8-bit, no MCT, baseline MQ style.
+//! Scoped native reversible JPEG 2000 grayscale and RGB pixel reconstruction.
+//! Multiple tiles and quality layers, unsigned 8-bit, optional reversible MCT, baseline MQ style.
 //! This does not activate the PDF JPXDecode rendering path.
 use super::{Container,codestream::{inspect_codestream,Codestream,QuantMode,Wavelet},geometry::{self,Band,Rect},packet,ebcot,wavelet53::{self,Detail53}};
 use crate::{Error,Result};
@@ -9,6 +9,8 @@ const MAX_PIXELS:usize=4_194_304;
 const MAX_WORK:usize=MAX_PIXELS*128;
 #[derive(Debug,PartialEq,Eq)]
 pub struct GrayImage{pub width:usize,pub height:usize,pub pixels:Vec<u8>}
+#[derive(Debug,PartialEq,Eq)]
+pub struct RgbImage{pub width:usize,pub height:usize,pub pixels:Vec<u8>}
 struct Plane{bounds:Rect,values:Vec<i32>}
 struct Segment{band:Band,zero:u8,passes:u16,bytes:Vec<u8>}
 fn band_index(b:Band)->usize{match b{Band::Ll=>0,Band::Hl=>1,Band::Lh=>2,Band::Hh=>3}}
@@ -26,24 +28,42 @@ pub fn decode_gray53_layers(data:&[u8],layers:u16)->Result<GrayImage>{
     decode_layers(data,Some(layers))
 }
 fn decode_layers(data:&[u8],requested:Option<u16>)->Result<GrayImage>{
+    let (width,height,pixels)=decode_components(data,requested,1)?;
+    Ok(GrayImage{width,height,pixels})
+}
+/// Decode three co-sited unsigned 8-bit components as interleaved RGB.
+/// Raw codestream component order is assumed RGB when MCT is absent.
+pub fn decode_rgb53(data:&[u8])->Result<RgbImage>{
+    let (width,height,pixels)=decode_components(data,None,3)?;
+    Ok(RgbImage{width,height,pixels})
+}
+fn sample8(v:i64)->u8{(v+128).clamp(0,255)as u8}
+/// Inverse reversible component transform, before unsigned level shift.
+fn inverse_rct(y:i32,cb:i32,cr:i32)->[i64;3]{
+    let (y,cb,cr)=(i64::from(y),i64::from(cb),i64::from(cr));
+    let g=y-(cb+cr).div_euclid(4);
+    [g+cr,g,g+cb]
+}
+fn decode_components(data:&[u8],requested:Option<u16>,channels:usize)->Result<(usize,usize,Vec<u8>)>{
     let c=inspect_codestream(data)?;
     let h=&c.geometry;
     let layers=requested.unwrap_or(c.coding.layers);
     if layers==0||layers>c.coding.layers{return Err(Error::Invalid("JPX gray53 quality layers"));}
     if c.coding.layers>256{return Err(Error::Unsupported("JPX gray53 layer limit"));}
-    if h.container!=Container::RawCodestream||h.components.len()!=1||
-        c.coding.mct{
+    if h.container!=Container::RawCodestream||h.components.len()!=channels||
+        channels==1&&c.coding.mct{
         return Err(Error::Unsupported("JPX gray53 container/components/MCT"));
     }
-    let g=&h.components[0];let s=&c.component_coding[0];let q=&c.component_quantization[0];
+    for ((g,s),q) in h.components.iter().zip(&c.component_coding).zip(&c.component_quantization){
     if g.precision!=8||g.signed||g.x_sampling!=1||g.y_sampling!=1||
         s.wavelet!=Wavelet::Reversible53||s.codeblock_style!=0||q.mode!=QuantMode::None{
         return Err(Error::Unsupported("JPX gray53 coding parameters"));
     }
+    }
     let (w,ht)=(h.width as usize,h.height as usize);
     let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray53 pixels"))?;
     if area==0||area>MAX_PIXELS||w>1_048_576||ht>1_048_576{return Err(Error::Limit("JPX gray53 pixels"));}
-    let mut pixels=vec![0;area];
+    let mut pixels=vec![0;area.checked_mul(channels).ok_or(Error::Limit("JPX output samples"))?];
     let mut work=0usize;
     let mut geometry_work=0usize;
     let mut covered=0usize;
@@ -63,19 +83,33 @@ fn decode_layers(data:&[u8],requested:Option<u16>)->Result<GrayImage>{
         let n=tw.checked_mul(th).ok_or(Error::Limit("JPX gray53 tile area"))?;
         covered=covered.checked_add(n).ok_or(Error::Limit("JPX gray53 coverage"))?;
         if n==0||covered>area{return Err(Error::Invalid("JPX gray53 tile coverage"));}
-        let samples=decode_tile(data,&c,&plan,&mut work,layers)?;
+        let packets=packet::inspect_planned_packets(data,&c,&plan)?;
+        let mut samples=Vec::with_capacity(channels);
+        for component in 0..channels{
+            if plan.components[component].bounds!=b{return Err(Error::Unsupported("JPX component grid mismatch"));}
+            samples.push(decode_tile(data,&c,&plan,&packets,&mut work,layers,component)?);
+        }
         let ox=(b.x0-i64::from(h.x_origin))as usize;
         let oy=(b.y0-i64::from(h.y_origin))as usize;
         for y in 0..th{
-            for x in 0..tw{pixels[(oy+y)*w+ox+x]=(i64::from(samples[y*tw+x])+128).clamp(0,255)as u8;}
+            for x in 0..tw{
+                let src=y*tw+x;
+                let dst=((oy+y)*w+ox+x)*channels;
+                if channels==1{pixels[dst]=sample8(i64::from(samples[0][src]));}
+                else{
+                    let rgb=if c.coding.mct{inverse_rct(samples[0][src],samples[1][src],samples[2][src])}
+                        else{[i64::from(samples[0][src]),i64::from(samples[1][src]),i64::from(samples[2][src])]};
+                    for k in 0..3{pixels[dst+k]=sample8(rgb[k]);}
+                }
+            }
         }
     }
     if covered!=area{return Err(Error::Invalid("JPX gray53 tile coverage"));}
-    Ok(GrayImage{width:w,height:ht,pixels})
+    Ok((w,ht,pixels))
 }
 
-fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize,layers:u16)->Result<Vec<i32>>{
-    let t=&plan.components[0];let q=&c.component_quantization[0];
+fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet::TilePackets,work:&mut usize,layers:u16,component:usize)->Result<Vec<i32>>{
+    let t=&plan.components[component];let q=&c.component_quantization[component];
     let (w,ht)=(t.bounds.width()as usize,t.bounds.height()as usize);
     let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray53 tile area"))?;
     let mut planes:Vec<Vec<Plane>>=Vec::new();
@@ -91,12 +125,11 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize
         planes.push(bands);
     }
     if total!=area{return Err(Error::Invalid("JPX gray53 band partition"));}
-    let packets=packet::inspect_planned_packets(data,c,plan)?;
     // Default coding style has one continuous MQ segment per codeblock
     // (<=109 passes). Layer boundaries do not reset arithmetic or context state.
     let mut segments:BTreeMap<(usize,usize,usize,usize),Segment>=BTreeMap::new();
     for p in &packets.packets{
-        if p.packet.layer>=layers{continue;}
+        if p.packet.layer>=layers||usize::from(p.packet.component)!=component{continue;}
         for e in &p.contributions{
             let key=(usize::from(p.packet.resolution),p.packet.precinct,band_index(e.band),e.block);
             let seg=segments.entry(key).or_insert_with(||Segment{band:e.band,zero:e.zero_bit_planes,passes:0,bytes:Vec::new()});
@@ -229,5 +262,38 @@ mod tests{
         assert!(decode_gray53_layers(&b,0).is_err());
         assert!(decode_gray53_layers(&b,3).is_err());
         assert!(decode_gray53_layers(&b[..b.len()-1],1).is_err());
+    }
+
+    // Independent Pillow/OpenJPEG 2.5.4 lossless reference codestreams.
+    const RGB_DIRECT:&str="ff4fff51002f000000000004000000040000000000000000000000040000000400000000000000000003070101070101070101ff52000c00000001000000000001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000004d0001ff93cfb448103d80112ff5a0dee849878f6f1929805e7fcfb448104510db0fe5f29ed599e42c39c48b92353fcfb4480ac5c1747600ac519296da6faec6ac70036fffd9";
+    #[test]fn rgb53_direct(){
+        let a=decode_rgb53(&hex(RGB_DIRECT)).unwrap();
+        assert_eq!((a.width,a.height),(4,4));
+        assert_eq!(a.pixels,(0..48).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    const RGB_RCT:&str="ff4fff51002f000000000005000000030000000000000000000000050000000300000000000000000003070101070101070101ff52000c00000001010100000001ff5c00074040484850ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000650001ff93c7d40c11d49f1f045fcfb41c0d232f96d2967fcfb41c09887894956c44cfc0161f501c3ed030050f0cb0bf03ea99015a9fcfc0127e0070fb40800cb357bf0d83e40b8bcfc0167e0090fb408009b9e10ad70ba01c1c093fffd9";
+    #[test]fn rgb53_rct(){
+        let a=decode_rgb53(&hex(RGB_RCT)).unwrap();
+        assert_eq!((a.width,a.height),(5,3));
+        assert_eq!(a.pixels,(0..45).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    const RGB_TILED:&str="ff4fff51002f000000000009000000070000000000000000000000050000000400000000000000000003070101070101070101ff52000c00000002010100000001ff5c00074040484850ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000007e0001ff9380dc181254dade100d907c09c4400424af080c2d93a4c8a440089e0c50c7d40e0e186a0eb5ff7ffda0a0d1154a7f7ffd6080c6f98f1bfd8090fa81e1f682008c74ff7f019af4b416c22f0c1bd00fcfc013ee028fc00c0d7aeec53a41101e7ffde05f78247e00607f331113921f09d27fff90000a00010000007e0001ff93808080cf068fbc0c0e30200f7ec692201084c893f2030f640b08dfe1f9c17e7060043108be7fe3f501fea02003477f0469e5f501fed03005771f05aabffd60785f383fd40700b8cbdf0a7b7f0a863fc7da0597da05fc00bf201010870c5f0c5fbffde0593ea02fe005004f4f079f0beaff90000a0002000000690001ff93c44012728080cf803006744fc880108bcfbc0e7053f2020a922b0d650a8dfd21008b6c341fcfb41c118a0174385d0fcfb41c07932e5ed3987ffd40507ce0a0fa808044bf0967093ffde031f681c7e004eb0ce83f0b8bc1f680c057ff90000a0003000000770001ff938080d3c1000a15ce0c0b790acfbc0d3f20200894c705b3cc3004bb5de13e10bf38300b3f05937fe5f501fed03005947f0a73f7fed03fa8040c23910ffda0783f382be40307d4040ccb3702bf070237c18bea01fda030000704fdc0389f381fda031f80109f070805b3ffd9";
+    #[test]fn rgb53_tiled(){
+        let a=decode_rgb53(&hex(RGB_TILED)).unwrap();
+        assert_eq!((a.width,a.height),(9,7));
+        assert_eq!(a.pixels,(0..189).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    #[test]fn rgb53_rct_signed_floor(){
+        for r in [-128i32,-1,0,1,127]{for g in [-128i32,-1,0,1,127]{for b in [-128i32,-1,0,1,127]{
+            let y=(r+2*g+b).div_euclid(4);
+            assert_eq!(inverse_rct(y,b-g,r-g),[i64::from(r),i64::from(g),i64::from(b)]);
+        }}}
+        assert_eq!(sample8(i64::from(i32::MAX)),255);
+        assert_eq!(sample8(i64::from(i32::MIN)),0);
+    }
+    #[test]fn rgb53_reject_wrong_components_and_truncation(){
+        assert!(decode_rgb53(&hex(FLAT)).is_err());
+        assert!(decode_gray53(&hex(RGB_DIRECT)).is_err());
+        let b=hex(RGB_RCT);assert!(decode_rgb53(&b[..b.len()-1]).is_err());
     }
 }
