@@ -154,7 +154,7 @@ jobs:
 
   real-model-conversion:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ contains(github.event.head_commit.message, 'D1.9h-paper') && 25 || 15 }}
+    timeout-minutes: ${{ contains(github.event.head_commit.message, 'D1.11') && 40 || contains(github.event.head_commit.message, 'D1.9h-paper') && 25 || 15 }}
     if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7') || contains(github.event.head_commit.message, 'D1.8d') || contains(github.event.head_commit.message, 'D1.8e') || contains(github.event.head_commit.message, 'D1.8f') || contains(github.event.head_commit.message, 'D1.10a'))
     defaults:
       run:
@@ -340,3 +340,13 @@ jobs:
           target/release/examples/paragraph_reference "$RUNNER_TEMP/rpmodel-v1" fp32
           target/release/examples/paragraph_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
           target/release/rptranslate translate-paragraph-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain. We calculated site response.' 1 128 | grep -F '最大应变'
+
+      - name: Verify complete extracted paper document coverage and rejection records
+        if: contains(github.event.head_commit.message, 'D1.11')
+        run: |
+          set -eu
+          paper="$RUNNER_TEMP/rp-paper"
+          cargo build --locked --offline --release -p rptranslate --example document_reference
+          timeout 900 /usr/bin/time -f %M -o "$paper/int8.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" > "$paper/int8.document"
+          timeout 240 /usr/bin/time -f %M -o "$paper/fp32.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.document"
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_document_paper.py "$paper"

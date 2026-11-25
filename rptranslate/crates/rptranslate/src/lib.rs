@@ -1,6 +1,7 @@
 //! Local translation API and historical D1.0 smoke test.
 pub mod constrained;
 pub mod context;
+pub mod document;
 pub mod glossary;
 pub mod offline;
 pub mod paragraph;
