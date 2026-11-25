@@ -137,6 +137,84 @@ def compare_page(args, pdf, page, work, name):
         row["comparison"]={"status":"image_error","reason":str(e)[:300]}
     return row
 
+
+# JPX inventory is observational. A successful scan with zero JPX rows is
+# a coverage gap, not a decoder pass. pdfimages is test-only.
+MAX_JPX_SCAN_PAGES = 100
+MAX_JPX_COMPARE_PAGES = 6
+MAX_IMAGE_LIST_BYTES = 2 * 1024 * 1024
+
+def parse_image_list(output, last_page):
+    if len(output.encode("utf-8")) > MAX_IMAGE_LIST_BYTES:
+        raise ValueError("image list byte limit")
+    lines = output.splitlines()
+    if len(lines) < 2 or lines[0].split()[:10] != [
+            "page", "num", "type", "width", "height", "color", "comp", "bpc", "enc", "interp"]:
+        raise ValueError("unexpected pdfimages header")
+    if not lines[1].strip() or set(lines[1].strip()) != {"-"}:
+        raise ValueError("unexpected pdfimages separator")
+    rows = []
+    total = 0
+    for line in lines[2:]:
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) < 10:
+            raise ValueError("malformed image row")
+        page, number = map(int, parts[:2])
+        width, height = map(int, parts[3:5])
+        if not 1 <= page <= last_page or number < 0 or min(width,height) <= 0:
+            raise ValueError("image row geometry")
+        total += 1
+        if parts[8].lower() == "jpx":
+            rows.append({"page":page, "image":number, "type":parts[2],
+                         "width":width, "height":height, "color":parts[5],
+                         "components":parts[6], "bpc":parts[7],
+                         "encoding":parts[8], "interpolate":parts[9]})
+    return {"image_rows":total, "jpx_rows":rows}
+
+def scan_jpx(exe, pdf, pages):
+    last = min(pages, MAX_JPX_SCAN_PAGES)
+    base = {"scanned_first":1, "scanned_last":last, "document_pages":pages,
+            "complete":False, "image_rows":0, "jpx_rows":[]}
+    if not exe.is_file():
+        return {**base, "status":"scanner_missing"}
+    try:
+        p = subprocess.run([str(exe), "-f", "1", "-l", str(last), "-list", str(pdf)],
+                           capture_output=True, timeout=20,
+                           env={**os.environ,"LC_ALL":"C"})
+        if p.returncode or p.stderr.strip():
+            return {**base, "status":"scan_error",
+                    "reason":p.stderr[-1000:].decode("utf-8","replace")}
+        if len(p.stdout)>MAX_IMAGE_LIST_BYTES:
+            raise ValueError("image list byte limit")
+        parsed = parse_image_list(p.stdout.decode("utf-8"),last)
+    except subprocess.TimeoutExpired:
+        return {**base,"status":"timeout"}
+    except (OSError,ValueError,UnicodeError) as e:
+        return {**base,"status":"scan_error","reason":str(e)[:300]}
+    return {**base,**parsed,"status":"ok","complete":last==pages}
+
+def jpx_summary(documents):
+    scans=[d.get("jpx_inventory",{}) for d in documents]
+    hits=sum(len(s.get("jpx_rows",[])) for s in scans)
+    pages=sum(len({r["page"] for r in s.get("jpx_rows",[])}) for s in scans)
+    selected=sum(len(d.get("jpx_pages",[])) for d in documents)
+    compared=sum(r.get("comparison",{}).get("status")=="compared"
+                 for d in documents for r in d.get("jpx_pages",[]))
+    complete=bool(scans) and all(s.get("status")=="ok" and s.get("complete") for s in scans)
+    if not complete:
+        status="inventory_incomplete"
+    elif not hits:
+        status="coverage_gap"
+    elif selected!=pages or compared!=selected:
+        status="comparison_incomplete"
+    else:
+        status="compared_observational"
+    return {"status":status,"complete_documents":sum(s.get("status")=="ok" and s.get("complete",False) for s in scans),
+            "documents":len(documents),"jpx_image_rows":hits,"jpx_pages":pages,
+            "selected_jpx_pages":selected,"compared_jpx_pages":compared}
+
 def markdown(report):
     lines=["# RPCore visual comparison","",
            f"Independent Poppler reference, {report['dpi']} DPI / {report['dpi']/72:g} px per PDF point. No image rescaling.",
@@ -156,6 +234,23 @@ def markdown(report):
               "Worst 64×64 pixel tiles and source SHA-256 are in report.json.",
               "One-pixel tolerance and Gaussian blur radius 1 are supplementary diagnostics, not accuracy thresholds; physical tolerance differs with DPI.",
               "No automatic accuracy threshold is asserted; inspect discrepancies before release."]
+    if "jpx" in report:
+        j=report["jpx"]
+        lines += ["","## JPEG 2000 targeted inventory","",
+                  f"Status: {j['status']}; complete scans: {j['complete_documents']}/{j['documents']}.",
+                  f"JPX image rows: {j['jpx_image_rows']}; JPX pages: {j['jpx_pages']}; compared: {j['compared_jpx_pages']}/{j['selected_jpx_pages']}.",
+                  "Image rows count painted occurrences, not unique objects. Zero detections do not establish JPX support.",
+                  "Full-page comparison is observational and cannot attribute every error to JPX.",
+                  "","| Paper | Inventory | JPX rows | JPX pages | Native | Reference | Comparison | RGB MAE |",
+                  "|---|---|---:|---:|---|---|---|---:|"]
+        for d in report["documents"]:
+            s=d.get("jpx_inventory",{})
+            hits=len(s.get("jpx_rows",[]))
+            if not d.get("jpx_pages"):
+                lines.append(f"| {d['id']} | {s.get('status','not_run')} | {hits} | — | — | — | — | — |")
+            for r in d.get("jpx_pages",[]):
+                c=r["comparison"]
+                lines.append(f"| {d['id']} | {s.get('status','not_run')} | {hits} | {r['page']} | {r['native']['status']} | {r['reference']['status']} | {c['status']} | {c.get('mae_rgb_0_255','—')} |")
     return "\n".join(lines)+"\n"
 
 def main():
@@ -171,6 +266,7 @@ def main():
     p.add_argument("--dpi",type=int,choices=(36,72,144),default=DPI)
     p.add_argument("--local",type=pathlib.Path)
     p.add_argument("--save-images",action="store_true",help="Local PDF only; confirm source permissions")
+    p.add_argument("--jpx-inventory",action="store_true",help="Scan image encodings with sibling pdfimages and compare detected JPX pages separately")
     a=p.parse_args()
     if a.text_area and (a.text_aa!=4 or a.text_grid):
         p.error('--text-area requires --text-aa 4 without --text-grid')
@@ -221,6 +317,8 @@ def main():
             if d["inspect"]["status"]!="ok" or not 1<=n<=100000:
                 d["status"]="inspect_error";continue
             d["status"]="ok"
+            if a.jpx_inventory:
+                d["jpx_inventory"]=scan_jpx(a.reference.with_name("pdfimages"),pdf,n)
             for page in sample_pages(n):
                 report["selected"]+=1
                 if time.monotonic()>=deadline:
@@ -230,6 +328,21 @@ def main():
                 d["pages"].append(row)
                 if row["comparison"]["status"]=="compared":
                     report["compared"]+=1
+            if a.jpx_inventory:
+                d["jpx_pages"]=[]
+                existing={r["page"]:r for r in d["pages"]}
+                hits=sorted({r["page"] for r in d["jpx_inventory"].get("jpx_rows",[])})
+                for page in hits[:MAX_JPX_COMPARE_PAGES]:
+                    if page in existing:
+                        row=existing[page]
+                    elif time.monotonic()>=deadline:
+                        row={"page":page,"native":{"status":"budget_skipped"},
+                             "reference":{"status":"budget_skipped"},"comparison":{"status":"budget_skipped"}}
+                    else:
+                        row=compare_page(a,pdf,page,work,f"{item['id']}-jpx-{page}")
+                    d["jpx_pages"].append(row)
+    if a.jpx_inventory:
+        report["jpx"]=jpx_summary(report["documents"])
     (a.out/"report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
     md=markdown(report)
     (a.out/"report.md").write_text(md,encoding="utf-8")
