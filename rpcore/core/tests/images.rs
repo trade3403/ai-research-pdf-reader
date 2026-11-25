@@ -175,3 +175,20 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
         assert_eq!((x.object_id,x.source,x.components,x.path),((6,0),ProfileUse::Image,n,path));
     }
 }
+
+#[test]fn native_gray_icc_image_and_alpha_separation(){
+    use rpcore::icc::{ProfilePath,ProfileUse};
+    let p=icc_fixture::gray_icc();
+    let t=rpcore::icc::Profile::parse(&p).unwrap().gray_trc().unwrap();
+    assert!((t.to_xyz_d50(0.5).unwrap()[1]-0.25).abs()<1e-12);
+    assert!(t.to_xyz_d50(f64::NAN).is_err());
+    let im=fixture::stream("/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8 /SMask 8 0 R",&[128]);
+    let mask=fixture::stream("/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8",&[128]);
+    let pdf=fixture::pdf_extra(b"/Im Do",im,fixture::stream("/N 1",&p),"<< >>",vec![mask]);
+    let d=Document::open(&pdf).unwrap();
+    let out=d.render_page_with_text_quality(&d.pages().unwrap()[0],Options::default(),10000,None,rpcore::raster::TextQuality::Standard).unwrap();
+    assert_eq!(out.icc_profiles.len(),1);
+    assert_eq!((out.icc_profiles[0].source,out.icc_profiles[0].path),(ProfileUse::Image,ProfilePath::GrayTrc));
+    // Gray gamma 2 -> sRGB ~138; mask sample stays 128/255, not TRC.
+    for &x in &px(&out.bitmap,0,19)[..3]{close(x,196);}
+}

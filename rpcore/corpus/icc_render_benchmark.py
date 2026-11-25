@@ -22,6 +22,9 @@ def lcms():
         ('cmsCreate_sRGBProfile',P,[]),
         ('cmsCreateXYZProfile',P,[]),
         ('cmsCreateRGBProfile',P,[P,P,P]),
+        ('cmsCreateGrayProfile',P,[P,P]),
+        ('cmsBuildGamma',P,[P,C.c_double]),
+        ('cmsFreeToneCurve',None,[P]),
         ('cmsReadTag',P,[P,U]),
         ('cmsSaveProfileToMem',C.c_int,[P,P,C.POINTER(U)]),
         ('cmsOpenProfileFromMem',P,[P,U]),
@@ -95,6 +98,33 @@ def standard_rgb_profile(lib):
         out+=bytes(-len(out)%4)
     S.pack_into('>I',out,0,len(out))
     return bytes(out)
+
+def gray_profile(lib):
+    curve=lib.cmsBuildGamma(None,2.2)
+    if not curve:raise RuntimeError('gray gamma creation')
+    try:
+        wp=(C.c_double*3)(.3457,.3585,1.)
+        return serialize_profile(lib,lib.cmsCreateGrayProfile(wp,curve))
+    finally:
+        lib.cmsFreeToneCurve(curve)
+
+def oracle_gray(lib,profile,samples):
+    buf=C.create_string_buffer(profile)
+    src=lib.cmsOpenProfileFromMem(buf,len(profile));dst=lib.cmsCreate_sRGBProfile()
+    t=None
+    try:
+        if not src or not dst:raise RuntimeError('gray profile open')
+        t=lib.cmsCreateTransform(src,(1<<22)|(3<<16)|(1<<3),dst,RGB8,1,0)
+        if not t:raise RuntimeError('gray transform')
+        out=[]
+        for x in samples:
+            v=(C.c_double*1)(*x);rgb=(C.c_uint8*3)()
+            lib.cmsDoTransform(t,v,rgb,1);out.append(list(rgb))
+        return out
+    finally:
+        if t:lib.cmsDeleteTransform(t)
+        if src:lib.cmsCloseProfile(src)
+        if dst:lib.cmsCloseProfile(dst)
 
 def oracle_rgb(lib,profile,samples,xyz=False):
     srcbuf=C.create_string_buffer(profile) if not xyz else None
@@ -178,7 +208,7 @@ def main():
            ('cmyk-affine',cmyk,4,[(0,0,0,0),(255,0,0,0),(0,255,0,0),(0,0,255,0),(0,0,0,255),(64,128,192,32),(128,128,128,128),(255,255,255,255)])]
     raw=serialize_profile(lib,lib.cmsCreate_sRGBProfile())
     wide=wide_rgb_profile(lib)
-    cases.extend([('srgb-native',raw,3,cases[0][3]),('wide-native',wide,3,cases[0][3]),('mab-full',mab_fixture(2,True),4,cases[1][3])])
+    cases.extend([('srgb-native',raw,3,cases[0][3]),('wide-native',wide,3,cases[0][3]),('mab-full',mab_fixture(2,True),4,cases[1][3]),('gray-native',gray_profile(lib),1,[(v,) for v in (0,2,17,64,128,197,239,255)])])
     report={'schema':2,'profiles':{},'renders':[],'rows':[],'native_matrix_checks':[],
             'gate':{'native_image_vector_max':1,'native_lcms_max':2,'alpha_max':1,'native_spread':0},
             'note':'Sampled and unmodified LCMS sRGB, generated wide RGB and synthetic affine CMYK; Poppler diagnostic only.'}
@@ -209,15 +239,17 @@ def main():
                 pdf=work/(stem+'.pdf')
                 size,rows=make_pdf(pdf,profile,n,samples,bits)
                 src=[r['source'] for r in rows]
-                expected=oracle_rgb(lib,profile,src) if n==3 else oracle_rgb(lib,profile,[v[6:9] for v in cmyk_reference(profile,1 if name.startswith('mab-') else 2,src)],xyz=True)
+                expected=oracle_gray(lib,profile,src) if n==1 else oracle_rgb(lib,profile,src) if n==3 else oracle_rgb(lib,profile,[v[6:9] for v in cmyk_reference(profile,1 if name.startswith('mab-') else 2,src)],xyz=True)
                 for dpi in (72,144):
                     label=f'{stem}-{dpi}'
                     native,ref,im,ri=render_pair(a,pdf,1,dpi,work,label,None)
                     scale=dpi//72
                     dimensions=tuple(v*scale for v in size)
                     ok=im is not None and ri is not None and im.size==ri.size==dimensions
-                    if name.startswith('mab-'):
-                        ok=ok and native.get('icc_vector_native')=='1' and native.get('icc_image_native')=='1' and native.get('icc_vector_alternate')=='0' and native.get('icc_image_alternate')=='0'
+                    if name.startswith('mab-') or n==1:
+                        want='mab_A2B0' if n==4 else 'gray_trc'
+                        diag=[v for k,v in native.items() if k.startswith('icc_diag_')]
+                        ok=ok and native.get('icc_vector_native')=='1' and native.get('icc_image_native')=='1' and native.get('icc_vector_alternate')=='0' and native.get('icc_image_alternate')=='0' and len(diag)==2 and all(';'+want+';' in x for x in diag)
                     report['renders'].append({'case':label,'native':native,'reference':ref,'compared':ok})
                     if not ok:continue
                     panel=Image.new('RGB',(im.width*3,im.height),'white')
@@ -239,7 +271,7 @@ def main():
                             'parity_error':parity,'lcms_error':oracle,'alpha_error':ae,
                             'poppler_error':max(error(x,y) for x,y in zip(nv,rv)),
                             'pass':parity<=1 and oracle<=2 and ae<=1 and max(ns)==0})
-    total=160
+    total=192
     passed=sum(r['pass'] for r in report['rows'])
     report['expected_rows']=total
     report['passed']=passed
@@ -258,7 +290,7 @@ def main():
         lines.append(f"- {check['profile']}: {check['status']}, max RGB error {check.get('max_rgb_error','—')}, {'PASS' if check['pass'] else 'FAIL'}")
     lines+=['','Unmodified LCMS sRGB and generated wide-gamut matrix profile, sampled baseline and original synthetic CMYK LUT. No measured printer or monitor calibration claim.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
-    return int(len(report['renders'])!=20 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
+    return int(len(report['renders'])!=24 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
 
 if __name__=='__main__':
     raise SystemExit(main())

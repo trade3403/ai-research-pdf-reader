@@ -32,7 +32,7 @@ impl Space{
         Self::Cmyk=>Color::Cmyk(nums::<4>(a)?.map(|x|x.clamp(0.,1.))),
         Self::Calibrated(c)=>Color::Rgb(c.rgb(if c.components()==1{[nums::<1>(a)?[0],0.,0.]}else{nums::<3>(a)?})),
         Self::Icc(t)=>{
-            let v=if t.components()==3{let [r,g,b]=nums::<3>(a)?;[r,g,b,0.]}else{nums::<4>(a)?};
+            let v=match t.components(){1=>[nums::<1>(a)?[0],0.,0.,0.],3=>{let [r,g,b]=nums::<3>(a)?;[r,g,b,0.]},_=>nums::<4>(a)?};
             Color::Rgb(t.rgb(v)?)
         }
         Self::IccAlternate(n)=>match n{1=>Self::Gray.color(a)?,3=>Self::Rgb.color(a)?,_=>Self::Cmyk.color(a)?},

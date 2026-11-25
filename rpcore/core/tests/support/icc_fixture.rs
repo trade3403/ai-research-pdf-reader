@@ -40,3 +40,9 @@ pub fn cmyk_icc()->Vec<u8>{
     };
     test_icc(b"prtr",b"CMYK",b"Lab ",vec![(*b"A2B0",lut(false)),(*b"A2B1",lut(true))])
 }
+
+pub fn gray_icc()->Vec<u8>{
+    let mut wp=b"XYZ \0\0\0\0".to_vec();
+    for x in [0.9642_f64,1.,0.8249]{wp.extend_from_slice(&((x*65536.).round()as i32).to_be_bytes());}
+    test_icc(b"mntr",b"GRAY",b"XYZ ",vec![(*b"wtpt",wp),(*b"kTRC",b"curv\0\0\0\0\0\0\0\x01\x02\0".to_vec())])
+}

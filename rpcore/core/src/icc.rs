@@ -14,7 +14,7 @@ pub enum ProfileUse{Vector,Image}
 /// Native paths currently approximate PDF rendering intents. Alternate is
 /// explicitly distinguishable from a native transform even for identity RGB.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub enum ProfilePath{RgbMatrix,CmykLut{tag:Signature},Alternate{reason:&'static str}}
+pub enum ProfilePath{RgbMatrix,GrayTrc,CmykLut{tag:Signature},CmykMab{tag:Signature},Alternate{reason:&'static str}}
 /// One record per profile reference and source category on a successful page.
 /// Selection/decode can occur even if the affected paint is clipped away.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -97,6 +97,22 @@ impl<'a> Profile<'a>{
         let columns=[self.xyz(b"rXYZ")?,self.xyz(b"gXYZ")?,self.xyz(b"bXYZ")?];
         let curve=|name:&Signature|Curve::parse(self.tag(name).ok_or(Error::Unsupported("ICC missing TRC"))?);
         Ok(RgbMatrix{columns,curves:[curve(b"rTRC")?,curve(b"gTRC")?,curve(b"bTRC")?]})
+    }
+    /// Native media-relative monochrome TRC to D50 XYZ. The media white
+    /// is not an absolute-colorimetric scaling factor on this path.
+    pub fn gray_trc(&self)->Result<GrayTrc>{
+        if !matches!(&self.class,b"mntr"|b"scnr"|b"prtr")||self.color_space!=*b"GRAY"||self.pcs!=*b"XYZ "{
+            return Err(Error::Unsupported("ICC gray TRC class or space"));
+        }
+        if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
+            return Err(Error::Unsupported("ICC non-D50 PCS"));
+        }
+        if [*b"A2B0",*b"A2B1",*b"A2B2",*b"D2B0",*b"D2B1",*b"D2B2",*b"D2B3"].iter().any(|s|self.tags.contains_key(s)){
+            return Err(Error::Unsupported("ICC gray LUT profile"));
+        }
+        let white=self.xyz(b"wtpt")?;
+        if white.iter().any(|v|*v<=0.){return Err(Error::Invalid("ICC gray media white"));}
+        Ok(GrayTrc{curve:Curve::parse(self.tag(b"kTRC").ok_or(Error::Unsupported("ICC missing gray TRC"))?)?})
     }
     /// Explicit legacy A2B0 path for CMYK output profiles. Returns encoded PCS
     /// channels, not display RGB. No automatic intent selection or LUT fallback.
@@ -195,6 +211,15 @@ impl Curve{
                 (f64::from(t[i])*(1.-f)+f64::from(t[(i+1).min(t.len()-1)])*f)/65535.
             }
         }
+    }
+}
+#[derive(Debug)]
+pub struct GrayTrc{curve:Curve}
+impl GrayTrc{
+    pub fn to_xyz_d50(&self,gray:f64)->Result<[f64;3]>{
+        if !gray.is_finite(){return Err(Error::Invalid("ICC gray input"));}
+        let y=self.curve.eval(gray).clamp(0.,1.);
+        Ok([0.9642*y,y,0.8249*y])
     }
 }
 #[derive(Debug)]

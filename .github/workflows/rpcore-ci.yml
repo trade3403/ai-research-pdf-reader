@@ -246,6 +246,9 @@ jobs:
       - if: success() || failure()
         run: |
           /usr/bin/python3 rpcore/corpus/icc_print_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/print-profiles --swop /usr/share/color/icc/ghostscript/default_cmyk.icc --fogra /usr/share/color/icc/colord/FOGRA40L_SC_paper.icc
+      - if: success() || failure()
+        run: |
+          /usr/bin/python3 rpcore/corpus/icc_registry_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/registry
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -256,3 +259,4 @@ jobs:
         run: |
           if [ -f rpcore/target/icc-render-report/report.md ]; then cat rpcore/target/icc-render-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/icc-render-report/print-profiles/report.md ]; then cat rpcore/target/icc-render-report/print-profiles/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-render-report/registry/report.md ]; then cat rpcore/target/icc-render-report/registry/report.md >> "$GITHUB_STEP_SUMMARY"; fi

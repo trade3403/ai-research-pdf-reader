@@ -13,6 +13,8 @@ fn report_icc(v:&[rpcore::icc::ProfileDiagnostic]){
         let source=match p.source{ProfileUse::Vector=>"vector",ProfileUse::Image=>"image"};
         let (path,reason)=match p.path{
             ProfilePath::RgbMatrix=>("rgb_matrix".to_owned(),""),
+            ProfilePath::GrayTrc=>("gray_trc".to_owned(),""),
+            ProfilePath::CmykMab{tag}=>(format!("mab_{}",String::from_utf8_lossy(&tag)),""),
             ProfilePath::CmykLut{tag}=>(format!("cmyk_{}",String::from_utf8_lossy(&tag)),""),
             ProfilePath::Alternate{reason}=>("alternate".to_owned(),reason),
         };

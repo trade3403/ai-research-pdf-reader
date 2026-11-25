@@ -54,14 +54,16 @@ pub(crate) const ICC_PAGE_PROFILES:usize=16;
 #[derive(Debug)]
 pub(crate) enum IccTransform{
     Rgb(crate::icc::RgbMatrix),
+    Gray(crate::icc::GrayTrc),
     Cmyk(crate::icc::OwnedCmykLut),
     Mab(crate::icc::CmykMab),
 }
 impl IccTransform{
-    pub(crate) fn components(&self)->usize{match self{Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4}}
+    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4}}
     pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
         let xyz=match self{
             Self::Rgb(m)=>m.to_xyz_d50([v[0],v[1],v[2]])?,
+            Self::Gray(t)=>t.to_xyz_d50(v[0])?,
             Self::Cmyk(lut)=>lut.to_xyz_d50(v)?,
             Self::Mab(lut)=>lut.to_xyz_d50(v)?,
         };
@@ -94,6 +96,7 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
     }
     let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
     let transform=match n{
+        1=>p.gray_trc().map(IccTransform::Gray),
         3=>p.rgb_matrix().map(IccTransform::Rgb),
         4 if p.tag(key).is_some_and(|b|b.starts_with(b"mAB "))=>p.cmyk_mab(key).map(IccTransform::Mab),
         4=>{
@@ -107,7 +110,15 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
         _=>Err(Error::Unsupported("ICC gray transform")),
     };
     match transform{
-        Ok(t)=>Ok((n,Some(t),charged,if n==3{ProfilePath::RgbMatrix}else{ProfilePath::CmykLut{tag:*key}})),
+        Ok(t)=>{
+            let path=match &t{
+                IccTransform::Gray(_)=>ProfilePath::GrayTrc,
+                IccTransform::Rgb(_)=>ProfilePath::RgbMatrix,
+                IccTransform::Cmyk(_)=>ProfilePath::CmykLut{tag:*key},
+                IccTransform::Mab(_)=>ProfilePath::CmykMab{tag:*key},
+            };
+            Ok((n,Some(t),charged,path))
+        }
         Err(Error::Limit(s))=>Err(Error::Limit(s)),
         Err(Error::Invalid(s)|Error::Unsupported(s))=>Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
     }
