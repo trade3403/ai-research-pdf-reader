@@ -9,6 +9,7 @@ pub mod packet;
 pub mod mq;
 pub mod ebcot;
 pub mod wavelet53;
+pub mod wavelet97;
 pub mod gray53;
 
 const SIGNATURE:&[u8]=b"\x00\x00\x00\x0cjP  \x0d\x0a\x87\x0a";
