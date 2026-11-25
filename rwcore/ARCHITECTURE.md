@@ -102,3 +102,6 @@ C4.4a7b pending CI: shared bounded ClassDef formats 1/2, implicit zero within fa
 C4.4a7c pending CI: GSUB Type 5 format 3 per-position Coverage matching with ordered lookup actions; validates header/offsets, action indices, cumulative records and expanded coverage glyphs, charging shared offsets per reference. All three Type 5 formats have standalone matching source; no nested execution.
 
 C4.4a7d pending CI: original OFL Padauk and Noto Sans Devanagari fixtures; independent raw SFNT extraction of all Padauk direct Type 5 subtables and Noto Format 1. Exact ordered actions/rules, glyph-domain coverage gates, representative class sequence and coverage position matching. No nested execution.
+
+
+C4.4a7e1: standalone GSUB Type 6 Format 1 glyph-based chaining. First covered input, nearest-first backtrack, forward lookahead, font-order first match including empty actions; input-relative checked action indices; cumulative rule/glyph/action limits charge shared offsets. Ten new synthetic tests (653/platform, 1959 expected); CI pending. No nested execution, GDEF filtering, class/coverage chaining, shaping or real Type 6 font acceptance. Module: font_chain_context_subst.rs. ContextLimits.max_input is the full three-segment span, max_total_input counts implicit first input as well.

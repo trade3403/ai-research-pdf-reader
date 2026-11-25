@@ -32,3 +32,6 @@
 
 ## Latest handoff checkpoint
 C4.4a7d source pending CI; parent CI #96 verified 641 tests per platform. Check actual HEAD and CI; see DEV_STATE.md for next task. Preserve outstanding real point attachment/general matrix and corpus gates. Do not run concurrent writers.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4a7e1 source pending CI; parent CI #97 verified 643 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers.

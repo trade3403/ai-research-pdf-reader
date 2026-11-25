@@ -165,3 +165,6 @@ pub use font_class_def::{GlyphClassDef,parse_glyph_class_def};
 pub use font_context_subst::{ClassContextSubstitution,parse_class_context_substitution};
 
 pub use font_context_subst::{CoverageContextSubstitution,parse_coverage_context_substitution};
+
+pub mod font_chain_context_subst;
+pub use font_chain_context_subst::{ChainContextRule,ChainContextSubstitution,parse_chain_context_substitution};

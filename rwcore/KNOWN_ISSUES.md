@@ -94,3 +94,6 @@
 - C4.4a7c: synthetic Type 5 format 3 tests only; real context references, chaining, nested execution, GDEF filtering, cluster propagation and full shaping remain outstanding. Payload overlap validation not comprehensive.
 
 - C4.4a7d: selected real direct Type 5 tests cover all three formats; Noto Format 2/3 not yet checked, variable-font interpolation/rendering not tested; no external shaping comparison, nested execution, GDEF filtering or full shaping acceptance.
+
+
+- C4.4a7e1: standalone GSUB Type 6 Format 1 glyph-based chaining. First covered input, nearest-first backtrack, forward lookahead, font-order first match including empty actions; input-relative checked action indices; cumulative rule/glyph/action limits charge shared offsets. Ten new synthetic tests (653/platform, 1959 expected); CI pending. No nested execution, GDEF filtering, class/coverage chaining, shaping or real Type 6 font acceptance. Caller supplies contiguous logical glyph stream and start index. No lookup flag interpretation or glyph skipping; parser permits trailing parent-table bytes and charges aliased rules. Real DOCX corpus, security/license review and reference compatibility still outstanding.
