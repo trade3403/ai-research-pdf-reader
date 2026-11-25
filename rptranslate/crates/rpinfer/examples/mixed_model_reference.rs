@@ -10,7 +10,9 @@ fn main() -> Result<(), String> {
         }
         [mode, root] if mode == "verify" => {
             let model = MixedModel::load(Path::new(root), PAYLOAD_BYTES)?;
-            let shared = model.matrix("model.shared.weight").ok_or("missing shared")?;
+            let shared = model
+                .matrix("model.shared.weight")
+                .ok_or("missing shared")?;
             for name in [
                 "model.encoder.embed_tokens.weight",
                 "model.decoder.embed_tokens.weight",

@@ -222,7 +222,8 @@ impl MixedModel {
         let mut q = quantized::Reader::open(BufReader::new(q), q_info.0).map_err(debug_error)?;
         let mut f = SafeTensorReader::open(f).map_err(debug_error)?;
         let (q_shapes, f_shapes) = shapes();
-        if q.tensors().len() != Q_COUNT || f.tensors().len() != F_COUNT || !f.metadata().is_empty() {
+        if q.tensors().len() != Q_COUNT || f.tensors().len() != F_COUNT || !f.metadata().is_empty()
+        {
             return Err("mixed tensor count".into());
         }
         for (name, shape) in &q_shapes {
@@ -243,12 +244,14 @@ impl MixedModel {
         let mut quantized = BTreeMap::new();
         let mut auxiliary = BTreeMap::new();
         for (name, shape) in q_shapes {
-            let table = QuantizedTable::load(&mut q, &name, q_bytes(&shape))
-                .map_err(debug_error)?;
+            let table =
+                QuantizedTable::load(&mut q, &name, q_bytes(&shape)).map_err(debug_error)?;
             quantized.insert(name, table);
         }
         for (name, shape) in f_shapes {
-            let data = f.read_f32(&name, 0, f_bytes(&shape) / 4).map_err(debug_error)?;
+            let data = f
+                .read_f32(&name, 0, f_bytes(&shape) / 4)
+                .map_err(debug_error)?;
             let dims: Vec<usize> = shape.iter().map(|&v| v as usize).collect();
             auxiliary.insert(name, Tensor::new(&dims, data).map_err(debug_error)?);
         }
@@ -280,8 +283,15 @@ impl MixedModel {
     }
 
     pub fn payload_bytes(&self) -> usize {
-        self.quantized.values().map(QuantizedTable::payload_bytes).sum::<usize>()
-            + self.auxiliary.values().map(|v| v.data().len() * 4).sum::<usize>()
+        self.quantized
+            .values()
+            .map(QuantizedTable::payload_bytes)
+            .sum::<usize>()
+            + self
+                .auxiliary
+                .values()
+                .map(|v| v.data().len() * 4)
+                .sum::<usize>()
     }
 }
 
@@ -295,7 +305,7 @@ mod tests {
         assert_eq!((q.len(), f.len()), (Q_COUNT, F_COUNT));
         assert_eq!(q.values().map(|s| q_bytes(s)).sum::<usize>(), Q_BYTES);
         assert_eq!(f.values().map(|s| f_bytes(s)).sum::<usize>(), F_BYTES);
-        assert!(q.values().all(|s| s.len() == 2 && s[1] % BLOCK as u64 == 0));
+        assert!(q.values().all(|s| s.len() == 2 && s[1].is_multiple_of(BLOCK as u64)));
         assert!(f.contains_key("model.encoder.embed_positions.weight"));
         assert!(MixedModel::load(Path::new("missing"), PAYLOAD_BYTES - 1).is_err());
     }
