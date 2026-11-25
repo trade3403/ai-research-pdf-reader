@@ -26,7 +26,7 @@ fn report_icc(v:&[rpcore::icc::ProfileDiagnostic]){
     println!("icc_vector_native={}\nicc_vector_alternate={}\nicc_image_native={}\nicc_image_alternate={}",counts[0],counts[1],counts[2],counts[3]);
 }
 // Same Document instance, separate page passes, alternating adaptation.
-fn render_checked(doc:&Document<'_>,p:&PageInfo,opt:Options,fonts:Option<&rpcore::raster::StandardFontSet>,quality:TextQuality,degree:rpcore::icc::AdaptationDegree)->rpcore::Result<rpcore::raster::SubstitutedBitmap>{
+fn render_checked(doc:&Document<'_>,p:&PageInfo,opt:Options,fonts:Option<&rpcore::raster::StandardFontSet>,quality:TextQuality,degree:rpcore::icc::AdaptationDegree)->std::result::Result<rpcore::raster::SubstitutedBitmap,Error>{
     if std::env::var("RPCORE_ICC_REPEAT").as_deref()!=Ok("1"){
         return doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,degree);
     }
