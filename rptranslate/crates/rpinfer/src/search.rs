@@ -26,7 +26,7 @@ pub struct Hypothesis {
     pub ended: bool,
 }
 
-fn validate(c: SearchConfig<'_>, vocab: usize) -> Result<(), Error> {
+pub(crate) fn validate(c: SearchConfig<'_>, vocab: usize) -> Result<(), Error> {
     if vocab == 0
         || vocab > MAX_VOCAB
         || c.beam_width == 0

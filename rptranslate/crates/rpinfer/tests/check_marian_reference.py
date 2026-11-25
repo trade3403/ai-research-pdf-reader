@@ -80,6 +80,7 @@ for case, (src, sm, tgt, tm) in enumerate(cases):
     trace["enc.embedding"] = result.encoder_hidden_states[0][0].numpy()
     trace["dec.embedding"] = result.decoder_hidden_states[0][0].numpy()
     trace["logits"] = result.logits[0].numpy()
+    trace["cached_logits"] = result.logits[0].numpy()
     trace["next_logits"] = result.logits[0,-1:].numpy()
     trace["probabilities"] = torch.softmax(result.logits[0,-1:], dim=-1).numpy()
     for kernel in ("scalar", "blocked", "auto", "parallel"):

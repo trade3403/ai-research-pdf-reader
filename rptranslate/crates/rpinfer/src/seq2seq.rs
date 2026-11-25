@@ -1,10 +1,11 @@
 //! Joint encoder/decoder inference with bounded full-prefix generation.
 use crate::{
     attention::softmax,
+    cache::Cache,
     decoder::{Decoder, DecoderMask},
     encoder::Encoder,
     matmul::Kernel,
-    search::{search, Hypothesis, SearchConfig},
+    search::{search, validate, Hypothesis, SearchConfig},
     tensor::{buffer, layout, Error, Tensor},
 };
 
@@ -113,6 +114,69 @@ impl Encoded<'_, '_> {
             return Err(Error::Limit);
         }
         search(vocab, config, |prefix| self.next_logits(prefix, None))
+    }
+
+    /// Incremental full-sequence logits, for teacher-forced cache validation.
+    pub fn cached_logits(
+        &self,
+        prefix: &[u32],
+        target_keep: Option<&[bool]>,
+    ) -> Result<Tensor, Error> {
+        if prefix.is_empty() || target_keep.is_some_and(|m| m.len() != prefix.len()) {
+            return Err(Error::Shape);
+        }
+        let &[vocab, _] = self.model.decoder.embeddings.shape() else {
+            return Err(Error::Shape);
+        };
+        let (_, size) = layout(&[prefix.len(), vocab])?;
+        let mut cache = Cache::new(
+            &self.model.decoder, &self.memory, self.source_keep.as_deref(),
+            prefix.len(), 1, self.kernel,
+        )?;
+        let mut data = buffer(size)?;
+        for (i, &id) in prefix.iter().enumerate() {
+            let (next, hidden) = cache.step(id, target_keep.is_none_or(|m| m[i]))?;
+            let logits = self.model.head.project(&hidden, self.model.decoder.embeddings, true)?;
+            data.extend_from_slice(logits.data());
+            cache = next;
+        }
+        Tensor::new(&[prefix.len(), vocab], data)
+    }
+
+    /// Same search policy as generate(), with immutable parent snapshots.
+    /// Only the preceding and current beam generations are retained.
+    pub fn generate_cached(&self, config: SearchConfig<'_>) -> Result<Vec<Hypothesis>, Error> {
+        use std::collections::BTreeMap;
+        let &[vocab, _] = self.model.decoder.embeddings.shape() else {
+            return Err(Error::Shape);
+        };
+        validate(config, vocab)?;
+        let root = Cache::new(
+            &self.model.decoder, &self.memory, self.source_keep.as_deref(),
+            config.max_new, config.beam_width, self.kernel,
+        )?;
+        let mut previous = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        let mut depth = 1;
+        search(vocab, config, |prefix| {
+            if prefix.len() == depth + 1 {
+                previous = std::mem::take(&mut current);
+                depth += 1;
+            }
+            if prefix.len() != depth {
+                return Err(Error::Shape);
+            }
+            let (&token, parent) = prefix.split_last().ok_or(Error::Shape)?;
+            let cache = if parent.is_empty() {
+                &root
+            } else {
+                previous.get(parent).ok_or(Error::Shape)?
+            };
+            let (next, hidden) = cache.step(token, true)?;
+            let logits = self.model.head.project(&hidden, self.model.decoder.embeddings, true)?;
+            current.insert(prefix.to_vec(), next);
+            Ok(logits)
+        })
     }
 
     pub fn memory(&self) -> &Tensor {
@@ -342,6 +406,34 @@ mod tests {
             let generated = source.generate(config).unwrap();
             assert_eq!(generated[0].tokens, [4, 4, 0]);
             assert!(generated[0].ended);
+            let cached = source.cached_logits(&[4, 3], None).unwrap();
+            close(cached.data(), logits.data());
+            let prefix = [4, 3, 1];
+            let keep = [true, false, true];
+            close(
+                source.cached_logits(&prefix, Some(&keep)).unwrap().data(),
+                source.logits(&prefix, Some(&keep)).unwrap().data(),
+            );
+            for beam_width in [1, 2, 4] {
+                let c = SearchConfig {
+                    beam_width,
+                    max_new: 4,
+                    length_penalty: 1.,
+                    ..config
+                };
+                let full = source.generate(c).unwrap();
+                let cached = source.generate_cached(c).unwrap();
+                assert_eq!(full.len(), cached.len());
+                for (a, b) in full.iter().zip(cached.iter()) {
+                    assert_eq!(a.tokens, b.tokens);
+                    assert_eq!(a.ended, b.ended);
+                    assert!((a.log_probability - b.log_probability).abs() < 1e-5);
+                    assert!((a.score - b.score).abs() < 1e-5);
+                }
+            }
+            assert_eq!(source.cached_logits(&[], None), Err(Error::Shape));
+            assert_eq!(source.cached_logits(&[5], None), Err(Error::Index));
+            assert_eq!(source.cached_logits(&[4], Some(&[])), Err(Error::Shape));
             assert_eq!(source.next_logits(&[], None), Err(Error::Shape));
             assert_eq!(source.next_logits(&[5], None), Err(Error::Index));
             assert_eq!(

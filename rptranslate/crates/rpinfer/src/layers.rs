@@ -130,17 +130,55 @@ impl MultiHead<'_> {
         if work > 1 << 30 {
             return Err(Error::Limit);
         }
-        let q = self.q.forward(query, kernel)?;
         let k = self.k.forward(memory, kernel)?;
         let v = self.v.forward(memory, kernel)?;
+        self.forward_projected(query, &k, &v, mask, kernel)
+    }
+
+    pub(crate) fn forward_projected(
+        &self,
+        query: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        mask: Mask<'_>,
+        kernel: Kernel,
+    ) -> Result<Tensor, Error> {
+        let &[queries, model] = query.shape() else {
+            return Err(Error::Shape);
+        };
+        let &[keys, width] = k.shape() else {
+            return Err(Error::Shape);
+        };
+        if model == 0
+            || keys == 0
+            || width != model
+            || v.shape() != k.shape()
+            || self.heads == 0
+            || self.heads > 128
+            || !model.is_multiple_of(self.heads)
+            || [self.q, self.k, self.v, self.output]
+                .iter()
+                .any(|l| l.weight.shape() != [model, model])
+        {
+            return Err(Error::Shape);
+        }
+        layout(&[queries, keys])?;
+        let work = queries
+            .checked_mul(keys)
+            .and_then(|v| v.checked_mul(model))
+            .ok_or(Error::Limit)?;
+        if work > 1 << 30 {
+            return Err(Error::Limit);
+        }
+        let q = self.q.forward(query, kernel)?;
         let width = model / self.heads;
         let mut joined = buffer(q.data().len())?;
         joined.resize(q.data().len(), 0.0);
         for head in 0..self.heads {
             let start = head * width;
             let qh = head_slice(&q, start, width)?;
-            let kh = head_slice(&k, start, width)?;
-            let vh = head_slice(&v, start, width)?;
+            let kh = head_slice(k, start, width)?;
+            let vh = head_slice(v, start, width)?;
             let result = scaled_dot_product(&qh, &kh, &vh, mask, kernel)?;
             for (row, part) in joined
                 .chunks_exact_mut(model)
