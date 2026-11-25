@@ -9,6 +9,7 @@
 - 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10c 全量后通知用户，等待下一阶段指示。
 
 ## 当前状态（最新优先）
+- D1.10c run [45568226746](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568226746) CPU Format 失败：glossary_reference.rs 8组元组换行及 offline.rs 闭包换行，已按实际 rustfmt 日志修复。原真实模型专项仍运行，保留结果；新提交全量复验前不启动 D1.10d。
 - D1.10b 基线 HEAD 257a156 / [45559761420](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45559761420) 全量 success，97 workspace + 52 portable =149/149；真实 FP32/INT8 各6组8字面量1负例；论文成功266/269、拒绝3，数字280/310→306/310，同成功集合106.321602→105.831631秒、120704 KiB。保护仍显式选择，非语义质量通过。用户授权 D1.10c：本提交新增 Rust trie、69条项目自编候选别名（三学科配置，通用/岩土地震/生物），ASCII case、横向空格、三种Unicode连字符规范化、显式复数别名、最长匹配、UTF-8边界、跨通用/学科冲突拒绝、公式/数值优先、显式 translate-glossary[-int8] API/CLI、双精度各8组真实句与同论文8片段观察。无自动语义消歧或权重训练；保留 D1.10b 全量专项，待CI，不启动 D1.10d。
 - D1.10b run [45555576461](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45555576461) 真实专项 success（job139006695845），FP32/INT8 各6组、8个保护字面量、1负例通过；全文269片段，成功266、拒绝3（9 NoTranslation；45/252 Truncated），302识别跨度、493模型调用。同成功集合数字字符串280/310→306/310，时间106.642471→105.359267秒，保护峰值RSS120768KiB。未证明语义质量提升；样本有漏译、额外数字、分段幻觉及术语错误，保护路径仍仅显式选择。CPU因offline.rs与protection.rs两处rustfmt换行失败，按真实日志修复，全部门槛待重新验收。
 - D1.10b run [45554897289](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45554897289) 失败：Rust 2021 不支持 let chains，protection.rs:269；scientific_reference.rs:30 rustfmt 元组换行。按真实日志改为 Option::filter 及格式修复，保持 Rust 2021 与原验收门槛。新提交待CI；上一轮科学专项未执行。

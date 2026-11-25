@@ -31,14 +31,46 @@ fn main() -> Result<(), String> {
         mode: GenerationMode::Cached,
     };
     let cases = [
-        (Domain::Geotechnical, "We measured maximum strain.", "最大应变"),
-        (Domain::Geotechnical, "We calculated site response.", "场地响应"),
-        (Domain::Geotechnical, "We estimated seismic vulnerability.", "地震易损性"),
-        (Domain::Geotechnical, "We measured spectral amplitude.", "谱幅值"),
-        (Domain::Geotechnical, "We used a Ricker wavelet.", "Ricker 子波"),
-        (Domain::Geotechnical, "We measured incidence angle.", "入射角"),
-        (Domain::Geotechnical, "We examined input motions.", "输入地震动"),
-        (Domain::Biology, "We isolated a bacterial strain.", "细菌菌株"),
+        (
+            Domain::Geotechnical,
+            "We measured maximum strain.",
+            "最大应变",
+        ),
+        (
+            Domain::Geotechnical,
+            "We calculated site response.",
+            "场地响应",
+        ),
+        (
+            Domain::Geotechnical,
+            "We estimated seismic vulnerability.",
+            "地震易损性",
+        ),
+        (
+            Domain::Geotechnical,
+            "We measured spectral amplitude.",
+            "谱幅值",
+        ),
+        (
+            Domain::Geotechnical,
+            "We used a Ricker wavelet.",
+            "Ricker 子波",
+        ),
+        (
+            Domain::Geotechnical,
+            "We measured incidence angle.",
+            "入射角",
+        ),
+        (
+            Domain::Geotechnical,
+            "We examined input motions.",
+            "输入地震动",
+        ),
+        (
+            Domain::Biology,
+            "We isolated a bacterial strain.",
+            "细菌菌株",
+        ),
     ];
     for (i, (domain, source, target)) in cases.iter().enumerate() {
         let glossary = if *domain == Domain::Biology {

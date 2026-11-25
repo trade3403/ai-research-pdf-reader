@@ -267,3 +267,5 @@ D1.10b run [45555576461](https://github.com/trade3403/ai-research-pdf-reader/act
 
 ## D1.10c
 D1.10b 基线 HEAD 257a156 / [45559761420](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45559761420) 全量 success，97 workspace + 52 portable =149/149；真实 FP32/INT8 各6组8字面量1负例；论文成功266/269、拒绝3，数字280/310→306/310，同成功集合106.321602→105.831631秒、120704 KiB。保护仍显式选择，非语义质量通过。用户授权 D1.10c：本提交新增 Rust trie、69条项目自编候选别名（三学科配置，通用/岩土地震/生物），ASCII case、横向空格、三种Unicode连字符规范化、显式复数别名、最长匹配、UTF-8边界、跨通用/学科冲突拒绝、公式/数值优先、显式 translate-glossary[-int8] API/CLI、双精度各8组真实句与同论文8片段观察。无自动语义消歧或权重训练；保留 D1.10b 全量专项，待CI，不启动 D1.10d。
+
+D1.10c run [45568226746](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568226746) CPU Format 失败：glossary_reference.rs 8组元组换行及 offline.rs 闭包换行，已按实际 rustfmt 日志修复。原真实模型专项仍运行，保留结果；新提交全量复验前不启动 D1.10d。

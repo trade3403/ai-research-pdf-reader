@@ -244,7 +244,9 @@ impl TextSession<'_> {
         kernel: Kernel,
     ) -> Result<scientific::ScientificTranslation, scientific::Error> {
         self.validate_scientific(text, options)?;
-        scientific::translate_indexed_with(text, glossary, |gap| self.translate(gap, options, kernel))
+        scientific::translate_indexed_with(text, glossary, |gap| {
+            self.translate(gap, options, kernel)
+        })
     }
 
     fn validate_scientific(
