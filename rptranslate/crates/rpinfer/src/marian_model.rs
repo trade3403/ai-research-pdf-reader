@@ -82,9 +82,8 @@ impl MarianModel {
             return Err(ModelError::Budget);
         }
         let (config, mut reader) = package::open_profile(root).map_err(ModelError::Package)?;
-        let embeddings =
-            MarianEmbeddings::load(&mut reader, &config, EMBEDDING_PAYLOAD_BYTES)
-                .map_err(ModelError::Weights)?;
+        let embeddings = MarianEmbeddings::load(&mut reader, &config, EMBEDDING_PAYLOAD_BYTES)
+            .map_err(ModelError::Weights)?;
         let encoder = MarianEncoder::load(&mut reader, &config, ENCODER_PAYLOAD_BYTES)
             .map_err(ModelError::Weights)?;
         let decoder = MarianDecoder::load(&mut reader, &config, DECODER_PAYLOAD_BYTES)
@@ -103,7 +102,9 @@ impl MarianModel {
     }
 
     pub fn payload_bytes(&self) -> usize {
-        self.embeddings.payload_bytes() + self.encoder.payload_bytes() + self.decoder.payload_bytes()
+        self.embeddings.payload_bytes()
+            + self.encoder.payload_bytes()
+            + self.decoder.payload_bytes()
     }
 
     pub fn default_options(&self) -> GenerationOptions {

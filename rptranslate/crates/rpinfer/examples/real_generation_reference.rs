@@ -11,8 +11,8 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("missing model directory")?;
-    let model = MarianModel::load(Path::new(&path), MODEL_PAYLOAD_BYTES)
-        .map_err(|e| format!("{e:?}"))?;
+    let model =
+        MarianModel::load(Path::new(&path), MODEL_PAYLOAD_BYTES).map_err(|e| format!("{e:?}"))?;
     let cases = [
         (&[1, 2048, 0][..], None, &[65000, 4, 4096][..], None),
         (

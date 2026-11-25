@@ -1,6 +1,8 @@
 //! Lifecycle and token-level public entry-point verification with real weights.
 use rpinfer::{
-    marian_model::{GenerationMode, GenerationOptions, MarianModel, ModelError, MODEL_PAYLOAD_BYTES},
+    marian_model::{
+        GenerationMode, GenerationOptions, MarianModel, ModelError, MODEL_PAYLOAD_BYTES,
+    },
     matmul::Kernel,
     tensor::Error,
 };
@@ -57,17 +59,30 @@ fn main() -> Result<(), String> {
         mode: GenerationMode::Cached,
     };
     for invalid in [
-        GenerationOptions { max_new: 0, ..options },
-        GenerationOptions { max_new: 512, ..options },
-        GenerationOptions { beam_width: 17, ..options },
+        GenerationOptions {
+            max_new: 0,
+            ..options
+        },
+        GenerationOptions {
+            max_new: 512,
+            ..options
+        },
+        GenerationOptions {
+            beam_width: 17,
+            ..options
+        },
     ] {
         if a.generate(invalid).err() != Some(Error::Limit) {
             return Err("invalid generation options accepted".into());
         }
     }
     let prefix = [65000, 4];
-    let full = a.logits(&prefix, None, false).map_err(|e| format!("{e:?}"))?;
-    let cached = a.cached_logits(&prefix, None).map_err(|e| format!("{e:?}"))?;
+    let full = a
+        .logits(&prefix, None, false)
+        .map_err(|e| format!("{e:?}"))?;
+    let cached = a
+        .cached_logits(&prefix, None)
+        .map_err(|e| format!("{e:?}"))?;
     for (&x, &y) in full.data().iter().zip(cached.data()) {
         if (x - y).abs() > 1e-4 + 1e-4 * x.abs() {
             return Err("public logits mismatch".into());
