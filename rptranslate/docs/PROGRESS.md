@@ -18,7 +18,8 @@
 | D1.5a | 已通过 | 稳定 Softmax、单头缩放点积 Attention、组合 mask |
 | D1.5b | 已通过 | 多头注意力、LayerNorm、QKV 投影 |
 | D1.6a | 已通过 | Embedding、Marian 位置编码、激活与 FFN |
-| D1.6b–D1.6e | 未开始 | Encoder、Decoder、联合推理与逐层对照 |
+| D1.6b | 待验证 | post-norm Encoder 单层、多层与源 mask |
+| D1.6c–D1.6e | 未开始 | Decoder、联合推理与逐层对照 |
 | D1.7 | 未开始 | Beam Search |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -87,8 +88,11 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.6a
 新增自主 embedding lookup、显式 scale、Marian grouped sin/cos 位置编码（含奇数宽度、offset、上限）、ReLU/GELU tanh/SiLU、两层 FFN。独立 NumPy 2.3.5 生成位置与 FFN 参考数组；实际验收：首轮 [45517949056](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517949056) rustfmt 失败，按日志修正两组格式；[修复提交 68b3ae7](https://github.com/trade3403/ai-research-pdf-reader/commit/68b3ae78f04b2e2db76a1eb836d1a0ae2a744ed8)，[复测 45518013150](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518013150) completed/success。新增四项测试、格式、Clippy、workspace 单元测试、Release、自检、强制 portable-only 全部通过。D1.6a 已通过；D1.6b 待研发，完整 D1.6 尚未验收，不增加整阶段计数。未加载真实模型或测试推理性能。[技术文档](D1.6_TRANSFORMER.md)。
 
-## 下一阶段 D1.6b
-Post-norm Transformer Encoder layer、层堆叠和独立逐层对照。
+## 当前阶段 D1.6b
+新增 EncoderLayer、Norm、1–64 层顺序执行、token embedding 入口、显式源 padding keep mask。实际 NumPy 2.3.5 FP64 合成参考对照首层 attention/post-norm、首层及双层输出，验证改变被 mask 的 token 不影响有效位置。CI 待验收。
+
+## 下一阶段 D1.6c
+Decoder 自注意力（causal）、encoder cross attention、FFN、残差归一化及逐层对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
