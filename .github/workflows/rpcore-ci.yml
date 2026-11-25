@@ -178,3 +178,28 @@ jobs:
         run: |
           if [ -f rpcore/target/formula-report/report.md ]; then cat rpcore/target/formula-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/formula-report/extended/report.md ]; then cat rpcore/target/formula-report/extended/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-charts:
+    # Numerical chart crops and original synthetic comparison images.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends poppler-utils python3-pil fonts-urw-base35
+      - run: /usr/bin/python3 rpcore/corpus/test_chart_benchmark.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: |
+          mkdir -p rpcore/target/chart-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/chart-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/chart-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/chart_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --font-dir /usr/share/fonts/opentype/urw-base35 --out rpcore/target/chart-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-chart-visual-comparison
+          path: rpcore/target/chart-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/chart-report/report.md ]; then cat rpcore/target/chart-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
