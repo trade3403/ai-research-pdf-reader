@@ -44,6 +44,46 @@ pub fn inverse97_line(low:&[f64],high:&[f64],odd_origin:bool)->Result<Vec<f64>>{
     Ok(a)
 }
 
+const MAX_PLANE:usize=4_194_304;
+/// Reconstruct one resolution from row-major LL, HL, LH and HH bands.
+/// HL is high in X; LH is high in Y. Undo horizontal lifting first,
+/// then vertical, with the output reference-grid parity on each axis.
+/// Keep floating-point samples unrounded and unclipped.
+pub fn inverse97_plane(width:usize,height:usize,odd_x:bool,odd_y:bool,
+    ll:&[f64],hl:&[f64],lh:&[f64],hh:&[f64])->Result<Vec<f64>>{
+    let area=width.checked_mul(height).ok_or(Error::Limit("JPX 9/7 plane area"))?;
+    if width==0||height==0{return Err(Error::Invalid("JPX 9/7 empty plane"));}
+    if width>MAX_LINE||height>MAX_LINE||area>MAX_PLANE{
+        return Err(Error::Limit("JPX 9/7 plane area"));
+    }
+    let lw=width/2+usize::from(width%2!=0&&!odd_x);
+    let ly=height/2+usize::from(height%2!=0&&!odd_y);
+    let hw=width-lw;let hy=height-ly;
+    if ll.len()!=lw*ly||hl.len()!=hw*ly||lh.len()!=lw*hy||hh.len()!=hw*hy{
+        return Err(Error::Invalid("JPX 9/7 subband plane dimensions"));
+    }
+    if [ll,hl,lh,hh].into_iter().flatten().any(|v|!v.is_finite()){
+        return Err(Error::Invalid("JPX 9/7 nonfinite coefficient"));
+    }
+    let mut rows=Vec::with_capacity(area);
+    for (lo,hi,count) in [(ll,hl,ly),(lh,hh,hy)]{
+        for y in 0..count{
+            rows.extend(inverse97_line(&lo[y*lw..(y+1)*lw],&hi[y*hw..(y+1)*hw],odd_x)?);
+        }
+    }
+    let mut out=vec![0.;area];
+    let mut low=Vec::with_capacity(ly);
+    let mut high=Vec::with_capacity(hy);
+    for x in 0..width{
+        low.clear();high.clear();
+        for y in 0..ly{low.push(rows[y*width+x]);}
+        for y in ly..height{high.push(rows[y*width+x]);}
+        let col=inverse97_line(&low,&high,odd_y)?;
+        for (y,v) in col.into_iter().enumerate(){out[y*width+x]=v;}
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -84,5 +124,65 @@ mod tests{
         assert!(inverse97_line(&[f64::MAX],&[0.],false).is_err());
         assert!(inverse97_line(&[0.],&[f64::MAX],false).is_err());
         assert!(inverse97_line(&vec![0.;MAX_LINE+1],&[],false).is_err());
+    }
+
+    // Separate Python Decimal forward lifting, 45-digit arithmetic;
+    // vertical analysis then horizontal. Reference input (i*37 % 101)-50.
+    #[test]fn plane97_reference_even(){
+        let a=inverse97_plane(4,4,false,false,
+            &[-14.821272703659382,-0.7537151798561157,18.346602473807124,-10.841125471060586],
+            &[35.09651724122752,-22.795183640581723,-3.984640195851484,-10.729645029232488],
+            &[35.77108197894249,-3.310075458136462,-14.144313116011768,-2.0787745046624813],
+            &[65.69016791652082,111.90121609242061,111.9012160924206,97.63446396423927]).unwrap();
+        let expected:Vec<_>=(0..16).map(|i|((i*37%101)-50)as f64).collect();
+        close(&a,&expected);
+    }
+    #[test]fn plane97_reference_mixed_x(){
+        let a=inverse97_plane(5,3,true,false,
+            &[-7.90390113420691,-0.1835594969921918,-15.662172846796079,13.874633477995536],
+            &[-5.418763194131768,36.96574899698358,-2.2116349609793304,101.1195616850103,-8.809800922444511,-99.30105967897757],
+            &[12.227987520143019,25.647012479856922],
+            &[65.53034422361785,-28.15594807453948,-59.71844807453948]).unwrap();
+        let expected:Vec<_>=(0..15).map(|i|((i*37%101)-50)as f64).collect();
+        close(&a,&expected);
+    }
+    #[test]fn plane97_reference_mixed_y(){
+        let a=inverse97_plane(3,5,false,true,
+            &[-34.90328890868197,28.66541780754459,0.6000268952430935,-4.237155794105359],
+            &[-2.1002884425874404,39.97528844258738],
+            &[-5.766482041696528,-20.75370708198258,-8.809800922444468,36.96574899698353,7.584984047729345,13.123308926871394],
+            &[9.218448074539264,-28.15594807453948,-3.406551925460893]).unwrap();
+        let expected:Vec<_>=(0..15).map(|i|((i*37%101)-50)as f64).collect();
+        close(&a,&expected);
+    }
+    #[test]fn plane97_reference_odd(){
+        let a=inverse97_plane(3,3,true,true,
+            &[-2.999999999999981],
+            &[-45.51644188181788,45.5164418818179],
+            &[-12.301741049139963,12.301741049139979],
+            &[1.540941627686054e-13,-8.852217861175207e-14,8.852217861175204e-14,-1.5409416276860545e-13]).unwrap();
+        let expected:Vec<_>=(0..9).map(|i|((i*37%101)-50)as f64).collect();
+        close(&a,&expected);
+    }
+    #[test]fn plane97_degenerate_axes(){
+        for x in [false,true]{for y in [false,true]{
+            let mut b=[&[][..];4];
+            b[usize::from(x)+2*usize::from(y)]=&[-7.25];
+            close(&inverse97_plane(1,1,x,y,b[0],b[1],b[2],b[3]).unwrap(),&[-7.25]);
+        }}
+        for odd in [false,true]{
+            close(&inverse97_plane(1,2,true,odd,&[],&[3.5],&[],&[0.]).unwrap(),&[3.5,3.5]);
+            close(&inverse97_plane(2,1,odd,true,&[],&[],&[3.5],&[0.]).unwrap(),&[3.5,3.5]);
+        }
+        close(&inverse97_plane(4,4,false,false,&[12.5;4],&[0.;4],&[0.;4],&[0.;4]).unwrap(),&[12.5;16]);
+    }
+    #[test]fn plane97_limits_and_nonfinite(){
+        assert!(inverse97_plane(0,1,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse97_plane(usize::MAX,2,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse97_plane(MAX_LINE+1,1,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse97_plane(2049,2049,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse97_plane(2,2,false,false,&[1.],&[0.],&[0.],&[]).is_err());
+        assert!(inverse97_plane(2,2,false,false,&[1.],&[0.],&[0.],&[f64::NAN]).is_err());
+        assert!(inverse97_plane(2,2,false,false,&[f64::MAX],&[0.],&[0.],&[0.]).is_err());
     }
 }
