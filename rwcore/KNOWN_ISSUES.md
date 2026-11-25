@@ -117,3 +117,5 @@
 - C4.4b1: directory and two ClassDefs only; MarkGlyphSetsDef, AttachList, LigCaretList and ItemVariationStore bodies remain undecoded. Child offsets are not validated extents; no lookup flag application or mark filtering yet. Native Type 8 sample, nested lookup execution, cluster handling, GPOS and full Word fidelity remain outstanding.
 
 - C4.4b2: mark-set membership does not imply GDEF Mark classification; lookup flag precedence and actual filtering not implemented. AttachList, LigCaretList and ItemVariationStore remain opaque. Real GDEF reference not yet checked, native Type 8 fixture still needed; full GSUB execution, GPOS, cluster handling and Word fidelity outstanding.
+
+- C4.4b2 CI #109 failed due to a legal empty Coverage format 2 mutation incorrectly classified as malformed. Repair 1 fixes the expectation, preserves all regression cases including a true unsupported-format rejection, and requires fresh three-platform acceptance. Other limitations unchanged.

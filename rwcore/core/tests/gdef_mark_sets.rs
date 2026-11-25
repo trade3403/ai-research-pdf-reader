@@ -43,7 +43,12 @@ fn set(b:&mut [u8],i:usize,v:u16){b[2*i..2*i+2].copy_from_slice(&v.to_be_bytes()
     }
 }
 #[test]fn malformed_coverages(){
-    for (i,v) in [(8,3),(9,65535),(10,32),(11,10),(12,3),(14,16),(15,32),(16,1),(17,2),(18,1)]{
+    // Empty Coverage Format 2 is legal: zero ranges, no range records.
+    let mut valid=fixture();set(&mut valid,17,2);
+    let x=parse(&valid).unwrap();
+    assert!(x.coverage(2).unwrap().is_empty());
+    for glyph in 0..32u16{assert_eq!(x.contains(2,glyph),Some(false));}
+    for (i,v) in [(8,3),(9,65535),(10,32),(11,10),(12,3),(14,16),(15,32),(16,1),(17,3),(18,1)]{
         let mut b=fixture();set(&mut b,i,v);assert!(parse(&b).is_err(),"word {i}");
     }
 }
