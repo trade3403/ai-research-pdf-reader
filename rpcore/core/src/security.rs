@@ -1,8 +1,10 @@
-//! Structural inspection and legacy password authentication. No decryption of PDF objects.
+//! Structural inspection and authenticated legacy RC4 object decryption.
 //! Encrypted files cannot be opened as Document until a separate authenticated
 //! path exists. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
 mod legacy;
 mod auth;
+mod object_crypto;
+pub(crate) use object_crypto::ObjectCrypto;
 pub use auth::PasswordStatus;
 use crate::{Document,Error,Object,Result,xref::Entry};
 use std::collections::BTreeMap;
@@ -137,6 +139,18 @@ impl TrailerSecurity{
     }
     pub(crate) fn inspect(self,doc:&Document<'_>)->Result<Option<EncryptionInfo>>{
         self.bootstrap(doc)?.map(|(d,_)|parse(&d)).transpose()
+    }
+    pub(crate) fn unlock(self,doc:&Document<'_>,password:&[u8])->Result<Option<ObjectCrypto>>{
+        let reference=match &self.encrypt{Some(Object::Ref(id,g))=>Some((*id,*g)),_=>None};
+        let Some((d,id))=self.bootstrap(doc)? else{return Ok(None);};
+        let info=parse(&d)?;
+        let (role,key)=auth::authenticate(&d,&id,&info,password)?;
+        let key=key.ok_or(Error::Invalid("incorrect PDF password"))?;
+        if role==PasswordStatus::User{
+            let mask=if info.revision==2{0x3c}else{0xf3c};
+            if info.permissions&mask!=mask{return Err(Error::Unsupported("restricted PDF user permissions"));}
+        }
+        Ok(Some(ObjectCrypto::new(key,usize::from(info.key_bits/8),reference)?))
     }
     pub(crate) fn authenticate(self,doc:&Document<'_>,password:&[u8])->Result<PasswordStatus>{
         let Some((d,id))=self.bootstrap(doc)? else{return Ok(PasswordStatus::Unencrypted);};

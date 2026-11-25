@@ -202,6 +202,13 @@ impl<'a> Document<'a>{
         let (doc,security)=Self::index(bytes,true)?;
         security.authenticate(&doc,password)
     }
+    /// Read-only authenticated R2/R3 open. Restricted user permissions are
+    /// rejected until application enforcement is available. No password logging.
+    pub fn open_with_legacy_password(bytes:&'a [u8],password:&[u8])->Result<Self>{
+        let (mut doc,security)=Self::index(bytes,true)?;
+        doc.encryption=security.unlock(&doc,password)?;
+        Ok(doc)
+    }
     fn index(bytes:&'a [u8],inspect:bool)->Result<(Self,crate::security::TrailerSecurity)>{
         if bytes.len()>MAX_BYTES{return Err(Error::Limit("file size"));}
         if !bytes.starts_with(b"%PDF-"){return Err(Error::Invalid("PDF header"));}
@@ -239,7 +246,7 @@ impl<'a> Document<'a>{
             // Index by object number, not generation. Free entries are tombstones.
             for (id,e) in sec.entries{entries.entry(id).or_insert(e);}
             if let Some(p)=prev{offset=p;}else{
-                return Ok((Self{bytes,entries,root:root.ok_or(Error::Invalid("missing Root"))?,object_stream_cache:Mutex::new(None)},security));
+                return Ok((Self{bytes,entries,root:root.ok_or(Error::Invalid("missing Root"))?,encryption:None,object_stream_cache:Mutex::new(None)},security));
             }
         }
         Err(Error::Limit("xref revisions"))
@@ -269,9 +276,13 @@ impl<'a> Document<'a>{
                         Some(Object::Ref(i,g))=>self.stream_length(*i,*g,active)?,
                         other=>number(other,MAX_BYTES,"stream length")?,
                     };
-                    return read_stream(&mut p,map,length);
+                    let mut value=read_stream(&mut p,map,length)?;
+                    if let Some(crypto)=&self.encryption{crypto.decrypt(id,generation,&mut value)?;}
+                    return Ok(value);
                 }
                 p.expect(b"endobj")?;
+                let mut value=value;
+                if let Some(crypto)=&self.encryption{crypto.decrypt(id,generation,&mut value)?;}
                 Ok(value)
             }
             Some(Entry::Compressed{stream,index}) if generation==0=>{

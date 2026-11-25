@@ -233,6 +233,7 @@ pub struct Document<'a> {
     bytes: &'a [u8],
     entries: BTreeMap<u32,xref::Entry>,
     root: (u32,u16),
+    encryption: Option<security::ObjectCrypto>,
     object_stream_cache: std::sync::Mutex<Option<(u32,std::sync::Arc<xref::ObjectStream>)>>,
 }
 impl<'a> Document<'a> {

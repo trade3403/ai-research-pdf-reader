@@ -62,7 +62,7 @@ fn recover_owner(password:&[u8],o:&[u8;32],r:u8,n:usize)->Result<[u8;32]>{
     else{for round in (0..=19).rev(){xor_round(&hash[..n],round,&mut user)?;}}
     Ok(user)
 }
-fn authenticate(d:&Dict,id:&[u8],info:&EncryptionInfo,password:&[u8])->Result<(PasswordStatus,Option<[u8;16]>)>{
+pub(super) fn authenticate(d:&Dict,id:&[u8],info:&EncryptionInfo,password:&[u8])->Result<(PasswordStatus,Option<[u8;16]>)>{
     let r=info.revision;
     if !matches!((info.version,r),(1,2)|(2,3)){return Err(Error::Unsupported("legacy password revision"));}
     let n=usize::from(info.key_bits/8);
