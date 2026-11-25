@@ -1,5 +1,6 @@
 //! Scalar numeric primitives and dense FP32 tensor core.
 pub mod attention;
+pub mod layers;
 pub mod matmul;
 pub mod tensor;
 
