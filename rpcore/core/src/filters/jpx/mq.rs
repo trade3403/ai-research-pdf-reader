@@ -142,4 +142,29 @@ mod tests{
             assert!(d.decode(&mut c).is_err());
         }
     }
+
+    // Offline C reference encoder using OpenJPEG 2.5.3 state table,
+    // byteout and flush; separate encoder decision equations.
+    #[test]fn independent_multicontext_vectors(){
+        let vectors=[
+            "700f6d9ff6a1c6e35b52bf0ba1ee221c1b64394a9783834b8575b4febb62632f94498e4f4190dcf0aca780b69d0524e9bcf781bd5bd424cc59425da468b8af43044c4a273c",
+            "3e56416ed4c80179f5e85455eae2bd3ad17b148d148c735d1e6916075e2c8a400b24416f663cabeafe6f9386dd08858d0e3081e9a428f927d07865928c3761a58fb5a6d864def265463d80a043218a822477",
+            "0000c64b27bc050000850011a8e70011557a888020ac020a0d33181f68d86a8991a21b7ada39bf44165ef4b8045d0aa9b07bfcc2fd6b84ca5cd916cb47e29b6c60003faca10bd80c2205eb4eb4c0320fb423918e489ed2429b3ffe4f4badc7b0d072820d274793ad2a952ee46f",
+            "01fe2492d873dec55183ef6af37b260341bd2324a8b73e6d75d67be003778a4d100a3924badb63d7fbb4c2917c1fe47b0f996cd1e8d0e18198333a4662af0c9b1cc4616fb16a7f",
+            "00000004e0808a1000004eb582281acaab00f6e7f640a2106d6c66327121048110404a00ac111c7199c200000024d94b91e0be7952d52c4548017079f748f8148021300a00f58bc70de10c518a9a6ad405afb635293834a355b16c841f0959593bc2f2e9111ef22a1e1bb70e997b312d484e9cf50b",
+        ];
+        for (g,(hex,len)) in vectors.into_iter().zip([69,82,109,71,117]).enumerate(){
+            assert_eq!(hex.len(),len*2);
+            let bytes:Vec<u8>=hex.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            let mut contexts:Vec<_>=(0..19).map(|k|Context::new(((g*19+k)%47) as u8,((g+k)%2) as u8).unwrap()).collect();
+            let mut d=Decoder::new(&bytes,512).unwrap();
+            let mut rng=0x12345678u32+g as u32;
+            for i in 0..512{
+                rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);
+                let k=((rng>>16)%19) as usize;
+                assert_eq!(d.decode(&mut contexts[k]).unwrap(),(rng>>31) as u8,"group {g}, symbol {i}, context {k}");
+            }
+            assert!(d.decode(&mut contexts[0]).is_err());
+        }
+    }
 }
