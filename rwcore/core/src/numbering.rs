@@ -202,7 +202,7 @@ pub struct NumberingCounter {
 
 fn start_value(level: &NumberingLevel) -> u32 { level.start.unwrap_or(0) }
 
-fn format_value(value: u32, kind: &str) -> Result<String, Error> {
+pub(crate) fn format_value(value: u32, kind: &str) -> Result<String, Error> {
     match kind {
         "decimal" => Ok(value.to_string()),
         "decimalZero" => Ok(format!("{value:02}")),

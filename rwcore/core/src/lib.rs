@@ -32,3 +32,6 @@ pub use stories::{StoryBinding, PageContext, SectionStories, SelectedStories};
 
 pub mod fields;
 pub use fields::{StoryField, FieldKind, FieldEncoding};
+
+pub mod page_numbers;
+pub use page_numbers::{PageNumberPlan, PageNumberContext, evaluate_page_field};
