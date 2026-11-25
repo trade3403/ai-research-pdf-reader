@@ -2,6 +2,7 @@
 //! Sequential standalone files and headerless embedded streams only.
 //! Payloads remain opaque except for page information. This is not a bitmap
 //! decoder; embedded references may require a separately supplied globals stream.
+pub mod qm;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
