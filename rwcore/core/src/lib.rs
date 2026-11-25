@@ -124,3 +124,6 @@ pub use font_path::{PATH_ONE,PathLimits,PathPoint,GlyphPathCommand,GlyphPathBoun
 
 pub mod font_flatten;
 pub use font_flatten::{FlattenLimits,FlattenOptions,ContourOrientation,FlatContour,FlattenedGlyph,flatten_glyph_path};
+
+pub mod font_raster;
+pub use font_raster::{GlyphFillRule,RasterTransform,RasterViewport,RasterLimits,RasterOptions,GlyphBitmap,rasterize_flat_glyph};
