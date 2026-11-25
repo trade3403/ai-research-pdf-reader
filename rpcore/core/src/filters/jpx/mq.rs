@@ -1,0 +1,112 @@
+//! JPEG 2000 Part 1 MQ binary arithmetic decoder, independent of Tier-1.
+//! Virtual FF termination is normative; it cannot authenticate a truncated segment.
+use crate::{Error,Result,MAX_BYTES};
+const MAX_SYMBOLS:usize=16_777_216;
+// Qe, next MPS, next LPS, switch MPS.
+const STATES:[(u32,u8,u8,bool);47]=[
+(0x5601,1,1,true),(0x3401,2,6,false),(0x1801,3,9,false),(0x0ac1,4,12,false),
+(0x0521,5,29,false),(0x0221,38,33,false),(0x5601,7,6,true),(0x5401,8,14,false),
+(0x4801,9,14,false),(0x3801,10,14,false),(0x3001,11,17,false),(0x2401,12,18,false),
+(0x1c01,13,20,false),(0x1601,29,21,false),(0x5601,15,14,true),(0x5401,16,14,false),
+(0x5101,17,15,false),(0x4801,18,16,false),(0x3801,19,17,false),(0x3401,20,18,false),
+(0x3001,21,19,false),(0x2801,22,19,false),(0x2401,23,20,false),(0x2201,24,21,false),
+(0x1c01,25,22,false),(0x1801,26,23,false),(0x1601,27,24,false),(0x1401,28,25,false),
+(0x1201,29,26,false),(0x1101,30,27,false),(0x0ac1,31,28,false),(0x09c1,32,29,false),
+(0x08a1,33,30,false),(0x0521,34,31,false),(0x0441,35,32,false),(0x02a1,36,33,false),
+(0x0221,37,34,false),(0x0141,38,35,false),(0x0111,39,36,false),(0x0085,40,37,false),
+(0x0049,41,38,false),(0x0025,42,39,false),(0x0015,43,40,false),(0x0009,44,41,false),
+(0x0005,45,42,false),(0x0001,45,43,false),(0x5601,46,46,false)];
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct Context{state:u8,mps:u8}
+impl Context{
+    pub fn new(state:u8,mps:u8)->Result<Self>{
+        if state>=47||mps>1{return Err(Error::Invalid("JPX MQ context"));}
+        Ok(Self{state,mps})
+    }
+    pub fn state(&self)->u8{self.state}
+    pub fn mps(&self)->u8{self.mps}
+}
+pub struct Decoder<'a>{data:&'a[u8],pos:usize,a:u32,c:u32,ct:u8,left:usize,virtual_input:bool}
+impl<'a> Decoder<'a>{
+    pub fn new(data:&'a[u8],symbols:usize)->Result<Self>{
+        if data.is_empty(){return Err(Error::Invalid("JPX empty MQ segment"));}
+        if data.len()>MAX_BYTES||symbols>MAX_SYMBOLS{return Err(Error::Limit("JPX MQ work"));}
+        let mut d=Self{data,pos:0,a:0x8000,c:u32::from(data[0])<<16,ct:0,left:symbols,virtual_input:false};
+        d.byte_in();d.c<<=7;d.ct-=7;Ok(d)
+    }
+    fn byte_in(&mut self){
+        let b=self.data.get(self.pos).copied().unwrap_or(255);
+        let next=self.data.get(self.pos+1).copied().unwrap_or(255);
+        if b==255&&next>0x8f{
+            self.c=self.c.wrapping_add(0xff00);self.ct=8;
+            if self.pos+1>=self.data.len(){self.virtual_input=true;}
+        }else{
+            self.pos+=1;
+            if self.pos>=self.data.len(){self.virtual_input=true;}
+            if b==255{self.c=self.c.wrapping_add(u32::from(next)<<9);self.ct=7;}
+            else{self.c=self.c.wrapping_add(u32::from(next)<<8);self.ct=8;}
+        }
+    }
+    fn renorm(&mut self){
+        while self.a<0x8000{
+            if self.ct==0{self.byte_in();}
+            self.a<<=1;self.c<<=1;self.ct-=1;
+        }
+    }
+    pub fn decode(&mut self,cx:&mut Context)->Result<u8>{
+        if self.left==0{return Err(Error::Limit("JPX MQ symbols"));}
+        self.left-=1;
+        let (qe,nm,nl,sw)=STATES[usize::from(cx.state)];
+        self.a-=qe;
+        let m=cx.mps;
+        let bit;
+        if self.c>>16<qe{
+            if self.a<qe{bit=m;cx.state=nm;}
+            else{bit=m^1;cx.state=nl;if sw{cx.mps^=1;}}
+            self.a=qe;self.renorm();
+        }else{
+            self.c-=qe<<16;
+            if self.a>=0x8000{return Ok(m);}
+            if self.a<qe{bit=m^1;cx.state=nl;if sw{cx.mps^=1;}}
+            else{bit=m;cx.state=nm;}
+            self.renorm();
+        }
+        Ok(bit)
+    }
+    pub fn used_virtual_input(&self)->bool{self.virtual_input}
+    pub fn bytes_consumed(&self)->usize{(self.pos+1).min(self.data.len())}
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]fn table_integrity(){
+        assert_eq!(STATES.len(),47);
+        for &(q,m,l,_) in &STATES{assert!(q>0&&q<=0x5601&&m<47&&l<47);}
+        assert_eq!(STATES[46],(0x5601,46,46,false));
+        assert_eq!(STATES.iter().filter(|s|s.3).count(),3);
+    }
+    #[test]fn context_and_work_limits(){
+        assert!(Context::new(47,0).is_err());assert!(Context::new(0,2).is_err());
+        assert!(Decoder::new(&[],1).is_err());assert!(Decoder::new(&[0],MAX_SYMBOLS+1).is_err());
+        let mut d=Decoder::new(&[0,0],0).unwrap();let mut c=Context::new(0,0).unwrap();
+        assert!(d.decode(&mut c).is_err());assert_eq!(c,Context::new(0,0).unwrap());
+    }
+    #[test]fn hand_derived_first_exchange(){
+        let mut d=Decoder::new(&[0,0],1).unwrap();let mut c=Context::new(0,0).unwrap();
+        assert_eq!(d.decode(&mut c).unwrap(),0);assert_eq!(c.state(),1);assert_eq!(c.mps(),0);
+        let mut d=Decoder::new(&[0,0],1).unwrap();let mut c=Context::new(1,0).unwrap();
+        assert_eq!(d.decode(&mut c).unwrap(),1);assert_eq!(c.state(),6);assert_eq!(c.mps(),0);
+    }
+    #[test]fn byte_in_stuffing_and_marker(){
+        let d=Decoder::new(&[255,0x8f,0],1).unwrap();assert_eq!(d.bytes_consumed(),2);assert_eq!(d.ct,0);
+        let d=Decoder::new(&[255,0x90,0],1).unwrap();assert_eq!(d.bytes_consumed(),1);assert_eq!(d.ct,1);
+        let d=Decoder::new(&[255],1).unwrap();assert!(d.used_virtual_input());
+    }
+    #[test]fn bounded_repeated_symbols(){
+        for data in [[0,0,0],[255,0x8f,0],[0x12,0x34,0x56]]{
+            let mut d=Decoder::new(&data,1024).unwrap();let mut c=Context::new(0,0).unwrap();
+            for _ in 0..1024{assert!(d.decode(&mut c).unwrap()<=1);assert!(d.a>=0x8000&&d.a<=0xffff);}
+            assert!(d.decode(&mut c).is_err());assert!(d.bytes_consumed()<=data.len());
+        }
+    }
+}
