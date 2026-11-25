@@ -50,3 +50,5 @@
 - C4.3g verified CI #74: nominal single-face logical-order text only, no shaping, kerning, bidi, grapheme clusters, font fallback, tabs/line layout or DOCX painting. Source-over rounded 8-bit alpha is layer composition, not analytic union of overlapping contours. No bitmap cache or benchmark. Aggregate pixel/sample budgets and per-glyph limits bound the reference implementation, not exact heap or cumulative CPU work across every stage. Real licensed font/reference geometry and visual comparisons pending.
 
 - C4.3h-1 pending CI: comparison rectangle includes transparent gaps; no automatic threshold or reference generation. Real font licenses, fixture provenance, reference geometry and visual acceptance remain outstanding.
+
+- C4.3h-2a pending CI: one Latin font only; no independent grayscale reference, multilingual corpus or Word compatibility acceptance. License and source blob provenance retained.

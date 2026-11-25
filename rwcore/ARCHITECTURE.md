@@ -57,4 +57,6 @@ C4.3f (verified CI #73): font_render.rs builds a single borrowed TrueTypeRendere
 
 C4.3g (verified CI #74): font_text.rs renders logical Unicode scalars through the same TrueTypeRenderer, retains UTF-8 ranges, glyph metrics and 26.6 placements, scales cumulative original hmtx units before rounding, unions nonempty bitmap viewports and composites straight alpha in source order. Empty glyphs retain advance. Bounded bytes/scalars, aggregate retained glyph pixels and sample counts, output dimensions and pixels, per-glyph stage limits. No exact outline-union coverage or shaping.
 
-C4.3h-1 (pending CI): font_compare.rs compares caller-supplied straight-alpha bitmaps in absolute coordinates, zero outside each viewport. Bounds input lengths, union rectangle area and integer accumulators; reports absolute/squared/max error and ink sums. No reference generator or real font corpus yet.
+C4.3h-1 (verified CI #75): font_compare.rs compares caller-supplied straight-alpha bitmaps in absolute coordinates, zero outside each viewport. Bounds input lengths, union rectangle area and integer accumulators; reports absolute/squared/max error and ink sums. No reference generator or real font corpus yet.
+
+C4.3h-2a pending CI: real_font.rs exercises unmodified ABeeZee Regular OFL font with separately extracted cmap4/hmtx values, directory checksums, simple/composite smoke and translation invariance. No independent reference raster yet.
