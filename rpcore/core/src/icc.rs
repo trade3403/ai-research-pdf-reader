@@ -743,6 +743,52 @@ impl MpeDirection{
         match self{Self::DeviceToPcs=>[b'D',b'2',b'B',intent.digit()],Self::PcsToDevice=>[b'B',b'2',b'D',intent.digit()]}
     }
 }
+/// Ordered candidates for ICC.1:2022 section 8.10.2. Candidate presence
+/// does not imply support; callers must validate each transform. A resource
+/// limit must never be treated as a missing tag.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum TransformCandidate{
+    Mpe{tag:Signature},
+    Legacy{tag:Signature,absolute_adjustment:bool},
+    MatrixTrc{absolute_adjustment:bool},
+}
+impl MpeDirection{
+    pub fn candidates(self,intent:RenderingIntent)->Vec<TransformCandidate>{
+        let absolute=intent==RenderingIntent::AbsoluteColorimetric;
+        let digit=if absolute{b'1'}else{intent.digit()};
+        let legacy=|d|match self{
+            Self::DeviceToPcs=>[b'A',b'2',b'B',d],
+            Self::PcsToDevice=>[b'B',b'2',b'A',d],
+        };
+        let mut out=vec![TransformCandidate::Mpe{tag:self.tag(intent)},
+            TransformCandidate::Legacy{tag:legacy(digit),absolute_adjustment:absolute}];
+        if digit!=b'0'{out.push(TransformCandidate::Legacy{tag:legacy(b'0'),absolute_adjustment:absolute});}
+        out.push(TransformCandidate::MatrixTrc{absolute_adjustment:absolute});
+        out
+    }
+}
+impl Profile<'_>{
+    /// Select the first supported candidate. Unsupported transforms may fall
+    /// through; malformed data and resource limits remain explicit errors.
+    /// The callback owns preparation and must apply any requested PCS adjustment.
+    pub fn select_transform<T>(&self,direction:MpeDirection,intent:RenderingIntent,
+        mut prepare:impl FnMut(TransformCandidate)->Result<T>)->Result<(TransformCandidate,T)>{
+        for candidate in direction.candidates(intent){
+            let tag=match candidate{
+                TransformCandidate::Mpe{tag}|TransformCandidate::Legacy{tag,..}=>Some(tag),
+                TransformCandidate::MatrixTrc{..}=>None,
+            };
+            if tag.is_some_and(|t|self.tag(&t).is_none()){continue;}
+            match prepare(candidate){
+                Ok(value)=>return Ok((candidate,value)),
+                Err(Error::Unsupported(_))=>continue,
+                Err(err)=>return Err(err),
+            }
+        }
+        Err(Error::Unsupported("ICC no supported intent transform"))
+    }
+}
+
 /// Exact MPE tag execution in physical PCS units (not integer LUT encoding).
 #[derive(Debug)]
 pub struct MpeTransform<'a>{
@@ -779,5 +825,50 @@ mod mpe_intent_tests{
         }
         assert!(RenderingIntent::from_icc(4).is_err());
         assert!(RenderingIntent::from_pdf_name(b"unknown").is_err());
+    }
+}
+
+#[cfg(test)]
+mod intent_selection_tests{
+    use super::*;
+    fn profile()->Vec<u8>{
+        let mut b=vec![0;192];
+        b[..4].copy_from_slice(&192u32.to_be_bytes());
+        b[8]=4;b[12..24].copy_from_slice(b"prtrCMYKXYZ ");
+        b[36..40].copy_from_slice(b"acsp");
+        b[128..132].copy_from_slice(&3u32.to_be_bytes());
+        for (i,tag) in [b"D2B1",b"A2B1",b"A2B0"].iter().enumerate(){
+            let p=132+12*i;let offset=168+8*i;
+            b[p..p+4].copy_from_slice(*tag);
+            b[p+4..p+8].copy_from_slice(&(offset as u32).to_be_bytes());
+            b[p+8..p+12].copy_from_slice(&8u32.to_be_bytes());
+        }
+        b
+    }
+    #[test]
+    fn candidate_order_both_directions(){
+        use TransformCandidate::*;
+        for (dir,mpe,legacy,zero) in [(MpeDirection::DeviceToPcs,*b"D2B3",*b"A2B1",*b"A2B0"),
+            (MpeDirection::PcsToDevice,*b"B2D3",*b"B2A1",*b"B2A0")]{
+            assert_eq!(dir.candidates(RenderingIntent::AbsoluteColorimetric),vec![
+                Mpe{tag:mpe},Legacy{tag:legacy,absolute_adjustment:true},
+                Legacy{tag:zero,absolute_adjustment:true},MatrixTrc{absolute_adjustment:true}]);
+        }
+        assert_eq!(MpeDirection::DeviceToPcs.candidates(RenderingIntent::Perceptual).len(),3);
+    }
+    #[test]
+    fn selection_fallback_and_fatal_errors(){
+        use TransformCandidate::*;
+        let bytes=profile();let p=Profile::parse(&bytes).unwrap();
+        let dir=MpeDirection::DeviceToPcs;let intent=RenderingIntent::RelativeColorimetric;
+        let (chosen,_) = p.select_transform(dir,intent,|c|match c{
+            Mpe{..}=>Err(Error::Unsupported("test unsupported")),
+            _=>Ok(()),
+        }).unwrap();
+        assert_eq!(chosen,Legacy{tag:*b"A2B1",absolute_adjustment:false});
+        assert!(matches!(p.select_transform(dir,intent,|_|Err::<(),_>(Error::Limit("test"))),Err(Error::Limit("test"))));
+        assert!(matches!(p.select_transform(dir,intent,|_|Err::<(),_>(Error::Invalid("test"))),Err(Error::Invalid("test"))));
+        let (chosen,_) = p.select_transform(dir,RenderingIntent::Saturation,|_|Ok(())).unwrap();
+        assert_eq!(chosen,Legacy{tag:*b"A2B0",absolute_adjustment:false});
     }
 }
