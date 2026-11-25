@@ -174,7 +174,7 @@ pub use font_chain_context_subst::{ClassChainContextSubstitution,parse_class_cha
 pub use font_chain_context_subst::{CoverageChainContextSubstitution,parse_coverage_chain_context_substitution};
 
 pub mod font_extension_subst;
-pub use font_extension_subst::{ExtensionSubstitution,ExtensionTarget,ExtensionLimits,parse_extension_substitution,resolve_extension_lookup,parse_extension_target,parse_extension_target_substitution};
+pub use font_extension_subst::{ExtensionSubstitution,ExtensionTarget,ExtensionLimits,parse_extension_substitution,resolve_extension_lookup,parse_extension_target,parse_extension_target_substitution,parse_direct_gsub_target};
 
 pub mod font_reverse_subst;
 pub use font_reverse_subst::{ReverseSubstLimits,ReverseSubstitution,parse_reverse_substitution};
@@ -190,3 +190,6 @@ pub use font_lookup_filter::{LookupFilter,LookupFilterLimits,GlyphEligibility,LO
 
 pub mod font_gsub_plan;
 pub use font_gsub_plan::{GsubPlanLimits,GsubPlannedLookup,GsubPlan,build_gsub_base_plan};
+
+pub mod font_gsub_compile;
+pub use font_gsub_compile::{GsubCompileLimits,CompiledGsubSubtable,CompiledGsubLookup,compile_gsub_lookups,compile_gsub_plan};

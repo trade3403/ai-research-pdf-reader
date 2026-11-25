@@ -90,11 +90,16 @@ impl ExtensionTarget{
 /// No recursive Type 7 dispatch. Lookup indices are checked against the
 /// caller-supplied owning lookup count. No cumulative multi-target budget.
 pub fn parse_extension_target(ext:ExtensionSubstitution<'_>,glyph_count:u32,lookup_count:usize,l:ExtensionLimits)->Result<ExtensionTarget,Error>{
-    let b=ext.target();
+    parse_direct_gsub_target(ext.kind(),ext.target(),glyph_count,lookup_count,l)
+}
+/// Shared direct target decoder for lookup compilation and Type 7 dispatch.
+/// Type 7 itself requires wrapper resolution before calling this function.
+pub fn parse_direct_gsub_target(kind:u16,b:&[u8],glyph_count:u32,lookup_count:usize,l:ExtensionLimits)->Result<ExtensionTarget,Error>{
     if b.len()>l.max_bytes{return Err(Error::Limit("extension target bytes"));}
-    let format=u16::from_be_bytes([b[0],b[1]]);
+    let h=b.get(..2).ok_or(Error::Invalid("gsub target header"))?;
+    let format=u16::from_be_bytes([h[0],h[1]]);
     use ExtensionTarget::*;
-    Ok(match ext.kind(){
+    Ok(match kind{
         1=>Single(parse_single_substitution(b,glyph_count,l.single)?),
         2=>Multiple(parse_multiple_substitution(b,glyph_count,l.multiple)?),
         3=>Alternate(parse_alternate_substitution(b,glyph_count,l.alternate)?),
