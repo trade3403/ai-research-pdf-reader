@@ -196,3 +196,6 @@ pub use font_gsub_compile::{GsubCompileLimits,CompiledGsubSubtable,CompiledGsubL
 
 pub mod font_gsub_dependencies;
 pub use font_gsub_dependencies::{GsubDependencyLimits,GsubDependencySite,GsubDependency,discover_gsub_dependencies};
+
+pub mod font_gsub_closure;
+pub use font_gsub_closure::{GsubClosureLimits,GsubDependencyClosure,analyze_gsub_dependency_closure};

@@ -137,3 +137,5 @@
 - C4.4c4a: direct reference inventory is conservative (includes unmatchable rules); not a proof of runtime reachability. Caller supplies full LookupList count; no font identity proof or closure/cycle rejection. Real raw action census and runtime guards remain outstanding. No actual substitution, complete shaping or Word fidelity claim.
 
 - C4.4c4b: reference covers stored actions, not dynamic reachability. No self references observed in selected fixtures, not a proof that mutual cycles are absent. Closure, static cycle diagnostics and runtime execution guards remain separate. No actual substitution or full shaping acceptance.
+
+- C4.4c4c: static closure depends on caller-supplied complete direct inventory for each declared source, from the same font; missing reachable sources prevent proven-acyclic status. Witness is first deterministic DFS cycle, not all cycles or runtime reachability. DFS stack limit is not longest-path limit. Nested execution still requires independent dynamic depth/action/work guards. Real closure reference pending next stage.
