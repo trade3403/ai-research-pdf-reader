@@ -1,7 +1,5 @@
 //! Explicit Windows 64-bit read-only mapping; not an immutable snapshot.
-use std::{
-    ffi::c_void, fs::File, io, os::windows::io::AsRawHandle, ptr::NonNull, slice,
-};
+use std::{ffi::c_void, fs::File, io, os::windows::io::AsRawHandle, ptr::NonNull, slice};
 
 type Handle = *mut c_void;
 
