@@ -25,11 +25,7 @@ pub fn embedding(table: &dyn RowTable, ids: &[u32], scale: f32) -> Result<Tensor
         if id >= vocab {
             return Err(Error::Index);
         }
-        data.extend(
-            table.row(id)?
-                .iter()
-                .map(|&x| x * scale),
-        );
+        data.extend(table.row(id)?.iter().map(|&x| x * scale));
     }
     Tensor::new(&[ids.len(), hidden], data)
 }

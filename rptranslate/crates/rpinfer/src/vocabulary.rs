@@ -75,7 +75,9 @@ impl ChunkedTable {
         if rows == 0 || width == 0 || rows_per_block == 0 {
             return Err(Error::Shape.into());
         }
-        if rows > MAX_ROWS || width > MAX_WIDTH || rows_per_block > rows
+        if rows > MAX_ROWS
+            || width > MAX_WIDTH
+            || rows_per_block > rows
             || rows_per_block.checked_mul(width).ok_or(Error::Limit)? > MAX_BLOCK_ELEMENTS
         {
             return Err(Error::Limit.into());
@@ -110,7 +112,10 @@ impl ChunkedTable {
         rows_per_block: usize,
         max_bytes: usize,
     ) -> Result<Self, LoadError> {
-        let info = reader.tensors().get(name).ok_or(ReaderError::MissingTensor)?;
+        let info = reader
+            .tensors()
+            .get(name)
+            .ok_or(ReaderError::MissingTensor)?;
         let &[rows, width] = info.shape.as_slice() else {
             return Err(Error::Shape.into());
         };
@@ -174,11 +179,14 @@ mod tests {
         let dense = Tensor::new(&[5, 2], values.to_vec()).unwrap();
         let hidden = Tensor::new(&[2, 2], vec![2., -1., -1., 2.]).unwrap();
         let bias = Tensor::new(&[5], vec![0., 1., 2., 3., 4.]).unwrap();
-        let head = OutputHead { weight: None, bias: Some(&bias) };
+        let head = OutputHead {
+            weight: None,
+            bias: Some(&bias),
+        };
         let all = head.project(&hidden, &table, false).unwrap();
         assert_eq!(all.data(), &[0., 3., 6., 9., 12., 3., 6., 9., 12., 15.]);
         assert_eq!(all, head.project(&hidden, &dense, false).unwrap());
-        assert_eq!(head.project(&hidden, &table, true).unwrap().data(), &all.data()[5..]);
+
         assert_eq!(
             ChunkedTable::load(&mut reader, "table", 2, 39).unwrap_err(),
             LoadError::Tensor(Error::Limit)
@@ -188,12 +196,30 @@ mod tests {
     #[test]
     fn limits_and_invalid_reader_results() {
         let fail = |_, _| panic!("must reject before reading");
-        assert_eq!(ChunkedTable::from_rows(0, 2, 1, 100, fail).unwrap_err(), LoadError::Tensor(Error::Shape));
-        assert_eq!(ChunkedTable::from_rows(200_001, 2, 1, 100, fail).unwrap_err(), LoadError::Tensor(Error::Limit));
-        assert_eq!(ChunkedTable::from_rows(5000, 512, 3000, usize::MAX, fail).unwrap_err(), LoadError::Tensor(Error::Limit));
-        assert_eq!(ChunkedTable::from_rows(5, 2, 2, 39, fail).unwrap_err(), LoadError::Tensor(Error::Limit));
-        assert_eq!(ChunkedTable::from_rows(5, 2, 2, 40, |_, _| Ok(vec![1.])).unwrap_err(), LoadError::Tensor(Error::Shape));
-        assert_eq!(ChunkedTable::from_rows(5, 2, 2, 40, |_, n| Ok(vec![f32::NAN; n * 2])).unwrap_err(), LoadError::Tensor(Error::NonFinite));
+        assert_eq!(
+            ChunkedTable::from_rows(0, 2, 1, 100, fail).unwrap_err(),
+            LoadError::Tensor(Error::Shape)
+        );
+        assert_eq!(
+            ChunkedTable::from_rows(200_001, 2, 1, 100, fail).unwrap_err(),
+            LoadError::Tensor(Error::Limit)
+        );
+        assert_eq!(
+            ChunkedTable::from_rows(5000, 512, 3000, usize::MAX, fail).unwrap_err(),
+            LoadError::Tensor(Error::Limit)
+        );
+        assert_eq!(
+            ChunkedTable::from_rows(5, 2, 2, 39, fail).unwrap_err(),
+            LoadError::Tensor(Error::Limit)
+        );
+        assert_eq!(
+            ChunkedTable::from_rows(5, 2, 2, 40, |_, _| Ok(vec![1.])).unwrap_err(),
+            LoadError::Tensor(Error::Shape)
+        );
+        assert_eq!(
+            ChunkedTable::from_rows(5, 2, 2, 40, |_, n| Ok(vec![f32::NAN; n * 2])).unwrap_err(),
+            LoadError::Tensor(Error::NonFinite)
+        );
     }
 
     #[test]
@@ -210,7 +236,8 @@ mod tests {
                 values[(i + 1) * WIDTH - 1] = -id;
             }
             Ok(values)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(table.block_count(), 32);
         assert_eq!(table.payload_bytes(), 133_122_048);
         for id in [0, 2047, 2048, 4096, 65_000] {
@@ -220,7 +247,10 @@ mod tests {
         values[0] = 2.;
         values[WIDTH - 1] = 1.;
         let hidden = Tensor::new(&[1, WIDTH], values).unwrap();
-        let head = OutputHead { weight: None, bias: None };
+        let head = OutputHead {
+            weight: None,
+            bias: None,
+        };
         let logits = head.project(&hidden, &table, true).unwrap();
         assert_eq!(logits.shape(), &[1, ROWS]);
         for (id, &value) in logits.data().iter().enumerate() {

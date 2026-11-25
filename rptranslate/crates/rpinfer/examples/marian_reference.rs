@@ -128,7 +128,8 @@ fn main() {
     let dense = &w["model.shared.weight"];
     let table = ChunkedTable::from_rows(17, 8, 5, 17 * 8 * 4, |start, count| {
         Ok(dense.data()[start * 8..(start + count) * 8].to_vec())
-    }).unwrap();
+    })
+    .unwrap();
     let table = &table;
     let scale = 8_f32.sqrt();
     let model = Seq2Seq {
