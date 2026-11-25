@@ -191,7 +191,10 @@ mod tests {
     fn batched_respects_take_and_propagates_read_failure() {
         let mut input = b"abc trailing".as_slice();
         let result = digest_reader((&mut input).take(3), 3).unwrap();
-        assert_eq!(result, digest_reader_reference(b"abc".as_slice(), 3).unwrap());
+        assert_eq!(
+            result,
+            digest_reader_reference(b"abc".as_slice(), 3).unwrap()
+        );
         assert_eq!(input, b" trailing");
 
         struct Failed;
