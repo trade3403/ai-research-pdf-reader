@@ -121,3 +121,5 @@
 - C4.4b2 CI #109 failed due to a legal empty Coverage format 2 mutation incorrectly classified as malformed. Repair 1 fixes the expectation, preserves all regression cases including a true unsupported-format rejection, and requires fresh three-platform acceptance. Other limitations unchanged.
 
 - C4.4b3: selected real GDEF references cover three versions and ClassDef format 2 only (format 1 remains synthetically tested), no real Component class in these fixtures. ItemVariationStore offsets checked, bodies not decoded; no lookup flags, full shaping or external shaper equivalence yet. Native Type 8 and point-attachment fixtures remain outstanding.
+
+- C4.4b4: eligibility/index projection only; not yet integrated into actual GSUB/GPOS match or edit operations. Missing GDEF classes stay unclassified; no Unicode-based inference. Invalid declared mark set always rejected, including when IgnoreMarks wins. No real flag reference tests yet. Nested lookups, scheduling, clusters and full shaping remain outstanding.

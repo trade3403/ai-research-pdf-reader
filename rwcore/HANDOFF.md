@@ -70,3 +70,6 @@ Latest C4.4b2 repair 1 pending CI: #109 failed identically on three platforms du
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4b3 source pending CI; parent CI #110 verified 730 tests per platform. Repair 1 accepted. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Recommend preventive new conversation handoff now.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4b4 source pending CI; parent CI #111 verified 738 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Recommend preventive new conversation handoff. LookupFlag policy is not yet actual filtered substitution execution.

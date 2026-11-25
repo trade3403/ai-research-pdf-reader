@@ -184,3 +184,6 @@ pub use font_gdef::{GdefLimits,GdefDirectory,GdefGlyphClass,Gdef,parse_gdef_dire
 
 pub mod font_gdef_mark_sets;
 pub use font_gdef_mark_sets::{MarkGlyphSetLimits,MarkGlyphSets,parse_mark_glyph_sets};
+
+pub mod font_lookup_filter;
+pub use font_lookup_filter::{LookupFilter,LookupFilterLimits,GlyphEligibility,LOOKUP_RIGHT_TO_LEFT,LOOKUP_IGNORE_BASE,LOOKUP_IGNORE_LIGATURE,LOOKUP_IGNORE_MARK,LOOKUP_USE_MARK_SET,LOOKUP_MARK_ATTACHMENT_MASK};

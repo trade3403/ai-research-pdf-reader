@@ -32,6 +32,7 @@ pub struct Gdef{
     mark_sets:Option<MarkGlyphSets>,
 }
 impl Gdef{
+    pub fn glyph_count(&self)->u32{self.glyph_count}
     pub fn mark_sets(&self)->Option<&MarkGlyphSets>{self.mark_sets.as_ref()}
     pub fn directory(&self)->&GdefDirectory{&self.directory}
     pub fn glyph_classes(&self)->Option<&GlyphClassDef>{self.glyph_classes.as_ref()}
