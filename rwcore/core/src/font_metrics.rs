@@ -72,7 +72,7 @@ fn exact_size(b:&[u8],n:usize)->Result<(),Error>{
     Ok(())
 }
 fn units_valid(n:u16)->bool{(16..=16384).contains(&n)}
-fn parse_head(b:&[u8],flavor:FontFlavor)->Result<FontHead,Error>{
+pub(crate) fn parse_head(b:&[u8],flavor:FontFlavor)->Result<FontHead,Error>{
     exact_size(b,54)?;
     if u32_at(b,0)?!=0x00010000{return Err(Error::Unsupported("font head version"));}
     if u32_at(b,12)?!=0x5f0f3cf5{return Err(Error::Invalid("font head magic"));}

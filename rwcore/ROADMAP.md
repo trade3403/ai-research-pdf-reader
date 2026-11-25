@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #66, not full Word compatibility.
+Status below is baseline at CI #67, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -25,8 +25,9 @@ Status below is baseline at CI #66, not full Word compatibility.
 | C4.1 | Font container and SFNT directory parsing | Verified |
 | C4.2a | Native font metrics and unit conversions | Verified |
 | C4.2b | Unicode cmap glyph mapping | Verified |
-| C4.2c | Nominal glyph metrics and text measurement integration | Source implemented; CI pending |
-| C4.3a | Native TrueType loca/glyf simple outlines | Planned |
+| C4.2c | Nominal glyph metrics and text measurement integration | Verified |
+| C4.3a | Native TrueType loca/glyf simple outlines | Source implemented; CI pending |
+| C4.3b | Bounded composite glyph assembly | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

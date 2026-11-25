@@ -112,3 +112,6 @@ pub use font_cmap::{CmapFormat,CmapSource,CmapLimits,UnicodeCmap,parse_unicode_c
 
 pub mod font_measure;
 pub use font_measure::{MissingGlyphPolicy,MeasureUnit,MeasureLimits,MeasureOptions,NominalGlyph,NominalLineMetrics,TextMeasurement,NominalFont,parse_nominal_font};
+
+pub mod font_outline;
+pub use font_outline::{OutlineLimits,GlyphOutlineKind,OutlinePoint,HalfPoint,OutlineCommand,SimpleGlyph,TrueTypeOutlines,parse_true_type_outlines};
