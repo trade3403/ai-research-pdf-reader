@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #85, not full Word compatibility.
+Status below is baseline at CI #86, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -45,8 +45,9 @@ Status below is baseline at CI #85, not full Word compatibility.
 | C4.4a1 | Shared OpenType Coverage format 1/2 decoder | Verified |
 | C4.4a2a | GSUB header and top-level directory | Verified |
 | C4.4a2b | GSUB child structures and cross-index validation | Verified |
-| C4.4a3a | Standalone single substitution format 1/2 | Source implemented; CI pending |
-| C4.4a3b | Real-font type 1 reference and integration | Planned |
+| C4.4a3a | Standalone single substitution format 1/2 | Verified |
+| C4.4a3b | Real-font direct type 1 reference and integration | Source implemented; CI pending |
+| C4.4a4 | Multiple substitution | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

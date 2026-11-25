@@ -80,3 +80,5 @@ C4.4a2a pending CI: font_gsub.rs bounded GSUB 1.0/1.1 top-level directories, abs
 C4.4a2b pending CI: GSUB child headers, default and tagged LangSys, required feature and lookup index validation, lookup flags and optional mark filtering set metadata, bounded cumulative records. Subtable bodies opaque.
 
 C4.4a3a pending CI: standalone type 1 format 1 modulo-65536 delta and format 2 explicit replacements linked to validated Coverage; all outputs checked against face glyph count, bounded input and expanded coverage. No lookup scheduling.
+
+C4.4a3b pending CI: independent offline JS raw SFNT GSUB lookup directory and Coverage decoding produced all direct type 1 mappings for ABeeZee Regular/Italic and Aref Ruqaa Regular. Test integration traverses production GSUB layout and validates each subtable mapping over entire face glyph domain, including misses. Abel fixture has no GSUB. No execution scheduling.

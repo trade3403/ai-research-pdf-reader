@@ -72,3 +72,5 @@
 - C4.4a2b: child metadata only; substitution payload, FeatureParams, FeatureVariations, GDEF mark filtering index and overlapping structures are not fully validated; no real GSUB acceptance yet.
 
 - C4.4a3a standalone single substitution only, bounded 16-bit domain scan for format 1; real-font reference, lookup scheduling, GDEF filtering, other substitution types and full shaping outstanding.
+
+- C4.4a3b pending CI: real direct type 1 subtable fixtures only; no extension lookup execution, script/language scheduling, GDEF filtering, Arabic shaping or full shaping acceptance. Reference generated independently from raw font bytes, not an external shaping engine.
