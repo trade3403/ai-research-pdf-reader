@@ -215,7 +215,10 @@ impl MixedModel {
     /// # Safety
     /// Both weight files must remain immutable and untruncated for the
     /// entire call, including through other handles or processes.
-    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "windows"),
+        target_pointer_width = "64"
+    ))]
     pub unsafe fn load_mapped(root: &Path, budget: usize) -> Result<Self, String> {
         use rpmodel::{mapped::MappedFile, sha256::digest_slice};
         use std::io::Cursor;

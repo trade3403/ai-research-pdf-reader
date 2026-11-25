@@ -354,3 +354,118 @@ jobs:
           timeout 900 /usr/bin/time -f %M -o "$paper/int8.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" retry > "$paper/int8.document"
           timeout 240 /usr/bin/time -f %M -o "$paper/fp32.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.document"
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_document_paper.py "$paper"
+
+      - name: Transfer verified mixed model fixture to Windows
+        if: contains(github.event.head_commit.message, 'D1.13')
+        uses: actions/upload-artifact@v4
+        with:
+          name: rptranslate-windows-mixed-fixture
+          path: ${{ runner.temp }}/rpmodel-mixed/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  windows-cpu-validation:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rptranslate
+        shell: pwsh
+    env:
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Native MSVC toolchain and architecture
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $info = rustc -vV
+          $info
+          if (-not ($info -contains 'host: x86_64-pc-windows-msvc')) { throw 'Expected Windows x64 MSVC' }
+          cargo --version
+      - name: Format and Windows lint
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --all -- --check
+          cargo clippy --locked --offline --workspace --all-targets -- -D warnings
+      - name: Windows workspace and forced portable tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo test --locked --offline --workspace
+          cargo test --locked --offline -p rpinfer --features portable-only
+      - name: Native release executable and independent training reference
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --locked --offline --release -p rptranslate
+          & .\target\release\rptranslate.exe self-check
+          cargo build --locked --offline --release -p rpinfer --example toy_training_reference
+          python crates/rpinfer/tests/check_toy_training.py target/release/examples/toy_training_reference.exe
+          $exe = Get-Item .\target\release\rptranslate.exe
+          Write-Output "WINDOWS_RELEASE bytes=$($exe.Length) sha256=$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)"
+
+  windows-real-model:
+    if: contains(github.event.head_commit.message, 'D1.13')
+    needs: [windows-cpu-validation, real-model-conversion]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rptranslate
+        shell: pwsh
+    env:
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rptranslate-windows-mixed-fixture
+          path: ${{ runner.temp }}/rpmodel-mixed
+      - name: Build native automatic and portable Rust executables
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build --locked --offline --release -p rpinfer --example mixed_model_reference
+          cargo build --locked --offline --release -p rptranslate
+          cargo build --locked --offline --release -p rptranslate --features rpinfer/portable-only --target-dir target/portable
+      - name: Verify Windows mapping and reject damaged weights
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = Join-Path $env:RUNNER_TEMP 'rpmodel-mixed'
+          $probe = '.\target\release\examples\mixed_model_reference.exe'
+          & $probe mapped-reference $root
+          & $probe verify-mapped $root
+          $weights = Join-Path $root 'weights.rpq'
+          $stream = [System.IO.File]::Open($weights, 'Open', 'ReadWrite', 'None')
+          try {
+            $original = $stream.ReadByte()
+            if ($original -lt 0) { throw 'Empty weight file' }
+            $stream.Position = 0
+            $stream.WriteByte([byte]($original -bxor 1))
+          } finally { $stream.Dispose() }
+          try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            & $probe verify-mapped $root
+            if ($LASTEXITCODE -eq 0) { throw 'Damaged mapping was accepted' }
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $true
+            $stream = [System.IO.File]::Open($weights, 'Open', 'ReadWrite', 'None')
+            try { $stream.WriteByte([byte]$original) } finally { $stream.Dispose() }
+          }
+          & $probe verify-mapped $root
+          Write-Output 'WINDOWS_MAPPED_NEGATIVE PASS restored=true'
+      - name: Actual local INT8 translation automatic versus portable
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [Console]::OutputEncoding
+          $root = Join-Path $env:RUNNER_TEMP 'rpmodel-mixed'
+          $auto = '.\target\release\rptranslate.exe'
+          $scalar = '.\target\portable\release\rptranslate.exe'
+          $text = 'We measured maximum strain.'
+          $a = (& $auto translate-paragraph-int8 $root geotechnical $text 1 128) -join "`n"
+          $b = (& $scalar translate-paragraph-int8 $root geotechnical $text 1 128) -join "`n"
+          if ($a -cne $b -or -not $a.Contains('最大应变')) { throw 'Windows translation mismatch' }
+          Write-Output 'WINDOWS_TRANSLATION PASS precision=int8 auto_portable_equal=true glossary=true local_model=true'

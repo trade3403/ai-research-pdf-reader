@@ -2,6 +2,9 @@
 pub mod config;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod mapped;
+#[cfg(all(target_os = "windows", target_pointer_width = "64"))]
+#[path = "mapped_windows.rs"]
+pub mod mapped;
 pub mod marian;
 pub mod normalization;
 pub mod package;

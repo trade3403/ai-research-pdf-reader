@@ -74,7 +74,10 @@ fn batch_reference(root: &Path) -> Result<(), String> {
 }
 
 // Offline CI probe only: private, immutable fixtures with no concurrent writers.
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    target_pointer_width = "64"
+))]
 fn mapped_reference(root: &Path) -> Result<(), String> {
     let start = Instant::now();
     let ordinary = MixedModel::load(root, PAYLOAD_BYTES)?;
@@ -159,9 +162,15 @@ fn main() -> Result<(), String> {
         }
         [mode, root] if mode == "batch-reference" => batch_reference(Path::new(root))?,
         [mode, path] if mode == "sha-reference" => sha_reference(Path::new(path))?,
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "windows"),
+            target_pointer_width = "64"
+        ))]
         [mode, root] if mode == "mapped-reference" => mapped_reference(Path::new(root))?,
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "windows"),
+            target_pointer_width = "64"
+        ))]
         [mode, root] if mode == "verify-mapped" => {
             // SAFETY: same controlled immutable fixture as mapped-reference.
             unsafe { MixedModel::load_mapped(Path::new(root), PAYLOAD_BYTES) }?;
