@@ -1,5 +1,5 @@
 //! JPEG 2000 Tier-1 context modelling for the baseline MQ coding style.
-//! No coding passes are performed here.
+//! Initial cleanup pass for baseline style; subsequent passes are not yet supported.
 use super::{geometry::Band,mq::{Context,Decoder}};
 use crate::{Error,Result};
 
@@ -115,6 +115,50 @@ impl Block{
     }
 }
 
+fn initial_cleanup(width:usize,height:usize,band:Band,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Result<Block>{
+    if plane>30{return Err(Error::Invalid("JPX EBCOT plane"));}
+    let mut b=Block::new(width,height)?;
+    for top in (0..height).step_by(4){
+        let bottom=(top+4).min(height);
+        for x in 0..width{
+            let mut y=top;
+            let mut implicit=false;
+            if bottom-top==4{
+                let mut eligible=true;
+                for row in top..bottom{
+                    let (n,_,_)=b.neighbours(x,row)?;
+                    if n.h+n.v+n.d!=0{eligible=false;break;}
+                }
+                if eligible{
+                    if read(AGG_CONTEXT)?==0{continue;}
+                    let hi=usize::from(read(UNI_CONTEXT)?);
+                    let lo=usize::from(read(UNI_CONTEXT)?);
+                    y+=2*hi+lo;
+                    if y>=bottom{return Err(Error::Invalid("JPX EBCOT run position"));}
+                    implicit=true;
+                }
+            }
+            for row in y..bottom{
+                let (n,h,v)=b.neighbours(x,row)?;
+                if (implicit&&row==y)||read(zero_context(band,n)?)?!=0{
+                    let (cx,pred)=sign_context(h,v)?;
+                    let neg=(read(cx)?^pred)!=0;
+                    b.make_significant(x,row,plane,neg)?;
+                }
+            }
+        }
+    }
+    Ok(b)
+}
+/// Decode the first (highest nonempty) cleanup bitplane of one baseline
+/// MQ codeblock. No bypass, reset, segmentation symbol or later passes.
+/// Contexts and decoder are fresh and private: errors return no partial block.
+pub fn decode_initial_cleanup(data:&[u8],width:usize,height:usize,band:Band,plane:u8)->Result<Block>{
+    let mut cx=Contexts::new()?;
+    let mut mq=Decoder::new(data,4096*4)?;
+    initial_cleanup(width,height,band,plane,|i|cx.decode(&mut mq,i))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -165,5 +209,42 @@ mod tests{
         let mut c=Contexts::new().unwrap();let mut d=Decoder::new(&[0,0],1).unwrap();
         assert!(c.decode(&mut d,19).is_err());
         assert!(c.decode(&mut d,UNI_CONTEXT).is_ok());assert!(c.decode(&mut d,0).is_err());
+    }
+
+    fn scripted(w:usize,h:usize,seq:&[(usize,u8)])->Block{
+        let mut it=seq.iter();
+        let b=initial_cleanup(w,h,Band::Ll,3,|cx|{
+            let &(want,bit)=it.next().expect("extra decision");
+            assert_eq!(cx,want);Ok(bit)
+        }).unwrap();
+        assert!(it.next().is_none());b
+    }
+    #[test]fn cleanup_aggregate_zero(){
+        let b=scripted(2,4,&[(17,0),(17,0)]);
+        assert!(b.coefficients.iter().all(|c|!c.significant()));
+    }
+    #[test]fn cleanup_run_and_sign(){
+        let b=scripted(1,4,&[(17,1),(18,1),(18,0),(9,1),(3,1),(10,0)]);
+        assert!(!b.coefficient(0,0).unwrap().significant());
+        assert!(!b.coefficient(0,1).unwrap().significant());
+        for y in 2..4{let c=b.coefficient(0,y).unwrap();assert_eq!(c.magnitude(),8);assert!(c.negative());}
+    }
+    #[test]fn cleanup_partial_stripe_order(){
+        let b=scripted(2,2,&[(0,1),(9,0),(3,0),(5,0),(1,0)]);
+        assert_eq!(b.coefficient(0,0).unwrap().magnitude(),8);
+        assert_eq!(b.coefficients.iter().filter(|c|c.significant()).count(),1);
+    }
+    #[test]fn cleanup_stripe_boundary(){
+        let b=scripted(1,5,&[(17,1),(18,1),(18,1),(9,0),(3,0)]);
+        assert!(b.coefficient(0,3).unwrap().significant());
+        assert!(!b.coefficient(0,4).unwrap().significant());
+    }
+    #[test]fn cleanup_limits_and_mq(){
+        assert!(decode_initial_cleanup(&[],1,1,Band::Ll,0).is_err());
+        assert!(decode_initial_cleanup(&[0],65,65,Band::Ll,0).is_err());
+        assert!(decode_initial_cleanup(&[0],1,1,Band::Ll,31).is_err());
+        let b=decode_initial_cleanup(&[0,0],1,1,Band::Ll,0).unwrap();
+        assert_eq!(b.coefficients.len(),1);
+        assert!(initial_cleanup(1,4,Band::Ll,0,|_|Err(Error::Invalid("test"))).is_err());
     }
 }
