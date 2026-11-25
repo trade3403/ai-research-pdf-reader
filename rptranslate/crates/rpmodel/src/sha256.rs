@@ -96,6 +96,32 @@ pub fn digest_reader(mut reader: impl Read, limit: u64) -> io::Result<(u64, Stri
     Ok((total, state.iter().map(|v| format!("{v:08x}")).collect()))
 }
 
+/// Hash immutable bytes directly, without copying full compression blocks.
+pub fn digest_slice(bytes: &[u8], limit: u64) -> io::Result<(u64, String)> {
+    let total = bytes.len() as u64;
+    if total > limit || total > u64::MAX / 8 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "hash size limit"));
+    }
+    let mut state = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let (blocks, tail) = bytes.as_chunks::<64>();
+    for block in blocks {
+        compress(&mut state, block);
+    }
+    let mut block = [0_u8; 64];
+    block[..tail.len()].copy_from_slice(tail);
+    block[tail.len()] = 0x80;
+    if tail.len() >= 56 {
+        compress(&mut state, &block);
+        block = [0; 64];
+    }
+    block[56..].copy_from_slice(&(total * 8).to_be_bytes());
+    compress(&mut state, &block);
+    Ok((total, state.iter().map(|v| format!("{v:08x}")).collect()))
+}
+
 /// Original per-block buffered reader retained for regression and timing.
 #[doc(hidden)]
 pub fn digest_reader_reference(reader: impl Read, limit: u64) -> io::Result<(u64, String)> {
@@ -170,6 +196,7 @@ mod tests {
         for len in [0, 1, 55, 56, 63, 64, 65, 65_535, 65_536, 65_537, data.len()] {
             let input = &data[..len];
             let expected = digest_reader_reference(input, len as u64).unwrap();
+            assert_eq!(digest_slice(input, len as u64).unwrap(), expected);
             for step in [1, 7, 63, 64, 65, 4093, 65_536] {
                 let reader = Fragmented {
                     bytes: input,

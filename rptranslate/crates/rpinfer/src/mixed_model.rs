@@ -1,7 +1,10 @@
 //! Fixed-profile RPModel-Mixed v1: RPQ8 block64 matrices and F32 auxiliaries.
 //! Owns verified weights; neural network adapter is a separate next stage.
 //! Hashes check integrity, not publisher authenticity. Stable local files required.
-use crate::{quantized_table::QuantizedTable, tensor::Tensor};
+use crate::{
+    quantized_table::{LoadError, QuantizedTable},
+    tensor::Tensor,
+};
 use rpmodel::{
     config::MarianConfig,
     package,
@@ -192,6 +195,66 @@ impl MixedModel {
         if budget < PAYLOAD_BYTES {
             return Err("mixed weight budget".into());
         }
+        let mut q = open_file(root, Q_FILE)?;
+        let mut f = open_file(root, F_FILE)?;
+        let q_info = hash_file(&mut q, Q_BYTES + 1024 * 1024)?;
+        let f_info = hash_file(&mut f, F_BYTES + 1024 * 1024)?;
+        Self::load_verified(
+            root,
+            BufReader::new(q),
+            f,
+            q_info,
+            f_info,
+            QuantizedTable::load,
+        )
+    }
+
+    /// Opt-in mapped input for caller-controlled immutable model packages.
+    /// Inference arrays are still owned and the mappings are released.
+    ///
+    /// # Safety
+    /// Both weight files must remain immutable and untruncated for the
+    /// entire call, including through other handles or processes.
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    pub unsafe fn load_mapped(root: &Path, budget: usize) -> Result<Self, String> {
+        use rpmodel::{mapped::MappedFile, sha256::digest_slice};
+        use std::io::Cursor;
+
+        if budget < PAYLOAD_BYTES {
+            return Err("mixed weight budget".into());
+        }
+        let q_file = open_file(root, Q_FILE)?;
+        let f_file = open_file(root, F_FILE)?;
+        let q =
+            unsafe { MappedFile::open(&q_file, Q_BYTES + 1024 * 1024) }.map_err(debug_error)?;
+        let f =
+            unsafe { MappedFile::open(&f_file, F_BYTES + 1024 * 1024) }.map_err(debug_error)?;
+        let q_info =
+            digest_slice(q.as_bytes(), (Q_BYTES + 1024 * 1024) as u64).map_err(debug_error)?;
+        let f_info =
+            digest_slice(f.as_bytes(), (F_BYTES + 1024 * 1024) as u64).map_err(debug_error)?;
+        Self::load_verified(
+            root,
+            Cursor::new(q.as_bytes()),
+            Cursor::new(f.as_bytes()),
+            q_info,
+            f_info,
+            |reader, name, budget| QuantizedTable::load_slice(reader, name, budget),
+        )
+    }
+
+    fn load_verified<R: Read + Seek, S: Read + Seek>(
+        root: &Path,
+        q: R,
+        f: S,
+        q_info: (u64, String),
+        f_info: (u64, String),
+        mut load_table: impl FnMut(
+            &mut quantized::Reader<R>,
+            &str,
+            usize,
+        ) -> Result<QuantizedTable, LoadError>,
+    ) -> Result<Self, String> {
         let mut manifest_text = String::new();
         open_file(root, MANIFEST)?
             .take(1025)
@@ -200,10 +263,6 @@ impl MixedModel {
         if manifest_text.len() > 1024 {
             return Err("manifest limit".into());
         }
-        let mut q = open_file(root, Q_FILE)?;
-        let mut f = open_file(root, F_FILE)?;
-        let q_info = hash_file(&mut q, Q_BYTES + 1024 * 1024)?;
-        let f_info = hash_file(&mut f, F_BYTES + 1024 * 1024)?;
         if manifest_text != manifest(&q_info, &f_info) {
             return Err("mixed manifest integrity/profile".into());
         }
@@ -219,7 +278,7 @@ impl MixedModel {
             std::str::from_utf8(&assets["generation_config.json"]).map_err(debug_error)?;
         let config = MarianConfig::parse(model_json, generation_json).map_err(debug_error)?;
         drop(assets);
-        let mut q = quantized::Reader::open(BufReader::new(q), q_info.0).map_err(debug_error)?;
+        let mut q = quantized::Reader::open(q, q_info.0).map_err(debug_error)?;
         let mut f = SafeTensorReader::open(f).map_err(debug_error)?;
         let (q_shapes, f_shapes) = shapes();
         if q.tensors().len() != Q_COUNT || f.tensors().len() != F_COUNT || !f.metadata().is_empty()
@@ -244,8 +303,7 @@ impl MixedModel {
         let mut quantized = BTreeMap::new();
         let mut auxiliary = BTreeMap::new();
         for (name, shape) in q_shapes {
-            let table =
-                QuantizedTable::load(&mut q, &name, q_bytes(&shape)).map_err(debug_error)?;
+            let table = load_table(&mut q, &name, q_bytes(&shape)).map_err(debug_error)?;
             quantized.insert(name, table);
         }
         for (name, shape) in f_shapes {

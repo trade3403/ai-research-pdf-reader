@@ -2,13 +2,14 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前只做 D1.9j 自主 SHA256 完整性校验加速**。D1.9i #105 全量成功；用户已授权进入下一阶段。未全量验收前不启动 D1.9k-l。D2 训练与蒸馏独立项目，不计入主线。
+- **当前只做 D1.9k 自主只读内存映射与直接解包（首批）**。D1.9j #107 全量成功；用户已授权进入下一阶段。未全量验收前不启动 D1.9l。D2 训练与蒸馏独立项目，不计入主线。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 ubuntu CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
-- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.9j 全量后依据用户最新授权推进。
+- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.9k 全量后依据用户最新授权推进。
 
 ## 当前状态（最新优先）
+- 2026-11-25 D1.9j 基线 c59091649e8deffb20f04c0eb395f742f9be25ea / [#107 / 45644239731](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45644239731) 全量 success；131 workspace + 56 portable=187/187，真实三文件 Rust旧/新/hashlib 摘要一致；FP32 1403.670→1372.914ms、RPQ8 372.722→365.572ms、辅助12.604→12.391ms，加载FP32/INT8 1816.819/989.615ms，跨runner仅观察。用户授权D1.9k首批：自主Linux 64位 mmap RAII只读映射，长度/文件类型/预算校验，显式 unsafe 调用者必须保证文件全程不可变且不截断；默认安全文件读取不改，不向正式CLI暴露。直接slice SHA256与RPQ8映射解包入最终数组，统一manifest、索引、语义、配置和预算校验；内部RPQ8校验仍走原Reader，辅助F32仍解码复制。现有RPQ8交错布局不能直接作为分离的推理数组，非全模型零拷贝或常驻mmap，Windows/其他系统保留原路径，后续D1.13验收；需设计安全不可变安装策略才可默认启用。2新增单测（映射预算/字节、slice尾块），扩展SHA边界；真实97矩阵/159辅助全量位级对照、4篡改分别拒绝和同runner顺序耗时，仅测试私有不可变fixture，不设速度门槛。未本地编译，待CI；不提前进入D1.9l；D2独立。
 - 2026-11-25 D1.9j [#106 / 45641446001](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45641446001) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45641446001/job/139300867217) 仅 sha256.rs:191 assert_eq! 需换行；按 rustfmt 日志逐字修复，不改变算法、SHA校验或测试。真实专项查询时仍运行（科学保护翻译步骤），未取消，尚未取得真实SHA测速完整日志。待新提交全量验收，不提前进入D1.9k。
 - 2026-11-25 D1.9i 基线 766128c38e98cec3c4da3f213e99bb856a9d67b1 / [#105 / 45635122116](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45635122116) 全量 success；129 workspace + 56 portable=185/185。真实97张量77320704 codes/1208136 scales 位级一致，旧2010.920ms、新67.815ms（同runner顺序、非冷缓存、不含SHA），FP32/INT8完整加载1843.237/985.301ms，RSS331844/107440KiB；论文8样本词面4通过4拒绝。#104 旧1045.689ms、新61.177ms，加载1733.189/925.477ms，跨runner比较仅观察。用户授权 D1.9j：默认自主SHA256改用64KiB连续读取，直接按64字节压缩，跨短读仅保留0–63字节尾部，保留原FIPS压缩/补位/长度上限、Interrupted/IO错误及完整哈希门槛；旧逐块BufReader作为回归与计时参考。新增2组Rust测试：11个边界长度、7种短读步长及Interrupted、限制/Take/IO错误；FP32权重、RPQ8和辅助FP32真实文件对比旧Rust及Python hashlib摘要，报告两路径读取+哈希耗时（先旧后新，不是冷缓存，不设未证实速度门槛）。不涉及SHA-NI、mmap或减少校验次数；没有本地Rust工具链，待真实CI，不提前开始D1.9k。D2独立。
 - 2026-11-25 D1.9i [#104 / 45632499613](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45632499613) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45632499613/job/139269142368) 仅 mixed_model_reference.rs:78 命令行 usage 字符串需换行；按 rustfmt 日志逐字修复，算法、预算、SHA校验和所有测试不变。查询时真实模型专项仍运行，已进入科学保护翻译步骤；不据此虚报批读性能，待完整日志及新提交全量CI，禁止提前启动D1.9j。

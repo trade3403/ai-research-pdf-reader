@@ -291,6 +291,45 @@ impl<R: Read + Seek> Reader<R> {
     }
 }
 
+impl Reader<Cursor<&[u8]>> {
+    /// Decode from a verified immutable slice into final arrays. Discard both
+    /// arrays on error. No intermediate payload buffer is required.
+    pub fn read_tensor_slice_into(
+        &self,
+        name: &str,
+        codes: &mut [i8],
+        scales: &mut [f32],
+    ) -> Result<(), Error> {
+        let info = self.tensors.get(name).ok_or(Error::Index)?;
+        if codes.len() as u64 != info.elements || scales.len() as u64 != info.blocks {
+            return Err(Error::Limit);
+        }
+        let start = self
+            .payload_start
+            .checked_add(info.offset)
+            .ok_or(Error::Limit)?;
+        let end = start.checked_add(info.bytes).ok_or(Error::Limit)?;
+        let start = usize::try_from(start).map_err(|_| Error::Limit)?;
+        let end = usize::try_from(end).map_err(|_| Error::Limit)?;
+        let raw = self.inner.get_ref().get(start..end).ok_or(Error::Io)?;
+        let size = info.block_size as usize;
+        for ((record, dest), scale) in raw
+            .chunks(size + 4)
+            .zip(codes.chunks_mut(size))
+            .zip(scales)
+        {
+            let (header, data) = record.split_at(4);
+            let value = f32::from_le_bytes(header.try_into().map_err(|_| Error::Format)?);
+            for (code, &byte) in dest.iter_mut().zip(data) {
+                *code = byte as i8;
+            }
+            validate_block(value, dest)?;
+            *scale = value;
+        }
+        Ok(())
+    }
+}
+
 /// Borrowed already-quantized data. Writer accepts sorted canonical names only.
 pub struct TensorInput<'a> {
     pub name: &'a str,
@@ -490,6 +529,23 @@ mod tests {
                 Err(Error::Block)
             );
         }
+    }
+
+    #[test]
+    fn direct_slice_decode_and_tail() {
+        let data = fixture();
+        let reader = Reader::open(Cursor::new(data.as_slice()), 1024).unwrap();
+        let mut codes = [0; 6];
+        let mut scales = [0.; 2];
+        reader
+            .read_tensor_slice_into("a.weight", &mut codes, &mut scales)
+            .unwrap();
+        assert_eq!(codes, [127, -127, 1, 0, 2, -3]);
+        assert_eq!(scales, [0.5, 0.25]);
+        assert_eq!(
+            reader.read_tensor_slice_into("a.weight", &mut codes, &mut [0.]),
+            Err(Error::Limit)
+        );
     }
 
     #[test]

@@ -30,6 +30,9 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run([str(exe), "convert", str(package), str(dest)], check=True, timeout=120)
     subprocess.run([str(exe), "verify", str(dest)], check=True, timeout=120)
     subprocess.run([str(exe), "batch-reference", str(dest)], check=True, timeout=120)
+    mapped_supported = sys.platform.startswith("linux") and struct.calcsize("P") == 8
+    if mapped_supported:
+        subprocess.run([str(exe), "mapped-reference", str(dest)], check=True, timeout=120)
     qpath = dest / "weights.rpq"
     for path in (package/"weights.safetensors", qpath, dest/"auxiliary.safetensors"):
         report = subprocess.check_output([str(exe), "sha-reference", str(path)],
@@ -103,6 +106,10 @@ with tempfile.TemporaryDirectory() as temp:
         try:
             result = subprocess.run([str(exe), "verify", str(dest)], capture_output=True, timeout=120)
             assert result.returncode != 0, path.name
+            if mapped_supported:
+                mapped_result = subprocess.run([str(exe), "verify-mapped", str(dest)],
+                                               capture_output=True, timeout=120)
+                assert mapped_result.returncode != 0, path.name
         finally:
             with path.open("r+b") as handle:
                 handle.seek(offset)

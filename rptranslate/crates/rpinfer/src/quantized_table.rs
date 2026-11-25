@@ -112,6 +112,22 @@ impl QuantizedTable {
         Ok(table)
     }
 
+    /// Decode directly from a verified immutable slice.
+    pub fn load_slice(
+        reader: &quantized::Reader<std::io::Cursor<&[u8]>>,
+        name: &str,
+        budget: usize,
+    ) -> Result<Self, LoadError> {
+        let info = reader.tensors().get(name).ok_or(Error::Index)?;
+        let mut table = Self::allocate(&info.shape, info.block_size as usize, budget)?;
+        table.codes.resize(info.elements as usize, 0);
+        table.scales.resize(info.blocks as usize, 0.);
+        reader
+            .read_tensor_slice_into(name, &mut table.codes, &mut table.scales)
+            .map_err(LoadError::Quantized)?;
+        Ok(table)
+    }
+
     pub fn shape(&self) -> &[usize] {
         &self.shape
     }

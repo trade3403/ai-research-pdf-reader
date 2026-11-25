@@ -73,6 +73,63 @@ fn batch_reference(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// Offline CI probe only: private, immutable fixtures with no concurrent writers.
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn mapped_reference(root: &Path) -> Result<(), String> {
+    let start = Instant::now();
+    let ordinary = MixedModel::load(root, PAYLOAD_BYTES)?;
+    let ordinary_ms = start.elapsed().as_secs_f64() * 1000.;
+    let start = Instant::now();
+    // SAFETY: CI completes writes in its private fixture before this call.
+    let mapped = unsafe { MixedModel::load_mapped(root, PAYLOAD_BYTES) }?;
+    let mapped_ms = start.elapsed().as_secs_f64() * 1000.;
+    let mut q = 0;
+    let mut f = 0;
+    let mut elements = 0;
+    let mut blocks = 0;
+    let mut floats = 0;
+    for (name, shape) in rpmodel::package::expected_shapes() {
+        if let Some(a) = ordinary.matrix(&name) {
+            let b = mapped.matrix(&name).ok_or("missing mapped matrix")?;
+            let a = a.as_input(&name, &shape);
+            let b = b.as_input(&name, &shape);
+            if a.codes != b.codes
+                || a.scales.len() != b.scales.len()
+                || a.scales
+                    .iter()
+                    .zip(b.scales)
+                    .any(|(x, y)| x.to_bits() != y.to_bits())
+            {
+                return Err(format!("mapped matrix mismatch: {name}"));
+            }
+            q += 1;
+            elements += a.codes.len();
+            blocks += a.scales.len();
+        } else {
+            let a = ordinary.auxiliary(&name).ok_or("missing auxiliary")?;
+            let b = mapped.auxiliary(&name).ok_or("missing mapped auxiliary")?;
+            if a.shape() != b.shape()
+                || a.data().len() != b.data().len()
+                || a.data()
+                    .iter()
+                    .zip(b.data())
+                    .any(|(x, y)| x.to_bits() != y.to_bits())
+            {
+                return Err(format!("mapped auxiliary mismatch: {name}"));
+            }
+            f += 1;
+            floats += a.data().len();
+        }
+    }
+    if (q, f, elements, blocks, floats) != (97, 159, 77_320_704, 1_208_136, 687_593) {
+        return Err("mapped inventory mismatch".into());
+    }
+    println!(
+        "MAPPED_REFERENCE PASS q={q} f={f} codes={elements} scales={blocks} floats={floats} bitwise=true ordinary_ms={ordinary_ms:.3} mapped_ms={mapped_ms:.3}"
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
@@ -102,6 +159,13 @@ fn main() -> Result<(), String> {
         }
         [mode, root] if mode == "batch-reference" => batch_reference(Path::new(root))?,
         [mode, path] if mode == "sha-reference" => sha_reference(Path::new(path))?,
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        [mode, root] if mode == "mapped-reference" => mapped_reference(Path::new(root))?,
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        [mode, root] if mode == "verify-mapped" => {
+            // SAFETY: same controlled immutable fixture as mapped-reference.
+            unsafe { MixedModel::load_mapped(Path::new(root), PAYLOAD_BYTES) }?;
+        }
         _ => return Err(
             "usage: mixed_model_reference convert SOURCE DEST | verify DEST | batch-reference DEST | sha-reference FILE"
                 .into(),
