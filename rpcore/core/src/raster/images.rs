@@ -135,12 +135,82 @@ fn mask_image(doc:&Document<'_>,o:&Object,w:usize,h:usize,budget:&mut Budget,har
     let a:Vec<u8>=raw.into_iter().map(|v|{let c=channel(v,max_sample(b),p);if hard{255-c}else{c}}).collect();
     if (sw,sh)==(w,h){Ok(a)}else{resample_alpha(&a,sw,sh,w,h,budget)}
 }
+
+fn is_jpx(d:&Dict)->bool{
+    matches!(d.get(b"Filter".as_slice()),Some(Object::Name(n)) if n==b"JPXDecode")
+}
+
+/// Image-only baseline JPX path. Keep arbitrary content streams, filter
+/// chains, external/embedded masks and non-device color outside this subset.
+fn load_jpx(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
+    interpolate:bool,budget:&mut Budget)->Result<Image>{
+    use crate::filters::jpx::{self,BaselineColor,Container};
+    if flag(dict,b"ImageMask")?||dict.contains_key(b"Mask".as_slice())||
+        !matches!(dict.get(b"SMask".as_slice()),None|Some(Object::Name(_)) )
+    {
+        return Err(Error::Unsupported("JPX image mask"));
+    }
+    if let Some(Object::Name(n))=dict.get(b"SMask".as_slice()){
+        if n!=b"None"{return Err(Error::Unsupported("JPX external soft mask"));}
+    }
+    match dict.get(b"SMaskInData".as_slice()){
+        None=>{},
+        Some(Object::Number(v)) if *v==0.=>{},
+        _=>return Err(Error::Unsupported("JPX embedded alpha")),
+    }
+    match dict.get(b"DecodeParms".as_slice()){
+        None|Some(Object::Null)=>{},
+        Some(Object::Dict(p)) if p.is_empty()=>{},
+        _=>return Err(Error::Unsupported("JPX DecodeParms")),
+    }
+    if dict.contains_key(b"BitsPerComponent".as_slice())&&bits(dict)?!=8{
+        return Err(Error::Unsupported("JPX PDF sample depth"));
+    }
+    // Charge the compressed input and a conservative per-sample estimate
+    // before expensive decoding; codec-local geometry/MQ limits also apply.
+    budget.charge(data.len())?;
+    let header=jpx::inspect(data)?;
+    if (header.width as usize,header.height as usize)!=(w,h){
+        return Err(Error::Invalid("JPX/PDF dimensions mismatch"));
+    }
+    let n=header.components.len();
+    if !matches!(n,1|3){return Err(Error::Unsupported("JPX PDF components"));}
+    if let Some(cs)=dict.get(b"ColorSpace".as_slice()){
+        // PDF color space can override the codestream's color space. This
+        // scoped path supports only the matching device space, not conversion.
+        if device(&doc.dereference(cs)?)?!=n{
+            return Err(Error::Unsupported("JPX PDF color space mismatch"));
+        }
+    }else if header.container==Container::RawCodestream{
+        return Err(Error::Unsupported("raw JPX requires PDF color space"));
+    }
+    let charge=w.checked_mul(h).and_then(|v|v.checked_mul(n))
+        .and_then(|v|v.checked_mul(128)).ok_or(Error::Limit("JPX page decode work"))?;
+    budget.charge(charge)?;
+    let image=jpx::decode_baseline(data)?;
+    if (image.width,image.height)!=(w,h)||
+        image.color!=(if n==1{BaselineColor::Gray}else{BaselineColor::Srgb})||
+        image.pixels.len()!=w*h*n{
+        return Err(Error::Invalid("JPX/PDF decoded samples mismatch"));
+    }
+    // For non-stencil JPX images the PDF Decode entry is ignored.
+    let rgb=if n==1{
+        let mut rgb=Vec::with_capacity(w*h*3);
+        for v in image.pixels{rgb.extend([v;3]);}rgb
+    }else{image.pixels};
+    Ok(Image{w,h,rgb,alpha:None,stencil:false,interpolate})
+}
+
 pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut IccCache,intent:crate::icc::RenderingIntent)->Result<Image>{
     let o=doc.resolve(id.0,id.1)?;let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("image stream"));};
     if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==b"Image"){return Err(Error::Invalid("image subtype"));}
     let interpolate=flag(dict,b"Interpolate")?;
-    if dict.contains_key(b"SMaskInData".as_slice()){return Err(Error::Unsupported("image interpolation or embedded alpha"));}
     let(w,h)=dimensions(dict)?;
+    if is_jpx(dict){
+        let Object::Stream{data,..}=&o else{return Err(Error::Invalid("JPX image stream"));};
+        return load_jpx(doc,dict,data,w,h,interpolate,budget);
+    }
+    if dict.contains_key(b"SMaskInData".as_slice()){return Err(Error::Unsupported("image interpolation or embedded alpha"));}
     let stencil=flag(dict,b"ImageMask")?;
     if stencil{
         if dict.contains_key(b"ColorSpace".as_slice())||dict.contains_key(b"Mask".as_slice())||dict.contains_key(b"SMask".as_slice()){return Err(Error::Invalid("stencil dictionary"));}
@@ -218,5 +288,93 @@ impl Image{
             let(p,alpha)=pixel(x,y);a+=w*alpha;for i in 0..3{c[i]+=w*alpha*f64::from(p[i]);}
         }
         (if a>0.{c.map(|v|(v/a).round().clamp(0.,255.)as u8)}else{[0;3]},a.clamp(0.,1.))
+    }
+}
+
+#[cfg(test)]
+mod jpx_pdf_tests{
+    use super::*;
+    // Existing independent OpenJPEG fixtures from B11.2h2b/h3, reused here.
+    const GRAY:&str="ff4fff510029000000000004000000040000000000000000000000040000000400000000000000000001070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000240001ff93cfb44c117bb2617fbedccc4de18580bdcbecf21b9c6fffd9";
+    const ZERO:&str="ff4fff510029000000000005000000050000000000000000000000050000000500000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000100001ff938080ffd9";
+    const RGB:&str="ff4fff51002f000000000005000000030000000000000000000000050000000300000000000000000003070101070101070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000560001ff93e7ed0efda0800650755682a4deb51fad11e62edd01d8be8fe7ed0efda0a005a7ecf01b757433609a96865e7f002b779b1fe7ed0efda0600ef58e3ef470c6917e13d6fbbc5f065fb3ffd9";
+    fn hex(s:&str)->Vec<u8>{s.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect()}
+    fn box_bytes(kind:&[u8;4],p:&[u8])->Vec<u8>{
+        let mut b=((p.len()+8)as u32).to_be_bytes().to_vec();b.extend(kind);b.extend(p);b
+    }
+    fn jp2_zero()->Vec<u8>{
+        let mut b=hex("0000000c6a5020200d0a870a00000014667479706a703220000000006a703220");
+        let h=hex("000000166968647200000005000000050001070700000000000f636f6c7201000000000011");
+        b.extend(box_bytes(b"jp2h",&h));b.extend(box_bytes(b"jp2c",&hex(ZERO)));b
+    }
+    fn pdf(data:&[u8],w:usize,h:usize,fields:&str)->Vec<u8>{
+        let contents=format!("q {w} 0 0 {h} 0 0 cm /Im Do Q");
+        let mut image=format!("<< /Type /XObject /Subtype /Image /Width {w} /Height {h} {fields} /Length {} >>\nstream\n",data.len()).into_bytes();
+        image.extend(data);image.extend(b"\nendstream");
+        let objects=[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Resources << /XObject << /Im 5 0 R >> >> /Contents 4 0 R >>").into_bytes(),
+            format!("<< /Length {} >>\nstream\n{contents}\nendstream",contents.len()).into_bytes(),
+            image
+        ];
+        let mut b=b"%PDF-1.5\n".to_vec();let mut offsets=Vec::new();
+        for (i,o) in objects.iter().enumerate(){
+            offsets.push(b.len());b.extend(format!("{} 0 obj\n",i+1).as_bytes());b.extend(o);b.extend(b"\nendobj\n");
+        }
+        let x=b.len();b.extend(b"xref\n0 6\n0000000000 65535 f \n");
+        for off in offsets{b.extend(format!("{off:010} 00000 n \n").as_bytes());}
+        b.extend(format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes());b
+    }
+    fn render(data:&[u8],w:usize,h:usize,fields:&str)->Result<super::super::Bitmap>{
+        let bytes=pdf(data,w,h,fields);
+        let doc=Document::open(&bytes)?;let pages=doc.pages()?;
+        doc.render_page(&pages[0],super::super::Options::default(),4096)
+    }
+    #[test]fn pdf_jpx_raw_gray(){
+        let a=render(&hex(GRAY),4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0]").unwrap();
+        assert_eq!((a.width,a.height),(4,4));
+        let want=[22u8,60,96,134,172,208,246,26,62,100,138,174,212,248,28,66];
+        assert_eq!(a.rgba.len(),64);
+        for (p,e) in a.rgba.chunks_exact(4).zip(want){
+            assert_eq!(p[0],p[1]);assert_eq!(p[1],p[2]);assert_eq!(p[3],255);
+            assert!(p[0].abs_diff(e)<=1);
+        }
+    }
+    #[test]fn pdf_jpx_container_implicit_metadata(){
+        let a=render(&jp2_zero(),5,5,"/Filter /JPXDecode /SMaskInData 0").unwrap();
+        assert_eq!((a.width,a.height),(5,5));assert_eq!(a.rgba.len(),100);
+        assert!(a.rgba.chunks_exact(4).all(|p|p==[128,128,128,255]));
+    }
+    #[test]fn pdf_jpx_raw_rgb(){
+        let a=render(&hex(RGB),5,3,"/Filter /JPXDecode /ColorSpace /DeviceRGB").unwrap();
+        let want=hex("163c6086acd0f61a3e648aaed4f81c42668cb2d6fc20446a90b4dafe22486c92b8dc00264a7096bae004284e72");
+        assert_eq!((a.width,a.height),(5,3));assert_eq!(a.rgba.len(),60);
+        for (p,e) in a.rgba.chunks_exact(4).zip(want.chunks_exact(3)){
+            assert_eq!(p[3],255);assert!(p[..3].iter().zip(e).all(|(&x,&y)|x.abs_diff(y)<=1));
+        }
+    }
+    #[test]fn pdf_jpx_rejects_dictionary(){
+        let data=hex(GRAY);
+        for f in [
+            "/Filter /JPXDecode",
+            "/Filter /JPXDecode /ColorSpace /DeviceRGB",
+            "/Filter /JPXDecode /ColorSpace /DeviceGray /BitsPerComponent 16",
+            "/Filter /JPXDecode /ColorSpace /DeviceGray /SMaskInData 1",
+            "/Filter /JPXDecode /ColorSpace /DeviceGray /Mask [0 0]",
+            "/Filter /JPXDecode /ColorSpace /DeviceGray /ImageMask true",
+            "/Filter /JPXDecode /ColorSpace /DeviceGray /DecodeParms << /ColorTransform 1 >>",
+            "/Filter [/JPXDecode] /ColorSpace /DeviceGray /BitsPerComponent 8",
+        ]{assert!(render(&data,4,4,f).is_err(),"{f}");}
+        assert!(render(&data,5,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").is_err());
+        assert!(render(&data[..data.len()-1],4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").is_err());
+    }
+    #[test]fn pdf_jpx_budget_and_content_stream_isolation(){
+        let data=hex(GRAY);
+        let bytes=pdf(&data,4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray");
+        let doc=Document::open(&bytes).unwrap();let stream=doc.resolve(5,0).unwrap();
+        assert!(crate::filters::decode(&stream,64).is_err());
+        let mut budget=Budget{work:super::super::MAX_WORK-1,stage:"JPX test budget"};
+        assert!(load(&doc,(5,0),&mut budget,&mut IccCache::default(),crate::icc::RenderingIntent::default()).is_err());
     }
 }
