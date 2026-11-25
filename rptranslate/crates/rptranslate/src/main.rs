@@ -9,8 +9,8 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("D1.0 PASS: synthetic corpus, scalar dot, model budget = {bytes} bytes");
             println!("Self-check only; no model loaded; no network requests");
         }
-        [command, root, text, rest @ ..] if matches!(command.as_str(), "translate" | "translate-int8") && rest.len() <= 2 => {
-            let translator = if command == "translate-int8" {
+        [command, root, text, rest @ ..] if matches!(command.as_str(), "translate" | "translate-int8" | "translate-scientific" | "translate-scientific-int8") && rest.len() <= 2 => {
+            let translator = if command.ends_with("-int8") {
                 OfflineTranslator::load_mixed(Path::new(root), PAYLOAD_BYTES)
             } else {
                 OfflineTranslator::load(Path::new(root), MODEL_PAYLOAD_BYTES)
@@ -23,9 +23,20 @@ fn run(args: &[String]) -> Result<(), String> {
             if let Some(limit) = rest.get(1) {
                 options.max_new = limit.parse().map_err(|_| "invalid token limit")?;
             }
-            let result = translator
-                .session()
-                .and_then(|session| session.translate(text, options, Kernel::Auto))
+            let session = translator.session().map_err(|e| format!("{e:?}"))?;
+            if command.starts_with("translate-scientific") {
+                let result = session
+                    .translate_scientific(text, &[], options, Kernel::Auto)
+                    .map_err(|e| format!("{e:?}"))?;
+                println!("{}", result.text);
+                eprintln!(
+                    "Protected spans: {}; model calls: {}; fragmented context: {}",
+                    result.protected_spans, result.model_calls, result.fragmented_context
+                );
+                return Ok(());
+            }
+            let result = session
+                .translate(text, options, Kernel::Auto)
                 .map_err(|e| format!("{e:?}"))?;
             println!("{}", result.text);
             if result.reached_limit {
@@ -36,7 +47,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: rptranslate self-check | translate[-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]"
+                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]"
                     .into(),
             )
         }

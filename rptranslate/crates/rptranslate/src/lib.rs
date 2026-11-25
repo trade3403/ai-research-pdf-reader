@@ -1,6 +1,7 @@
 //! Local translation API and historical D1.0 smoke test.
 pub mod offline;
 pub mod protection;
+pub mod scientific;
 use rpdata::{deduplicate, SentencePair};
 use rpmodel::ModelSpec;
 

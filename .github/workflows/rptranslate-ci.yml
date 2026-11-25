@@ -296,3 +296,14 @@ jobs:
           /usr/bin/time -f %M -o "$paper/int8.rss" target/release/examples/benchmark_paper "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" > "$paper/int8.out"
           /usr/bin/time -f %M -o "$paper/fp32.rss" target/release/examples/benchmark_paper "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.out"
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/benchmark_paper.py report "$paper"
+      - name: Verify scientific protected translation through actual FP32 and INT8 models
+        if: contains(github.event.head_commit.message, 'D1.10b')
+        run: |
+          set -eu
+          paper="$RUNNER_TEMP/rp-paper"
+          cargo build --locked --offline --release -p rptranslate --example scientific_reference
+          target/release/examples/scientific_reference "$RUNNER_TEMP/rpmodel-v1" fp32
+          /usr/bin/time -f %M -o "$paper/scientific.rss" target/release/examples/scientific_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" > "$paper/scientific.out"
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_scientific_paper.py "$paper"
+          target/release/rptranslate translate-scientific-int8 "$RUNNER_TEMP/rpmodel-mixed" 'The peak acceleration is 0.1 g.' 1 64 | grep -F '0.1 g'
+          if target/release/rptranslate translate-scientific-int8 "$RUNNER_TEMP/rpmodel-mixed" 'broken $x' 1 64; then exit 1; fi

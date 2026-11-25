@@ -14,6 +14,7 @@ const UNITS: &[&str] = &[
     "mmol", "mol", "kPa", "MPa", "Pa", "GHz", "MHz", "kHz", "Hz", "kg", "mg", "g", "mL", "L", "nm",
     "mm", "cm", "km", "m", "ms", "s", "min", "h", "K", "V", "mV", "A", "W", "%",
 ];
+const EXTRA_UNITS: &[&str] = &["m/s²", "m/s^2", "m s−1", "m s–1", "m s⁻¹", "°", "◦"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -33,6 +34,7 @@ pub enum Kind {
     Quantity,
     Chemical,
     Term,
+    Symbol,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +122,10 @@ fn number_end(s: &str, start: usize) -> Result<Option<usize>, Error> {
     }
     let b = s.as_bytes();
     let mut at = start;
+    if let Some(c @ ('<' | '>' | '≤' | '≥' | '≈' | '∼' | '~')) = s[at..].chars().next() {
+        at += c.len_utf8();
+        at += s[at..].len() - s[at..].trim_start_matches(' ').len();
+    }
     if let Some(c @ ('+' | '-' | '−')) = s[at..].chars().next() {
         at += c.len_utf8();
     }
@@ -163,6 +169,26 @@ fn number_end(s: &str, start: usize) -> Result<Option<usize>, Error> {
                     return Err(Error::InvalidNumber);
                 }
                 at = end;
+            } else if let Some(exp) = trimmed.strip_prefix("10") {
+                let mut begin = s.len() - exp.len();
+                if let Some(c @ ('⁺' | '⁻')) = s[begin..].chars().next() {
+                    begin += c.len_utf8();
+                }
+                let mut end = begin;
+                while let Some(c @ ('⁰' | '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹')) =
+                    s[end..].chars().next()
+                {
+                    end += c.len_utf8();
+                }
+                if end > begin {
+                    at = end;
+                } else if let Some(c @ ('−' | '+' | '-')) = exp.chars().next() {
+                    let begin = s.len() - exp.len() + c.len_utf8();
+                    let end = digits(b, begin);
+                    if end > begin {
+                        at = end;
+                    }
+                }
             }
         }
     }
@@ -174,7 +200,11 @@ fn unit_end(s: &str, at: usize) -> Option<usize> {
     let start = at + tail.len() - tail.trim_start_matches([' ', '\t']).len();
     UNITS
         .iter()
-        .filter(|&&u| s[start..].starts_with(u) && right_boundary(s, start + u.len()))
+        .chain(EXTRA_UNITS)
+        .filter(|&&u| {
+            s[start..].starts_with(u)
+                && (matches!(u, "°" | "◦" | "%") || right_boundary(s, start + u.len()))
+        })
         .map(|u| start + u.len())
         .max()
 }
@@ -234,6 +264,15 @@ impl Plan {
                 at = end;
                 continue;
             }
+            if left_boundary(source, at)
+                && source[at..].starts_with("Mw ")
+                && let Some(end) = number_end(source, at + 3)?
+                && right_boundary(source, end)
+            {
+                push(&mut spans, source, at, end, Kind::Quantity, None)?;
+                at = end;
+                continue;
+            }
             if let Some(end) = number_end(source, at)? {
                 if let Some(end) = unit_end(source, end) {
                     push(&mut spans, source, at, end, Kind::Quantity, None)?;
@@ -247,6 +286,17 @@ impl Plan {
                 }
             }
             if left_boundary(source, at) {
+                if let Some(symbol) = ["P–SV", "P-SV", "Vₛ", "Vₚ"]
+                    .into_iter()
+                    .find(|s| {
+                        source[at..].starts_with(s) && right_boundary(source, at + s.len())
+                    })
+                {
+                    let end = at + symbol.len();
+                    push(&mut spans, source, at, end, Kind::Symbol, None)?;
+                    at = end;
+                    continue;
+                }
                 if let Some(name) = CHEMICALS
                     .iter()
                     .filter(|&&name| {
@@ -405,6 +455,29 @@ mod tests {
         }
         assert_eq!(p.restore(&p.masked()).unwrap(), input);
         assert_eq!(p.assemble(&p.gaps()).unwrap(), input);
+    }
+
+    #[test]
+    fn paper_quantities_and_symbols() {
+        let source = "Mw 7.8; 0.1 g; 30◦in; 30°; 20 kPa; 1.5 × 10⁻⁴ s; 1.5 × 10−4 s; <2 Hz; P–SV; Vₛ.";
+        let p = Plan::prepare(source, &[]).unwrap();
+        let actual: Vec<_> = p.spans().iter().map(|s| s.original.as_str()).collect();
+        assert_eq!(
+            actual,
+            [
+                "Mw 7.8",
+                "0.1 g",
+                "30◦",
+                "30°",
+                "20 kPa",
+                "1.5 × 10⁻⁴ s",
+                "1.5 × 10−4 s",
+                "<2 Hz",
+                "P–SV",
+                "Vₛ",
+            ]
+        );
+        assert_eq!(p.assemble(&p.gaps()).unwrap(), source);
     }
 
     #[test]

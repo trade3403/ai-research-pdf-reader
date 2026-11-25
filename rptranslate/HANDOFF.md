@@ -2,13 +2,18 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前只做 D1.9 全量验收修复**。D1.10a 独立科研保护模块已提交但未验收；先不要开发 D1.10b 或 D1.9i-l。
+- **当前只做 D1.10b 科学数值、公式及单位保护接入**。D1.9h-paper 及 D1.10a 基础测试已通过；用户已授权开始 D1.10b。未全量验收前不启动 D1.10c 或 D1.9i-l。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 ubuntu CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
-- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.9 全量后通知用户，等待用户指示加载加速或D1.10b。
+- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10b 全量后通知用户，等待下一阶段指示。
 
-## 当前状态（写入本交接前）
+## 当前状态（最新优先）
+- 基线 HEAD 1173be0b79784ebbd4a5eff20025725db37fbc7d，run [45549181329](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45549181329) 全量 success；CPU、真实模型实际运行均成功。D1.10a 六组基础测试通过，尚未接入默认翻译。
+- 真实论文 INT8 269/269 片段、6036英文词、110.690017秒、73.132159 tokens/s、114900 KiB、287/317数字字符串、0截断。同8片段 FP32/INT8 55.936918/3.206017秒、17.447482x，4/8译文一致；两个模型都将 strain 译为菌株、0.1 g 译为0.1克，非量化独有错误。仅提取文本，不含完整排版及独立人工评分。
+- D1.10b 本提交显式 translate-scientific[-int8]、TextSession::translate_scientific、分段保护恢复、拒绝截断/错误/预算、六组真实双精度固定样本、同论文完整提取文本对照。保留普通入口。标记 D1.10b D1.10a D1.9h-paper D1.8f 触发所有已有门槛。待本提交CI；先查真实HEAD及run。保护仅保证识别跨度字面恢复，分割可能损伤语义，全文失败计入拒绝，不能宣传100%科学准确率。
+
+## 历史状态（旧记录，非当前）
 父提交 a3c1f49c3d0a3dd457cb9833b71a7c21ae75a854；run [45543085996](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45543085996)，CPU [138967024836](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45543085996/job/138967024836) Format通过，Lint失败：int8_simd_bench.rs:70/79 needless_range_loop，循环 rep 索引 times[slot][rep]。本交接提交修复为 samples[repeat][kernel] + iter_mut().enumerate()，最后转置为两组中位数；原5次交替、位级一致要求不变。此修复待新CI，须通过HEAD查找新 run，不要把父提交当最新。真实专项138967025227仍执行。45542753928与45542273543被取消，不是成功；历史修复a3c1f49为确切rustfmt换行，d84d318修复两处固定chunk clippy与奇偶判断，51bf387修复12组format。
 
 ## D1.9 已经取得的真实证据（非整体绿灯）
@@ -31,4 +36,4 @@
 用户问为何 INT8 1.8秒加载与FP32相近。实际源码：MixedModel::load先全文件hash_file，再quantized::Reader::open内SHA，QuantizedTable::load对1208136块逐一read_block，每块seek/read/临时Vec/validate；OfflineTranslator加载验证分词器、session再次初始化。候选优化 D1.9i 连续批量读取无每块分配；D1.9j 双重SHA单次扫描/加速；D1.9k mmap/零拷贝；D1.9l 模型常驻及分词器复用。0.3–0.6秒仅目标，保持安全完整性、真实位级对照及内存验收。待用户明确同意才做。后续D1.10b真实保护接入；D1.11真实论文、D1.12小规模训练与断点、D1.13 Windows工具；D2训练，D3集成。
 
 ## 新窗口提示
-继续 D 线路 RPTranslate 自主研发。读取 GitHub 仓库 trade3403/ai-research-pdf-reader 的 feature/rptranslate 分支下 rptranslate/HANDOFF.md，核对最新HEAD、研发进度与CI实际日志。先修复D1.9剩余错误，实际提交GitHub、重新验收；不启用定时任务，不开始新功能，直到D1.9全量CI成功。不要改其他线路。报告真实链接与数据。
+继续 D 线路 RPTranslate 自主研发。读取 feature/rptranslate 的 rptranslate/HANDOFF.md，核对实际HEAD及CI日志。当前 D1.10b，先完成全量验收，按真实错误修复，不启用自动任务，不开发后续阶段或修改其他线路。

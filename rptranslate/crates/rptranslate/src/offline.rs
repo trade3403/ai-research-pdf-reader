@@ -18,6 +18,8 @@ use rpmodel::{
 };
 use std::path::Path;
 
+use crate::{protection::Term, scientific};
+
 pub const LANGUAGE: &str = ">>cmn_Hans<<";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -219,6 +221,25 @@ impl TextSession<'_> {
             return Err(Error::SourceTooLong);
         }
         Ok(tokens)
+    }
+
+    /// Explicit opt-in mode. No automatic fallback to unprotected output.
+    pub fn translate_scientific(
+        &self,
+        text: &str,
+        glossary: &[Term],
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<scientific::ScientificTranslation, scientific::Error> {
+        self.encode(text).map_err(scientific::Error::Input)?;
+        if options.beam_width == 0
+            || options.beam_width > 16
+            || options.max_new == 0
+            || options.max_new >= self.model.config().generation.max_length
+        {
+            return Err(scientific::Error::Input(Error::Inference(InferError::Limit)));
+        }
+        scientific::translate_with(text, glossary, |gap| self.translate(gap, options, kernel))
     }
 
     pub fn translate(
