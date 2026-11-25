@@ -58,3 +58,80 @@ pub fn parse_gsub_directory(b:&[u8],limits:GsubLimits)->Result<GsubDirectory,Err
     }else{None};
     Ok(GsubDirectory{minor_version:minor,scripts,features,lookups,feature_variations})
 }
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubLangSys{pub required_feature:Option<u16>,pub features:Vec<u16>}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubScript{pub tag:[u8;4],pub default_language:Option<GsubLangSys>,pub languages:Vec<([u8;4],GsubLangSys)>}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubFeature{pub tag:[u8;4],pub parameters:Option<usize>,pub lookups:Vec<u16>}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubLookup{pub kind:u16,pub flags:u16,pub subtables:Vec<usize>,pub mark_filtering_set:Option<u16>}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubLayout{pub directory:GsubDirectory,pub scripts:Vec<GsubScript>,pub features:Vec<GsubFeature>,pub lookups:Vec<GsubLookup>}
+fn charge(budget:&mut usize,n:usize)->Result<(),Error>{
+    *budget=budget.checked_sub(n).ok_or(Error::Limit("gsub child records"))?;Ok(())
+}
+fn indices(b:&[u8],p:usize,n:usize,bound:usize,budget:&mut usize)->Result<Vec<u16>,Error>{
+    charge(budget,n)?;slice(b,p,n*2)?;
+    let mut out=Vec::with_capacity(n);
+    for i in 0..n{let v=word(b,p+2*i)?;if usize::from(v)>=bound{return Err(Error::Invalid("gsub cross index"));}out.push(v);}
+    Ok(out)
+}
+fn language(b:&[u8],p:usize,features:usize,budget:&mut usize)->Result<GsubLangSys,Error>{
+    slice(b,p,6)?;
+    if word(b,p)?!=0{return Err(Error::Invalid("gsub reserved lookup order"));}
+    let r=word(b,p+2)?;
+    let required_feature=if r==0xffff{None}else{
+        if usize::from(r)>=features{return Err(Error::Invalid("gsub required feature index"));}Some(r)
+    };
+    let n=usize::from(word(b,p+4)?);
+    Ok(GsubLangSys{required_feature,features:indices(b,p+6,n,features,budget)?})
+}
+/// Decode child headers and cross-indices. Offsets refer to the input GSUB
+/// slice. Substitution subtables, feature parameters, GDEF mark-set indices
+/// and variation bodies remain opaque, not validated for execution.
+pub fn parse_gsub_layout(b:&[u8],limits:GsubLimits)->Result<GsubLayout,Error>{
+    let directory=parse_gsub_directory(b,limits)?;
+    let mut budget=limits.max_records;
+    charge(&mut budget,directory.scripts.len()+directory.features.len()+directory.lookups.len())?;
+    let mut scripts=Vec::new();
+    for r in &directory.scripts{
+        let p=r.offset;let n=usize::from(word(b,p+2)?);
+        charge(&mut budget,n)?;
+        let size=4+6*n;slice(b,p,size)?;
+        let rel=usize::from(word(b,p)?);
+        let default_language=if rel==0{None}else{
+            charge(&mut budget,1)?;
+            Some(language(b,offset(b,p,rel,size,6)?,directory.features.len(),&mut budget)?)
+        };
+        let mut languages:Vec<([u8;4],GsubLangSys)>=Vec::with_capacity(n);
+        for i in 0..n{
+            let q=p+4+6*i;let tag:[u8;4]=slice(b,q,4)?.try_into().unwrap();
+            if languages.last().is_some_and(|r|r.0>=tag){return Err(Error::Invalid("gsub language tag order"));}
+            let at=offset(b,p,usize::from(word(b,q+4)?),size,6)?;
+            languages.push((tag,language(b,at,directory.features.len(),&mut budget)?));
+        }
+        scripts.push(GsubScript{tag:r.tag,default_language,languages});
+    }
+    let mut features=Vec::new();
+    for r in &directory.features{
+        let p=r.offset;let n=usize::from(word(b,p+2)?);
+        let refs=indices(b,p+4,n,directory.lookups.len(),&mut budget)?;
+        let rel=usize::from(word(b,p)?);
+        let parameters=if rel==0{None}else{Some(offset(b,p,rel,4+2*n,1)?)};
+        features.push(GsubFeature{tag:r.tag,parameters,lookups:refs});
+    }
+    let mut lookups=Vec::new();
+    for &p in &directory.lookups{
+        let kind=word(b,p)?;let flags=word(b,p+2)?;let n=usize::from(word(b,p+4)?);
+        if !(1..=8).contains(&kind)||flags&0x00e0!=0{return Err(Error::Invalid("gsub lookup kind or flags"));}
+        charge(&mut budget,n)?;
+        let size=6+2*n+if flags&0x10!=0{2}else{0};slice(b,p,size)?;
+        let mut subtables=Vec::with_capacity(n);
+        for i in 0..n{subtables.push(offset(b,p,usize::from(word(b,p+6+2*i)?),size,2)?);}
+        let mark_filtering_set=if flags&0x10!=0{Some(word(b,p+6+2*n)?)}else{None};
+        lookups.push(GsubLookup{kind,flags,subtables,mark_filtering_set});
+    }
+    Ok(GsubLayout{directory,scripts,features,lookups})
+}

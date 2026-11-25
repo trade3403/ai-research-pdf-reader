@@ -142,3 +142,5 @@ pub use font_coverage::{GlyphCoverage,parse_glyph_coverage};
 
 pub mod font_gsub;
 pub use font_gsub::{GsubRecord,GsubDirectory,GsubLimits,parse_gsub_directory};
+
+pub use font_gsub::{GsubLangSys,GsubScript,GsubFeature,GsubLookup,GsubLayout,parse_gsub_layout};

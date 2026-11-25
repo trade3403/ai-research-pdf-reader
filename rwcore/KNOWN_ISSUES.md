@@ -68,3 +68,5 @@
 - C4.3h-2e2b real off-diagonal and point attachment fixtures outstanding, retained while independent shaping development proceeds. C4.4a1 Coverage parsing only; GSUB/GPOS execution and shaping not implemented.
 
 - C4.4a2a: directory-only GSUB parser; child contents, cross-index checks, overlapping child structures and variation semantics not validated. No real GSUB fixture acceptance yet.
+
+- C4.4a2b: child metadata only; substitution payload, FeatureParams, FeatureVariations, GDEF mark filtering index and overlapping structures are not fully validated; no real GSUB acceptance yet.

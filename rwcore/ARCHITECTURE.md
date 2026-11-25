@@ -76,3 +76,5 @@ C4.3h-2e2a pending CI: four independent hand-calculated synthetic composite boun
 C4.4a1 pending CI: font_coverage.rs bounded Coverage format 1 glyph list and format 2 ranges, strict ordering and contiguous index validation, binary search, exclusive glyph count and expansion bounds. No substitution execution.
 
 C4.4a2a pending CI: font_gsub.rs bounded GSUB 1.0/1.1 top-level directories, absolute child offsets, cumulative record and byte budgets; no child body, variation execution or substitution validation.
+
+C4.4a2b pending CI: GSUB child headers, default and tagged LangSys, required feature and lookup index validation, lookup flags and optional mark filtering set metadata, bounded cumulative records. Subtable bodies opaque.

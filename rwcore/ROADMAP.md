@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #83, not full Word compatibility.
+Status below is baseline at CI #84, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -43,8 +43,9 @@ Status below is baseline at CI #83, not full Word compatibility.
 | C4.3h-2e2a | Exact synthetic general matrix and attachment boundary tests | Verified |
 | C4.3h-2e2b | Real point attachment/general matrix reference (outstanding) | Planned |
 | C4.4a1 | Shared OpenType Coverage format 1/2 decoder | Verified |
-| C4.4a2a | GSUB header and top-level directory | Source implemented; CI pending |
-| C4.4a2b | GSUB child structures and cross-index validation | Planned |
+| C4.4a2a | GSUB header and top-level directory | Verified |
+| C4.4a2b | GSUB child structures and cross-index validation | Source implemented; CI pending |
+| C4.4a3 | Single substitution and real-font validation | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
