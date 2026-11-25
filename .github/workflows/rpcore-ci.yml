@@ -229,3 +229,26 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/icc-report/report.md ]; then cat rpcore/target/icc-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  icc-render:
+    # End-to-end embedded ICC gate; LCMS, Poppler and Pillow are CI-only.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2 poppler-utils python3-pil
+      - run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --example corpus_probe
+      - run: |
+          mkdir -p rpcore/target/icc-render-report
+          dpkg-query -W liblcms2-2 poppler-utils python3-pil > rpcore/target/icc-render-report/reference-versions.txt
+          /usr/bin/python3 rpcore/corpus/icc_render_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-icc-render-comparison
+          path: rpcore/target/icc-render-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/icc-render-report/report.md ]; then cat rpcore/target/icc-render-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
