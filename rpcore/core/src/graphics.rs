@@ -112,7 +112,7 @@ pub enum Command{
     /// Intersect current clipping region; path is applied after any painting.
     Clip{path:Path,rule:FillRule},
     /// Image reference and placement only. Image samples are not decoded here.
-    Image{object_id:(u32,u16),ctm:Matrix},
+    Image{object_id:(u32,u16),ctm:Matrix,intent:crate::icc::RenderingIntent},
     /// Text operators are retained in order, but glyph rendering is deferred.
     Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>,resource_owner:Option<(u32,u16)>},
 }
@@ -129,11 +129,12 @@ pub struct DisplayList{
 }
 #[derive(Clone)]
 struct State{
+    intent:crate::icc::RenderingIntent,fill_icc:Option<Vec<Object>>,stroke_icc:Option<Vec<Object>>,fill_values:Vec<Object>,stroke_values:Vec<Object>,
     ctm:Matrix,fill:Color,fill_space:Space,stroke:Stroke,stroke_space:Space,fill_alpha:f64,stroke_alpha:f64,blend:BlendMode,knockout:bool,in_mask:bool,
 }
 impl Default for State{
     fn default()->Self{
-        Self{ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
+        Self{intent:crate::icc::RenderingIntent::RelativeColorimetric,fill_icc:None,stroke_icc:None,fill_values:Vec::new(),stroke_values:Vec::new(),ctm:Matrix::IDENTITY,fill:Color::Gray(0.),fill_space:Space::Gray,
             stroke:Stroke{color:Color::Gray(0.),width:1.,cap:LineCap::Butt,join:LineJoin::Miter,miter_limit:10.,dash:Vec::new(),dash_phase:0.,ctm:Matrix::IDENTITY},stroke_space:Space::Gray,fill_alpha:1.,stroke_alpha:1.,blend:BlendMode::Normal,knockout:false,in_mask:false}
     }
 }
@@ -164,7 +165,7 @@ fn device(n:&[u8])->Result<Space>{match n{
 struct Engine<'d,'a>{
     doc:&'d Document<'a>,out:DisplayList,
     active:BTreeSet<(u32,u16)>,ops:usize,segments:usize,bytes_left:usize,
-    icc_cache:BTreeMap<(u32,u16),Space>,icc_bytes:usize,
+    icc_cache:BTreeMap<((u32,u16),crate::icc::RenderingIntent),Space>,icc_bytes:usize,
 }
 impl<'d,'a> Engine<'d,'a>{
     fn command(&mut self,c:Command)->Result<()>{
@@ -228,7 +229,7 @@ impl<'d,'a> Engine<'d,'a>{
             b"Image"=>{
                 self.warning(Warning::ImageRenderingDeferred);
                 if matches!(dict.get(b"ImageMask".as_slice()),Some(Object::Bool(true))){self.command(Command::StencilColor(s.fill))?;}
-                self.command(Command::Image{object_id:id,ctm:s.ctm})
+                self.command(Command::Image{object_id:id,ctm:s.ctm,intent:s.intent})
             }
             b"Form"=>{
                 let group_isolated=if let Some(group)=dict.get(b"Group".as_slice()){
@@ -280,35 +281,45 @@ impl<'d,'a> Engine<'d,'a>{
             _=>Err(Error::Unsupported("XObject subtype")),
         }
     }
-    fn color_space(&mut self,resources:Option<&Object>,n:&[u8])->Result<Space>{
-        if let Ok(s)=device(n){return Ok(s);}
-        let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Unsupported("graphics color space"))?)?)?;
-        let spaces=crate::dict(self.doc.dereference(r.get(b"ColorSpace".as_slice()).ok_or(Error::Unsupported("graphics color space"))?)?)?;
-        let o=self.doc.dereference(spaces.get(n).ok_or(Error::Unsupported("graphics color space"))?)?;
-        match o{
-            Object::Name(n)=>device(&n),
-            Object::Array(a)=>match a.first(){
-                Some(Object::Name(n)) if n==b"ICCBased"=>{
+    fn icc_space(&mut self,a:&[Object],intent:crate::icc::RenderingIntent)->Result<Space>{
                     let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
-                    if let Some(s)=self.icc_cache.get(&id){return Ok(s.clone());}
+                    if let Some(s)=self.icc_cache.get(&(id,intent)){return Ok(s.clone());}
                     if self.icc_cache.len()>=crate::color::ICC_PAGE_PROFILES{return Err(Error::Limit("ICC page profiles"));}
-                    let (n,t,used,path)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes)?;
+                    let (n,t,used,path)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes,intent)?;
                     self.icc_bytes+=used;
                     self.out.icc_profiles.push(crate::icc::ProfileDiagnostic{object_id:id,source:crate::icc::ProfileUse::Vector,components:n,path});
                     let space=if let Some(t)=t{
                         // PDF ri / absolute and saturation paths are not implemented.
-                        self.warning(Warning::IccIntentApproximation);
+                        if !matches!(path,crate::icc::ProfilePath::Mpe{..}){self.warning(Warning::IccIntentApproximation);}
                         Space::Icc(Arc::new(t))
                     }else{
                         self.warning(Warning::IccAlternateUsed);
                         Space::IccAlternate(n)
                     };
-                    self.icc_cache.insert(id,space.clone());
+                    self.icc_cache.insert((id,intent),space.clone());
                     Ok(space)
+    }
+    fn set_intent(&mut self,s:&mut State,intent:crate::icc::RenderingIntent)->Result<()>{
+        if s.intent==intent{return Ok(());}
+        if let Some(a)=&s.fill_icc{let space=self.icc_space(a,intent)?;s.fill=if s.fill_values.is_empty(){space.initial()?}else{space.color(&s.fill_values)?};s.fill_space=space;}
+        if let Some(a)=&s.stroke_icc{let space=self.icc_space(a,intent)?;s.stroke.color=if s.stroke_values.is_empty(){space.initial()?}else{space.color(&s.stroke_values)?};s.stroke_space=space;}
+        s.intent=intent;Ok(())
+    }
+    fn color_space(&mut self,resources:Option<&Object>,n:&[u8],intent:crate::icc::RenderingIntent)->Result<(Space,Option<Vec<Object>>)> {
+        if let Ok(s)=device(n){return Ok((s,None));}
+        let r=crate::dict(self.doc.dereference(resources.ok_or(Error::Unsupported("graphics color space"))?)?)?;
+        let spaces=crate::dict(self.doc.dereference(r.get(b"ColorSpace".as_slice()).ok_or(Error::Unsupported("graphics color space"))?)?)?;
+        let o=self.doc.dereference(spaces.get(n).ok_or(Error::Unsupported("graphics color space"))?)?;
+        match o{
+            Object::Name(n)=>device(&n).map(|s|(s,None)),
+            Object::Array(a)=>match a.first(){
+                Some(Object::Name(n)) if n==b"ICCBased"=>{
+                    let space=self.icc_space(&a,intent)?;
+                    Ok((space,Some(a)))
                 }
                 Some(Object::Name(n)) if n==b"Pattern"=>Err(Error::Unsupported("graphics Pattern color space")),
                 Some(Object::Name(n)) if matches!(n.as_slice(),b"CalRGB"|b"CalGray"|b"Lab")=>{
-                    Ok(Space::Calibrated(crate::color::Calibrated::parse(self.doc,&a)?))
+                    Ok((Space::Calibrated(crate::color::Calibrated::parse(self.doc,&a)?),None))
                 }
                 Some(Object::Name(n)) if n==b"Separation"||n==b"DeviceN"=>Err(Error::Unsupported("graphics spot color space")),
                 Some(Object::Name(n)) if n==b"Indexed"=>Err(Error::Unsupported("graphics Indexed color space")),
@@ -410,7 +421,7 @@ impl<'d,'a> Engine<'d,'a>{
                 // These quality hints do not change the abstract path geometry.
                 b"FL" if (0.0..=100.).contains(&number(&v)?)=>{},
                 b"SM" if (0.0..=1.).contains(&number(&v)?)=>{},
-                b"RI" if matches!(&v,Object::Name(n) if matches!(n.as_slice(),b"AbsoluteColorimetric"|b"RelativeColorimetric"|b"Saturation"|b"Perceptual"))=>{},
+                b"RI"=>self.set_intent(s,crate::icc::RenderingIntent::from_pdf_name(name(&v)?)?)?,
                 b"SA" if matches!(v,Object::Bool(_))=>{
                     if v==Object::Bool(true){self.warning(Warning::DeviceQualityHintNotInterpreted);}
                 }
@@ -475,11 +486,11 @@ impl<'d,'a> Engine<'d,'a>{
                 b"g"|b"G"|b"rg"|b"RG"|b"k"|b"K"=>{
                     let space=match w{b"g"|b"G"=>Space::Gray,b"rg"|b"RG"=>Space::Rgb,_=>Space::Cmyk};
                     let color=space.color(a)?;
-                    if w[0].is_ascii_uppercase(){s.stroke_space=space;s.stroke.color=color;}else{s.fill_space=space;s.fill=color;}
+                    if w[0].is_ascii_uppercase(){s.stroke_space=space;s.stroke.color=color;s.stroke_icc=None;s.stroke_values.clear();}else{s.fill_space=space;s.fill=color;s.fill_icc=None;s.fill_values.clear();}
                 }
-                b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;let initial=space.initial()?;if w==b"CS"{s.stroke_space=space;s.stroke.color=initial;}else{s.fill_space=space;s.fill=initial;}}
-                b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
-                b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
+                b"CS"|b"cs"=>{arity(a,1)?;let (space,icc)=self.color_space(resources,name(&a[0])?,s.intent)?;let initial=space.initial()?;if w==b"CS"{s.stroke_space=space;s.stroke.color=initial;s.stroke_icc=icc;s.stroke_values.clear();}else{s.fill_space=space;s.fill=initial;s.fill_icc=icc;s.fill_values.clear();}}
+                b"SC"|b"SCN"=>{s.stroke.color=s.stroke_space.color(a)?;if s.stroke_icc.is_some(){s.stroke_values=a.to_vec();}},
+                b"sc"|b"scn"=>{s.fill=s.fill_space.color(a)?;if s.fill_icc.is_some(){s.fill_values=a.to_vec();}},
                 b"Do"=>{if s.knockout||s.in_mask{return Err(Error::Unsupported("XObject inside path-only knockout or soft mask"));}arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth,resource_owner)?;}
                 b"BT"|b"ET"|b"Tc"|b"Tw"|b"Tz"|b"TL"|b"Tf"|b"Tr"|b"Ts"|b"Td"|b"TD"|b"Tm"|b"T*"|b"Tj"|b"TJ"|b"'"|b"\""=> {
                     if s.knockout||s.in_mask{return Err(Error::Unsupported("text inside path-only knockout or soft mask"));}
@@ -493,7 +504,7 @@ impl<'d,'a> Engine<'d,'a>{
                     self.command(Command::Text{operation:op.clone(),ctm:s.ctm,fill:s.fill,stroke:s.stroke(),scope,resource_owner})?;
                 }
                 b"BMC"|b"BDC"|b"EMC"|b"MP"|b"DP"=>self.warning(Warning::MarkedContentNotInterpreted),
-                b"ri"=>{arity(a,1)?;name(&a[0])?;}
+                b"ri"=>{arity(a,1)?;self.set_intent(&mut s,crate::icc::RenderingIntent::from_pdf_name(name(&a[0])?)?)?;}
                 b"i"=>{let v=nums::<1>(a)?[0];if !(0.0..=100.).contains(&v){return Err(Error::Invalid("flatness"));}}
                 b"gs"=>{arity(a,1)?;self.ext_gstate(resources,name(&a[0])?,&mut s,depth,resource_owner)?;}
                 b"sh"=>return Err(Error::Unsupported("shading")),

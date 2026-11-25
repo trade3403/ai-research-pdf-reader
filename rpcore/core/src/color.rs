@@ -82,7 +82,7 @@ impl IccTransform{
 /// if present, otherwise A2B0. Full PDF rendering-intent switching is deferred.
 /// Invalid or unsupported profile payloads use the documented device alternate;
 /// a recognized profile with wrong component count or a resource limit is fatal.
-pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
+pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crate::icc::RenderingIntent)
     ->Result<(usize,Option<IccTransform>,usize,ProfilePath)>{
     let (o,n)=icc_stream(doc,a)?;
     let Object::Stream{data,..}=&o else{unreachable!()};
@@ -101,9 +101,10 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
     }
     // Preserve the existing relative-colorimetric display policy. Both
     // vector and image paths use this loader; PDF ri switching is separate.
-    if p.tag(b"D2B1").is_some(){
-        use crate::icc::{MpeDirection,RenderingIntent};
-        match p.mpe_transform(MpeDirection::DeviceToPcs,RenderingIntent::RelativeColorimetric){
+    use crate::icc::{MpeDirection,RenderingIntent};
+    let tag=MpeDirection::DeviceToPcs.tag(intent);
+    if p.tag(&tag).is_some(){
+        match p.mpe_transform(MpeDirection::DeviceToPcs,intent){
             Ok(transform)=>{
                 // Bound per-operation vector work as well as per-pixel
                 // raster work. Charge owned payloads conservatively.
@@ -111,14 +112,17 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
                 let charged=charged.checked_add(bytes.len()).ok_or(Error::Limit("ICC owned MPE bytes"))?;
                 if charged>remaining{return Err(Error::Limit("ICC owned MPE bytes"));}
                 let transform=transform.into_owned();
-                return Ok((n,Some(IccTransform::Mpe{transform,components:n}),charged,ProfilePath::Mpe{tag:*b"D2B1"}));
+                return Ok((n,Some(IccTransform::Mpe{transform,components:n}),charged,ProfilePath::Mpe{tag}));
             }
             Err(Error::Unsupported(_))=>{},
             Err(Error::Limit(s))=>return Err(Error::Limit(s)),
             Err(Error::Invalid(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
         }
     }
-    let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
+    // Until media-white correction is implemented, absolute legacy
+    // transforms retain the relative approximation and diagnostic warning.
+    let preferred=match intent{RenderingIntent::Perceptual=>b"A2B0",RenderingIntent::Saturation=>b"A2B2",_=>b"A2B1"};
+    let key=if p.tag(preferred).is_some(){preferred}else{b"A2B0"};
     let transform=match n{
         1=>p.gray_trc().map(IccTransform::Gray),
         3=>p.rgb_matrix().map(IccTransform::Rgb),

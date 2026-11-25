@@ -719,7 +719,7 @@ mod tests{
 }
 
 /// ICC rendering intent, independent of the profile's preferred intent.
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub enum RenderingIntent{Perceptual,RelativeColorimetric,Saturation,AbsoluteColorimetric}
 impl RenderingIntent{
     pub fn from_pdf_name(name:&[u8])->Result<Self>{

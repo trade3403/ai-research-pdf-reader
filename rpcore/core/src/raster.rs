@@ -404,7 +404,7 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize,icc_cache:images::IccCache}
+struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<((u32,u16),crate::icc::RenderingIntent),Arc<images::Image>>,image_cache_bytes:usize,icc_cache:images::IccCache}
 impl Surface{
     fn local_index(&self,page_sample:usize)->Option<usize>{
         let p=page_sample/4;self.region.index(p%self.w,p/self.w,page_sample%4)
@@ -602,14 +602,14 @@ impl Surface{
         }}
         Ok(())
     }
-    fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix)->Result<()>{
+    fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix,intent:crate::icc::RenderingIntent)->Result<()>{
         self.budget.stage="raster work (image decode)";
-        let img=if let Some(img)=self.image_cache.get(&id){Arc::clone(img)}else{
-            let img=Arc::new(images::load(doc,id,&mut self.budget,&mut self.icc_cache)?);
+        let img=if let Some(img)=self.image_cache.get(&(id,intent)){Arc::clone(img)}else{
+            let img=Arc::new(images::load(doc,id,&mut self.budget,&mut self.icc_cache,intent)?);
             let bytes=img.rgb.capacity()+img.alpha.as_ref().map_or(0,Vec::capacity);
             // No eviction/reload churn, no caching unbounded numbers of tiny images.
             if self.image_cache.len()<128&&bytes<=32*1024*1024-self.image_cache_bytes{
-                self.image_cache_bytes+=bytes;self.image_cache.insert(id,Arc::clone(&img));
+                self.image_cache_bytes+=bytes;self.image_cache.insert((id,intent),Arc::clone(&img));
             }
             img
         };
@@ -678,7 +678,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
                 if let Some((c,rule))=fill{let m=mask(&p,*rule,w,h,&s.clip,&mut s.budget)?;s.paint(&m,rgb(*c),s.fill_alpha)?;}
                 if let Some(st)=stroke{let p=stroke_paths(&p,st,view,&mut s.budget)?;let m=mask(&p,FillRule::NonZero,w,h,&s.clip,&mut s.budget)?;s.paint(&m,rgb(st.color),s.stroke_alpha)?;}
             }
-            Command::Image{object_id,ctm}=>s.image(doc,*object_id,view.compose(*ctm)?)?,
+            Command::Image{object_id,ctm,intent}=>s.image(doc,*object_id,view.compose(*ctm)?,*intent)?,
             Command::Text{operation,ctm,fill,stroke,resource_owner,..}=>{
                 // Explicit preview mode skips all text, as in B10.1. Strict mode never silently skips.
                 if opt.allow_missing_text{missing_text=true;continue;}

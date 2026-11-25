@@ -35,28 +35,28 @@ enum Space{Device(usize),Icc(Arc<IccTransform>),Indexed{base:usize,high:usize,pa
 /// Cache even alternate decisions so uncached image objects cannot repeatedly
 /// inflate/parse the same profile. Scope is a single raster pass.
 #[derive(Default)]
-pub(super) struct IccCache{entries:BTreeMap<(u32,u16),(usize,Option<Arc<IccTransform>>)>,bytes:usize,pub(super) diagnostics:Vec<crate::icc::ProfileDiagnostic>}
+pub(super) struct IccCache{entries:BTreeMap<((u32,u16),crate::icc::RenderingIntent),(usize,Option<Arc<IccTransform>>)>,bytes:usize,pub(super) diagnostics:Vec<crate::icc::ProfileDiagnostic>}
 impl IccCache{
-    fn space(&mut self,doc:&Document<'_>,a:&[Object],budget:&mut Budget)->Result<Space>{
+    fn space(&mut self,doc:&Document<'_>,a:&[Object],budget:&mut Budget,intent:crate::icc::RenderingIntent)->Result<Space>{
         let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
-        if let Some((n,t))=self.entries.get(&id){
+        if let Some((n,t))=self.entries.get(&(id,intent)){
             return Ok(match t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(*n)});
         }
         if self.entries.len()>=ICC_PAGE_PROFILES{return Err(Error::Limit("ICC image profiles"));}
-        let (n,t,used,path)=crate::color::load_icc(doc,a,ICC_PAGE_BYTES-self.bytes)?;
+        let (n,t,used,path)=crate::color::load_icc(doc,a,ICC_PAGE_BYTES-self.bytes,intent)?;
         self.bytes+=used;
         budget.charge(used)?;
         let t=t.map(Arc::new);
         let space=match &t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(n)};
-        self.entries.insert(id,(n,t));
+        self.entries.insert((id,intent),(n,t));
         self.diagnostics.push(crate::icc::ProfileDiagnostic{object_id:id,source:crate::icc::ProfileUse::Image,components:n,path});
         Ok(space)
     }
 }
-fn space(doc:&Document<'_>,d:&Dict,cache:&mut IccCache,budget:&mut Budget)->Result<Space>{
+fn space(doc:&Document<'_>,d:&Dict,cache:&mut IccCache,budget:&mut Budget,intent:crate::icc::RenderingIntent)->Result<Space>{
     let o=doc.dereference(d.get(b"ColorSpace".as_slice()).ok_or(Error::Invalid("image color space"))?)?;
     if let Object::Array(a)=&o{
-        if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased"){return cache.space(doc,a,budget);}
+        if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased"){return cache.space(doc,a,budget,intent);}
         if a.len()!=4||!matches!(&a[0],Object::Name(n) if n==b"Indexed"||n==b"I"){return Err(Error::Unsupported("image color space array"));}
         let base=device(&doc.dereference(&a[1])?)?;
         let high=match a[2]{Object::Number(v) if v>=0.&&v<=255.&&v.fract()==0.=>v as usize,_=>return Err(Error::Invalid("Indexed hival"))};
@@ -135,7 +135,7 @@ fn mask_image(doc:&Document<'_>,o:&Object,w:usize,h:usize,budget:&mut Budget,har
     let a:Vec<u8>=raw.into_iter().map(|v|{let c=channel(v,max_sample(b),p);if hard{255-c}else{c}}).collect();
     if (sw,sh)==(w,h){Ok(a)}else{resample_alpha(&a,sw,sh,w,h,budget)}
 }
-pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut IccCache)->Result<Image>{
+pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut IccCache,intent:crate::icc::RenderingIntent)->Result<Image>{
     let o=doc.resolve(id.0,id.1)?;let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("image stream"));};
     if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==b"Image"){return Err(Error::Invalid("image subtype"));}
     let interpolate=flag(dict,b"Interpolate")?;
@@ -153,7 +153,7 @@ pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut 
         for y in 0..h{for x in 0..w{let b=(data[y*row+x/8]>>(7-x%8))&1;let paint=if pair[0]==0.{b==0}else{b==1};alpha.push(if paint{255}else{0});}}
         return Ok(Image{w,h,rgb:Vec::new(),alpha:Some(alpha),stencil:true,interpolate});
     }
-    let b=bits(dict)?;let max=max_sample(b);let cs=space(doc,dict,cache,budget)?;
+    let b=bits(dict)?;let max=max_sample(b);let cs=space(doc,dict,cache,budget,intent)?;
     let n=match &cs{Space::Device(n)=>*n,Space::Icc(t)=>t.components(),Space::Indexed{..}=>1};
     if matches!(&cs,Space::Indexed{..})&&(b==16||matches!(dict.get(b"Filter".as_slice()),Some(Object::Name(n)) if n==b"DCTDecode"||n==b"DCT")){return Err(Error::Unsupported("Indexed sample format"));}
     let data=sample_data(&o,w,h,n,b,budget)?;
