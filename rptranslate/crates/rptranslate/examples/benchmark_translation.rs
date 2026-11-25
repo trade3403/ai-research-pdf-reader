@@ -2,22 +2,28 @@
 use rpinfer::{
     marian_model::{GenerationMode, GenerationOptions, MODEL_PAYLOAD_BYTES},
     matmul::{avx2_available, Kernel},
+    mixed_model::PAYLOAD_BYTES,
 };
 use rptranslate::offline::OfflineTranslator;
 use std::{path::Path, time::Instant};
 
 fn main() -> Result<(), String> {
     let path = std::env::args().nth(1).ok_or("missing model directory")?;
+    let mode = std::env::args().nth(2).unwrap_or_else(|| "fp32".into());
     let start = Instant::now();
-    let translator = OfflineTranslator::load(Path::new(&path), MODEL_PAYLOAD_BYTES)
-        .map_err(|e| format!("{e:?}"))?;
+    let translator = match mode.as_str() {
+        "fp32" => OfflineTranslator::load(Path::new(&path), MODEL_PAYLOAD_BYTES),
+        "int8" => OfflineTranslator::load_mixed(Path::new(&path), PAYLOAD_BYTES),
+        _ => return Err("unknown benchmark precision".into()),
+    }
+    .map_err(|e| format!("{e:?}"))?;
     let load_ms = start.elapsed().as_secs_f64() * 1000.;
     let start = Instant::now();
     let session = translator.session().map_err(|e| format!("{e:?}"))?;
     let session_ms = start.elapsed().as_secs_f64() * 1000.;
     println!(
         "BENCH_LOAD\t{load_ms:.3}\t{session_ms:.3}\t{}\t{}",
-        MODEL_PAYLOAD_BYTES,
+        translator.payload_bytes(),
         avx2_available()
     );
     let cases = [

@@ -1,4 +1,4 @@
-use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, matmul::Kernel};
+use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, matmul::Kernel, mixed_model::PAYLOAD_BYTES};
 use rptranslate::offline::OfflineTranslator;
 use std::{path::Path, process::ExitCode};
 
@@ -9,9 +9,13 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("D1.0 PASS: synthetic corpus, scalar dot, model budget = {bytes} bytes");
             println!("Self-check only; no model loaded; no network requests");
         }
-        [command, root, text, rest @ ..] if command == "translate" && rest.len() <= 2 => {
-            let translator = OfflineTranslator::load(Path::new(root), MODEL_PAYLOAD_BYTES)
-                .map_err(|e| format!("{e:?}"))?;
+        [command, root, text, rest @ ..] if matches!(command.as_str(), "translate" | "translate-int8") && rest.len() <= 2 => {
+            let translator = if command == "translate-int8" {
+                OfflineTranslator::load_mixed(Path::new(root), PAYLOAD_BYTES)
+            } else {
+                OfflineTranslator::load(Path::new(root), MODEL_PAYLOAD_BYTES)
+            }
+            .map_err(|e| format!("{e:?}"))?;
             let mut options = translator.default_options();
             if let Some(width) = rest.first() {
                 options.beam_width = width.parse().map_err(|_| "invalid beam width")?;
@@ -32,7 +36,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: rptranslate self-check | translate MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]"
+                "Usage: rptranslate self-check | translate[-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]"
                     .into(),
             )
         }

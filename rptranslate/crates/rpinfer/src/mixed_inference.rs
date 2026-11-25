@@ -76,15 +76,15 @@ impl Attention<'_> {
             let kh = head_slice(&kv.k, start, 64)?;
             let vh = head_slice(&kv.v, start, 64)?;
             let context = scaled_dot_product(&qh, &kh, &vh, mask, kernels.float)?.context;
-            for (row, part) in joined.chunks_exact_mut(512).zip(context.data().chunks_exact(64)) {
+            for (row, part) in joined
+                .chunks_exact_mut(512)
+                .zip(context.data().chunks_exact(64))
+            {
                 row[start..start + 64].copy_from_slice(part);
             }
         }
-        self.output.forward_with(
-            &Tensor::new(&[rows, 512], joined)?,
-            false,
-            kernels.integer,
-        )
+        self.output
+            .forward_with(&Tensor::new(&[rows, 512], joined)?, false, kernels.integer)
     }
 }
 
@@ -113,14 +113,21 @@ impl MixedModel {
     fn linear(&self, name: &str) -> Result<QuantizedLinear<'_>, Error> {
         Ok(QuantizedLinear {
             weight: self.matrix(&format!("{name}.weight")).ok_or(Error::Shape)?,
-            bias: Some(self.auxiliary(&format!("{name}.bias")).ok_or(Error::Shape)?),
+            bias: Some(
+                self.auxiliary(&format!("{name}.bias"))
+                    .ok_or(Error::Shape)?,
+            ),
         })
     }
 
     fn norm(&self, name: &str) -> Result<Norm<'_>, Error> {
         Ok(Norm {
-            weight: self.auxiliary(&format!("{name}.weight")).ok_or(Error::Shape)?,
-            bias: self.auxiliary(&format!("{name}.bias")).ok_or(Error::Shape)?,
+            weight: self
+                .auxiliary(&format!("{name}.weight"))
+                .ok_or(Error::Shape)?,
+            bias: self
+                .auxiliary(&format!("{name}.bias"))
+                .ok_or(Error::Shape)?,
             epsilon: 1e-5,
         })
     }
@@ -172,7 +179,10 @@ impl MixedModel {
             .ok_or(Error::Shape)?;
         let shared = self.matrix("model.shared.weight").ok_or(Error::Shape)?;
         let tokens = shared.embedding(ids, self.config().embedding_scale)?;
-        let positions = Tensor::new(&[ids.len(), 512], pos.data()[offset * 512..end * 512].to_vec())?;
+        let positions = Tensor::new(
+            &[ids.len(), 512],
+            pos.data()[offset * 512..end * 512].to_vec(),
+        )?;
         tokens.binary(&positions, Binary::Add)
     }
 
@@ -196,7 +206,10 @@ impl MixedModel {
             let branch = layer.own.forward(
                 &x,
                 &kv,
-                Mask { key_keep: Some(&keep), ..Mask::default() },
+                Mask {
+                    key_keep: Some(&keep),
+                    ..Mask::default()
+                },
                 kernels,
             )?;
             x = layer.finish(&layer.own_norm.residual(&x, &branch)?, kernels)?;
@@ -238,7 +251,10 @@ impl MixedSession<'_> {
 
     fn head(&self, hidden: &Tensor, last_only: bool) -> Result<Tensor, Error> {
         QuantizedLinear {
-            weight: self.model.matrix("model.shared.weight").ok_or(Error::Shape)?,
+            weight: self
+                .model
+                .matrix("model.shared.weight")
+                .ok_or(Error::Shape)?,
             bias: Some(&self.bias),
         }
         .forward_with(hidden, last_only, self.kernels.integer)
@@ -248,7 +264,12 @@ impl MixedSession<'_> {
         self.layers
             .iter()
             .map(|layer| {
-                layer.cross.as_ref().ok_or(Error::Shape)?.0.project(&self.memory, self.kernels)
+                layer
+                    .cross
+                    .as_ref()
+                    .ok_or(Error::Shape)?
+                    .0
+                    .project(&self.memory, self.kernels)
             })
             .collect()
     }
@@ -260,7 +281,10 @@ impl MixedSession<'_> {
         if ids.len() > self.model.config().max_positions {
             return Err(Error::Limit);
         }
-        if ids.iter().any(|&id| id as usize >= self.model.config().vocab) {
+        if ids
+            .iter()
+            .any(|&id| id as usize >= self.model.config().vocab)
+        {
             return Err(Error::Index);
         }
         Ok(())
@@ -280,7 +304,11 @@ impl MixedSession<'_> {
             let branch = layer.own.forward(
                 &x,
                 &kv,
-                Mask { key_keep: keep, causal_offset: Some(0), ..Mask::default() },
+                Mask {
+                    key_keep: keep,
+                    causal_offset: Some(0),
+                    ..Mask::default()
+                },
                 self.kernels,
             )?;
             x = layer.own_norm.residual(&x, &branch)?;
@@ -288,7 +316,10 @@ impl MixedSession<'_> {
             let branch = att.forward(
                 &x,
                 cross_kv,
-                Mask { key_keep: Some(&self.keep), ..Mask::default() },
+                Mask {
+                    key_keep: Some(&self.keep),
+                    ..Mask::default()
+                },
                 self.kernels,
             )?;
             x = layer.finish(&norm.residual(&x, &branch)?, self.kernels)?;
@@ -327,11 +358,18 @@ impl MixedSession<'_> {
         let mut own = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
             let row = layer.own.project(&x, self.kernels)?;
-            let kv = if offset == 0 { row } else { parent.own[i].append(&row)? };
+            let kv = if offset == 0 {
+                row
+            } else {
+                parent.own[i].append(&row)?
+            };
             let branch = layer.own.forward(
                 &x,
                 &kv,
-                Mask { key_keep: Some(&target_keep), ..Mask::default() },
+                Mask {
+                    key_keep: Some(&target_keep),
+                    ..Mask::default()
+                },
                 self.kernels,
             )?;
             x = layer.own_norm.residual(&x, &branch)?;
@@ -339,7 +377,10 @@ impl MixedSession<'_> {
             let branch = att.forward(
                 &x,
                 &parent.cross[i],
-                Mask { key_keep: Some(&self.keep), ..Mask::default() },
+                Mask {
+                    key_keep: Some(&self.keep),
+                    ..Mask::default()
+                },
                 self.kernels,
             )?;
             x = layer.finish(&norm.residual(&x, &branch)?, self.kernels)?;

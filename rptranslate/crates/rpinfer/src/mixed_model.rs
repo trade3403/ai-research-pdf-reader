@@ -305,7 +305,9 @@ mod tests {
         assert_eq!((q.len(), f.len()), (Q_COUNT, F_COUNT));
         assert_eq!(q.values().map(|s| q_bytes(s)).sum::<usize>(), Q_BYTES);
         assert_eq!(f.values().map(|s| f_bytes(s)).sum::<usize>(), F_BYTES);
-        assert!(q.values().all(|s| s.len() == 2 && s[1].is_multiple_of(BLOCK as u64)));
+        assert!(q
+            .values()
+            .all(|s| s.len() == 2 && s[1].is_multiple_of(BLOCK as u64)));
         assert!(f.contains_key("model.encoder.embed_positions.weight"));
         assert!(MixedModel::load(Path::new("missing"), PAYLOAD_BYTES - 1).is_err());
     }
