@@ -1,6 +1,6 @@
 //! Native CCITT T.6 MSB-first bitstream, run-length codes and 2D modes.
 //! Tables 1–3 of T.6 (1988), shared primitives for JBIG2 and PDF fax.
-//! This stage does not reconstruct scanlines or integrate PDF filters.
+//! Scoped Group 4 strip reconstruction; no PDF filter integration.
 use crate::{Error,Result,MAX_BYTES};
 pub const MAX_RUN:u32=1_048_576;
 pub const MAX_BITS:usize=200_000_000;
@@ -122,6 +122,98 @@ impl<'a> BitReader<'a>{
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum Mode{Pass,Horizontal,Vertical(i8),EndOfBlock}
 
+
+pub const MAX_MMR_PIXELS:u64=100_000_000;
+pub const MAX_MMR_BYTES:usize=16*1024*1024;
+pub const MAX_MMR_WORK:u64=200_000_000;
+#[derive(Debug,PartialEq,Eq)]
+pub struct MmrImage{
+    pub width:u32,pub height:u32,pub stride:usize,pub packed:Vec<u8>,
+    pub mode_counts:[u64;9],
+    pub encoded_bits:usize,
+}
+fn charge(left:&mut u64,n:u64)->Result<()>{
+    *left=left.checked_sub(n).ok_or(Error::Limit("CCITT MMR work"))?;
+    Ok(())
+}
+fn reference_pair(refs:&[u32],x:u32,black:bool,initial:bool,width:u32)->(u32,u32){
+    // Actual changes only. Even index changes white->black, odd black->white.
+    // At start, a0 is imaginary white to the left of pixel zero.
+    let mut i=refs.partition_point(|&p|if initial{p<x}else{p<=x});
+    if i%2!=usize::from(black){i+=1;}
+    (refs.get(i).copied().unwrap_or(width),refs.get(i+1).copied().unwrap_or(width))
+}
+fn paint(row:&mut[u8],start:u32,end:u32,black:bool){
+    if black{for x in start..end{row[x as usize/8]|=128>>(x%8);}}
+}
+/// Decode one MSB-first Group 4 strip with a white initial reference row,
+/// known dimensions, exact EOFB, and at most seven zero byte-padding bits.
+/// Returned pixels are MSB-first black=1, unused row bits zero. No byte
+/// alignment between rows, uncompressed extension, multi-strip TIFF parser,
+/// error recovery or PDF-specific EndOfBlock policy is implemented here.
+pub fn decode_mmr(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
+    if width==0||height==0{return Err(Error::Invalid("CCITT MMR dimensions"));}
+    let area=u64::from(width)*u64::from(height);
+    if width>MAX_RUN||height>MAX_RUN||area>MAX_MMR_PIXELS{return Err(Error::Limit("CCITT MMR dimensions"));}
+    let stride=(width as usize).div_ceil(8);
+    let len=stride.checked_mul(height as usize).ok_or(Error::Limit("CCITT MMR bytes"))?;
+    if len>MAX_MMR_BYTES{return Err(Error::Limit("CCITT MMR bytes"));}
+    let bit_len=data.len().checked_mul(8).ok_or(Error::Limit("CCITT MMR input"))?;
+    let mut reader=BitReader::new(data,bit_len)?;
+    let mut left=work_limit.min(MAX_MMR_WORK);
+    // Charge the worst-case painting and transition scan, all input bits,
+    // and a conservative per-mode search/dispatch allowance below.
+    charge(&mut left,area*2+bit_len as u64)?;
+    let mut packed=Vec::new();
+    packed.try_reserve_exact(len).map_err(|_|Error::Limit("CCITT MMR allocation"))?;
+    packed.resize(len,0);
+    let mut refs=Vec::<u32>::new();
+    refs.try_reserve_exact(width as usize).map_err(|_|Error::Limit("CCITT MMR reference allocation"))?;
+    let mut mode_counts=[0u64;9];
+    for row in packed.chunks_exact_mut(stride){
+        let mut x=0u32;let mut black=false;let mut initial=true;
+        while x<width{
+            charge(&mut left,32)?;
+            let (b1,b2)=reference_pair(&refs,x,black,initial,width);
+            match reader.mode()?{
+                Mode::Pass=>{
+                    if b2<=x{return Err(Error::Invalid("CCITT MMR pass progress"));}
+                    paint(row,x,b2,black);x=b2;mode_counts[0]+=1;
+                }
+                Mode::Horizontal=>{
+                    let a=x+reader.run(black,width-x)?;
+                    let b=a+reader.run(!black,width-a)?;
+                    if b<=x{return Err(Error::Invalid("CCITT MMR horizontal progress"));}
+                    paint(row,x,a,black);paint(row,a,b,!black);x=b;mode_counts[1]+=1;
+                }
+                Mode::Vertical(delta)=>{
+                    let a=i64::from(b1)+i64::from(delta);
+                    if a<i64::from(x)||a>i64::from(width)||(a==i64::from(x)&&!initial){
+                        return Err(Error::Invalid("CCITT MMR vertical position"));
+                    }
+                    let a=a as u32;
+                    paint(row,x,a,black);x=a;black=!black;
+                    mode_counts[(i16::from(delta)+5)as usize]+=1;
+                }
+                Mode::EndOfBlock=>return Err(Error::Invalid("CCITT MMR early EOFB")),
+            }
+            initial=false;
+        }
+        // Rebuild canonical changing elements from actual pixels: zero
+        // length horizontal runs cannot create duplicate reference changes.
+        refs.clear();let mut previous=false;
+        for x in 0..width{
+            let bit=row[x as usize/8]&(128>>(x%8))!=0;
+            if bit!=previous{refs.push(x);previous=bit;}
+        }
+    }
+    if reader.mode()?!=Mode::EndOfBlock{return Err(Error::Invalid("CCITT MMR missing EOFB"));}
+    let encoded_bits=reader.position();
+    if reader.remaining()>7{return Err(Error::Invalid("CCITT MMR trailing bytes"));}
+    while reader.remaining()!=0{if reader.bit()?!=0{return Err(Error::Invalid("CCITT MMR nonzero padding"));}}
+    Ok(MmrImage{width,height,stride,packed,mode_counts,encoded_bits})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -209,5 +301,69 @@ mod tests{
         let d=pack("0000001");assert!(matches!(BitReader::new(&d,7).unwrap().mode(),Err(Error::Unsupported(_))));
         let d=pack("11011");assert!(BitReader::new(&d,5).unwrap().run(false,64).is_err());
         assert!(matches!(BitReader::new(&d,5).unwrap().run(false,MAX_RUN+1),Err(Error::Limit(_))));
+    }
+
+    // Independent Pillow 12.3.0/libtiff 4.7.1 Group 4 single strips,
+    // TIFF PhotometricInterpretation=1, default FillOrder=1; reference
+    // samples read from original bitmaps and independently checked via
+    // pdfminer CCITTFaxDecoder(reversed=True). No runtime library dependency.
+    fn hex(s:&str)->Vec<u8>{
+        s.as_bytes().chunks_exact(2).map(|b|u8::from_str_radix(std::str::from_utf8(b).unwrap(),16).unwrap()).collect()
+    }
+    fn mmr_case(w:u32,h:u32,code:&str,want:&str)->MmrImage{
+        let b=hex(code);let a=decode_mmr(&b,w,h,MAX_MMR_WORK).unwrap();
+        assert_eq!((a.width,a.height,a.stride),(w,h,(w as usize).div_ceil(8)));
+        assert_eq!(a.packed,hex(want));
+        assert_eq!(a,decode_mmr(&b,w,h,MAX_MMR_WORK).unwrap());
+        a
+    }
+    #[test]fn mmr_white_black_reference(){
+        mmr_case(13,4,"f0010010","0000000000000000");
+        mmr_case(13,4,"26a09f80080080","fff8fff8fff8fff8");
+    }
+    #[test]fn mmr_shifted_reference(){
+        mmr_case(19,9,"304095b1b76c12b636ed82530436e0020020",
+            "1f80c00fc00007e00003f0c001f80000fc00007ec01f80000fc000");
+    }
+    #[test]fn mmr_dense_reference(){
+        let a=mmr_case(17,7,"26a8ba308be0961b4d88864d63905845d2045f4ac260924102d2a4105e924105b0010010",
+            "913300e0e180000000e0e1809133004a5280aaaa00");
+        let b=mmr_case(16,5,"26a88e88e88e88e88e88e82569249249249524924924924ad2492492492a492492492494004004",
+            "aaaa5555aaaa5555aaaa");
+        assert!(a.mode_counts[0]+b.mode_counts[0]>0);
+        assert!(a.mode_counts[1]+b.mode_counts[1]>0);
+    }
+    #[test]fn mmr_narrow_reference(){
+        mmr_case(1,7,"aed760020020","00808000808000");
+    }
+    #[test]fn mmr_long_makeup_reference(){
+        let a=decode_mmr(&hex("26a03e1920c9193501f0c90648008008"),3001,3,MAX_MMR_WORK).unwrap();
+        assert_eq!(a.stride,376);
+        for (y,row) in a.packed.chunks_exact(376).enumerate(){
+            for x in 0..3001{assert_eq!(row[x/8]&(128>>(x%8))!=0,y!=1&&x<2800);}
+            assert_eq!(row[375]&127,0);
+        }
+    }
+    #[test]fn mmr_strict_eofb_and_padding(){
+        let data=hex("f0010010");
+        for end in 0..data.len(){assert!(decode_mmr(&data[..end],13,4,MAX_MMR_WORK).is_err());}
+        let mut b=data.clone();b.push(0);assert!(decode_mmr(&b,13,4,MAX_MMR_WORK).is_err());
+        let mut b=data.clone();*b.last_mut().unwrap()|=1;assert!(decode_mmr(&b,13,4,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&data,13,3,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&data,13,5,MAX_MMR_WORK).is_err());
+    }
+    #[test]fn mmr_bounds_and_progress(){
+        let data=hex("f0010010");
+        assert!(matches!(decode_mmr(&data,13,4,0),Err(Error::Limit(_))));
+        assert!(matches!(decode_mmr(&data,13,4,13*4*2+32+4*32-1),Err(Error::Limit(_))));
+        assert!(decode_mmr(&data,13,4,13*4*2+32+4*32).is_ok());
+        assert!(decode_mmr(&data,0,4,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&data,MAX_RUN+1,1,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&data,100_000,100_000,MAX_MMR_WORK).is_err());
+        // H with white0 and black0; V+1 beyond a white reference row;
+        // EOFB before any pixels.
+        for b in [pack("001001101010000110111"),pack("011"),pack("000000000001000000000001")]{
+            assert!(decode_mmr(&b,13,1,MAX_MMR_WORK).is_err());
+        }
     }
 }
