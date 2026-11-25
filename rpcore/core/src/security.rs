@@ -1,6 +1,9 @@
 //! Structural inspection only. No passwords, authentication or decryption.
 //! Encrypted files cannot be opened as Document until a separate authenticated
 //! path exists. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
+// Temporary until authenticated legacy file-key integration uses the primitives.
+#[allow(dead_code)]
+mod legacy;
 use crate::{Document,Error,Object,Result,xref::Entry};
 use std::collections::BTreeMap;
 type Dict=BTreeMap<Vec<u8>,Object>;
