@@ -20,3 +20,6 @@ pub use numbering::{parse_numbering, NumberingCatalog, NumberingLabel, Numbering
 
 pub mod section;
 pub use section::{parse_section, SectionProperties, DocumentSection, SectionEnd};
+
+pub mod geometry;
+pub use geometry::{compute_page_geometry, PageGeometry, Rect, GutterSide};
