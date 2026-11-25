@@ -1,4 +1,4 @@
-//! Bounded ICC v2/v4 binary profile inspection and RGB matrix/TRC subset.
+//! Bounded ICC v2/v4 binary profile inspection, RGB matrix/TRC and legacy CMYK LUT subset.
 //! ICC.1:2022 sections 7, 10 and Annex F. No runtime PDF integration yet.
 use crate::{Error,Result};
 use std::collections::BTreeMap;
@@ -83,6 +83,19 @@ impl<'a> Profile<'a>{
         let curve=|name:&Signature|Curve::parse(self.tag(name).ok_or(Error::Unsupported("ICC missing TRC"))?);
         Ok(RgbMatrix{columns,curves:[curve(b"rTRC")?,curve(b"gTRC")?,curve(b"bTRC")?]})
     }
+    /// Explicit legacy A2B0 path for CMYK output profiles. Returns encoded PCS
+    /// channels, not display RGB. No automatic intent selection or LUT fallback.
+    pub fn cmyk_a2b0(&self)->Result<CmykLut<'a>>{
+        if self.class!=*b"prtr"||self.color_space!=*b"CMYK"||!matches!(&self.pcs,b"XYZ "|b"Lab "){
+            return Err(Error::Unsupported("ICC CMYK output profile class or space"));
+        }
+        if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
+            return Err(Error::Unsupported("ICC non-D50 PCS"));
+        }
+        let b=self.tag(b"A2B0").ok_or(Error::Unsupported("ICC missing A2B0"))?;
+        CmykLut::parse(b,self.pcs)
+    }
+
 }
 #[derive(Debug)]
 enum Curve{Identity,Gamma(f64),Table(Vec<u16>)}
@@ -134,6 +147,90 @@ impl RgbMatrix{
         if rgb.iter().any(|v|!v.is_finite()){return Err(Error::Invalid("ICC RGB input"));}
         let v:[f64;3]=std::array::from_fn(|i|self.curves[i].eval(rgb[i]));
         Ok(std::array::from_fn(|j|(0..3).map(|i|self.columns[i][j]*v[i]).sum()))
+    }
+}
+
+
+/// Borrowed legacy lut8Type/lut16Type CMYK A2B0 evaluator.
+/// Input, CLUT and output tables remain in the original bounded profile.
+/// Encoded PCS values are normalized code values; Lab decoding is not implied.
+#[derive(Debug)]
+pub struct CmykLut<'a>{
+    bytes:&'a [u8],pcs:Signature,word:usize,grid:usize,
+    input_entries:usize,output_entries:usize,input:usize,clut:usize,output:usize,
+}
+impl<'a> CmykLut<'a>{
+    fn parse(b:&'a [u8],pcs:Signature)->Result<Self>{
+        if b.len()<48||b[4..8]!=[0;4]||b[11]!=0{return Err(Error::Invalid("ICC LUT header"));}
+        if b[8]!=4||b[9]!=3{return Err(Error::Unsupported("ICC LUT channel count"));}
+        let grid=b[10] as usize;
+        if grid<2{return Err(Error::Invalid("ICC LUT grid"));}
+        if grid>33{return Err(Error::Limit("ICC LUT grid"));}
+        // For non-XYZ input the legacy matrix is required to be identity.
+        for i in 0..9{
+            if fixed(b,12+4*i)?!=if i%4==0{1.}else{0.}{
+                return Err(Error::Unsupported("ICC nonidentity CMYK LUT matrix"));
+            }
+        }
+        let (word,input,input_entries,output_entries)=match &sig(b,0)?{
+            b"mft1"=>(1usize,48usize,256usize,256usize),
+            b"mft2"=>{
+                let n=u16be(b,48)? as usize;let m=u16be(b,50)? as usize;
+                if n<2||m<2{return Err(Error::Invalid("ICC LUT table entries"));}
+                if n>4096||m>4096{return Err(Error::Limit("ICC LUT table entries"));}
+                (2,52,n,m)
+            }
+            _=>return Err(Error::Unsupported("ICC A2B0 LUT type")),
+        };
+        // With bounded grid/table counts these products fit even 32-bit usize.
+        let clut=input+word*4*input_entries;
+        let output=clut+word*3*grid.pow(4);
+        let end=output+word*3*output_entries;
+        if b.len()!=end{return Err(Error::Invalid("ICC LUT size"));}
+        Ok(Self{bytes:b,pcs,word,grid,input_entries,output_entries,input,clut,output})
+    }
+    pub fn pcs(&self)->Signature{self.pcs}
+    pub fn encoding_bits(&self)->usize{self.word*8}
+    fn value(&self,base:usize,index:usize)->f64{
+        let p=base+self.word*index;
+        if self.word==1{f64::from(self.bytes[p])/255.}
+        else{f64::from(u16::from_be_bytes([self.bytes[p],self.bytes[p+1]]))/65535.}
+    }
+    fn table(&self,base:usize,channel:usize,n:usize,x:f64)->f64{
+        let p=x.clamp(0.,1.)*(n-1) as f64;
+        let lo=(p.floor() as usize).min(n-2);let f=p-lo as f64;
+        let a=self.value(base,channel*n+lo);
+        let b=self.value(base,channel*n+lo+1);
+        a*(1.-f)+b*f
+    }
+    /// Four-dimensional multilinear interpolation (16 corners).
+    /// Device values are clamped to [0,1]; non-finite inputs are rejected.
+    /// The last input channel varies fastest in ICC CLUT storage.
+    /// Return normalized PCS code values, not physical Lab/XYZ or display RGB.
+    pub fn evaluate_encoded(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if cmyk.iter().any(|x|!x.is_finite()){return Err(Error::Invalid("ICC CMYK input"));}
+        let mut low=[0usize;4];let mut frac=[0.;4];
+        for i in 0..4{
+            let p=self.table(self.input,i,self.input_entries,cmyk[i])*(self.grid-1) as f64;
+            low[i]=(p.floor() as usize).min(self.grid-2);frac[i]=p-low[i] as f64;
+        }
+        let mut out=[0.;3];
+        for corner in 0..16{
+            let mut w=1.;let mut index=0;
+            for i in 0..4{
+                let hi=(corner>>i)&1;
+                index=index*self.grid+low[i]+hi;
+                w*=if hi==1{frac[i]}else{1.-frac[i]};
+            }
+            for (j,v) in out.iter_mut().enumerate(){*v+=w*self.value(self.clut,3*index+j);}
+        }
+        Ok(std::array::from_fn(|i|self.table(self.output,i,self.output_entries,out[i])))
+    }
+    /// Legacy 16-bit XYZ PCS encoding (u1.15). Lab and 8-bit XYZ conversion
+    /// are deliberately left unsupported until their PCS paths are validated.
+    pub fn to_xyz_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if self.pcs!=*b"XYZ "||self.word!=2{return Err(Error::Unsupported("ICC LUT XYZ PCS encoding"));}
+        Ok(self.evaluate_encoded(cmyk)?.map(|v|v*65535./32768.))
     }
 }
 
@@ -194,5 +291,72 @@ mod tests{
         assert!(Profile::parse(&b).unwrap().rgb_matrix().is_err());
         let mut b=profile();b[132..136].copy_from_slice(b"A2B0");
         assert!(Profile::parse(&b).unwrap().rgb_matrix().is_err());
+    }
+
+    // Independently specified analytic fixture: input C reversed, CLUT channels
+    // (C*M, Y, K), then output Y inverted. Each axis differs, exposing stride
+    // and channel-order errors without relying on evaluator-generated values.
+    fn lut_profile(word:usize)->Vec<u8>{
+        let n=if word==1{256}else{3};
+        let mut tag=vec![0;if word==1{48}else{52}];
+        tag[..4].copy_from_slice(if word==1{b"mft1"}else{b"mft2"});
+        tag[8..11].copy_from_slice(&[4,3,2]);
+        for i in [0,4,8]{put(&mut tag,12+4*i,65536);}
+        if word==2{
+            tag[48..50].copy_from_slice(&(n as u16).to_be_bytes());
+            tag[50..52].copy_from_slice(&(n as u16).to_be_bytes());
+        }
+        let mut value=|x:f64|{
+            if word==1{tag.push((x*255.).round() as u8);}
+            else{tag.extend_from_slice(&((x*65535.).round() as u16).to_be_bytes());}
+        };
+        for ch in 0..4{for i in 0..n{
+            let x=i as f64/(n-1) as f64;value(if ch==0{1.-x}else{x});
+        }}
+        for c in 0..2{for m in 0..2{for y in 0..2{for k in 0..2{
+            value((c*m) as f64);value(y as f64);value(k as f64);
+        }}}}
+        for ch in 0..3{for i in 0..n{
+            let x=i as f64/(n-1) as f64;value(if ch==1{1.-x}else{x});
+        }}
+        let mut b=vec![0;144];b[8]=2;b[12..24].copy_from_slice(b"prtrCMYKXYZ ");
+        b[36..40].copy_from_slice(b"acsp");
+        for (i,x) in [0.9642_f64,1.,0.8249].into_iter().enumerate(){put(&mut b,68+i*4,(x*65536.).round() as u32);}
+        put(&mut b,128,1);b[132..136].copy_from_slice(b"A2B0");put(&mut b,136,144);put(&mut b,140,tag.len() as u32);
+        b.extend(tag);while b.len()%4!=0{b.push(0);}
+        let len=b.len() as u32;put(&mut b,0,len);b
+    }
+    #[test]fn legacy_lut_analytic_interpolation(){
+        for word in [1,2]{
+            let b=lut_profile(word);let p=Profile::parse(&b).unwrap();let l=p.cmyk_a2b0().unwrap();
+            assert_eq!(l.encoding_bits(),word*8);assert_eq!(l.pcs(),*b"XYZ ");
+            for i in 0..=8{for j in 0..=8{
+                let c=i as f64/8.;let m=j as f64/8.;
+                let actual=l.evaluate_encoded([c,m,0.375,0.625]).unwrap();
+                let expected=[(1.-c)*m,0.625,0.625];
+                for k in 0..3{assert!((actual[k]-expected[k]).abs()<0.0001);}
+            }}
+            assert_eq!(l.evaluate_encoded([-1.,2.,0.,1.]).unwrap(),[1.,1.,1.]);
+            assert!(l.evaluate_encoded([0.,0.,f64::INFINITY,0.]).is_err());
+            if word==2{
+                assert!((l.to_xyz_d50([0.,1.,0.,1.]).unwrap()[0]-65535./32768.).abs()<1e-12);
+            }else{assert!(l.to_xyz_d50([0.;4]).is_err());}
+        }
+    }
+    #[test]fn legacy_lut_rejects_invalid_shapes(){
+        let b=lut_profile(2);
+        for (off,v) in [(152,3),(153,4),(154,0),(155,1),(156,1),(193,1)]{
+            let mut x=b.clone();x[off]=v;
+            assert!(Profile::parse(&x).unwrap().cmyk_a2b0().is_err(),"offset {off}");
+        }
+        let mut x=b.clone();x[154]=34;
+        assert!(matches!(Profile::parse(&x).unwrap().cmyk_a2b0(),Err(Error::Limit(_))));
+        let mut x=b.clone();let n=u32be(&x,140).unwrap();put(&mut x,140,n-1);
+        assert!(Profile::parse(&x).unwrap().cmyk_a2b0().is_err());
+        let mut x=b.clone();x[144..148].copy_from_slice(b"mAB ");
+        assert!(Profile::parse(&x).unwrap().cmyk_a2b0().is_err());
+        let mut x=b.clone();x[20..24].copy_from_slice(b"Lab ");
+        let p=Profile::parse(&x).unwrap();let l=p.cmyk_a2b0().unwrap();
+        assert!(l.evaluate_encoded([0.;4]).is_ok());assert!(l.to_xyz_d50([0.;4]).is_err());
     }
 }
