@@ -137,11 +137,71 @@ fn mask_image(doc:&Document<'_>,o:&Object,w:usize,h:usize,budget:&mut Budget,har
 }
 
 fn is_jpx(d:&Dict)->bool{
-    matches!(d.get(b"Filter".as_slice()),Some(Object::Name(n)) if n==b"JPXDecode")
+    match d.get(b"Filter".as_slice()){
+        Some(Object::Name(n))=>n==b"JPXDecode",
+        Some(Object::Array(a))=>a.iter().any(|v|matches!(v,Object::Name(n) if n==b"JPXDecode")),
+        _=>false,
+    }
 }
 
-/// Image-only baseline JPX path. Keep arbitrary content streams, filter
-/// chains, external/embedded masks and non-device color outside this subset.
+/// Extract the terminal JPX payload without extending the generic stream
+/// decoder to accept image codecs. Every prefix is charged and bounded.
+fn jpx_payload<'a>(dict:&Dict,data:&'a [u8],budget:&mut Budget)->Result<std::borrow::Cow<'a,[u8]>>{
+    use std::borrow::Cow;
+    let filters:Vec<&[u8]>=match dict.get(b"Filter".as_slice()){
+        Some(Object::Name(n))=>vec![n.as_slice()],
+        Some(Object::Array(a)) if !a.is_empty()&&a.len()<=8=>a.iter().map(|v|
+            match v{Object::Name(n)=>Ok(n.as_slice()),_=>Err(Error::Invalid("JPX filter name"))}
+        ).collect::<Result<Vec<_>>>()?,
+        _=>return Err(Error::Unsupported("JPX filter structure")),
+    };
+    if filters.last()!=Some(&b"JPXDecode".as_slice())||
+        filters.iter().filter(|&&n|n==b"JPXDecode").count()!=1{
+        return Err(Error::Unsupported("JPX must be unique terminal filter"));
+    }
+    let params:Vec<Option<&Object>>=match dict.get(b"DecodeParms".as_slice()){
+        None|Some(Object::Null)=>vec![None;filters.len()],
+        Some(v@Object::Dict(_)) if filters.len()==1=>vec![Some(v)],
+        Some(Object::Array(a)) if a.len()==filters.len()=>a.iter().map(Some).collect(),
+        _=>return Err(Error::Unsupported("JPX DecodeParms structure")),
+    };
+    match params.last().copied().flatten(){
+        None|Some(Object::Null)=>{},
+        Some(Object::Dict(p)) if p.is_empty()=>{},
+        _=>return Err(Error::Unsupported("JPX DecodeParms")),
+    }
+    for (name,param) in filters[..filters.len()-1].iter().zip(&params){
+        if !matches!(*name,b"ASCIIHexDecode"|b"AHx"|b"ASCII85Decode"|b"A85"|
+            b"FlateDecode"|b"Fl"|b"RunLengthDecode"|b"RL"){
+            return Err(Error::Unsupported("JPX prefix filter"));
+        }
+        // Prefixes unwrap compressed bytes, not image samples. No predictors.
+        if !matches!(param,None|Some(Object::Null)) &&
+            !matches!(param,Some(Object::Dict(p)) if p.is_empty()&&matches!(*name,b"FlateDecode"|b"Fl")){
+            return Err(Error::Unsupported("JPX prefix DecodeParms"));
+        }
+    }
+    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JPX input bytes"));}
+    budget.charge(data.len())?;
+    let mut payload=Cow::Borrowed(data);
+    for (name,param) in filters[..filters.len()-1].iter().zip(&params){
+        // The cap is applied to each individual prefix decoder, not merely
+        // the last prefix. Charge both encoded and decoded work cumulatively.
+        budget.charge(payload.len())?;
+        let cap=crate::MAX_BYTES.min(super::MAX_WORK.saturating_sub(budget.work));
+        let mut d=Dict::new();
+        d.insert(b"Filter".to_vec(),Object::Name(name.to_vec()));
+        if let Some(p)=param{d.insert(b"DecodeParms".to_vec(),(*p).clone());}
+        let stream=Object::Stream{dict:d,data:payload.into_owned()};
+        let decoded=crate::filters::decode(&stream,cap)?;
+        budget.charge(decoded.len())?;
+        payload=Cow::Owned(decoded);
+    }
+    Ok(payload)
+}
+
+/// Image-only baseline JPX path with bounded lossless prefix filters.
+/// Arbitrary content streams, masks and non-device color remain excluded.
 fn load_jpx(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     interpolate:bool,budget:&mut Budget)->Result<Image>{
     use crate::filters::jpx::{self,BaselineColor,Container};
@@ -158,18 +218,13 @@ fn load_jpx(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
         Some(Object::Number(v)) if *v==0.=>{},
         _=>return Err(Error::Unsupported("JPX embedded alpha")),
     }
-    match dict.get(b"DecodeParms".as_slice()){
-        None|Some(Object::Null)=>{},
-        Some(Object::Dict(p)) if p.is_empty()=>{},
-        _=>return Err(Error::Unsupported("JPX DecodeParms")),
-    }
     if dict.contains_key(b"BitsPerComponent".as_slice())&&bits(dict)?!=8{
         return Err(Error::Unsupported("JPX PDF sample depth"));
     }
     // Charge the compressed input and a conservative per-sample estimate
     // before expensive decoding; codec-local geometry/MQ limits also apply.
-    budget.charge(data.len())?;
-    let header=jpx::inspect(data)?;
+    let payload=jpx_payload(dict,data,budget)?;
+    let header=jpx::inspect(&payload)?;
     if (header.width as usize,header.height as usize)!=(w,h){
         return Err(Error::Invalid("JPX/PDF dimensions mismatch"));
     }
@@ -187,7 +242,7 @@ fn load_jpx(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     let charge=w.checked_mul(h).and_then(|v|v.checked_mul(n))
         .and_then(|v|v.checked_mul(128)).ok_or(Error::Limit("JPX page decode work"))?;
     budget.charge(charge)?;
-    let image=jpx::decode_baseline(data)?;
+    let image=jpx::decode_baseline(&payload)?;
     if (image.width,image.height)!=(w,h)||
         image.color!=(if n==1{BaselineColor::Gray}else{BaselineColor::Srgb})||
         image.pixels.len()!=w*h*n{
@@ -364,7 +419,7 @@ mod jpx_pdf_tests{
             "/Filter /JPXDecode /ColorSpace /DeviceGray /Mask [0 0]",
             "/Filter /JPXDecode /ColorSpace /DeviceGray /ImageMask true",
             "/Filter /JPXDecode /ColorSpace /DeviceGray /DecodeParms << /ColorTransform 1 >>",
-            "/Filter [/JPXDecode] /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "/Filter [/JPXDecode /ASCIIHexDecode] /ColorSpace /DeviceGray /BitsPerComponent 8",
         ]{assert!(render(&data,4,4,f).is_err(),"{f}");}
         assert!(render(&data,5,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").is_err());
         assert!(render(&data[..data.len()-1],4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").is_err());
@@ -376,5 +431,92 @@ mod jpx_pdf_tests{
         assert!(crate::filters::decode(&stream,64).is_err());
         let mut budget=Budget{work:super::super::MAX_WORK-1,stage:"JPX test budget"};
         assert!(load(&doc,(5,0),&mut budget,&mut IccCache::default(),crate::icc::RenderingIntent::RelativeColorimetric).is_err());
+    }
+
+    fn ascii_hex_wrap(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();
+        for b in data{out.extend(format!("{b:02x}").bytes());}
+        out.push(b'>');out
+    }
+    fn run_wrap(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();
+        for chunk in data.chunks(128){out.push((chunk.len()-1)as u8);out.extend(chunk);}
+        out.push(128);out
+    }
+    fn ascii85_wrap(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();
+        for chunk in data.chunks(4){
+            let mut word=[0u8;4];word[..chunk.len()].copy_from_slice(chunk);
+            let mut n=u32::from_be_bytes(word);
+            let mut group=[0u8;5];
+            for i in (0..5).rev(){group[i]=(n%85)as u8+33;n/=85;}
+            out.extend(&group[..chunk.len()+1]);
+        }
+        out.extend(b"~>");out
+    }
+    fn stored_flate(data:&[u8])->Vec<u8>{
+        assert!(data.len()<=65535);
+        let n=data.len()as u16;
+        let mut out=vec![0x78,0x01,1];
+        out.extend(n.to_le_bytes());out.extend((!n).to_le_bytes());out.extend(data);
+        let (mut a,mut b)=(1u32,0u32);
+        for &v in data{a=(a+u32::from(v))%65521;b=(b+a)%65521;}
+        out.extend(((b<<16)|a).to_be_bytes());out
+    }
+    #[test]fn pdf_jpx_single_filter_array(){
+        let data=hex(GRAY);
+        let a=render(&data,4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").unwrap();
+        for fields in ["/Filter [/JPXDecode] /ColorSpace /DeviceGray",
+            "/Filter [/JPXDecode] /ColorSpace /DeviceGray /DecodeParms [null]",
+            "/Filter [/JPXDecode] /ColorSpace /DeviceGray /DecodeParms [<< >>]"]{
+            assert_eq!(render(&data,4,4,fields).unwrap(),a);
+        }
+    }
+    #[test]fn pdf_jpx_prefix_ascii(){
+        let data=hex(GRAY);
+        let a=render(&data,4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray").unwrap();
+        for (wrapped,fields) in [
+            (ascii_hex_wrap(&data),"/Filter [/ASCIIHexDecode /JPXDecode] /ColorSpace /DeviceGray /DecodeParms [null null]"),
+            (ascii85_wrap(&data),"/Filter [/A85 /JPXDecode] /ColorSpace /DeviceGray")]{
+            assert_eq!(render(&wrapped,4,4,fields).unwrap(),a);
+        }
+    }
+    #[test]fn pdf_jpx_prefix_flate_runlength(){
+        let data=hex(RGB);
+        let a=render(&data,5,3,"/Filter /JPXDecode /ColorSpace /DeviceRGB").unwrap();
+        for (wrapped,fields) in [
+            (stored_flate(&data),"/Filter [/FlateDecode /JPXDecode] /DecodeParms [<< >> null] /ColorSpace /DeviceRGB"),
+            (run_wrap(&data),"/Filter [/RL /JPXDecode] /ColorSpace /DeviceRGB")]{
+            assert_eq!(render(&wrapped,5,3,fields).unwrap(),a);
+        }
+    }
+    #[test]fn pdf_jpx_multiple_prefixes_and_jp2(){
+        let data=jp2_zero();
+        let wrapped=ascii85_wrap(&stored_flate(&run_wrap(&data)));
+        let a=render(&data,5,5,"/Filter /JPXDecode").unwrap();
+        assert_eq!(render(&wrapped,5,5,"/Filter [/ASCII85Decode /Fl /RunLengthDecode /JPXDecode] /DecodeParms [null null null << >>]").unwrap(),a);
+    }
+    #[test]fn pdf_jpx_prefix_validation(){
+        let data=hex(GRAY);
+        for fields in [
+            "/Filter [/JPXDecode /AHx] /ColorSpace /DeviceGray",
+            "/Filter [/JPXDecode /JPXDecode] /ColorSpace /DeviceGray",
+            "/Filter [/DCTDecode /JPXDecode] /ColorSpace /DeviceGray",
+            "/Filter [/AHx 7 /JPXDecode] /ColorSpace /DeviceGray",
+            "/Filter [/AHx /JPXDecode] /DecodeParms [null] /ColorSpace /DeviceGray",
+            "/Filter [/Fl /JPXDecode] /DecodeParms [<< /Predictor 12 >> null] /ColorSpace /DeviceGray",
+            "/Filter [/AHx /JPXDecode] /DecodeParms [null << /ColorTransform 1 >>] /ColorSpace /DeviceGray",
+            "/Filter [/AHx /AHx /AHx /AHx /AHx /AHx /AHx /AHx /JPXDecode] /ColorSpace /DeviceGray"
+        ]{assert!(render(&data,4,4,fields).is_err(),"{fields}");}
+        assert!(render(b"123",4,4,"/Filter [/AHx /JPXDecode] /ColorSpace /DeviceGray").is_err());
+    }
+    #[test]fn pdf_jpx_prefix_budget_and_isolation(){
+        let data=ascii_hex_wrap(&hex(GRAY));
+        let bytes=pdf(&data,4,4,"/Filter [/AHx /JPXDecode] /ColorSpace /DeviceGray");
+        let doc=Document::open(&bytes).unwrap();let stream=doc.resolve(5,0).unwrap();
+        assert!(crate::filters::decode(&stream,4096).is_err());
+        let Object::Stream{dict,data}=&stream else{panic!("stream");};
+        let mut budget=Budget{work:super::super::MAX_WORK-data.len()*2-1,stage:"JPX prefix budget"};
+        assert!(matches!(jpx_payload(dict,data,&mut budget),Err(Error::Limit(_))));
     }
 }
