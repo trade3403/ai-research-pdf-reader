@@ -1,7 +1,7 @@
 //! Paper throughput measurement; engine and model loading are unchanged.
 use rpinfer::{
     marian_model::{GenerationMode, GenerationOptions, MODEL_PAYLOAD_BYTES},
-    matmul::{Kernel, avx2_available},
+    matmul::{avx2_available, Kernel},
     mixed_model::PAYLOAD_BYTES,
 };
 use rptranslate::offline::OfflineTranslator;
