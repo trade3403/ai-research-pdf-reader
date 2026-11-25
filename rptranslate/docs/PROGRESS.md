@@ -254,3 +254,5 @@ D1.9g/D1.9h 真实专项 [45540564400/job/138958019476](https://github.com/trade
 D1.9 全量复验修复：run45542273543/job138963393404 format通过，Clippy `chunks_exact_to_as_chunks` 两处失败（mixed_inference.rs 80/81），改为固定数组切片并显式验证尾部与行数；另预防性修正 protection.rs 的奇偶判断为 is_multiple_of（不变更语义）。保留既有全部CI门槛和正在运行的真实专项，定时自动任务保持关闭，待新提交复验。不进入新阶段。
 
 D1.9复验 run45542753928/job138965410757：上次修复新增 if 条件触发rustfmt单组换行差异，按日志原样修正，仅格式变化；Clippy和单测因format失败尚未执行。保留全部门槛，定时任务关闭，不开始新功能。
+
+D1.9复验 run45543085996/job138967024836：Format通过，Lint在 int8_simd_bench.rs:70/79 报 needless_range_loop。将样本矩阵转为[repeat][kernel]，迭代器enumerate写入每轮，最后转置为两组中位数；5轮交替顺序及bitwise门槛不变。与HANDOFF.md同提交，待CI验证。定时任务仍关闭。

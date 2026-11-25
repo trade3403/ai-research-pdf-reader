@@ -66,8 +66,8 @@ fn main() -> Result<(), String> {
             return Err("warmup bit mismatch".into());
         }
         compared += auto.data().len();
-        let mut times = [[0_f64; 5]; 2];
-        for rep in 0..5 {
+        let mut samples = [[0_f64; 2]; 5];
+        for (rep, times) in samples.iter_mut().enumerate() {
             for slot in [rep % 2, 1 - rep % 2] {
                 let kernel = [Int8Kernel::Scalar, Int8Kernel::Auto][slot];
                 let start = Instant::now();
@@ -76,12 +76,13 @@ fn main() -> Result<(), String> {
                         .forward_with(black_box(&input), false, kernel)
                         .map_err(|e| format!("{e:?}"))?,
                 );
-                times[slot][rep] = start.elapsed().as_secs_f64() * 1000.;
+                times[slot] = start.elapsed().as_secs_f64() * 1000.;
                 if !same(&result) {
                     return Err("timed bit mismatch".into());
                 }
             }
         }
+        let mut times = [samples.map(|row| row[0]), samples.map(|row| row[1])];
         for t in &mut times {
             t.sort_by(f64::total_cmp);
         }
