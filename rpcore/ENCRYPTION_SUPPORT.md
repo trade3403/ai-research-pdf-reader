@@ -1,6 +1,6 @@
-# RPCore encryption read-path scope — closure candidate B11.1g
+# RPCore encryption read-path scope — validated scope B11.1g
 
-Baseline CI #123, run 45576512397, commit 8ef8a221b1386cc4b9ed7c894a56c4d18e393c9c: 10/10 jobs, 251 tests per Windows/Linux/macOS, 753 total; R5/R6 modern authentication and object decoding tests passed. Scope freeze only after B11.1g CI succeeds and actual closure logs are checked.
+Baseline CI #123, run 45576512397, commit 8ef8a221b1386cc4b9ed7c894a56c4d18e393c9c: 10/10 jobs, 251 tests per Windows/Linux/macOS, 753 total; R5/R6 modern authentication and object decoding tests passed. Closure verified at c74d916184a9e213cba9e185555c6c20d60c9035, CI #125 run 45577313544: 10/10 jobs, 252 tests/platform (756 total), 5/5 revisions, 40/40 native render, 20/20 text geometry, 20/20 reference render. Validated subset frozen; limitations below remain.
 
 Supported subset: Standard V1/R2 RC4-40, V2/R3 RC4 40–128, V4/R4 RC4/AESV2/Identity default filters, V5/R5/R6 AESV3/Identity. Authenticated user and owner password roles, classic/xref stream and compressed object paths, nested strings and stream bytes before filter decode. R4–R6 metadata exemptions, OE/UE/Perms checks in R5/R6. Caller supplies prepared password bytes (legacy encoding or prepared UTF-8); R5/R6 truncate to 127 bytes. Read-only. Ordinary Document::open rejects encryption; use explicit Document::open_with_password and authenticate_password. No key export. P accepts exact signed or unsigned 32-bit representations with identical bit patterns.
 
