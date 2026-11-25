@@ -1,5 +1,5 @@
-//! Scoped native reversible JPEG 2000 grayscale and RGB pixel reconstruction.
-//! Multiple tiles and quality layers, unsigned 8-bit, optional reversible MCT, baseline MQ style.
+//! Scoped native reversible and irreversible JPEG 2000 grayscale and RGB reconstruction.
+//! Multiple tiles and quality layers, unsigned 8-bit, optional MCT, baseline MQ style.
 //! This does not activate the PDF JPXDecode rendering path.
 use super::{Container,codestream::{inspect_codestream,Codestream,QuantMode,Wavelet},geometry::{self,Band,Rect},packet,ebcot,wavelet53::{self,Detail53}};
 use crate::{Error,Result};
@@ -178,16 +178,40 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet
 pub struct Gray97Samples{pub width:usize,pub height:usize,pub samples:Vec<f64>}
 
 pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
+    let (width,height,samples)=decode_components97(data,1)?;
+    Ok(Gray97Samples{width,height,samples})
+}
+
+/// Baseline raw irreversible RGB, three co-sited unsigned 8-bit components.
+/// With MCT disabled, raw component order is assumed RGB.
+pub fn decode_rgb97(data:&[u8])->Result<RgbImage>{
+    let (width,height,samples)=decode_components97(data,3)?;
+    let pixels=samples.into_iter().map(|v|(v+128.).round().clamp(0.,255.)as u8).collect();
+    Ok(RgbImage{width,height,pixels})
+}
+
+/// Inverse irreversible component transform before level shift.
+fn inverse_ict(y:f64,cb:f64,cr:f64)->Result<[f64;3]>{
+    if [y,cb,cr].iter().any(|v|!v.is_finite()){
+        return Err(Error::Invalid("JPX ICT nonfinite input"));
+    }
+    let rgb=[y+1.402*cr,y-0.34413*cb-0.71414*cr,y+1.772*cb];
+    if rgb.iter().any(|v|!v.is_finite()){return Err(Error::Limit("JPX ICT overflow"));}
+    Ok(rgb)
+}
+
+fn decode_components97(data:&[u8],channels:usize)->Result<(usize,usize,Vec<f64>)>{
     let c=inspect_codestream(data)?;
     let h=&c.geometry;
-    if h.container!=Container::RawCodestream||h.components.len()!=1||c.coding.mct||
+    if h.container!=Container::RawCodestream||h.components.len()!=channels||channels==1&&c.coding.mct||
         c.coding.layers>256{
         return Err(Error::Unsupported("JPX gray97 container/components/tiles/layers"));
     }
-    let g=&h.components[0];let style=&c.component_coding[0];let q=&c.component_quantization[0];
-    if g.precision!=8||g.signed||g.x_sampling!=1||g.y_sampling!=1||
-        style.wavelet!=Wavelet::Irreversible97||style.codeblock_style!=0||q.mode==QuantMode::None{
-        return Err(Error::Unsupported("JPX gray97 coding parameters"));
+    for ((g,style),q) in h.components.iter().zip(&c.component_coding).zip(&c.component_quantization){
+        if g.precision!=8||g.signed||g.x_sampling!=1||g.y_sampling!=1||
+            style.wavelet!=Wavelet::Irreversible97||style.codeblock_style!=0||q.mode==QuantMode::None{
+            return Err(Error::Unsupported("JPX gray97 coding parameters"));
+        }
     }
     let (w,ht)=(h.width as usize,h.height as usize);
     let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray97 area"))?;
@@ -199,7 +223,8 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
     if c.tile_parts.len()!=tiles as usize||c.tile_parts.iter().any(|p|p.index!=0||p.declared_parts>1){
         return Err(Error::Unsupported("JPX gray97 multiple tile parts"));
     }
-    let mut samples=vec![0.;area];
+    let count=area.checked_mul(channels).ok_or(Error::Limit("JPX 97 output samples"))?;
+    let mut samples=vec![0.;count];
     let mut covered=0usize;
     let mut work=0usize;
     let mut geometry_work=0usize;
@@ -219,26 +244,38 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
         covered=covered.checked_add(n).ok_or(Error::Limit("JPX gray97 coverage"))?;
         if n==0||covered>area{return Err(Error::Invalid("JPX gray97 tile coverage"));}
         let packets=packet::inspect_planned_packets(data,&c,&plan)?;
-        let tile=decode_tile97(data,&c,&plan,&packets,&mut work,&mut segment_bytes)?;
-        if tile.len()!=n{return Err(Error::Invalid("JPX gray97 tile samples"));}
+        let mut tile=Vec::with_capacity(channels);
+        for component in 0..channels{
+            if plan.components[component].bounds!=b{return Err(Error::Unsupported("JPX 97 component grid mismatch"));}
+            let v=decode_tile97(data,&c,&plan,&packets,&mut work,&mut segment_bytes,component)?;
+            if v.len()!=n{return Err(Error::Invalid("JPX 97 tile samples"));}
+            tile.push(v);
+        }
         let ox=(b.x0-i64::from(h.x_origin))as usize;
         let oy=(b.y0-i64::from(h.y_origin))as usize;
         for y in 0..th{
-            let dst=(oy+y)*w+ox;
-            samples[dst..dst+tw].copy_from_slice(&tile[y*tw..(y+1)*tw]);
+            for x in 0..tw{
+                let src=y*tw+x;let dst=((oy+y)*w+ox+x)*channels;
+                if channels==1{samples[dst]=tile[0][src];}
+                else{
+                    let rgb=if c.coding.mct{inverse_ict(tile[0][src],tile[1][src],tile[2][src])?}
+                        else{[tile[0][src],tile[1][src],tile[2][src]]};
+                    samples[dst..dst+3].copy_from_slice(&rgb);
+                }
+            }
         }
     }
     if covered!=area{return Err(Error::Invalid("JPX gray97 coverage"));}
-    Ok(Gray97Samples{width:w,height:ht,samples})
+    Ok((w,ht,samples))
 }
 
 fn decode_tile97(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet::TilePackets,
-    work:&mut usize,segment_bytes:&mut usize)->Result<Vec<f64>>{
+    work:&mut usize,segment_bytes:&mut usize,component:usize)->Result<Vec<f64>>{
     use super::{codestream::inverse_quantization as iq,wavelet97::{self,Detail97}};
-    let t=&plan.components[0];
-    let g=&c.geometry.components[0];
-    let style=&c.component_coding[0];
-    let q=&c.component_quantization[0];
+    let t=&plan.components[component];
+    let g=&c.geometry.components[component];
+    let style=&c.component_coding[component];
+    let q=&c.component_quantization[component];
     let (w,ht)=(t.bounds.width()as usize,t.bounds.height()as usize);
     let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray97 tile area"))?;
     struct FloatPlane{bounds:Rect,values:Vec<f64>,delta:f64}
@@ -263,6 +300,7 @@ fn decode_tile97(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&pack
     // across all quality layers are assembled before decoding each block.
     let mut segments:BTreeMap<(usize,usize,usize,usize),Segment>=BTreeMap::new();
     for p in &packets.packets{
+        if usize::from(p.packet.component)!=component{continue;}
         for e in &p.contributions{
             let key=(usize::from(p.packet.resolution),p.packet.precinct,band_index(e.band),e.block);
             let seg=segments.entry(key).or_insert_with(||Segment{band:e.band,zero:e.zero_bit_planes,passes:0,bytes:Vec::new()});
@@ -539,5 +577,42 @@ mod tests{
         let c=inspect_codestream(&a).unwrap();
         a.drain(c.tile_parts.last().unwrap().span.clone());
         assert!(decode_gray97_centered(&a).is_err());
+    }
+
+    // Independent Pillow/OpenJPEG 2.5.4 fixtures, generated and decoded
+    // locally in this stage. Raw J2K, irreversible, 4x4 codeblocks,
+    // RGB byte signal (i*37+23)%256. Reference is decoded output.
+    fn compare_rgb97(data:&str,w:usize,h:usize,mct:bool,levels:u8,tiles:usize,reference:&str){
+        let b=hex(data);let c=inspect_codestream(&b).unwrap();
+        assert_eq!((c.coding.mct,c.coding.style.levels,c.tile_parts.len()),(mct,levels,tiles));
+        let a=decode_rgb97(&b).unwrap();let want=hex(reference);
+        assert_eq!((a.width,a.height),(w,h));assert_eq!(a.pixels.len(),want.len());
+        for (i,(&v,&e)) in a.pixels.iter().zip(&want).enumerate(){
+            assert!(v.abs_diff(e)<=1,"RGB sample {i}: actual {v}, reference {e}");
+        }
+    }
+    #[test]fn rgb97_direct_reference(){
+        compare_rgb97("ff4fff51002f000000000005000000030000000000000000000000050000000300000000000000000003070101070101070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000560001ff93e7ed0efda0800650755682a4deb51fad11e62edd01d8be8fe7ed0efda0a005a7ecf01b757433609a96865e7f002b779b1fe7ed0efda0600ef58e3ef470c6917e13d6fbbc5f065fb3ffd9",5,3,false,0,1,"163c6086acd0f61a3e648aaed4f81c42668cb2d6fc20446a90b4dafe22486c92b8dc00264a7096bae004284e72");
+    }
+    #[test]fn rgb97_ict_reference(){
+        compare_rgb97("ff4fff51002f000000000007000000050000000000000000000000070000000500000000000000000003070101070101070101ff52000c00000001010100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000009f0001ff93c7da1a190e951c16dd590f81f416e17fc7da1a1efc950a1eff118eb98cfafe27cfc0380f68e54e067885b8c749bb725d4fc7e01707d40f03e70c0cfe23dffdd7468c4da4c51283a4fab147c81171b1cd917fc3ed0a83ea0780f902800f9766bb7d8f33ce649f1174edf25ceb4f0e18dc1b5fc3ed0a83ea0683ea06072c74961eba77f4ce4f0d4af3280e610e77cad3f4b7ffd9",7,5,true,1,1,"173c6187abd1f51a3f6489aed3f81d43678cb2d6fc1f456a8fb4d9fe23486d92b8dc01264b7095b9df03294d7498bde2072c51769bbfe50a2f54799ec4e80d31577ca1c6eb10355a80a4c9ee13385c82a7ccf2173a6083aacff4193e6388add1f61c41668bb0d6fa1f");
+    }
+    #[test]fn rgb97_tiles_reference(){
+        compare_rgb97("ff4fff51002f000000000009000000070000000000000000000000050000000400000000000000000003070101070101070101ff52000c00000001010100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000007b0001ff93c7da0e0e1a8a293723c1c7da0e12b007331b497fcfc0240d9ff109608746b5bfc3ed0587da0f07d40a04280bed4f0b4beab2153e070c1ce68fedc3ed0587da1107d4080aaca551d70bf86a7441f3033f107a5df7c3ed0587da0f07d408089e4ba2510c54076a70d22f0a0a5bcdff90000a0001000000840001ff93e13e405fa80c003705be5fe1fa80ff280c031c8f0380dfe1fa80ff280c06387f09691fc7e00d83f501fea0387da0a00e3060e3e0770b49cf0a508f0f7ea7be1fc1f50260fd407fa8120fa810106951c50c4af70c1bff7f1053ee8dc3ed05c23e405fb40e1f68280fcf5ec8af09680c33a70b10817a71ff90000a0002000000680001ff93c7da0c12774f8bc3b1c3ea0703c425222e2b7fc7da0e0792c18d5da0bfc7e00d03e70703e704077cd566bcbf0958bf091fc3ed0580f901c07c808010687a32ad02861f0249c3ed0587da090fb40c0a8fd2a5af0d65a7080a883fff90000a0003000000770001ff93e05f085f90100acf073fe1fa80ff280c05a1270a74dfe1fa80ff280c0bf03709824fc7e00d81f9c0fe70503e70400b78fc0c8fbf02072f015bc3ed06c13e405fa80a0fa8080894f4bdff7f097f01c30573c3ed06c13e405fa80a07ce080503c5d2987f057f05bf056fffd9",9,7,true,1,4,"163c6086abd0f51a3f6489add2f71d42678bb1d6fb21456b8fb4d8ff23486d92b7dc01254b7095badf04294e7398bde2072c51769bc0e50a2e55799ec3e80d32577da1c6eb10355b7fa4caee13385d81a7cdf2173c6086aacff5183f6488acd2f71c42668bb1d5f91f43698db2d8fd22476c91b7dc00254a6e94b9df04284d7397bce1062b507499bfe2092e53779dc2e70c30567ba1c6ea0f34597ea3c7ec12375d81a6ccf015395f84a9cff3193c6286acd1f61b40658ab0d4fa1e42");
+    }
+    #[test]fn ict97_numeric(){
+        let a=inverse_ict(10.,20.,-30.).unwrap();
+        for (v,want) in a.into_iter().zip([-32.06,24.5416,45.44]){assert!((v-want).abs()<1e-10);}
+        assert_eq!(inverse_ict(0.,0.,0.).unwrap(),[0.;3]);
+        assert!(inverse_ict(f64::NAN,0.,0.).is_err());
+        assert!(inverse_ict(f64::MAX,0.,f64::MAX).is_err());
+    }
+    #[test]fn rgb97_rejects_unsupported(){
+        assert!(decode_rgb97(&hex(ONE97)).is_err());
+        assert!(decode_rgb97(&[]).is_err());
+        let b=hex("ff4fff51002f000000000007000000050000000000000000000000070000000500000000000000000003070101070101070101ff52000c00000001010100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000009f0001ff93c7da1a190e951c16dd590f81f416e17fc7da1a1efc950a1eff118eb98cfafe27cfc0380f68e54e067885b8c749bb725d4fc7e01707d40f03e70c0cfe23dffdd7468c4da4c51283a4fab147c81171b1cd917fc3ed0a83ea0780f902800f9766bb7d8f33ce649f1174edf25ceb4f0e18dc1b5fc3ed0a83ea0683ea06072c74961eba77f4ce4f0d4af3280e610e77cad3f4b7ffd9");
+        assert!(decode_gray97_centered(&b).is_err());
+        assert!(decode_rgb97(&b[..b.len()-1]).is_err());
+        let mut a=b.clone();a[45]=0x87;assert!(decode_rgb97(&a).is_err());
     }
 }
