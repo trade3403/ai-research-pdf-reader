@@ -19,4 +19,4 @@ pub mod numbering;
 pub use numbering::{parse_numbering, NumberingCatalog, NumberingLabel, NumberingCounter, NumberedBlock, NumberedParagraph};
 
 pub mod section;
-pub use section::{parse_section, SectionProperties};
+pub use section::{parse_section, SectionProperties, DocumentSection, SectionEnd};

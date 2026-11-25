@@ -181,3 +181,18 @@ pub(crate) fn parse_section_node(root: Node<'_, '_>, ns: &str) -> Result<Section
     }
     Ok(out)
 }
+
+
+/// Source location of a section's terminating properties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionEnd { Paragraph, Body, Implicit }
+
+/// A half-open range in Document::blocks. The paragraph containing sectPr
+/// belongs to the section it terminates. Body sectPr is metadata, not content.
+/// Empty ranges are allowed; absent final properties remain unspecified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSection {
+    pub blocks: std::ops::Range<usize>,
+    pub properties: Option<SectionProperties>,
+    pub end: SectionEnd,
+}

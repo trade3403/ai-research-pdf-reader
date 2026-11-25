@@ -23,8 +23,13 @@ fn paragraph_text_and_diagnostics() {
     let document = read_docx(&fixture(WORD, REL), Limits::default()).unwrap();
     let Block::Paragraph(p) = &document.blocks[0] else { panic!("paragraph expected") };
     assert_eq!(p.text(), "中文 & SCI \t论文\nsecond");
-    assert_eq!(document.blocks.len(), 3);
-    assert_eq!(document.diagnostics.len(), 2);
+    assert_eq!(document.blocks.len(), 2);
+    assert!(matches!(&document.blocks[1], Block::Unsupported { name } if name == "tbl"));
+    assert_eq!(document.diagnostics.len(), 1);
+    assert_eq!(document.sections.len(), 1);
+    assert_eq!(document.sections[0].blocks, 0..2);
+    assert_eq!(document.sections[0].end, rwcore::SectionEnd::Body);
+    assert_eq!(document.sections[0].properties, Some(Default::default()));
 }
 
 #[test]
@@ -165,4 +170,66 @@ fn numbering_references_survive_style_cascade_and_cancellation() {
     p.properties.num_level = Some(0);
     let props = resolve_formatting(&catalog, &p, &r).unwrap().paragraph;
     assert_eq!((props.num_id, props.num_level), (Some(24), Some(0)));
+}
+
+
+fn section_doc(body: &str) -> Result<rwcore::Document, Error> {
+    let xml = format!("<w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'><w:body>{body}</w:body></w:document>");
+    read_docx(&fixture(&xml, REL), Limits::default())
+}
+
+#[test]
+fn sections_terminate_own_content_ranges() {
+    use rwcore::{SectionEnd, section::{Orientation, SectionBreak}};
+    let d = section_doc("<w:p><w:r><w:t>Introduction</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:pgSz w:w='11906' w:h='16838'/><w:cols w:num='2'/></w:sectPr></w:pPr><w:r><w:t>Methods</w:t></w:r></w:p><w:tbl/><w:p><w:r><w:t>Results</w:t></w:r></w:p><w:sectPr><w:type w:val='continuous'/><w:pgSz w:w='15840' w:h='12240' w:orient='landscape'/></w:sectPr>").unwrap();
+    assert_eq!(d.blocks.len(), 4);
+    assert_eq!(d.sections.len(), 2);
+    assert_eq!(d.sections[0].blocks, 0..2);
+    assert_eq!(d.sections[0].end, SectionEnd::Paragraph);
+    assert_eq!(d.sections[0].properties.as_ref().unwrap().columns.as_ref().unwrap().count, Some(2));
+    assert_eq!(d.sections[1].blocks, 2..4);
+    assert_eq!(d.sections[1].end, SectionEnd::Body);
+    let props = d.sections[1].properties.as_ref().unwrap();
+    assert_eq!(props.orientation, Some(Orientation::Landscape));
+    assert_eq!(props.break_type, Some(SectionBreak::Continuous));
+    let Block::Paragraph(p) = &d.blocks[1] else { panic!("paragraph expected") };
+    assert_eq!(p.text(),"Methods");
+    assert!(p.properties.diagnostics.is_empty());
+    assert_eq!(d.diagnostics.len(),1);
+}
+
+#[test]
+fn implicit_final_and_empty_sections_preserve_boundaries() {
+    use rwcore::SectionEnd;
+    let empty = section_doc("").unwrap();
+    assert_eq!(empty.sections[0].blocks, 0..0);
+    assert_eq!(empty.sections[0].end, SectionEnd::Implicit);
+    assert!(empty.sections[0].properties.is_none());
+    let d = section_doc("<w:p><w:pPr><w:sectPr/></w:pPr></w:p>").unwrap();
+    assert_eq!(d.sections.len(),2);
+    assert_eq!(d.sections[0].blocks,0..1);
+    assert_eq!(d.sections[1].blocks,1..1);
+    assert_eq!(d.sections[1].end,SectionEnd::Implicit);
+    let d = section_doc("<w:sectPr/>").unwrap();
+    assert_eq!(d.sections[0].blocks,0..0);
+    assert_eq!(d.sections[0].end,SectionEnd::Body);
+}
+
+#[test]
+fn rejects_ambiguous_and_invalid_section_boundaries() {
+    assert_eq!(section_doc("<w:sectPr/><w:p/>"),Err(Error::Invalid("content after final section properties")));
+    assert_eq!(section_doc("<w:sectPr/><w:sectPr/>"),Err(Error::Invalid("content after final section properties")));
+    assert_eq!(section_doc("<w:p><w:pPr><w:sectPr/><w:sectPr/></w:pPr></w:p>"),Err(Error::Invalid("duplicate paragraph section properties")));
+    assert_eq!(section_doc("<w:p><w:pPr><w:sectPr><w:pgSz w:w='0'/></w:sectPr></w:pPr></w:p>"),Err(Error::Invalid("zero page or column dimension")));
+}
+
+#[test]
+fn section_warnings_propagate_without_changing_text() {
+    let d = section_doc("<w:p><w:pPr><w:sectPr><w:headerReference/></w:sectPr></w:pPr><w:r><w:t>科研</w:t></w:r></w:p><w:sectPr><w:pgNumType/></w:sectPr>").unwrap();
+    assert_eq!(d.diagnostics.len(),2);
+    assert_eq!(d.sections[0].properties.as_ref().unwrap().diagnostics.len(),1);
+    assert_eq!(d.sections[1].properties.as_ref().unwrap().diagnostics.len(),1);
+    let Block::Paragraph(p) = &d.blocks[0] else { panic!("paragraph expected") };
+    assert_eq!(p.text(),"科研");
+    assert!(p.properties.diagnostics.is_empty());
 }

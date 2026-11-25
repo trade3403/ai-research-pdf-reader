@@ -138,7 +138,24 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
             Target::External(_) => warn(&mut document, "External numbering relationship ignored"),
         }
     }
+    use crate::section::{DocumentSection, SectionEnd, parse_section_node};
+    let mut section_start = 0;
+    let mut final_section_seen = false;
     for node in body.children().filter(|n| n.is_element()) {
+        if final_section_seen {
+            return Err(Error::Invalid("content after final section properties"));
+        }
+        if named(node, ns, "sectPr") {
+            let properties = parse_section_node(node, ns)?;
+            for message in &properties.diagnostics { warn(&mut document, message.clone()); }
+            document.sections.push(DocumentSection {
+                blocks: section_start..document.blocks.len(),
+                properties: Some(properties),
+                end: SectionEnd::Body,
+            });
+            final_section_seen = true;
+            continue;
+        }
         if !named(node, ns, "p") {
             let name = node.tag_name().name().to_owned();
             warn(&mut document, format!("Unsupported body element: {name}"));
@@ -147,6 +164,7 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
         }
         let mut paragraph = Paragraph::default();
         let mut paragraph_properties_seen = false;
+        let mut section_properties = None;
         for child in node.children().filter(|n| n.is_element()) {
             if named(child, ns, "pPr") {
                 if paragraph_properties_seen {
@@ -154,7 +172,16 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
                     continue;
                 }
                 paragraph_properties_seen = true;
-                paragraph.properties = parse_paragraph_node(child, ns);
+                let mut endings = child.children().filter(|n| named(*n, ns, "sectPr"));
+                if let Some(ending) = endings.next() {
+                    if endings.next().is_some() {
+                        return Err(Error::Invalid("duplicate paragraph section properties"));
+                    }
+                    let properties = parse_section_node(ending, ns)?;
+                    for message in &properties.diagnostics { warn(&mut document, message.clone()); }
+                    section_properties = Some(properties);
+                }
+                paragraph.properties = parse_paragraph_node_impl(child, ns, true);
                 for message in &paragraph.properties.diagnostics {
                     warn(&mut document, message.clone());
                 }
@@ -195,6 +222,22 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
             paragraph.runs.push(run);
         }
         document.blocks.push(Block::Paragraph(paragraph));
+        if let Some(properties) = section_properties {
+            let end = document.blocks.len();
+            document.sections.push(DocumentSection {
+                blocks: section_start..end,
+                properties: Some(properties),
+                end: SectionEnd::Paragraph,
+            });
+            section_start = end;
+        }
+    }
+    if !final_section_seen {
+        document.sections.push(DocumentSection {
+            blocks: section_start..document.blocks.len(),
+            properties: None,
+            end: SectionEnd::Implicit,
+        });
     }
     Ok(document)
 }
@@ -371,10 +414,15 @@ pub enum ParagraphAlignment { Left, Right, Center, Both, Start, End }
 pub enum LineRule { Auto, Exact, AtLeast }
 
 pub(crate) fn parse_paragraph_node(root: Node<'_, '_>, ns: &str) -> DirectParagraphProperties {
+    parse_paragraph_node_impl(root, ns, false)
+}
+
+fn parse_paragraph_node_impl(root: Node<'_, '_>, ns: &str, section_handled: bool) -> DirectParagraphProperties {
     let mut out = DirectParagraphProperties::default();
     let mut seen = std::collections::HashSet::new();
     for node in root.children().filter(|n| n.is_element()) {
         let name = node.tag_name().name();
+        if section_handled && named(node, ns, "sectPr") { continue; }
         if node.tag_name().namespace() != Some(ns) {
             out.diagnostics.push(format!("Unsupported foreign paragraph property: {name}"));
             continue;
