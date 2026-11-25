@@ -67,3 +67,6 @@ pub use table_columns::{allocate_table_columns, TableColumnLayout, CellWidthMeas
 
 pub mod table_layout;
 pub use table_layout::{layout_nested_table, TableMeasurer, NestedLayoutOptions, NestedTableLayout, NestedCellLayout, NestedBlockLayout};
+
+pub mod media;
+pub use media::{load_media, MediaLimits, MediaCatalog, MediaResource, MediaBinding, ImageFormat};
