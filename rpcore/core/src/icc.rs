@@ -83,6 +83,16 @@ impl<'a> Profile<'a>{
         if b.len()!=20||sig(b,0)?!=*b"XYZ "||b[4..8]!=[0;4]{return Err(Error::Invalid("ICC XYZ tag"));}
         Ok([fixed(b,8)?,fixed(b,12)?,fixed(b,16)?])
     }
+    /// Media-relative to ICC-absolute PCS scaling for CMYK output profiles.
+    /// Do not apply to native D2B3, or assume display/input profile semantics.
+    pub fn absolute_output_scale(&self)->Result<[f64;3]>{
+        self.check_cmyk()?;
+        let white=self.xyz(b"wtpt")?;
+        if white.iter().any(|v|!v.is_finite()||*v<=0.||*v>2.){
+            return Err(Error::Invalid("ICC absolute media white"));
+        }
+        Ok(std::array::from_fn(|i|white[i]/[0.9642,1.,0.8249][i]))
+    }
     /// Explicit relative-colorimetric matrix path to PCS XYZ D50.
     /// Refuse LUT-bearing profiles rather than silently override their LUT.
     pub fn rgb_matrix(&self)->Result<RgbMatrix>{

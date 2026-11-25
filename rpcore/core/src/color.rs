@@ -58,20 +58,25 @@ pub(crate) enum IccTransform{
     Cmyk(crate::icc::OwnedCmykLut),
     Mab(crate::icc::CmykMab),
     Mpe{transform:crate::icc::MpeTransform<'static>,components:usize},
+    AbsoluteOutput{inner:Box<IccTransform>,scale:[f64;3]},
 }
 impl IccTransform{
-    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4,Self::Mpe{components,..}=>*components}}
+    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4,Self::Mpe{components,..}=>*components,Self::AbsoluteOutput{inner,..}=>inner.components()}}
     pub(crate) fn work(&self)->usize{
-        match self{Self::Mpe{transform,..}=>transform.work().max(32),_=>if self.components()==4{128}else{32}}
+        match self{Self::Mpe{transform,..}=>transform.work().max(32),Self::AbsoluteOutput{inner,..}=>inner.work()+3,_=>if self.components()==4{128}else{32}}
     }
-    pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
-        let xyz=match self{
+    fn xyz(&self,v:[f64;4])->Result<[f64;3]>{
+        Ok(match self{
             Self::Rgb(m)=>m.to_xyz_d50([v[0],v[1],v[2]])?,
             Self::Gray(t)=>t.to_xyz_d50(v[0])?,
             Self::Cmyk(lut)=>lut.to_xyz_d50(v)?,
             Self::Mab(lut)=>lut.to_xyz_d50(v)?,
             Self::Mpe{transform,components}=>transform.to_xyz_d50(&v[..*components])?,
-        };
+            Self::AbsoluteOutput{inner,scale}=>{let xyz=inner.xyz(v)?;std::array::from_fn(|i|xyz[i]*scale[i])},
+        })
+    }
+    pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
+        let xyz=self.xyz(v)?;
         let src=mv(BRADFORD,[0.9642,1.,0.8249]);let dst=mv(BRADFORD,D65);
         let cone=mv(BRADFORD,xyz);
         let adapted=mv(BRADFORD_INV,std::array::from_fn(|i|cone[i]*dst[i]/src[i]));
@@ -99,8 +104,7 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crat
         let actual=match &p.color_space{b"GRAY"=>1,b"RGB "=>3,_=>4};
         if n!=actual{return Err(Error::Invalid("ICCBased profile N mismatch"));}
     }
-    // Preserve the existing relative-colorimetric display policy. Both
-    // vector and image paths use this loader; PDF ri switching is separate.
+    // Exact MPE intent takes precedence; native D2B3 is already absolute.
     use crate::icc::{MpeDirection,RenderingIntent};
     let tag=MpeDirection::DeviceToPcs.tag(intent);
     if p.tag(&tag).is_some(){
@@ -119,24 +123,23 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crat
             Err(Error::Invalid(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
         }
     }
-    // Until media-white correction is implemented, absolute legacy
-    // transforms retain the relative approximation and diagnostic warning.
+    // Legacy candidates: exact intent first, then A2B0 for missing or
+    // unsupported LUTs. Invalid payloads remain explicit alternate decisions.
     let preferred=match intent{RenderingIntent::Perceptual=>b"A2B0",RenderingIntent::Saturation=>b"A2B2",_=>b"A2B1"};
-    let key=if p.tag(preferred).is_some(){preferred}else{b"A2B0"};
-    let transform=match n{
-        1=>p.gray_trc().map(IccTransform::Gray),
-        3=>p.rgb_matrix().map(IccTransform::Rgb),
-        4 if p.tag(key).is_some_and(|b|b.starts_with(b"mAB "))=>p.cmyk_mab(key).map(IccTransform::Mab),
-        4=>{
-            p.cmyk_a2b(key).and_then(|lut|{
-                // Validate that physical PCS conversion is supported, not
-                // merely that the encoded LUT parses.
-                lut.to_xyz_d50([0.;4])?;
-                Ok(IccTransform::Cmyk(lut.to_owned_lut()))
-            })
+    let prepare=|key:&crate::icc::Signature|->Result<IccTransform>{
+        match n{
+            1=>p.gray_trc().map(IccTransform::Gray),
+            3=>p.rgb_matrix().map(IccTransform::Rgb),
+            4 if p.tag(key).is_some_and(|b|b.starts_with(b"mAB "))=>p.cmyk_mab(key).map(IccTransform::Mab),
+            4=>p.cmyk_a2b(key).and_then(|lut|{lut.to_xyz_d50([0.;4])?;Ok(IccTransform::Cmyk(lut.to_owned_lut()))}),
+            _=>Err(Error::Unsupported("ICC transform channels")),
         }
-        _=>Err(Error::Unsupported("ICC gray transform")),
     };
+    let mut key=preferred;
+    let mut transform=prepare(key);
+    if n==4&&key!=b"A2B0"&&matches!(&transform,Err(Error::Unsupported(_))){
+        key=b"A2B0";transform=prepare(key);
+    }
     match transform{
         Ok(t)=>{
             let path=match &t{
@@ -144,8 +147,15 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crat
                 IccTransform::Rgb(_)=>ProfilePath::RgbMatrix,
                 IccTransform::Cmyk(_)=>ProfilePath::CmykLut{tag:*key},
                 IccTransform::Mab(_)=>ProfilePath::CmykMab{tag:*key},
-                IccTransform::Mpe{transform,..}=>ProfilePath::Mpe{tag:transform.tag},
+                _=>return Err(Error::Invalid("ICC unexpected legacy transform")),
             };
+            let t=if intent==RenderingIntent::AbsoluteColorimetric&&n==4{
+                match p.absolute_output_scale(){
+                    Ok(scale)=>IccTransform::AbsoluteOutput{inner:Box::new(t),scale},
+                    Err(Error::Limit(s))=>return Err(Error::Limit(s)),
+                    Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
+                }
+            }else{t};
             Ok((n,Some(t),charged,path))
         }
         Err(Error::Limit(s))=>Err(Error::Limit(s)),
