@@ -172,3 +172,6 @@ pub use font_chain_context_subst::{ChainContextRule,ChainContextSubstitution,par
 pub use font_chain_context_subst::{ClassChainContextSubstitution,parse_class_chain_context_substitution};
 
 pub use font_chain_context_subst::{CoverageChainContextSubstitution,parse_coverage_chain_context_substitution};
+
+pub mod font_extension_subst;
+pub use font_extension_subst::{ExtensionSubstitution,ExtensionTarget,ExtensionLimits,parse_extension_substitution,resolve_extension_lookup,parse_extension_target,parse_extension_target_substitution};

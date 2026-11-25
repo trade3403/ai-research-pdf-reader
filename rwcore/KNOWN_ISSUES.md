@@ -103,3 +103,5 @@
 - C4.4a7e3: standalone matching only, all three Type 6 formats now implemented in source; real direct font references pending. Empty coverage is unmatchable; empty action list can match. Payload overlap checks not comprehensive; no GDEF filtering, nested execution/cycle checks, cluster propagation, full shaping, or Word corpus acceptance.
 
 - C4.4a7e4: two selected OFL fonts, direct Type 6 only, independent raw-byte reference rather than external shaping engine. Representative class matches are not exhaustive over all combinations; no Type 7 wrapper, nested execution, GDEF filtering, variable font interpolation, cluster merging or full Word fidelity. Real DOCX corpus and security/license audit still outstanding.
+
+- C4.4a8a: extension target slices are suffixes, not independently validated extents; per-target budgets, not aggregate decoded multi-target memory budget. No real wrapper acceptance yet, no Type 8 decoder, lookup execution, GDEF filtering, nested context cycles or full shaping. Real DOCX corpus and dependency audit remain outstanding.
