@@ -256,7 +256,16 @@ def main():
         if e.get('reason'):lines.append(f"  Reason: {e['reason']}")
     md='\n'.join(lines)+'\n'
     (a.out/'report.md').write_text(md);print(md)
-    return int(len(report['display_profiles'])!=2 or not any(e['status']=='native_pass' for e in report['display_profiles']) or any(e['status'] not in ('native_pass','explicit_alternate') for e in report['display_profiles']) or any(e['status']!='compared' or len(e['rows'])!=len(DENSE)*4 or len(e.get('renders',[]))!=16 for e in report['profiles']))
+    # Freeze both verified external RGB profiles as mandatory native paths.
+    # An explicit alternate remains useful in diagnostics but is a regression
+    # for these two fixtures; do not silently lower the closure gate.
+    rgb=report['display_profiles']
+    rgb_ok=({e['file'] for e in rgb}=={'sRGB.icc','AdobeRGB1998.icc'} and len(rgb)==2
+            and all(e['status']=='native_pass' and len(e['rows'])==512
+                    and len(e['decisions'])==16 and all(r['native'] and r['pass'] for r in e['rows'])
+                    and all(d['native'] for d in e['decisions']) for e in rgb))
+    print(f"ICC closure external RGB native gate: {'PASS' if rgb_ok else 'FAIL'}; {sum(r['native'] and r['pass'] for e in rgb for r in e['rows'])}/1024.")
+    return int(not rgb_ok or any(e['status']!='compared' or len(e['rows'])!=len(DENSE)*4 or len(e.get('renders',[]))!=16 for e in report['profiles']))
 
 if __name__=='__main__':
     raise SystemExit(main())

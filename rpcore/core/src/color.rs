@@ -85,8 +85,10 @@ impl IccTransform{
         Ok(mv(XYZ_RGB,adapted).map(srgb))
     }
 }
-/// Default relative-colorimetric source path. For legacy CMYK choose A2B1
-/// if present, otherwise A2B0. Full PDF rendering-intent switching is deferred.
+/// Page-scoped source transform to sRGB. Exact supported MPE intent takes
+/// precedence; legacy CMYK uses intent-specific A2B then A2B0 for missing or
+/// unsupported LUTs. Matrix/TRC uses the relative path except for absolute
+/// scaling and optional source CHAD adaptation. This is not a general CMM.
 /// Invalid or unsupported profile payloads use the documented device alternate;
 /// a recognized profile with wrong component count or a resource limit is fatal.
 pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crate::icc::RenderingIntent,degree:crate::icc::AdaptationDegree)
