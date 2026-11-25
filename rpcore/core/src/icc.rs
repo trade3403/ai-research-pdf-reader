@@ -130,6 +130,21 @@ impl<'a> Profile<'a>{
         if m.inputs()!=p||m.outputs()!=q{return Err(Error::Invalid("ICC MPE profile channels"));}
         Ok(m)
     }
+    /// Prepare the exact requested floating-point transform. Legacy fallback
+    /// is deliberately left to the caller; absolute intent is not emulated.
+    pub fn mpe_transform(&self, direction: MpeDirection, intent: RenderingIntent) -> Result<MpeTransform<'a>> {
+        if !matches!(&self.class,b"scnr"|b"mntr"|b"prtr"|b"spac"){
+            return Err(Error::Unsupported("ICC MPE profile class"));
+        }
+        if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
+            return Err(Error::Unsupported("ICC non-D50 PCS"));
+        }
+        let tag=direction.tag(intent);
+        let parsed=self.mpe(&tag)?;
+        let program=parsed.prepare()?;
+        Ok(MpeTransform{tag, direction, intent, pcs:self.pcs, program})
+    }
+
     /// Explicit legacy A2B0 path for CMYK output profiles. Returns encoded PCS
     /// channels, not display RGB. No automatic intent selection or LUT fallback.
     pub fn cmyk_a2b0(&self)->Result<CmykLut<'a>>{
@@ -700,5 +715,69 @@ mod tests{
         }
         let mut bad=b.clone();bad[116]=34;assert!(matches!(CmykMab::parse(&bad,*b"Lab "),Err(Error::Limit(_))));
         assert!(CmykMab::parse(&b[..b.len()-1],*b"Lab ").is_err());
+    }
+}
+
+/// ICC rendering intent, independent of the profile's preferred intent.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum RenderingIntent{Perceptual,RelativeColorimetric,Saturation,AbsoluteColorimetric}
+impl RenderingIntent{
+    pub fn from_pdf_name(name:&[u8])->Result<Self>{
+        match name{
+            b"Perceptual"=>Ok(Self::Perceptual),
+            b"RelativeColorimetric"=>Ok(Self::RelativeColorimetric),
+            b"Saturation"=>Ok(Self::Saturation),
+            b"AbsoluteColorimetric"=>Ok(Self::AbsoluteColorimetric),
+            _=>Err(Error::Unsupported("PDF rendering intent")),
+        }
+    }
+    pub fn from_icc(value:u32)->Result<Self>{
+        match value{0=>Ok(Self::Perceptual),1=>Ok(Self::RelativeColorimetric),2=>Ok(Self::Saturation),3=>Ok(Self::AbsoluteColorimetric),_=>Err(Error::Invalid("ICC rendering intent"))}
+    }
+    fn digit(self)->u8{match self{Self::Perceptual=>b'0',Self::RelativeColorimetric=>b'1',Self::Saturation=>b'2',Self::AbsoluteColorimetric=>b'3'}}
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum MpeDirection{DeviceToPcs,PcsToDevice}
+impl MpeDirection{
+    pub fn tag(self,intent:RenderingIntent)->Signature{
+        match self{Self::DeviceToPcs=>[b'D',b'2',b'B',intent.digit()],Self::PcsToDevice=>[b'B',b'2',b'D',intent.digit()]}
+    }
+}
+/// Exact MPE tag execution in physical PCS units (not integer LUT encoding).
+#[derive(Debug)]
+pub struct MpeTransform<'a>{
+    pub tag:Signature,pub direction:MpeDirection,pub intent:RenderingIntent,pub pcs:Signature,
+    program:mpe::Program<'a>,
+}
+impl MpeTransform<'_>{
+    pub fn evaluate(&self,input:&[f64])->Result<Vec<f64>>{self.program.evaluate(input)}
+    pub fn evaluate_into(&self,input:&[f64],output:&mut[f64])->Result<()>{self.program.evaluate_into(input,output)}
+    /// D50 PCS XYZ, retaining the selected intent's colorimetry.
+    /// Absolute colorimetry is NOT scaled by the media white again.
+    pub fn to_xyz_d50(&self,device:&[f64])->Result<[f64;3]>{
+        if self.direction!=MpeDirection::DeviceToPcs{return Err(Error::Invalid("ICC MPE direction"));}
+        let mut pcs=[0.;3];self.evaluate_into(device,&mut pcs)?;
+        if self.pcs==*b"XYZ "{return Ok(pcs);}
+        let [l,a,b]=pcs;
+        let y=(l+16.)/116.;
+        let f=|t:f64|if t>6./29.{t*t*t}else{(108./841.)*(t-4./29.)};
+        let xyz=[0.9642*f(y+a/500.),f(y),0.8249*f(y-b/200.)];
+        if xyz.iter().any(|v|!v.is_finite()){return Err(Error::Invalid("ICC MPE PCS range"));}
+        Ok(xyz)
+    }
+}
+#[cfg(test)]
+mod mpe_intent_tests{
+    use super::*;
+    #[test]
+    fn exact_tags_and_pdf_names(){
+        for (i,name) in [b"Perceptual".as_slice(),b"RelativeColorimetric",b"Saturation",b"AbsoluteColorimetric"].iter().enumerate(){
+            let intent=RenderingIntent::from_icc(i as u32).unwrap();
+            assert_eq!(RenderingIntent::from_pdf_name(name).unwrap(),intent);
+            assert_eq!(MpeDirection::DeviceToPcs.tag(intent),[b'D',b'2',b'B',b'0'+i as u8]);
+            assert_eq!(MpeDirection::PcsToDevice.tag(intent),[b'B',b'2',b'D',b'0'+i as u8]);
+        }
+        assert!(RenderingIntent::from_icc(4).is_err());
+        assert!(RenderingIntent::from_pdf_name(b"unknown").is_err());
     }
 }
