@@ -272,6 +272,11 @@ pub fn tokenizer_asset(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
     if !matches!(name, "source.spm" | "target.spm" | "vocab.json") {
         return Err(Error::Manifest);
     }
+    verified_asset(root, name)
+}
+
+/// Read only one of the five audited small model metadata files.
+pub fn verified_asset(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
     let (_, size, hash) = PINNED_FILES
         .iter()
         .find(|(key, _, _)| *key == name)
