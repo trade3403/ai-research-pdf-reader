@@ -7,6 +7,7 @@ pub mod geometry;
 pub mod packet_bits;
 pub mod packet;
 pub mod mq;
+pub mod ebcot;
 
 const SIGNATURE:&[u8]=b"\x00\x00\x00\x0cjP  \x0d\x0a\x87\x0a";
 const MAX_BOXES:usize=4096;
