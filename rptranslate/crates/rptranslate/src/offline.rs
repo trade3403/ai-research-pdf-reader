@@ -52,8 +52,9 @@ impl OfflineTranslator {
         }
         let source_spm = package::tokenizer_asset(root, "source.spm").map_err(Error::Package)?;
         let vocab = package::tokenizer_asset(root, "vocab.json").map_err(Error::Package)?;
-        let vocabulary = Vocabulary::parse(std::str::from_utf8(&vocab).map_err(|_| Error::Profile)?)
-            .map_err(Error::Vocabulary)?;
+        let vocabulary =
+            Vocabulary::parse(std::str::from_utf8(&vocab).map_err(|_| Error::Profile)?)
+                .map_err(Error::Vocabulary)?;
         let model = MarianModel::load(root, max_weight_bytes).map_err(Error::Model)?;
         let config = model.config();
         if vocabulary.len() != config.vocab

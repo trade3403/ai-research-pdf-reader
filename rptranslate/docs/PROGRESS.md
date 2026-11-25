@@ -37,7 +37,7 @@
 | D1.8c7 | 已通过 | 完整模型构建与加载验收 |
 | D1.8d | 待验证 | 真实跨内核与位置边界 |
 | D1.8e | 待验证 | 真实文本翻译 |
-| D1.8f | 未开始 | 性能与质量 |
+| D1.8f | 待验证 | 实际性能/RSS/质量基线 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -178,8 +178,13 @@ D1.8d [45534413835](https://github.com/trade3403/ai-research-pdf-reader/actions/
 ## 当前阶段 D1.8e
 新增 OfflineTranslator/借用式 TextSession：固定来源的 source.spm/vocab 原字节独立 SHA256 校验，真实词表65001和特殊ID校验，自主 NmtUnigram + 固定 >>cmn_Hans<< + EOS → MarianModel cached beam → Marian 共享网络词表反分词（target.spm 已在包校验，运行不需重新解析 target SPM）；明确拒绝空、调用者语言标记、超长，不截断，返回 source/target IDs、score、reached_limit。新增 rptranslate translate MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]；保留无模型历史入口显式报错。CI 三句真实英文、beam1/4 六次生成、精确源/目标 token、解码对照、3 HF greedy、独立自定义 beam 参考、中文字符及自然 EOS、CLI、3负例。参考工具 Python 仅CI；Rust runtime 无网络请求，未测速度、真实语料质量；仅固定官方 FP32 profile，非自主训练权重。待CI，不预写译文。
 
-## 下一阶段 D1.8f
-真实英中翻译性能、内存及质量验收。
+D1.8e [45534854851](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45534854851) 首轮基础 format 3组失败，真实专项尚未完成；D1.8d 独立运行被后继提交取消，仍需跨内核全量验收。此次修复完整上下文格式，不删除已有检查。
+
+## 当前阶段 D1.8f
+新增独立 Rust release 翻译基准：模型加载/分词会话初始化计时，2短句 beam1、Full/Cached 各3次交替计时（2 warmups 排除），目标序列严格一致；端到端 latency/输出Token/s（含EOS，非Decoder纯速度），median 与 full/cache latency ratio；Linux /usr/bin/time 单独 Rust 进程峰值RSS（含权重、warmup、质量请求，非Python）。6条自编科研短句 beam4、参考中文、数字多重集合匹配5项、术语/单位字符串备选12组、字符1..6 gram F2有效阶宏平均（非SacreBLEU），实际译文与上限标志逐条日志。质量观察不设虚构通过率或速度阈值，数字匹配不证明数量关系正确；非真实论文质量结论。先保留D1.8d/e全部门槛，之后执行基准。待CI。
+
+## 下一阶段 D1.9
+待 D1.8d/e/f 全部通过后，启动自主 INT8 量化格式、分块权重和精度验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

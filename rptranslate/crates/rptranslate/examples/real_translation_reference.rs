@@ -23,12 +23,32 @@ fn main() -> Result<(), String> {
             let mut options = translator.default_options();
             options.beam_width = beam;
             options.max_new = 48;
-            let result = session.translate(&line, options, Kernel::Auto)
+            let result = session
+                .translate(&line, options, Kernel::Auto)
                 .map_err(|e| format!("{e:?}"))?;
-            let src = result.source_tokens.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-            let tgt = result.target_tokens.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-            let hex = result.text.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-            println!("{beam}\t{src}\t{tgt}\t{hex}\t{}\t{:.17}", u8::from(result.reached_limit), result.score);
+            let src = result
+                .source_tokens
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let tgt = result
+                .target_tokens
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let hex = result
+                .text
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            println!(
+                "{beam}\t{src}\t{tgt}\t{hex}\t{}\t{:.17}",
+                u8::from(result.reached_limit),
+                result.score
+            );
         }
     }
     Ok(())

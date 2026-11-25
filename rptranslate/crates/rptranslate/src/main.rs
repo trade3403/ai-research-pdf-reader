@@ -25,10 +25,17 @@ fn run(args: &[String]) -> Result<(), String> {
                 .map_err(|e| format!("{e:?}"))?;
             println!("{}", result.text);
             if result.reached_limit {
-                eprintln!("Warning: output reached the generation limit; translation may be incomplete");
+                eprintln!(
+                    "Warning: output reached the generation limit; translation may be incomplete"
+                );
             }
         }
-        _ => return Err("Usage: rptranslate self-check | translate MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]".into()),
+        _ => {
+            return Err(
+                "Usage: rptranslate self-check | translate MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]"
+                    .into(),
+            )
+        }
     }
     Ok(())
 }
