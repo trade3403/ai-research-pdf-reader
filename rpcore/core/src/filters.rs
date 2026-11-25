@@ -3,6 +3,7 @@ mod deflate;
 mod predictor;
 pub mod jpeg;
 pub mod jpx;
+pub mod jbig2;
 use crate::{Error, Object, MAX_BYTES};
 
 fn push(out: &mut Vec<u8>, data: &[u8], limit: usize) -> Result<(), Error> {
