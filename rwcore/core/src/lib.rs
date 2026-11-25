@@ -100,3 +100,6 @@ pub use history::{HistoryLimits,HistoryUsage,HistoryReport,HistoryEditReport,Str
 
 pub mod structure;
 pub use structure::{SplitAnchors,SplitPoint,JoinFormatting,StructureOp,StructureTransaction,StructureLimits,StructureReport,apply_structure_transaction};
+
+pub mod font;
+pub use font::{FontTag,FontFlavor,FontContainerKind,FontLimits,FontTableRecord,FontFace,FontContainer,parse_font};

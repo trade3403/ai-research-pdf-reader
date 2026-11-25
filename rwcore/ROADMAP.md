@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #62, not full Word compatibility.
+Status below is baseline at CI #63, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -21,8 +21,9 @@ Status below is baseline at CI #62, not full Word compatibility.
 | C3.2 | Selection ranges and cross-run edits | Verified |
 | C3.3a | Bounded undo/redo transaction history | Verified |
 | C3.3b | Structural transactions and validation | Verified |
-| C3.3c | Structural history and path-safe editor integration | Source implemented; CI pending |
-| C4.1 | Font container and SFNT directory parsing | Planned |
+| C3.3c | Structural history and path-safe editor integration | Verified |
+| C4.1 | Font container and SFNT directory parsing | Source implemented; CI pending |
+| C4.2a | Native font metrics and unit conversions | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

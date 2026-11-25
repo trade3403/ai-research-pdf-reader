@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: 5dbe493b11d78780cf09c05288ffe884dfe9a855
-- CI #62: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45567776959
-- Verified: Ubuntu 328/328, Windows 328/328, macOS 328/328; total 984/984; zero failed/ignored; locked release builds passed.
-- Current stage: C3.3c unified text/structure history; 12 new synthetic regressions (340 per platform / 1020 executions expected, PENDING CI).
-- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C4.1 native bounded font container and SFNT table directory parsing (first font-engine batch).
-- Scope: existing body/nested body-cell paragraph range snapshots, shared LIFO text/structure undo/redo, section and picture metadata restore, revision-checked index path resolution, bounded retention. No automatic path remapping or stable node IDs; callers refresh paths after any revision. History counts logical text, offsets and run/paragraph/section snapshot slots, not heap bytes. No persistence, structural edits beyond C3.3b, or GUI/DOCX serialization.
+- Last verified baseline: ebaddc59e4aabc93e41dd4646be6aba5957f06ae
+- CI #63: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949
+- Verified: Ubuntu 340/340, Windows 340/340, macOS 340/340; total 1020/1020; zero failed/ignored; locked release builds passed.
+- Current stage: C4.1 native SFNT/TTC font directory parsing; 14 new synthetic regressions (354 per platform / 1062 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C4.2a native head/maxp/hhea/hmtx metric parsing and unit conversions; cmap follows.
+- Scope: raw TrueType and OpenType CFF-flavored SFNT directory, TTC/OTC versions 1/2, borrowed table lookup, bounded checked offsets/counts, shared table validation, optional table checksum and raw DSIG exposure. No required-table or whole-font validation, glyph outlines, cmap, shaping, WOFF, font discovery, rendering, or real font corpus acceptance. C3 foundational editing verified, not full Word fidelity.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.
