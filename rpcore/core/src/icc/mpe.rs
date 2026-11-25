@@ -344,7 +344,7 @@ impl Program<'_>{
                         }
                         if w!=0.{for j in 0..*outputs{b[j]+=w*f64::from(float(data,4*(index*outputs+j))?);}}
                     }
-                    for v in &b[..*outputs]{*v=checked_float(*v)?;}*outputs
+                    for v in &mut b[..*outputs]{*v=checked_float(*v)?;}*outputs
                 }
                 Stage::Identity=>{b[..n].copy_from_slice(&a[..n]);n}
             };
