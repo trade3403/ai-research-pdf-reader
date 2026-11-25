@@ -170,6 +170,105 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet
     let details:Vec<_>=planes.iter().skip(1).map(|r|Detail53{hl:&r[0].values,lh:&r[1].values,hh:&r[2].values}).collect();
     wavelet53::inverse53_levels(w,ht,t.bounds.x0 as u32,t.bounds.y0 as u32,&planes[0][0].values,&details)
 }
+
+/// Experimental irreversible single-tile grayscale component reconstruction.
+/// Samples are row-major, centered, unrounded and unclipped; this is not a
+/// PDF image rendering entry point. No color transform or JP2 interpretation.
+#[derive(Debug,PartialEq)]
+pub struct Gray97Samples{pub width:usize,pub height:usize,pub samples:Vec<f64>}
+
+pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
+    use super::{codestream::inverse_quantization as iq,wavelet97::{self,Detail97}};
+    let c=inspect_codestream(data)?;
+    let h=&c.geometry;
+    if h.container!=Container::RawCodestream||h.components.len()!=1||c.coding.mct||
+        h.tiles_x!=1||h.tiles_y!=1||c.tile_parts.len()!=1||c.coding.layers>256{
+        return Err(Error::Unsupported("JPX gray97 container/components/tiles/layers"));
+    }
+    let g=&h.components[0];let style=&c.component_coding[0];let q=&c.component_quantization[0];
+    if g.precision!=8||g.signed||g.x_sampling!=1||g.y_sampling!=1||
+        style.wavelet!=Wavelet::Irreversible97||style.codeblock_style!=0||q.mode==QuantMode::None{
+        return Err(Error::Unsupported("JPX gray97 coding parameters"));
+    }
+    let (w,ht)=(h.width as usize,h.height as usize);
+    let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray97 area"))?;
+    if area==0||area>MAX_PIXELS||w>1_048_576||ht>1_048_576{
+        return Err(Error::Limit("JPX gray97 area"));
+    }
+    let plan=geometry::plan(&c,0)?;
+    let t=&plan.components[0];
+    if t.bounds.x0!=i64::from(h.x_origin)||t.bounds.y0!=i64::from(h.y_origin)||
+        t.bounds.width()!=w as i64||t.bounds.height()!=ht as i64{
+        return Err(Error::Invalid("JPX gray97 tile placement"));
+    }
+    let packets=packet::inspect_planned_packets(data,&c,&plan)?;
+    struct FloatPlane{bounds:Rect,values:Vec<f64>,delta:f64}
+    let mut planes:Vec<Vec<FloatPlane>>=Vec::new();
+    let mut total=0usize;
+    for (ri,res) in t.resolutions.iter().enumerate(){
+        let mut bands=Vec::new();
+        for b in &res.subbands{
+            let n=(b.bounds.width()as usize).checked_mul(b.bounds.height()as usize)
+                .ok_or(Error::Limit("JPX gray97 band area"))?;
+            total=total.checked_add(n).ok_or(Error::Limit("JPX gray97 band area"))?;
+            if total>area{return Err(Error::Invalid("JPX gray97 band partition"));}
+            // Part 1 gain convention matches the native inverse97 lifting
+            // normalization; independent pixel parity is a separate gate.
+            let delta=iq::step_size(q,style.wavelet,g.precision,style.levels,ri as u8,b.band)?;
+            bands.push(FloatPlane{bounds:b.bounds,values:vec![0.;n],delta});
+        }
+        planes.push(bands);
+    }
+    if total!=area{return Err(Error::Invalid("JPX gray97 band partition"));}
+    // Same baseline continuous MQ segment contract as gray53. Contributions
+    // across all quality layers are assembled before decoding each block.
+    let mut segments:BTreeMap<(usize,usize,usize,usize),Segment>=BTreeMap::new();
+    let mut segment_bytes=0usize;
+    for p in &packets.packets{
+        for e in &p.contributions{
+            let key=(usize::from(p.packet.resolution),p.packet.precinct,band_index(e.band),e.block);
+            let seg=segments.entry(key).or_insert_with(||Segment{band:e.band,zero:e.zero_bit_planes,passes:0,bytes:Vec::new()});
+            if seg.passes!=e.first_pass||seg.zero!=e.zero_bit_planes||seg.band!=e.band{
+                return Err(Error::Invalid("JPX gray97 contribution sequence"));
+            }
+            seg.passes=seg.passes.checked_add(e.passes).ok_or(Error::Limit("JPX gray97 passes"))?;
+            if seg.passes>109{return Err(Error::Unsupported("JPX gray97 multiple segments"));}
+            let bytes=data.get(e.data.clone()).ok_or(Error::Invalid("JPX gray97 contribution range"))?;
+            segment_bytes=segment_bytes.checked_add(bytes.len()).ok_or(Error::Limit("JPX gray97 segment bytes"))?;
+            if segment_bytes>crate::MAX_BYTES{return Err(Error::Limit("JPX gray97 segment bytes"));}
+            seg.bytes.extend_from_slice(bytes);
+        }
+    }
+    let mut work=0usize;
+    for ((ri,pi,bi,block_index),seg) in segments{
+        let precinct=&t.resolutions[ri].precincts[pi];
+        let band=precinct.bands.iter().find(|b|b.band==seg.band).ok_or(Error::Invalid("JPX gray97 band"))?;
+        let block=*band.blocks.get(block_index).ok_or(Error::Invalid("JPX gray97 block"))?;
+        let plane=iq::highest_bitplane(q,style.levels,ri as u8,seg.band,seg.zero)?;
+        let (bw,bh)=(block.width()as usize,block.height()as usize);
+        let charge=bw.checked_mul(bh).and_then(|n|n.checked_mul(usize::from(seg.passes)))
+            .ok_or(Error::Limit("JPX gray97 work"))?;
+        work=work.checked_add(charge).ok_or(Error::Limit("JPX gray97 work"))?;
+        if work>MAX_WORK{return Err(Error::Limit("JPX gray97 work"));}
+        let target=&mut planes[ri][if ri==0{0}else{bi-1}];
+        let b=target.bounds;
+        if block.x0<b.x0||block.y0<b.y0||block.x1>b.x1||block.y1>b.y1{
+            return Err(Error::Invalid("JPX gray97 block placement"));
+        }
+        let values=ebcot::decode_codeblock(&seg.bytes,bw,bh,seg.band,plane,seg.passes,0)?
+            .reconstruct97(target.delta)?;
+        let stride=b.width()as usize;
+        let ox=(block.x0-b.x0)as usize;let oy=(block.y0-b.y0)as usize;
+        for y in 0..bh{
+            let start=(oy+y)*stride+ox;
+            target.values[start..start+bw].copy_from_slice(&values[y*bw..(y+1)*bw]);
+        }
+    }
+    let details:Vec<_>=planes.iter().skip(1).map(|r|Detail97{hl:&r[0].values,lh:&r[1].values,hh:&r[2].values}).collect();
+    let samples=wavelet97::inverse97_levels(w,ht,h.x_origin,h.y_origin,&planes[0][0].values,&details)?;
+    Ok(Gray97Samples{width:w,height:ht,samples})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -329,5 +428,47 @@ mod tests{
             let mut b=a.clone();b[at]=value;
             assert!(decode_gray53(&b).is_err(),"unsupported field offset {}",at);
         }
+    }
+
+    // Independently encoded and decoded this turn with Pillow/OpenJPEG 2.5.4,
+    // no_jp2=True, irreversible=True, codeblock_size=(4,4),
+    // num_resolutions=1 or 2, default one layer. Source (i*37+23)%256,
+    // except ZERO97 constant 128. References are decoder output, not source.
+    const FLAT97:&str="ff4fff510029000000000004000000040000000000000000000000040000000400000000000000000001070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000240001ff93cfb44c117bb2617fbedccc4de18580bdcbecf21b9c6fffd9";
+    const ZERO97:&str="ff4fff510029000000000005000000050000000000000000000000050000000500000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000100001ff938080ffd9";
+    const ONE97:&str="ff4fff510029000000000007000000050000000000000000000000070000000500000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000003d0001ff93cfc038094388b57844d6fb4519baa27849c3ed0987da0f07d40a1a78c7f17057ad0f5f185ac8b335bb7f14c35ff37fffd9";
+    const ODD97:&str="ff4fff510029000000000005000000030000000000000000000000050000000300000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000002e0001ff93cfc0200a652bc06fa492efc3ed058fc0121f6818045690589b03351d8b03007fffd9";
+    fn compare_gray97(data:&str,w:usize,h:usize,want:&[u8]){
+        let a=decode_gray97_centered(&hex(data)).unwrap();
+        assert_eq!((a.width,a.height),(w,h));
+        assert_eq!(a.samples.len(),want.len());
+        for (i,(&v,&expected)) in a.samples.iter().zip(want).enumerate(){
+            assert!(v.is_finite());
+            // Compare final u8 samples; allow only one level for the
+            // independent reference's float32 and tie rounding differences.
+            let actual=(v+128.).round().clamp(0.,255.)as u8;
+            assert!(actual.abs_diff(expected)<=1,"sample {i}: centered {v}, actual {actual}, reference {expected}");
+        }
+    }
+    #[test]fn gray97_flat_reference(){
+        compare_gray97(FLAT97,4,4,&[22,60,96,134,172,208,246,26,62,100,138,174,212,248,28,66]);
+    }
+    #[test]fn gray97_zero_reference(){
+        let a=decode_gray97_centered(&hex(ZERO97)).unwrap();
+        assert_eq!((a.width,a.height),(5,5));assert_eq!(a.samples,vec![0.;25]);
+    }
+    #[test]fn gray97_one_resolution_reference(){
+        compare_gray97(ONE97,7,5,&[23,60,97,134,171,208,245,25,63,100,137,174,211,248,29,66,103,140,177,214,251,32,69,106,143,180,217,254,34,72,109,145,183,220,1]);
+    }
+    #[test]fn gray97_odd_reference(){
+        compare_gray97(ODD97,5,3,&[23,60,97,134,171,208,245,26,63,100,137,174,211,248,29]);
+    }
+    #[test]fn gray97_rejects_unsupported(){
+        assert!(decode_gray97_centered(&hex(FLAT)).is_err());
+        let a=hex(ONE97);
+        assert!(decode_gray97_centered(&a[..a.len()-1]).is_err());
+        assert!(decode_gray97_centered(&[]).is_err());
+        let mut a=hex(ONE97);a[42]=0x87;assert!(decode_gray97_centered(&a).is_err());
+        let mut a=hex(ONE97);a[42]=15;assert!(decode_gray97_centered(&a).is_err());
     }
 }
