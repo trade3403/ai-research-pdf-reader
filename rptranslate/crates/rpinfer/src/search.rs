@@ -161,6 +161,21 @@ pub struct MarianGeneration<'a> {
 }
 
 impl<'a> MarianGeneration<'a> {
+    /// Bind the typed verified model metadata without duplicating token IDs.
+    pub fn from_profile(config: &'a rpmodel::config::Generation) -> Self {
+        Self {
+            start: config.start,
+            eos: config.eos,
+            pad: config.pad,
+            num_beams: config.num_beams,
+            min_length: config.min_length,
+            max_length: config.max_length,
+            length_penalty: config.length_penalty,
+            forced_eos: Some(config.forced_eos),
+            suppress: &config.suppress,
+        }
+    }
+
     pub fn search_config(&self, vocab: usize) -> Result<SearchConfig<'a>, Error> {
         if self.pad as usize >= vocab || self.forced_eos.is_some_and(|id| id != self.eos) {
             return Err(Error::Shape);

@@ -7,3 +7,6 @@
 
 D1.8c1 首轮 [45530926188](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45530926188) CPU CI 与真实权重校验通过，但 safetensors.torch 缺 packaging，转换失败；固定 packaging==24.2 后保留原 roundtrip 门槛复测。
 D1.8c2a 新增自主 package::open，固定 profile manifest 与文件哈希校验、256 canonical shape/dtype 索引、2个显式 alias；固定官方配置字节哈希而非任意配置字段解析，后续 c2b 类型化解析。稳定本地目录假设，无签名、并发修改或来源认证保证。
+
+实际验收：[eb0ee44](https://github.com/trade3403/ai-research-pdf-reader/commit/eb0ee44471a6ca3bdc6dfa65dda3b07836c19859) / [Actions 45531555536](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45531555536) completed/success；workspace 64/64、portable 37/37，补 packaging==24.2、23组 rustfmt 后通过。真实转换256 tensors、2 aliases、312033188 payload bytes、312062636 file bytes；78008297 FP32 元素逐位一致，canonical stream SHA256 ca02d9887eb51fa34135fed6093fcee0660f0836e4ad6959b30c01ecb519da82；自主包校验与3个损坏反例通过。D1.8c1/c2a 已验收。
+新增有界 JSON config 解析（64KiB、8层、单对象/数组128项、重复键/错误数字/非有限拒绝），类型化固定 Marian architecture + Generation，严格结构和特殊 token 参数、单 token bad_words、未知 generation 字段拒绝，显式默认 min_length=0、penalty=1，禁用 sampling/renormalize/early_stopping。package::open_profile 在固定文件哈希及权重索引验证后读取真实配置，MarianGeneration::from_profile 绑定自主 SearchConfig。仍仅支持固定审计 profile，不是通用 Marian 加载器，未装载真实神经网络权重执行推理。真实转换、逐位、包损坏反例和类型化配置专项 CI 待验收。

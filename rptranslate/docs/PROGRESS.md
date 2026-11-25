@@ -27,9 +27,10 @@
 | D1.7b2 | 已通过 | 独立搜索参考与实际 generation 配置适配 |
 | D1.8a | 已通过 | 固定真实权重与元数据核验 |
 | D1.8b | 已通过 | 大词表分块读取、共享权重、投影 |
-| D1.8c1 | 待验证 | 固定官方权重安全转换与 RPModel v1 |
-| D1.8c2a | 待验证 | SHA256、严格 manifest、固定配置 profile、权重索引 |
-| D1.8c2b–D1.8c7 | 未开始 | 配置字段解析、权重加载与完整模型构建 |
+| D1.8c1 | 已通过 | 固定官方权重安全转换与 RPModel v1 |
+| D1.8c2a | 已通过 | SHA256、严格 manifest、固定配置 profile、权重索引 |
+| D1.8c2b | 待验证 | 类型化配置和 search 参数绑定 |
+| D1.8c3–D1.8c7 | 未开始 | 真实权重加载与完整模型构建 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -131,8 +132,13 @@ D1 里程碑完成 8/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.8c2a
 自主 SHA256 流式校验、受限 JSON manifest 解析、严格来源/版本/文件白名单/别名/shape/dtype/metadata，固定官方5个配置和分词文件原始字节哈希，256个权重索引校验；真实转换通过后同一 Runner 执行完整包验证、同大小配置损坏/版本错误/权重哈希错误反例。仅支持固定 revision，非通用 Marian JSON 配置解析，manifest 自述权重哈希不代表签名或真实性；实际 CI 待验收。保留 D1.8c1 逐位验证，未执行真实推理。
 
-## 下一阶段 D1.8c2b
-受限 Marian 配置字段解析与类型化配置绑定，固定 profile 的配置和权重映射验收。
+实际验收：[eb0ee44](https://github.com/trade3403/ai-research-pdf-reader/commit/eb0ee44471a6ca3bdc6dfa65dda3b07836c19859) / [Actions 45531555536](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45531555536) completed/success；workspace 64/64、portable 37/37，补 packaging==24.2、23组 rustfmt 后通过。真实转换256 tensors、2 aliases、312033188 payload bytes、312062636 file bytes；78008297 FP32 元素逐位一致，canonical stream SHA256 ca02d9887eb51fa34135fed6093fcee0660f0836e4ad6959b30c01ecb519da82；自主包校验与3个损坏反例通过。D1.8c1/c2a 已验收。
+
+## 当前阶段 D1.8c2b
+新增有界 JSON config 解析（64KiB、8层、单对象/数组128项、重复键/错误数字/非有限拒绝），类型化固定 Marian architecture + Generation，严格结构和特殊 token 参数、单 token bad_words、未知 generation 字段拒绝，显式默认 min_length=0、penalty=1，禁用 sampling/renormalize/early_stopping。package::open_profile 在固定文件哈希及权重索引验证后读取真实配置，MarianGeneration::from_profile 绑定自主 SearchConfig。仍仅支持固定审计 profile，不是通用 Marian 加载器，未装载真实神经网络权重执行推理。真实转换、逐位、包损坏反例和类型化配置专项 CI 待验收。
+
+## 下一阶段 D1.8c3
+真实共享词嵌入分块读取、位置表及输出 bias、独立投影精度对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

@@ -1,6 +1,7 @@
 //! Strict RPModel v1 package validation for the audited Marian revision.
 //! Hashes detect corruption; a self-authored manifest is not a signature.
 use crate::{
+    config::{self, MarianConfig},
     safetensors::{self, Dtype, Parser, SafeTensorReader},
     sha256::digest_reader,
 };
@@ -54,6 +55,7 @@ pub enum Error {
     Limit,
     Index,
     Reader(safetensors::Error),
+    Config(config::Error),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -264,11 +266,14 @@ fn regular_file(root: &Path, name: &str) -> Result<File, Error> {
     File::open(path).map_err(|_| Error::Io)
 }
 
-/// Open the verified fixed-profile index. Caller must keep the local directory
-/// and file contents stable. No signature or protection against concurrent
-/// mutation is claimed. Config and generation values are fixed by the pinned
-/// exact hashes, not a general-purpose model config parser.
+/// Open the verified fixed-profile index.
 pub fn open(root: &Path) -> Result<SafeTensorReader<File>, Error> {
+    Ok(open_profile(root)?.1)
+}
+
+/// Parse typed configuration from the exact verified config bytes and return
+/// the weight reader. Stable local files required; no signature guarantee.
+pub fn open_profile(root: &Path) -> Result<(MarianConfig, SafeTensorReader<File>), Error> {
     let mut input = String::new();
     regular_file(root, "manifest.json")?
         .take(MAX_MANIFEST + 1)
@@ -276,6 +281,8 @@ pub fn open(root: &Path) -> Result<SafeTensorReader<File>, Error> {
         .map_err(|_| Error::Manifest)?;
     let files = manifest(&input)?;
     let mut weights = None;
+    let mut model_config = None;
+    let mut generation_config = None;
     for (name, info) in files {
         let mut file = regular_file(root, &name)?;
         if file.metadata().map_err(|_| Error::Io)?.len() != info.bytes {
@@ -288,11 +295,24 @@ pub fn open(root: &Path) -> Result<SafeTensorReader<File>, Error> {
         if name == "weights.safetensors" {
             file.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
             weights = Some(file);
+        } else if name == "config.json" || name == "generation_config.json" {
+            file.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
+            let mut text = String::new();
+            file.take(info.bytes + 1).read_to_string(&mut text).map_err(|_| Error::Io)?;
+            if name == "config.json" {
+                model_config = Some(text);
+            } else {
+                generation_config = Some(text);
+            }
         }
     }
     let reader = SafeTensorReader::open(weights.ok_or(Error::Manifest)?).map_err(Error::Reader)?;
     validate_index(&reader)?;
-    Ok(reader)
+    let config = MarianConfig::parse(
+        &model_config.ok_or(Error::Manifest)?,
+        &generation_config.ok_or(Error::Manifest)?,
+    ).map_err(Error::Config)?;
+    Ok((config, reader))
 }
 
 #[cfg(test)]

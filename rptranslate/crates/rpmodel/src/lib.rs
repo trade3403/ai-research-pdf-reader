@@ -1,4 +1,5 @@
 //! Model metadata and bounded local weight-file reader.
+pub mod config;
 pub mod marian;
 pub mod normalization;
 pub mod package;

@@ -180,3 +180,8 @@ jobs:
         run: |
           cargo build --locked --offline --release -p rpmodel --example verify_package
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_package_integrity.py "$RUNNER_TEMP/rpmodel-v1" target/release/examples/verify_package
+      - name: Bind real typed Marian architecture and search profile
+        if: contains(github.event.head_commit.message, 'D1.8c2b')
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example verify_marian_profile
+          target/release/examples/verify_marian_profile "$RUNNER_TEMP/rpmodel-v1"

@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
         self.rest = self.rest.trim_start_matches([' ', '\n', '\r', '\t']);
     }
 
-    fn take(&mut self, ch: char) -> bool {
+    pub(crate) fn take(&mut self, ch: char) -> bool {
         self.ws();
         if let Some(rest) = self.rest.strip_prefix(ch) {
             self.rest = rest;
@@ -73,7 +73,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, ch: char) -> Result<(), Error> {
+    pub(crate) fn expect(&mut self, ch: char) -> Result<(), Error> {
         if self.take(ch) {
             Ok(())
         } else {
