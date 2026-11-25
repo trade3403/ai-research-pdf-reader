@@ -1,5 +1,5 @@
-//! Bounded ICC v2/v4 binary profile inspection, RGB matrix/TRC and legacy CMYK LUT subset.
-//! ICC.1:2022 sections 7, 10 and Annex F. No runtime PDF integration yet.
+//! Bounded ICC v2/v4 profile inspection, RGB matrix/TRC and CMYK LUTs.
+//! ICC.1:2022 sections 7, 10 and Annex F; source transforms for PDF rendering.
 use crate::{Error,Result};
 use std::collections::BTreeMap;
 
@@ -104,14 +104,25 @@ impl<'a> Profile<'a>{
         self.cmyk_a2b(b"A2B0")
     }
     pub(crate) fn cmyk_a2b(&self,tag:&Signature)->Result<CmykLut<'a>>{
+        self.check_cmyk()?;
+        let b=self.tag(tag).ok_or(Error::Unsupported("ICC missing A2B tag"))?;
+        CmykLut::parse(b,self.pcs)
+    }
+    /// ICC v4 lutAToBType, CMYK output profile source transform.
+    pub fn cmyk_mab(&self,tag:&Signature)->Result<CmykMab>{
+        self.check_cmyk()?;
+        if self.version_major!=4{return Err(Error::Unsupported("ICC mAB version"));}
+        if !matches!(tag,b"A2B0"|b"A2B1"|b"A2B2"){return Err(Error::Unsupported("ICC mAB tag"));}
+        CmykMab::parse(self.tag(tag).ok_or(Error::Unsupported("ICC missing A2B tag"))?,self.pcs)
+    }
+    fn check_cmyk(&self)->Result<()>{
         if self.class!=*b"prtr"||self.color_space!=*b"CMYK"||!matches!(&self.pcs,b"XYZ "|b"Lab "){
             return Err(Error::Unsupported("ICC CMYK output profile class or space"));
         }
         if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
             return Err(Error::Unsupported("ICC non-D50 PCS"));
         }
-        let b=self.tag(tag).ok_or(Error::Unsupported("ICC missing A2B tag"))?;
-        CmykLut::parse(b,self.pcs)
+        Ok(())
     }
 
 }
@@ -197,6 +208,123 @@ impl RgbMatrix{
     }
 }
 
+
+
+/// Owned, validated CMYK lutAToBType pipeline. Supports four input channels,
+/// three output channels, independent 2..33 grid sizes, 8/16-bit CLUT,
+/// A/CLUT/B and A/CLUT/M/matrix/B combinations. No mBA or MPE execution.
+#[derive(Debug)]
+pub struct CmykMab{
+    pcs:Signature,a:Vec<Curve>,b:Vec<Curve>,m:Vec<Curve>,
+    matrix:Option<[f64;12]>,grid:[usize;4],stride:[usize;4],clut:Vec<u8>,word:usize,
+}
+fn embedded_curves(data:&[u8],start:usize,count:usize)->Result<(Vec<Curve>,usize)>{
+    let mut pos=start;let mut curves=Vec::with_capacity(count);
+    for _ in 0..count{
+        let tail=data.get(pos..).ok_or(Error::Invalid("ICC mAB curve offset"))?;
+        let size=match &sig(tail,0)?{
+            b"curv"=>{
+                let n=u32be(tail,8)? as usize;
+                if n>MAX_CURVE{return Err(Error::Limit("ICC curve entries"));}
+                12+2*n
+            }
+            b"para"=>12+4*match u16be(tail,8)?{0=>1,1=>3,2=>4,3=>5,4=>7,_=>return Err(Error::Unsupported("ICC parametric curve function"))},
+            _=>return Err(Error::Unsupported("ICC mAB curve type")),
+        };
+        let aligned=(size+3)&!3;
+        let raw=tail.get(..size).ok_or(Error::Invalid("ICC mAB curve bounds"))?;
+        // Final curve padding may be external to the tag; intermediate
+        // padding must be present, zero, and aligned.
+        let end=if tail.len()<aligned && curves.len()+1==count{size}else{aligned};
+        let pad=tail.get(size..end).ok_or(Error::Invalid("ICC mAB curve padding"))?;
+        if pad.iter().any(|&x|x!=0){return Err(Error::Invalid("ICC mAB curve padding"));}
+        curves.push(Curve::parse(raw)?);pos+=end;
+    }
+    Ok((curves,pos))
+}
+impl CmykMab{
+    fn parse(data:&[u8],pcs:Signature)->Result<Self>{
+        if data.len()>MAX_PROFILE{return Err(Error::Limit("ICC mAB bytes"));}
+        if data.len()<32||&data[..4]!=b"mAB "||data[4..8]!=[0;4]||data[10..12]!=[0;2]{
+            return Err(Error::Invalid("ICC mAB header"));
+        }
+        if data[8..10]!=[4,3]{return Err(Error::Unsupported("ICC mAB channel count"));}
+        if !matches!(&pcs,b"Lab "|b"XYZ "){return Err(Error::Unsupported("ICC mAB PCS"));}
+        let mut offsets=[0usize;5];
+        for (i,o) in offsets.iter_mut().enumerate(){
+            *o=u32be(data,12+4*i)? as usize;
+            if *o!=0&&(*o<32||*o%4!=0||*o>=data.len()){
+                return Err(Error::Invalid("ICC mAB element offset"));
+            }
+        }
+        let [bo,mo,mc,co,ao]=offsets;
+        if bo==0||co==0||ao==0||(mo==0)!=(mc==0){return Err(Error::Invalid("ICC mAB stage combination"));}
+        let (a,ae)=embedded_curves(data,ao,4)?;let (b,be)=embedded_curves(data,bo,3)?;
+        let mut ranges=vec![(ao,ae,0usize),(bo,be,0)];
+        let (m,matrix)=if mo!=0{
+            let (m,me)=embedded_curves(data,mc,3)?;
+            let raw=data.get(mo..mo+48).ok_or(Error::Invalid("ICC mAB matrix bounds"))?;
+            let mut mat=[0.;12];for i in 0..12{mat[i]=fixed(raw,i*4)?;}
+            ranges.push((mc,me,0));ranges.push((mo,mo+48,1));(m,Some(mat))
+        }else{(Vec::new(),None)};
+        let h=data.get(co..co+20).ok_or(Error::Invalid("ICC mAB CLUT header"))?;
+        if h[4..16]!=[0;12]||h[17..20]!=[0;3]{return Err(Error::Invalid("ICC mAB CLUT reserved"));}
+        let word=h[16] as usize;
+        if !matches!(word,1|2){return Err(Error::Unsupported("ICC mAB CLUT precision"));}
+        let grid:[usize;4]=std::array::from_fn(|i|h[i] as usize);
+        if grid.iter().any(|&v|v<2){return Err(Error::Invalid("ICC mAB CLUT grid"));}
+        if grid.iter().any(|&v|v>33){return Err(Error::Limit("ICC mAB CLUT grid"));}
+        let stride=[grid[1]*grid[2]*grid[3],grid[2]*grid[3],grid[3],1];
+        let end=co+20+grid.iter().product::<usize>()*3*word;
+        let clut=data.get(co+20..end).ok_or(Error::Invalid("ICC mAB CLUT bounds"))?;
+        ranges.push((co,end,2));
+        // Exact shared curve sequences are allowed. Cross-kind or partial
+        // overlap is rejected; no offset is followed recursively.
+        ranges.sort_unstable();ranges.dedup();
+        if ranges.windows(2).any(|w|w[0].1>w[1].0){return Err(Error::Invalid("ICC mAB overlapping elements"));}
+        Ok(Self{pcs,a,b,m,matrix,grid,stride,clut:clut.to_vec(),word})
+    }
+    fn value(&self,index:usize)->f64{
+        let p=index*self.word;
+        if self.word==1{f64::from(self.clut[p])/255.}
+        else{f64::from(u16::from_be_bytes([self.clut[p],self.clut[p+1]]))/65535.}
+    }
+    pub fn evaluate_encoded(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if cmyk.iter().any(|v|!v.is_finite()){return Err(Error::Invalid("ICC CMYK input"));}
+        let mut base=0;let mut f=[0.;4];
+        for i in 0..4{
+            let p=self.a[i].eval(cmyk[i]).clamp(0.,1.)*(self.grid[i]-1) as f64;
+            let lo=(p.floor()as usize).min(self.grid[i]-2);
+            base+=lo*self.stride[i];f[i]=p-lo as f64;
+        }
+        let mut out=[0.;3];
+        for c in 0..16{
+            let mut i=base;let mut w=1.;
+            for j in 0..4{
+                if c&(1<<j)!=0{i+=self.stride[j];w*=f[j];}else{w*=1.-f[j];}
+            }
+            if w!=0.{for k in 0..3{out[k]+=w*self.value(3*i+k);}}
+        }
+        if let Some(mat)=self.matrix{
+            let v:[f64;3]=std::array::from_fn(|i|self.m[i].eval(out[i]).clamp(0.,1.));
+            out=std::array::from_fn(|i|(mat[3*i]*v[0]+mat[3*i+1]*v[1]+mat[3*i+2]*v[2]+mat[9+i]).clamp(0.,1.));
+        }
+        Ok(std::array::from_fn(|i|self.b[i].eval(out[i]).clamp(0.,1.)))
+    }
+    /// v4 full-range PCS Lab (not legacy mft2's 0xFF00 white).
+    pub fn to_lab_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if self.pcs!=*b"Lab "{return Err(Error::Unsupported("ICC mAB Lab PCS"));}
+        let v=self.evaluate_encoded(cmyk)?;
+        Ok([100.*v[0],255.*v[1]-128.,255.*v[2]-128.])
+    }
+    pub fn to_xyz_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if self.pcs==*b"XYZ "{return Ok(self.evaluate_encoded(cmyk)?.map(|v|v*65535./32768.));}
+        let [l,a,b]=self.to_lab_d50(cmyk)?;
+        let fy=(l+16.)/116.;
+        let inv=|t:f64|if t>6./29.{t*t*t}else{3.*(6_f64/29.).powi(2)*(t-4./29.)};
+        Ok([0.9642*inv(fy+a/500.),inv(fy),0.8249*inv(fy-b/200.)])
+    }
+}
 
 /// Borrowed legacy lut8Type/lut16Type CMYK A2B0 evaluator.
 /// Input, CLUT and output tables remain in the original bounded profile.
@@ -508,5 +636,28 @@ mod tests{
             assert!(owned.to_xyz_d50([0.1,0.2,0.3,0.4]).is_ok());
             assert!(owned.to_xyz_d50([0.,0.,f64::NAN,0.]).is_err());
         }
+    }
+    #[test]fn mab_nonuniform_clut_and_validation(){
+        let mut b=vec![0;32];b[..4].copy_from_slice(b"mAB ");b[8..10].copy_from_slice(&[4,3]);
+        let put=|v:&mut[u8],i:usize,n:usize|v[i..i+4].copy_from_slice(&(n as u32).to_be_bytes());
+        let identity=b"curv\0\0\0\0\0\0\0\0";
+        put(&mut b,12,32);for _ in 0..3{b.extend_from_slice(identity);}
+        put(&mut b,28,68);for _ in 0..4{b.extend_from_slice(identity);}
+        put(&mut b,24,116);b.extend_from_slice(&[2,3,2,2,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0]);
+        for c in 0..2{for m in 0..3{for y in 0..2{for k in 0..2{
+            b.extend_from_slice(&[180-40*c-20*k,100+20*m,105+40*y]);
+        }}}}
+        let l=CmykMab::parse(&b,*b"Lab ").unwrap();
+        let v=l.evaluate_encoded([0.5,0.25,0.5,0.5]).unwrap();
+        for (a,e) in v.into_iter().zip([150.,110.,125.]){assert!((a-e/255.).abs()<1e-12);}
+        let lab=l.to_lab_d50([0.,0.,0.,0.]).unwrap();assert!((lab[0]-180.*100./255.).abs()<1e-12);
+        assert!(l.evaluate_encoded([f64::NAN,0.,0.,0.]).is_err());
+        let xyz=CmykMab::parse(&b,*b"XYZ ").unwrap().to_xyz_d50([0.;4]).unwrap();
+        assert!((xyz[0]-180./255.*65535./32768.).abs()<1e-12);
+        for (pos,val) in [(12,0),(24,28),(28,69),(16,116),(12,116)]{
+            let mut bad=b.clone();put(&mut bad,pos,val);assert!(CmykMab::parse(&bad,*b"Lab ").is_err());
+        }
+        let mut bad=b.clone();bad[116]=34;assert!(matches!(CmykMab::parse(&bad,*b"Lab "),Err(Error::Limit(_))));
+        assert!(CmykMab::parse(&b[..b.len()-1],*b"Lab ").is_err());
     }
 }

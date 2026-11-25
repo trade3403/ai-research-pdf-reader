@@ -40,6 +40,35 @@ def fixture(word, version):
     S.pack_into('>I',b,0,len(b))
     return bytes(b)
 
+
+def mab_fixture(word,full):
+    # Nonuniform grid; affine code-space CLUT (integer increments per
+    # grid axis), distinct A/B/M curves and nonidentity matrix with offset.
+    grid=(2,3,2,2)
+    identity=b'curv'+bytes(8)
+    gamma=lambda g:b'para'+bytes(8)+S.pack('>i',round(g*65536))
+    a=gamma(2)+identity+identity+identity
+    b=identity+gamma(2)+identity
+    m=identity+identity+gamma(2)
+    mat=S.pack('>12i',*(round(x*65536) for x in (.75,0,0,0,.75,0,0,0,.5,.1,.05,.2)))
+    clut=bytes(grid)+bytes(12)+bytes([word,0,0,0])
+    for c,m0,y,k in itertools.product(*(range(g) for g in grid)):
+        codes=(180-40*c-20*k,100+20*m0,105+40*y)
+        clut+=S.pack('>BBB' if word==1 else '>HHH',*(v if word==1 else v*257 for v in codes))
+    tag=bytearray(b'mAB '+bytes(4)+bytes([4,3,0,0])+bytes(20))
+    for pos,payload in [(12,b),(16,mat if full else b''),(20,m if full else b''),(24,clut),(28,a)]:
+        if not payload:continue
+        S.pack_into('>I',tag,pos,len(tag))
+        tag+=payload
+        tag+=bytes(-len(tag)%4)
+    wp=b'XYZ '+bytes(4)+S.pack('>iii',round(.9642*65536),65536,round(.8249*65536))
+    p=bytearray(156);p[8]=4;p[12:24]=b'prtrCMYKLab ';p[36:40]=b'acsp';p[68:80]=wp[8:]
+    S.pack_into('>I',p,128,2)
+    for i,(name,data) in enumerate(((b'A2B0',tag),(b'wtpt',wp))):
+        S.pack_into('>4sII',p,132+i*12,name,len(p),len(data));p+=data;p+=bytes(-len(p)%4)
+    S.pack_into('>I',p,0,len(p))
+    return bytes(p)
+
 def reference(data,word,samples):
     lib=C.CDLL('liblcms2.so.2')
     P=C.c_void_p
@@ -102,12 +131,26 @@ def main():
             maxima=[max(abs(x[i]-y[i]) for x,y in zip(actual,expected) for i in range(j,j+3)) for j in (0,3,6)]
             rows=[{'cmyk':x,'native':n,'reference':r} for x,n,r in zip(samples,actual,expected)]
             results.append({'bits':word*8,'version':version,'samples':len(samples),'max_errors':maxima,'pass':all(v<=t for v,t in zip(maxima,thresholds)),'rows':rows})
+        for word,full in itertools.product((1,2),(False,True)):
+            data=mab_fixture(word,full)
+            path=pathlib.Path(tmp)/'mab.icc';path.write_bytes(data)
+            raw=subprocess.run([str(a.probe.resolve()),str(path),'mab'],check=True,capture_output=True,text=True,timeout=20).stdout
+            actual=[list(map(float,line.split(','))) for line in raw.splitlines()]
+            # mAB uses full-range v4 Lab irrespective of CLUT word size.
+            expected=list(reference(data,1,samples))
+            if len(actual)!=len(samples) or any(len(v)!=9 or not all(map(math.isfinite,v)) for v in actual+expected):
+                raise RuntimeError('invalid mAB probe/reference output')
+            maxima=[max(abs(x[i]-y[i]) for x,y in zip(actual,expected) for i in range(j,j+3)) for j in (0,3,6)]
+            gate=[.0002,.05,.001]
+            results.append({'bits':word*8,'version':4,'type':'mAB-full' if full else 'mAB-basic','samples':len(samples),
+                'max_errors':maxima,'thresholds':gate,'pass':all(v<=t for v,t in zip(maxima,gate)),
+                'rows':[{'cmyk':x,'native':n,'reference':r} for x,n,r in zip(samples,actual,expected)]})
     report={'schema':1,'oracle':'LCMS raw A2B0 and PCS decoding, affine synthetic fixtures only','thresholds_encoded_lab_xyz':thresholds,'cases':results}
     (a.out/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
-    lines=['# ICC independent differential test','','| LUT bits | ICC major | Samples | Encoded max | Lab max | XYZ max | Gate |','|---:|---:|---:|---:|---:|---:|---|']
+    lines=['# ICC independent differential test','','| Type | LUT bits | ICC major | Samples | Encoded max | Lab max | XYZ max | Gate |','|---|---:|---:|---:|---:|---:|---:|---|']
     for r in results:
         errors=' | '.join(f'{v:.8f}' for v in r['max_errors'])
-        lines.append(f"| {r['bits']} | {r['version']} | {r['samples']} | {errors} | {'PASS' if r['pass'] else 'FAIL'} |")
+        lines.append(f"| {r.get('type','legacy')} | {r['bits']} | {r['version']} | {r['samples']} | {errors} | {'PASS' if r['pass'] else 'FAIL'} |")
     lines+=['','Synthetic affine fixtures only. No full color management, rendering-intent or real printer profile accuracy claim.']
     md='\n'.join(lines)+'\n'
     (a.out/'report.md').write_text(md)
