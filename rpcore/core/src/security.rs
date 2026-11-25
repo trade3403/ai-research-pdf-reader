@@ -6,6 +6,9 @@ mod object_crypto;
 // Block encryption is retained for primitive tests and future R6 integration.
 #[allow(dead_code)]
 mod aes;
+// Private digest primitives until modern password authentication is integrated.
+#[allow(dead_code)]
+mod sha2;
 pub(crate) use object_crypto::ObjectCrypto;
 pub use auth::PasswordStatus;
 use crate::{Document,Error,Object,Result,xref::Entry};
