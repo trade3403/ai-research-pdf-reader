@@ -73,3 +73,6 @@ pub use media::{load_media, MediaLimits, MediaCatalog, MediaResource, MediaBindi
 
 pub mod image_header;
 pub use image_header::{parse_image_dimensions, ImageDimensions, ImageLimits};
+
+pub mod drawing_inline;
+pub use drawing_inline::{parse_inline_picture, emu_to_twips, PictureExtent, PictureIdentity, InlinePicture, InlineMediaBindings};
