@@ -207,3 +207,5 @@ D1.9b 独立格式预研：RPQ8BIN v1 小端，32字节头(magic/version/count/i
 - 性能/质量数据及测试样本（未测则标注）：
 - 已知限制、回归、未完成项：
 - 下一阶段与进入条件：
+
+实际 FP32 专项验收：[45535270286/job/138940316695](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45535270286/job/138940316695) success，native32/8211233元素 max_abs=4.69684601e-5；portable24/3658488元素 max_abs=2.14576721e-5，max_cross=0（样本），512位置与4负例通过；REAL_TRANSLATION_REFERENCE PASS sentences=3 generations=6 hf_greedy=3 cli=1 invalid=3 max_score_error=7.17160084e-7；TRANSLATION_BASELINE PASS 12计时/2预热/6句，model_ms1444.469 session_ms26.833，RSS324.066MiB，cached3.116106/3.419395 output tokens/s，cache ratio1.075631/1.108269，number4/5（三次是中文数字），term12/12，mean_char_f2=72.914，capped0。质量观察而非全面质量通过；Hello world beam4 存在英文残留。该 run CPU format 失败，完整门槛仍需最新复测。D1.9a 首轮 CPU format 5组失败，本次修正；D1.9b 代码已提交，专项尚未执行。

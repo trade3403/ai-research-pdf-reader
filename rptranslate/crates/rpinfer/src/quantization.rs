@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn symmetric_ties_and_zero_block() {
-        let q = BlockInt8::quantize(&[-127., -2.5, -1.5, 0., 1.5, 2.5, 127., 0., 0.], 7, 17)
-            .unwrap();
+        let q =
+            BlockInt8::quantize(&[-127., -2.5, -1.5, 0., 1.5, 2.5, 127., 0., 0.], 7, 17).unwrap();
         assert_eq!(q.codes(), &[-127, -2, -2, 0, 2, 2, 127, 0, 0]);
         assert_eq!(q.scales(), &[1., 1.]);
         assert_eq!(q.payload_bytes(), 17);
@@ -197,7 +197,10 @@ mod tests {
             Some(Error::Limit)
         );
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(BlockInt8::quantize(&[value], 1, 5).err(), Some(Error::NonFinite));
+            assert_eq!(
+                BlockInt8::quantize(&[value], 1, 5).err(),
+                Some(Error::NonFinite)
+            );
         }
         assert!(BlockInt8::from_parts(vec![-128], vec![1.], 1, 5).is_err());
         assert!(BlockInt8::from_parts(vec![127], vec![f32::MAX], 1, 5).is_err());
@@ -208,7 +211,10 @@ mod tests {
         let q = BlockInt8::quantize(&[1., 2.], 2, 6).unwrap();
         assert_eq!(q.dequantize_range(1, 2, 8).err(), Some(Error::Index));
         assert_eq!(q.dequantize_range(0, 2, 7).err(), Some(Error::Limit));
-        assert_eq!(q.dequantize_range(usize::MAX, 1, 4).err(), Some(Error::Limit));
+        assert_eq!(
+            q.dequantize_range(usize::MAX, 1, 4).err(),
+            Some(Error::Limit)
+        );
         assert!(q.dequantize_range(2, 0, 0).unwrap().is_empty());
     }
 

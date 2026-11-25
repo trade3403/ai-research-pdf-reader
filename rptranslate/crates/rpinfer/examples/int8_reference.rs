@@ -15,14 +15,28 @@ fn main() -> Result<(), String> {
             .map(|s| u32::from_str_radix(s, 16).map(f32::from_bits))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| "invalid bits")?;
-        let q = BlockInt8::quantize(&values, block, 64 * 1024 * 1024)
-            .map_err(|e| format!("{e:?}"))?;
+        let q =
+            BlockInt8::quantize(&values, block, 64 * 1024 * 1024).map_err(|e| format!("{e:?}"))?;
         let out = q
             .dequantize_range(0, values.len(), 64 * 1024 * 1024)
             .map_err(|e| format!("{e:?}"))?;
-        let codes = q.codes().iter().map(i8::to_string).collect::<Vec<_>>().join(",");
-        let scales = q.scales().iter().map(|v| format!("{:08x}", v.to_bits())).collect::<Vec<_>>().join(",");
-        let restored = out.iter().map(|v| format!("{:08x}", v.to_bits())).collect::<Vec<_>>().join(",");
+        let codes = q
+            .codes()
+            .iter()
+            .map(i8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let scales = q
+            .scales()
+            .iter()
+            .map(|v| format!("{:08x}", v.to_bits()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let restored = out
+            .iter()
+            .map(|v| format!("{:08x}", v.to_bits()))
+            .collect::<Vec<_>>()
+            .join(",");
         println!("{codes}|{scales}|{restored}|{}", q.payload_bytes());
     }
     Ok(())
