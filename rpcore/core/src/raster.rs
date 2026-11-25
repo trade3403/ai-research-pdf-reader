@@ -633,12 +633,13 @@ impl Surface{
         }}Ok(())
     }
 }
-fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>,text_quality:TextQuality)->Result<SubstitutedBitmap>{
+fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>,text_quality:TextQuality,degree:crate::icc::AdaptationDegree)->Result<SubstitutedBitmap>{
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
     let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
     let mut s=Surface{w,h,text_quality,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0,icc_cache:images::IccCache::default()};
+    s.icc_cache.degree=degree;
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{
@@ -701,21 +702,25 @@ impl Document<'_>{
         // Reject invalid viewport before decoding page content.
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
-        Ok(render(self,page,&list,options,None,TextQuality::Standard)?.bitmap)
+        Ok(render(self,page,&list,options,None,TextQuality::Standard,crate::icc::AdaptationDegree::default())?.bitmap)
     }
     /// Explicit substitute outlines; caller must provide appropriately licensed,
     /// compatible font programs. Pixel equivalence to original fonts is not promised.
     pub fn render_page_with_standard_fonts(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:&StandardFontSet)->Result<SubstitutedBitmap>{
         viewport(page,options.scale)?;
         let list=self.page_display_list(page,content_limit)?;
-        render(self,page,&list,options,Some(fonts),TextQuality::Standard)
+        render(self,page,&list,options,Some(fonts),TextQuality::Standard,crate::icc::AdaptationDegree::default())
     }
     /// Opt-in glyph coverage quality, with optional caller-owned substitute fonts.
     /// Fine mode averages 4x4 coverage into the existing 2x2 compositing grid.
     pub fn render_page_with_text_quality(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:Option<&StandardFontSet>,quality:TextQuality)->Result<SubstitutedBitmap>{
+        self.render_page_with_adaptation(page,options,content_limit,fonts,quality,crate::icc::AdaptationDegree::default())
+    }
+    /// Opt-in source CHAD policy; fixed for one page, for absolute matrix/TRC ICC only.
+    pub fn render_page_with_adaptation(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:Option<&StandardFontSet>,quality:TextQuality,degree:crate::icc::AdaptationDegree)->Result<SubstitutedBitmap>{
         viewport(page,options.scale)?;
-        let list=self.page_display_list(page,content_limit)?;
-        render(self,page,&list,options,fonts,quality)
+        let list=self.page_display_list_with_adaptation(page,content_limit,degree)?;
+        render(self,page,&list,options,fonts,quality,degree)
     }
     /// Strict unhinted outline geometry, without allocating or painting a bitmap.
     /// Uses the supported display-list interpreter, including Form resources.

@@ -59,11 +59,12 @@ pub(crate) enum IccTransform{
     Mab(crate::icc::CmykMab),
     Mpe{transform:crate::icc::MpeTransform<'static>,components:usize},
     AbsoluteOutput{inner:Box<IccTransform>,scale:[f64;3]},
+    PartialPcs{inner:Box<IccTransform>,matrix:[[f64;3];3]},
 }
 impl IccTransform{
-    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4,Self::Mpe{components,..}=>*components,Self::AbsoluteOutput{inner,..}=>inner.components()}}
+    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4,Self::Mpe{components,..}=>*components,Self::AbsoluteOutput{inner,..}|Self::PartialPcs{inner,..}=>inner.components()}}
     pub(crate) fn work(&self)->usize{
-        match self{Self::Mpe{transform,..}=>transform.work().max(32),Self::AbsoluteOutput{inner,..}=>inner.work()+3,_=>if self.components()==4{128}else{32}}
+        match self{Self::Mpe{transform,..}=>transform.work().max(32),Self::AbsoluteOutput{inner,..}=>inner.work()+3,Self::PartialPcs{inner,..}=>inner.work()+15,_=>if self.components()==4{128}else{32}}
     }
     fn xyz(&self,v:[f64;4])->Result<[f64;3]>{
         Ok(match self{
@@ -72,6 +73,7 @@ impl IccTransform{
             Self::Cmyk(lut)=>lut.to_xyz_d50(v)?,
             Self::Mab(lut)=>lut.to_xyz_d50(v)?,
             Self::Mpe{transform,components}=>transform.to_xyz_d50(&v[..*components])?,
+            Self::PartialPcs{inner,matrix}=>mv(*matrix,inner.xyz(v)?),
             Self::AbsoluteOutput{inner,scale}=>{let xyz=inner.xyz(v)?;std::array::from_fn(|i|xyz[i]*scale[i])},
         })
     }
@@ -87,7 +89,7 @@ impl IccTransform{
 /// if present, otherwise A2B0. Full PDF rendering-intent switching is deferred.
 /// Invalid or unsupported profile payloads use the documented device alternate;
 /// a recognized profile with wrong component count or a resource limit is fatal.
-pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crate::icc::RenderingIntent)
+pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crate::icc::RenderingIntent,degree:crate::icc::AdaptationDegree)
     ->Result<(usize,Option<IccTransform>,usize,ProfilePath)>{
     let (o,n)=icc_stream(doc,a)?;
     let Object::Stream{data,..}=&o else{unreachable!()};
@@ -152,7 +154,15 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crat
             let t=if intent==RenderingIntent::AbsoluteColorimetric{
                 let scale=if n==4{p.absolute_output_scale()}else{p.absolute_matrix_scale()};
                 match scale{
-                    Ok(scale)=>IccTransform::AbsoluteOutput{inner:Box::new(t),scale},
+                    Ok(scale)=>{
+                        let t=if n==4{t}else{match p.partial_pcs_matrix(degree){
+                            Ok(Some(matrix))=>IccTransform::PartialPcs{inner:Box::new(t),matrix},
+                            Ok(None)=>t,
+                            Err(Error::Limit(s))=>return Err(Error::Limit(s)),
+                            Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
+                        }};
+                        IccTransform::AbsoluteOutput{inner:Box::new(t),scale}
+                    },
                     Err(Error::Limit(s))=>return Err(Error::Limit(s)),
                     Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
                 }

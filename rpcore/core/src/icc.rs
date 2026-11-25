@@ -99,6 +99,15 @@ impl<'a> Profile<'a>{
     pub fn partial_chad(&self,degree:AdaptationDegree)->Result<Option<PartialAdaptation>>{
         self.chromatic_adaptation()?.map(|m|PartialAdaptation::from_chad(m,degree)).transpose()
     }
+    /// Relative PCS to explicitly partially adapted source XYZ. This is an
+    /// opt-in Bradford policy for matrix/TRC sources, not LCMS state semantics.
+    /// Missing CHAD leaves the fully adapted source unchanged.
+    pub fn partial_pcs_matrix(&self,degree:AdaptationDegree)->Result<Option<[[f64;3];3]>>{
+        if degree.value()==1.{return Ok(None);}
+        let Some(chad)=self.chromatic_adaptation()? else{return Ok(None);};
+        let partial=PartialAdaptation::from_chad(chad,degree)?;
+        Ok(Some(cat_mm(partial.matrix(),invert_chad(chad)?)))
+    }
     /// Recover the pre-adaptation D50 white for diagnostics, not for the
     /// fully adapted absolute rendering path.
     pub fn unadapted_pcs_white(&self)->Result<Option<[f64;3]>>{
@@ -255,6 +264,7 @@ pub fn invert_chad(m:[[f64;3];3])->Result<[[f64;3];3]>{
 /// Not an emulation of another CMM's correlated-temperature interpolation.
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct AdaptationDegree(f64);
+impl Default for AdaptationDegree{fn default()->Self{Self(1.)}}
 impl AdaptationDegree{
     pub fn new(v:f64)->Result<Self>{
         if !v.is_finite()||!(0. ..=1.).contains(&v){return Err(Error::Invalid("ICC adaptation degree"));}

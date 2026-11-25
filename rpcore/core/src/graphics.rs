@@ -165,7 +165,7 @@ fn device(n:&[u8])->Result<Space>{match n{
 struct Engine<'d,'a>{
     doc:&'d Document<'a>,out:DisplayList,
     active:BTreeSet<(u32,u16)>,ops:usize,segments:usize,bytes_left:usize,
-    icc_cache:BTreeMap<((u32,u16),crate::icc::RenderingIntent),Space>,icc_bytes:usize,
+    icc_cache:BTreeMap<((u32,u16),crate::icc::RenderingIntent),Space>,icc_bytes:usize,degree:crate::icc::AdaptationDegree,
 }
 impl<'d,'a> Engine<'d,'a>{
     fn command(&mut self,c:Command)->Result<()>{
@@ -285,7 +285,7 @@ impl<'d,'a> Engine<'d,'a>{
                     let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
                     if let Some(s)=self.icc_cache.get(&(id,intent)){return Ok(s.clone());}
                     if self.icc_cache.len()>=crate::color::ICC_PAGE_PROFILES{return Err(Error::Limit("ICC page profiles"));}
-                    let (n,t,used,path)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes,intent)?;
+                    let (n,t,used,path)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes,intent,self.degree)?;
                     self.icc_bytes+=used;
                     self.out.icc_profiles.push(crate::icc::ProfileDiagnostic{object_id:id,source:crate::icc::ProfileUse::Vector,components:n,path});
                     let space=if let Some(t)=t{
@@ -519,11 +519,14 @@ impl Document<'_>{
     /// Build a partial vector display list with explicit deferred-content warnings.
     /// content_limit counts decoded page and expanded Form bytes cumulatively.
     pub fn page_display_list(&self,page:&PageInfo,content_limit:usize)->Result<DisplayList>{
+        self.page_display_list_with_adaptation(page,content_limit,crate::icc::AdaptationDegree::default())
+    }
+    pub fn page_display_list_with_adaptation(&self,page:&PageInfo,content_limit:usize,degree:crate::icc::AdaptationDegree)->Result<DisplayList>{
         let limit=content_limit.min(content::MAX_CONTENT_BYTES);
         let data=self.page_content(page,limit)?;
         let ops=content::parse(&data)?;
         let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new(),icc_profiles:Vec::new()},
-            active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len(),icc_cache:BTreeMap::new(),icc_bytes:0};
+            active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len(),icc_cache:BTreeMap::new(),icc_bytes:0,degree};
         e.run(&ops,page.resources.as_ref(),State::default(),0,None,None)?;
         Ok(e.out)
     }
