@@ -78,7 +78,10 @@ fn main() -> Result<(), String> {
             );
         }
         [mode, root] if mode == "batch-reference" => batch_reference(Path::new(root))?,
-        _ => return Err("usage: mixed_model_reference convert SOURCE DEST | verify DEST | batch-reference DEST".into()),
+        _ => return Err(
+            "usage: mixed_model_reference convert SOURCE DEST | verify DEST | batch-reference DEST"
+                .into(),
+        ),
     }
     Ok(())
 }

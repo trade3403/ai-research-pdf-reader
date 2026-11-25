@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-25 D1.9i [#104 / 45632499613](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45632499613) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45632499613/job/139269142368) 仅 mixed_model_reference.rs:78 命令行 usage 字符串需换行；按 rustfmt 日志逐字修复，算法、预算、SHA校验和所有测试不变。查询时真实模型专项仍运行，已进入科学保护翻译步骤；不据此虚报批读性能，待完整日志及新提交全量CI，禁止提前启动D1.9j。
+
 2026-11-25 D1.10h 基线 62e27a980b248e7cb0e8d01b124b37dbf02a7ef6 / [#103 / 45626514273](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45626514273) 全量 success；127 workspace + 56 portable=183/183，双精度固定段落、数值审计及预算负例通过。真实论文8样本通过词面4、拒绝4，较前版6/2更严格，不代表语义质量提高；后续D1.11仍须人工评估。用户授权 D1.9i：RPQ8 Reader::read_tensor_into 单张量一次seek、64KiB固定scratch按完整记录批量读取（含末尾短块），直接填入预分配codes/scales，每块沿用原语义校验，错误丢弃部分写入的数组。QuantizedTable::load 接入默认混合模型；保留原 read_block 和所有 SHA/格式/预算门槛。新增2组Rust测试（跨batch/尾块位对照、精确长度/名称和重签哈希后语义坏块拒绝）；真实97张量77320704 codes/1208136 scales逐位新旧对照及分路径时间观测。计时同runner先旧后新，非冷缓存、不含SHA，不设未证实的速度门槛；端到端加载仍由既有配对基准观测。未本地编译，待CI。D2训练/蒸馏独立项目不计入主线；不改其他线路，不启动D1.9j。
 
 2026-11-25 D1.10g 基线 2fa70c175de7a25415489ecb12ffe3d09485f777 / [#102 / 45620641204](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45620641204) 全量 success；124 workspace + 56 portable = 180/180，数学12组/格式17拒绝，FP32/INT8各2段4片段、1数值审计、1预算负例。论文8样本成功6拒绝2，Whole1/Constrained0/ProtectedGaps5，仅词面。实际日志仍有缩略语、联合国日刊等无原文依据的疑似噪声，不能称语义准确。用户授权 D1.10h 首批：在现有段落候选审计加入窄范围原文证据检查（缩略语前缀、空白归一化联合国日刊）及百分号前附着正负号绑定，保留原审核/回退/拒绝，不改写译文、不改默认翻译。新增3组 Rust 回归，增强真实双精度数值专项的无缩略语门槛，保留接受或明确拒绝协议和所有历史CI。启发式可能误拒绝合法译文或漏检其他幻觉，未证明覆盖率提升，后续仍需人工语义评价。新提交待全量CI，未本地编译、不启动加载优化。
