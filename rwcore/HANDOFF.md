@@ -76,3 +76,6 @@ C4.4b4 source pending CI; parent CI #111 verified 738 tests per platform. Read D
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4b5 source pending CI; parent CI #112 verified 751 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Eligibility reference tests are not filtered substitution execution.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4c1 source pending CI; parent CI #113 verified 757 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Base plan is not execution or a full script-specific shaping plan.

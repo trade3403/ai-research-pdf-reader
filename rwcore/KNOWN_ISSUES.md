@@ -125,3 +125,5 @@
 - C4.4b4: eligibility/index projection only; not yet integrated into actual GSUB/GPOS match or edit operations. Missing GDEF classes stay unclassified; no Unicode-based inference. Invalid declared mark set always rejected, including when IgnoreMarks wins. No real flag reference tests yet. Nested lookups, scheduling, clusters and full shaping remain outstanding.
 
 - C4.4b5: real lookup flag reference covers observed flags in seven fonts; absent combinations (including RightToLeft and simultaneous IgnoreMarks/UseMarkFilteringSet) retain synthetic checks. Reference is independent raw-data eligibility only, not external shaper equivalence or filtered substitution. Full scheduling, nested execution, clusters, GPOS and Word fidelity outstanding.
+
+- C4.4c1: base plan only, no FeatureVariations evaluation, automatic script/language identification, script-specific staging or feature values/masks. Cross-index validation covers selected LangSys and selected feature lookup refs; not an entire public-layout validator. Lookup execution, filtering during matching, cycles, clusters, GPOS and Word fidelity outstanding. Real plan reference acceptance pending next stage.

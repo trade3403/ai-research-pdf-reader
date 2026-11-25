@@ -187,3 +187,6 @@ pub use font_gdef_mark_sets::{MarkGlyphSetLimits,MarkGlyphSets,parse_mark_glyph_
 
 pub mod font_lookup_filter;
 pub use font_lookup_filter::{LookupFilter,LookupFilterLimits,GlyphEligibility,LOOKUP_RIGHT_TO_LEFT,LOOKUP_IGNORE_BASE,LOOKUP_IGNORE_LIGATURE,LOOKUP_IGNORE_MARK,LOOKUP_USE_MARK_SET,LOOKUP_MARK_ATTACHMENT_MASK};
+
+pub mod font_gsub_plan;
+pub use font_gsub_plan::{GsubPlanLimits,GsubPlannedLookup,GsubPlan,build_gsub_base_plan};

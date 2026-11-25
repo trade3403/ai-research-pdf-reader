@@ -151,3 +151,5 @@ Lock artifacts (metadata, not installer): [macOS](https://github.com/trade3403/a
 #111: 62db39b74f31666da9452639b7bea6a6b62f98ce, [CI run](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45693423736), all three jobs successful. Logs verify exact SHA, 738 passed/platform, 2214 total, zero failed/ignored, locked tests and Release builds. Real GDEF references accepted. Artifacts not independently inspected.
 
 #112: 699dc33ed84c5c863c7bb7db27d687cd21346c83, [CI run](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45696010727), all three jobs successful. Logs verify exact SHA, 751 passed/platform, 2253 total, zero failed/ignored, locked tests and Release builds. LookupFlag policy accepted. Artifacts not independently inspected.
+
+#113: a1fce9eacd400b3dc80c96087861909ec54976bd, [CI run](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45698681590), all three jobs successful. Logs verify exact SHA, 757 passed/platform, 2271 total, zero failed/ignored, locked tests and Release builds. 669 native lookup flags and 829056 lookup/glyph reference pairs accepted. Artifacts not independently inspected.
