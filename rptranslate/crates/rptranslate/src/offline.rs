@@ -237,7 +237,9 @@ impl TextSession<'_> {
             || options.max_new == 0
             || options.max_new >= self.model.config().generation.max_length
         {
-            return Err(scientific::Error::Input(Error::Inference(InferError::Limit)));
+            return Err(scientific::Error::Input(Error::Inference(
+                InferError::Limit,
+            )));
         }
         scientific::translate_with(text, glossary, |gap| self.translate(gap, options, kernel))
     }

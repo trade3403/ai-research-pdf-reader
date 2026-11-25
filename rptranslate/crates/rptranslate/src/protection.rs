@@ -458,7 +458,8 @@ mod tests {
 
     #[test]
     fn paper_quantities_and_symbols() {
-        let source = "Mw 7.8; 0.1 g; 30◦in; 30°; 20 kPa; 1.5 × 10⁻⁴ s; 1.5 × 10−4 s; <2 Hz; P–SV; Vₛ.";
+        let source =
+            "Mw 7.8; 0.1 g; 30◦in; 30°; 20 kPa; 1.5 × 10⁻⁴ s; 1.5 × 10−4 s; <2 Hz; P–SV; Vₛ.";
         let p = Plan::prepare(source, &[]).unwrap();
         let actual: Vec<_> = p.spans().iter().map(|s| s.original.as_str()).collect();
         assert_eq!(
