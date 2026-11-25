@@ -1,5 +1,5 @@
 //! JPEG 2000 Tier-1 context modelling for the baseline MQ coding style.
-//! Initial cleanup, first significance propagation and refinement for baseline MQ style.
+//! Baseline MQ codeblock passes and signed integer coefficient reconstruction.
 use super::{geometry::Band,mq::{Context,Decoder}};
 use crate::{Error,Result};
 
@@ -74,6 +74,7 @@ impl Coefficient{
     pub fn negative(self)->bool{self.negative}
     pub fn refined(self)->bool{self.refined}
     pub fn visited(self)->bool{self.visited}
+    pub fn signed(self)->i32{if self.negative{-(self.magnitude as i32)}else{self.magnitude as i32}}
 }
 pub struct Block{width:usize,height:usize,coefficients:Vec<Coefficient>}
 impl Block{
@@ -84,6 +85,8 @@ impl Block{
         }
         Ok(Self{width,height,coefficients:vec![Coefficient::default();count]})
     }
+    /// Row-major signed quantized coefficient values (no dequantization).
+    pub fn signed_coefficients(&self)->Vec<i32>{self.coefficients.iter().map(|c|c.signed()).collect()}
     fn index(&self,x:usize,y:usize)->Result<usize>{
         if x>=self.width||y>=self.height{return Err(Error::Invalid("JPX EBCOT coordinate"));}
         Ok(y*self.width+x)
@@ -116,30 +119,33 @@ impl Block{
     }
 }
 
-fn initial_cleanup(width:usize,height:usize,band:Band,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Result<Block>{
+fn cleanup(b:&mut Block,band:Band,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Result<()>{
     if plane>30{return Err(Error::Invalid("JPX EBCOT plane"));}
-    let mut b=Block::new(width,height)?;
-    for top in (0..height).step_by(4){
-        let bottom=(top+4).min(height);
-        for x in 0..width{
+    for top in (0..b.height).step_by(4){
+        let bottom=(top+4).min(b.height);
+        for x in 0..b.width{
             let mut y=top;
             let mut implicit=false;
             if bottom-top==4{
                 let mut eligible=true;
                 for row in top..bottom{
+                    let c=b.coefficient(x,row)?;
                     let (n,_,_)=b.neighbours(x,row)?;
-                    if n.h+n.v+n.d!=0{eligible=false;break;}
+                    if c.significant()||c.visited||n.h+n.v+n.d!=0{eligible=false;break;}
                 }
                 if eligible{
                     if read(AGG_CONTEXT)?==0{continue;}
                     let hi=usize::from(read(UNI_CONTEXT)?);
                     let lo=usize::from(read(UNI_CONTEXT)?);
+                    if hi>1||lo>1{return Err(Error::Invalid("JPX EBCOT run bit"));}
                     y+=2*hi+lo;
                     if y>=bottom{return Err(Error::Invalid("JPX EBCOT run position"));}
                     implicit=true;
                 }
             }
             for row in y..bottom{
+                let c=b.coefficient(x,row)?;
+                if c.significant()||c.visited{continue;}
                 let (n,h,v)=b.neighbours(x,row)?;
                 if (implicit&&row==y)||read(zero_context(band,n)?)?!=0{
                     let (cx,pred)=sign_context(h,v)?;
@@ -149,6 +155,12 @@ fn initial_cleanup(width:usize,height:usize,band:Band,plane:u8,mut read:impl FnM
             }
         }
     }
+    for c in &mut b.coefficients{c.visited=false;}
+    Ok(())
+}
+fn initial_cleanup(width:usize,height:usize,band:Band,plane:u8,read:impl FnMut(usize)->Result<u8>)->Result<Block>{
+    let mut b=Block::new(width,height)?;
+    cleanup(&mut b,band,plane,read)?;
     Ok(b)
 }
 /// Decode the first (highest nonempty) cleanup bitplane of one baseline
@@ -228,6 +240,46 @@ pub fn decode_initial_through_refinement(data:&[u8],width:usize,height:usize,ban
     propagation(&mut b,band,plane-1,|i|cx.decode(&mut mq,i))?;
     refinement(&mut b,plane-1,|i|cx.decode(&mut mq,i))?;
     Ok(b)
+}
+
+/// A baseline single MQ segment, with 1..=1+3*highest_plane passes.
+/// Quality-layer truncation may stop after any complete pass; omitted bits
+/// remain zero. The caller supplies the highest plane from packet metadata.
+/// No bypass, RESET, TERMALL, VSC, PTERM or SEGSYM modes are accepted.
+fn decode_passes(width:usize,height:usize,band:Band,highest_plane:u8,passes:u16,mut read:impl FnMut(usize)->Result<u8>)->Result<Block>{
+    if highest_plane>30||passes==0||passes>1+3*u16::from(highest_plane){
+        return Err(Error::Invalid("JPX EBCOT pass count/plane"));
+    }
+    let mut b=initial_cleanup(width,height,band,highest_plane,&mut read)?;
+    let mut remaining=passes-1;
+    for plane in (0..highest_plane).rev(){
+        if remaining==0{break;}
+        propagation(&mut b,band,plane,&mut read)?;
+        remaining-=1;
+        if remaining==0{break;}
+        refinement(&mut b,plane,&mut read)?;
+        remaining-=1;
+        if remaining==0{break;}
+        cleanup(&mut b,band,plane,&mut read)?;
+        remaining-=1;
+    }
+    Ok(b)
+}
+/// Decode a bounded baseline codeblock. Returns signed quantized coefficients,
+/// not pixels. MQ virtual termination is not a corruption authentication check.
+pub fn decode_codeblock(data:&[u8],width:usize,height:usize,band:Band,highest_plane:u8,passes:u16,style:u8)->Result<Block>{
+    if style!=0{return Err(Error::Unsupported("JPX EBCOT coding style"));}
+    if highest_plane>30||passes==0||passes>1+3*u16::from(highest_plane){
+        return Err(Error::Invalid("JPX EBCOT pass count/plane"));
+    }
+    // At most four decisions per sample per pass, including aggregation.
+    let area=width.checked_mul(height).ok_or(Error::Limit("JPX EBCOT block area"))?;
+    if width==0||height==0||width>1024||height>1024||area>4096{
+        return Err(Error::Limit("JPX EBCOT block dimensions"));
+    }
+    let mut cx=Contexts::new()?;
+    let mut mq=Decoder::new(data,area*usize::from(passes)*4)?;
+    decode_passes(width,height,band,highest_plane,passes,|i|cx.decode(&mut mq,i))
 }
 
 #[cfg(test)]
@@ -413,5 +465,57 @@ mod tests{
         assert!(decode_initial_through_refinement(&[0,0],65,65,Band::Ll,1).is_err());
         let b=decode_initial_through_refinement(&[0,0],1,1,Band::Ll,1).unwrap();
         assert_eq!(b.coefficients.len(),1);
+    }
+
+    #[test]fn multipass_signed_single_sample(){
+        let mut seq=[(0,1),(9,1),(14,1),(16,0)].into_iter();
+        let b=decode_passes(1,1,Band::Ll,2,7,|cx|{
+            let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)
+        }).unwrap();
+        assert!(seq.next().is_none());
+        assert_eq!(b.signed_coefficients(),vec![-6]);
+        assert!(!b.coefficient(0,0).unwrap().visited());
+    }
+    #[test]fn multipass_cleanup_clears_visited(){
+        let mut b=Block::new(3,1).unwrap();
+        b.make_significant(0,0,3,false).unwrap();
+        let mut seq=[(5,0)].into_iter();
+        propagation(&mut b,Band::Ll,2,|cx|{let(w,v)=seq.next().unwrap();assert_eq!(cx,w);Ok(v)}).unwrap();
+        assert!(seq.next().is_none());
+        assert!(b.coefficient(1,0).unwrap().visited());
+        let mut seq=[(0,1),(9,1)].into_iter();
+        cleanup(&mut b,Band::Ll,2,|cx|{let(w,v)=seq.next().unwrap();assert_eq!(cx,w);Ok(v)}).unwrap();
+        assert!(seq.next().is_none());
+        assert_eq!(b.signed_coefficients(),vec![8,0,-4]);
+        assert!(b.coefficients.iter().all(|c|!c.visited()));
+        let mut calls=0;
+        propagation(&mut b,Band::Ll,1,|cx|{calls+=1;assert_eq!(cx,8);Ok(0)}).unwrap();
+        assert_eq!(calls,1);
+        assert!(b.coefficient(1,0).unwrap().visited());
+    }
+    #[test]fn multipass_truncated_pass_boundary(){
+        let seq=[(0,1),(9,0),(14,1),(16,1)];
+        for passes in 1..=7{
+            let mut it=seq.into_iter();
+            let b=decode_passes(1,1,Band::Ll,2,passes,|cx|{
+                let(w,v)=it.next().unwrap();assert_eq!(cx,w);Ok(v)
+            }).unwrap();
+            let expected=if passes<3{4}else if passes<6{6}else{7};
+            assert_eq!(b.signed_coefficients(),vec![expected]);
+        }
+    }
+    #[test]fn multipass_all_zero_stripes(){
+        let mut calls=0;
+        let b=decode_passes(2,4,Band::Hh,2,7,|cx|{calls+=1;assert_eq!(cx,17);Ok(0)}).unwrap();
+        assert_eq!(calls,6);assert_eq!(b.signed_coefficients(),vec![0;8]);
+    }
+    #[test]fn multipass_mq_and_invalid_modes(){
+        assert!(decode_codeblock(&[0,0],1,1,Band::Ll,1,4,0).is_ok());
+        assert!(decode_codeblock(&[],1,1,Band::Ll,1,4,0).is_err());
+        assert!(decode_codeblock(&[0],1,1,Band::Ll,1,5,0).is_err());
+        assert!(decode_codeblock(&[0],1,1,Band::Ll,1,0,0).is_err());
+        assert!(decode_codeblock(&[0],1,1,Band::Ll,31,1,0).is_err());
+        assert!(decode_codeblock(&[0],65,65,Band::Ll,1,4,0).is_err());
+        for style in 1..=255{assert!(matches!(decode_codeblock(&[0],1,1,Band::Ll,1,4,style),Err(Error::Unsupported("JPX EBCOT coding style"))));}
     }
 }
