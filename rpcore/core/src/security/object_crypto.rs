@@ -91,7 +91,6 @@ fn decrypt_bytes(data:&mut Vec<u8>,method:CryptMethod,keys:&Keys,remaining:&mut 
         CryptMethod::Rc4=>Rc4::new(&keys.rc4[..keys.rc4_len])?.apply(data),
         CryptMethod::Aes128=>{*data=Aes128::new(&keys.aes)?.pdf_decrypt(data)?;Ok(())},
         CryptMethod::Aes256=>{*data=Aes256::new(&keys.modern)?.pdf_decrypt(data)?;Ok(())},
-        _=>Err(Error::Unsupported("legacy object crypt method")),
     }
 }
 fn special_dict(d:&std::collections::BTreeMap<Vec<u8>,Object>)->Result<()>{

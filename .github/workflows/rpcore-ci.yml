@@ -130,6 +130,12 @@ jobs:
           dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-area-72dpi-report/test-package-versions.txt
           sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-area-72dpi-report/font-sha256.txt
           /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-area-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --text-aa 4 --text-area
+      # Independent encrypted PDFs: fixture writer and oracle are CI-only.
+      - run: |
+          python3 -m venv rpcore/target/encryption-venv
+          rpcore/target/encryption-venv/bin/python -m pip install pypdf==5.9.0 cryptography==46.0.4
+          cargo build --manifest-path rpcore/Cargo.toml --locked --release --example encryption_probe
+          rpcore/target/encryption-venv/bin/python rpcore/corpus/encryption_benchmark.py --probe rpcore/target/release/examples/encryption_probe --font-dir /usr/share/fonts/opentype/urw-base35 --out rpcore/target/encryption-report
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -141,6 +147,7 @@ jobs:
             rpcore/target/visual-fine-72dpi-report/
             rpcore/target/visual-grid-72dpi-report/
             rpcore/target/visual-area-72dpi-report/
+            rpcore/target/encryption-report/
           if-no-files-found: warn
       - if: always()
         run: |

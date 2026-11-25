@@ -76,7 +76,15 @@ fn parse(d:&Dict)->Result<EncryptionInfo>{
         (1,2)|(2,3)|(4,4)|(5,5|6)=>return Err(Error::Invalid("encryption key length")),
         _=>return Err(Error::Unsupported("encryption V/R combination")),
     }
-    let permissions=integer(d,b"P","encryption P")?;
+    // Some external writers (including pypdf) serialize the identical
+    // 32-bit permissions word as unsigned decimal. Accept only exact 32-bit
+    // representations and preserve the original bits for key derivation.
+    let permissions=match d.get(b"P".as_slice()){
+        Some(Object::Number(n)) if n.is_finite()&&n.fract()==0.&&*n>=i32::MIN as f64&&*n<=u32::MAX as f64=>{
+            if *n<0.{*n as i32}else{(*n as u32) as i32}
+        }
+        _=>return Err(Error::Invalid("encryption P")),
+    };
     let encrypt_metadata=match d.get(b"EncryptMetadata".as_slice()){
         None|Some(Object::Bool(true))=>true,
         Some(Object::Bool(false)) if v>=4=>false,
@@ -255,5 +263,23 @@ mod tests{
         let x=b.len();b.extend(format!("xref\n0 3\n0000000000 65535 f \n{off:010} 00000 n \n{off2:010} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").bytes());
         assert_eq!(Document::encryption_info(&b).unwrap(),None);
         assert_eq!(Document::open(&b).unwrap().page_count().unwrap(),0);
+    }
+}
+
+
+#[cfg(test)]
+mod permission_word_tests{
+    #[test]fn accepts_equivalent_unsigned_permissions_only(){
+        use super::*;
+        for (p,expected) in [("-4",-4),("4294967292",-4),("2147483648",i32::MIN),("4294967295",-1)]{
+            let raw=format!("<< /Filter /Standard /V 1 /R 2 /P {p} /O <{}> /U <{}> >>","00".repeat(32),"00".repeat(32));
+            let d=crate::dict(crate::parse_object(raw.as_bytes()).unwrap()).unwrap();
+            assert_eq!(parse(&d).unwrap().permissions,expected);
+        }
+        for p in ["4294967296","-2147483649","1.5"]{
+            let raw=format!("<< /Filter /Standard /V 1 /R 2 /P {p} /O <{}> /U <{}> >>","00".repeat(32),"00".repeat(32));
+            let d=crate::dict(crate::parse_object(raw.as_bytes()).unwrap()).unwrap();
+            assert!(parse(&d).is_err());
+        }
     }
 }
