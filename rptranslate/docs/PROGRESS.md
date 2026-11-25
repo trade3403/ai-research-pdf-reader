@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.4 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.5 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -16,14 +16,14 @@
 | D1.4a | 已通过 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
 | D1.4b | 已通过 | AVX2 自动检测、向量化、标量回退、多线程 |
 | D1.5a | 已通过 | 稳定 Softmax、单头缩放点积 Attention、组合 mask |
-| D1.5b | 待验证 | 多头注意力、LayerNorm、QKV 投影 |
+| D1.5b | 已通过 | 多头注意力、LayerNorm、QKV 投影 |
 | D1.6–D1.7 | 未开始 | Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 5/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -80,7 +80,7 @@ D1 里程碑完成 5/14（按阶段数统计，不是工作量百分比）。
 新增最后轴稳定 Softmax、预投影 Q/K/V 的 rank-2 缩放点积 Attention、padding/pair/causal mask 组合、增量 causal offset、全遮罩零输出；复用 D1.4 四路径 MatMul，独立 NumPy 2.3.5 FP64 参考。实际验收：[代码 23c9f2a](https://github.com/trade3403/ai-research-pdf-reader/commit/23c9f2af225706c421be6c629b1bc72696027838)，[Actions 45516689570](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45516689570) completed/success；格式、Clippy、workspace 单元测试、Release、自检、强制 portable-only 均通过。五项新增 Attention 测试通过，含独立 NumPy 数值对照、四种矩阵路径、极端 softmax、组合掩码、全遮罩、增量偏移及错误输入。本轮未重跑矩阵基准和真实 tokenizer 探测（条件跳过）；未测真实模型或 Attention 性能。D1.5a 通过，D1.5b 待完成，不增加完整阶段计数。[技术文档](D1.5_ATTENTION.md)。
 
 ## 当前阶段 D1.5b
-新增 Linear [out,in] 权重布局、Q/K/V 与输出投影、单序列多头 self/cross attention、按头切分与合并、FP64 统计 LayerNorm 及 post-norm 残差。独立 NumPy 2.3.5 FP64 参考实际生成，测试四种矩阵路径、异常形状和全 mask 输出 bias。CI 待验收。
+新增 Linear [out,in] 权重布局、Q/K/V 与输出投影、单序列多头 self/cross attention、按头切分与合并、FP64 统计 LayerNorm 及 post-norm 残差。独立 NumPy 2.3.5 FP64 参考实际生成，测试四种矩阵路径、异常形状和全 mask 输出 bias。实际验收：首轮 [45517208297](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517208297) rustfmt 失败，按日志修正11组格式；[修复代码 9365456](https://github.com/trade3403/ai-research-pdf-reader/commit/93654563fa3193ec06200e1e727286edfecc3995)、[复测 45517274719](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517274719) completed/success。新增3项测试通过，含 Linear 权重布局、双头 cross attention 与 residual LayerNorm 的 NumPy 独立参考、全 mask bias、形状与极端值检查；格式、Clippy、workspace 测试、Release、自检及强制 portable-only 通过。未重跑真实 tokenizer 或矩阵性能基准；未加载真实权重、未测 Attention 速度。D1.5 阶段门槛通过，D1.6 待研发。
 
 ## 下一阶段 D1.6
 Transformer encoder/decoder、FFN、embedding、位置编码及玩具模型逐层对照。
