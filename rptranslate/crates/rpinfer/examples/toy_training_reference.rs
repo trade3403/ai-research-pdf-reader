@@ -11,7 +11,10 @@ fn main() -> Result<(), String> {
             }
         }
         if [0, 1, 37, 100].contains(&step) {
-            print!("STEP {step} {:.17}", trainer.loss().map_err(|e| format!("{e:?}"))?);
+            print!(
+                "STEP {step} {:.17}",
+                trainer.loss().map_err(|e| format!("{e:?}"))?
+            );
             for w in trainer.weights() {
                 print!(" {w:.17}");
             }

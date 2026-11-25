@@ -195,7 +195,10 @@ mod tests {
         }
         assert_eq!(resumed.checkpoint(), full.checkpoint());
         assert!(full.loss().unwrap() < initial * 0.1);
-        assert_ne!(Trainer::new(43, 0.2).unwrap(), Trainer::new(42, 0.2).unwrap());
+        assert_ne!(
+            Trainer::new(43, 0.2).unwrap(),
+            Trainer::new(42, 0.2).unwrap()
+        );
     }
 
     #[test]
