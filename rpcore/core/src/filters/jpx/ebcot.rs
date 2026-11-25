@@ -67,13 +67,16 @@ impl Contexts{
 
 /// Bounded raster storage; a coefficient becomes significant exactly once.
 #[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
-pub struct Coefficient{magnitude:u32,negative:bool,refined:bool,visited:bool}
+pub struct Coefficient{magnitude:u32,negative:bool,refined:bool,visited:bool,lowest_known_plane:u8}
 impl Coefficient{
     pub fn significant(self)->bool{self.magnitude!=0}
     pub fn magnitude(self)->u32{self.magnitude}
     pub fn negative(self)->bool{self.negative}
     pub fn refined(self)->bool{self.refined}
     pub fn visited(self)->bool{self.visited}
+    /// Number of unknown low magnitude bits of a significant coefficient.
+    /// Zero has no midpoint correction and is represented by None.
+    pub fn missing_bits(self)->Option<u8>{if self.significant(){Some(self.lowest_known_plane)}else{None}}
     pub fn signed(self)->i32{if self.negative{-(self.magnitude as i32)}else{self.magnitude as i32}}
 }
 pub struct Block{width:usize,height:usize,coefficients:Vec<Coefficient>}
@@ -87,6 +90,15 @@ impl Block{
     }
     /// Row-major signed quantized coefficient values (no dequantization).
     pub fn signed_coefficients(&self)->Vec<i32>{self.coefficients.iter().map(|c|c.signed()).collect()}
+    /// Reconstruct an irreversible subband block using individual decoded
+    /// precision, not a uniform count inferred from quality layers.
+    /// The delta is already resolved for this subband. No rounding or clipping.
+    pub fn reconstruct97(&self,delta:f64)->Result<Vec<f64>>{
+        use super::codestream::{inverse_quantization::reconstruct,Wavelet};
+        self.coefficients.iter().map(|c|
+            reconstruct(c.signed(),c.missing_bits().unwrap_or(0),delta,Wavelet::Irreversible97)
+        ).collect()
+    }
     fn index(&self,x:usize,y:usize)->Result<usize>{
         if x>=self.width||y>=self.height{return Err(Error::Invalid("JPX EBCOT coordinate"));}
         Ok(y*self.width+x)
@@ -97,7 +109,7 @@ impl Block{
     pub fn make_significant(&mut self,x:usize,y:usize,plane:u8,negative:bool)->Result<()>{
         let i=self.index(x,y)?;
         if plane>30||self.coefficients[i].significant(){return Err(Error::Invalid("JPX EBCOT significance"));}
-        self.coefficients[i]=Coefficient{magnitude:1u32<<plane,negative,refined:false,visited:false};Ok(())
+        self.coefficients[i]=Coefficient{magnitude:1u32<<plane,negative,refined:false,visited:false,lowest_known_plane:plane};Ok(())
     }
     fn sample(&self,x:i32,y:i32)->i8{
         if x<0||y<0{return 0;}
@@ -225,6 +237,7 @@ fn refinement(b:&mut Block,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Res
                 if bit>1{return Err(Error::Invalid("JPX EBCOT refinement bit"));}
                 b.coefficients[i].magnitude=(c.magnitude&!mask)|(u32::from(bit)<<plane);
                 b.coefficients[i].refined=true;
+                b.coefficients[i].lowest_known_plane=plane;
             }
         }
     }
@@ -574,5 +587,73 @@ mod tests{
             }
         }
         assert_eq!(count,4);
+    }
+
+    #[test]fn precision97_all_pass_boundaries(){
+        // Same independently scripted decisions as the historical signed
+        // coefficient test; a zero refinement bit still establishes precision.
+        for passes in 1..=7{
+            let mut seq=[(0,1),(9,1),(14,1),(16,0)].into_iter();
+            let b=decode_passes(1,1,Band::Ll,2,passes,|cx|{
+                let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)
+            }).unwrap();
+            let (missing,value)=match passes{1|2=>(2,-4),3..=5=>(1,-6),_=>(0,-6)};
+            let c=b.coefficient(0,0).unwrap();
+            assert_eq!(c.missing_bits(),Some(missing));
+            assert_eq!(c.signed(),value);
+            assert_eq!(b.reconstruct97(0.5).unwrap(),[match missing{2=>-3.0,1=>-3.5,_=>-3.25}]);
+        }
+    }
+    #[test]fn precision97_mixed_propagation_and_refinement(){
+        let mut b=Block::new(3,1).unwrap();
+        b.make_significant(0,0,3,false).unwrap();
+        let mut seq=[1,1,0].into_iter();
+        propagation(&mut b,Band::Ll,2,|_|Ok(seq.next().unwrap())).unwrap();
+        assert!(seq.next().is_none());
+        assert_eq!(b.signed_coefficients(),[8,-4,0]);
+        assert_eq!(b.coefficient(0,0).unwrap().missing_bits(),Some(3));
+        assert_eq!(b.coefficient(1,0).unwrap().missing_bits(),Some(2));
+        assert_eq!(b.coefficient(2,0).unwrap().missing_bits(),None);
+        assert_eq!(b.reconstruct97(1.).unwrap(),[12.,-6.,0.]);
+        let mut calls=0;
+        refinement(&mut b,2,|_|{calls+=1;Ok(0)}).unwrap();
+        assert_eq!(calls,1);
+        assert_eq!(b.coefficient(0,0).unwrap().missing_bits(),Some(2));
+        assert_eq!(b.reconstruct97(1.).unwrap(),[10.,-6.,0.]);
+        cleanup(&mut b,Band::Ll,2,|_|panic!("visited sample must be skipped")).unwrap();
+        assert_eq!(b.reconstruct97(1.).unwrap(),[10.,-6.,0.]);
+    }
+    #[test]fn precision97_cleanup_new_significance(){
+        let mut b=Block::new(3,1).unwrap();
+        b.make_significant(0,0,3,false).unwrap();
+        propagation(&mut b,Band::Ll,2,|_|Ok(0)).unwrap();
+        refinement(&mut b,2,|_|Ok(1)).unwrap();
+        let mut seq=[1,1].into_iter();
+        cleanup(&mut b,Band::Ll,2,|_|Ok(seq.next().unwrap())).unwrap();
+        assert!(seq.next().is_none());
+        assert_eq!(b.signed_coefficients(),[12,0,-4]);
+        assert_eq!(b.coefficient(2,0).unwrap().missing_bits(),Some(2));
+        assert_eq!(b.reconstruct97(0.25).unwrap(),[3.5,0.,-1.5]);
+    }
+    #[test]fn precision97_real_mq_fixture(){
+        // Existing independently generated lossless single-coefficient J2K.
+        // Used here solely to verify Tier-1 precision, not lossy pixel parity.
+        let data:Vec<u8>="ff4fff510029000000000001000000010000000000000000000000010000000100000000000000000001070101ff52000c00000001000000000001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000120001ff93c0f84100ffd9"
+            .as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        let p=super::super::packet::inspect_packets(&data,0).unwrap();
+        let e=&p.packets[0].contributions[0];
+        let b=decode_codeblock(&data[e.data.clone()],1,1,Band::Ll,8-e.zero_bit_planes,e.passes,0).unwrap();
+        assert_eq!(b.signed_coefficients(),[7]);
+        assert_eq!(b.coefficient(0,0).unwrap().missing_bits(),Some(0));
+        assert_eq!(b.reconstruct97(0.5).unwrap(),[3.75]);
+    }
+    #[test]fn precision97_zero_and_limits(){
+        let mut b=Block::new(2,1).unwrap();
+        assert_eq!(b.reconstruct97(2.).unwrap(),[0.,0.]);
+        for d in [0.,-1.,f64::NAN,f64::INFINITY]{assert!(b.reconstruct97(d).is_err());}
+        b.make_significant(0,0,30,true).unwrap();
+        assert_eq!(b.coefficient(0,0).unwrap().missing_bits(),Some(30));
+        assert_eq!(b.reconstruct97(1.).unwrap(),[-1610612736.,0.]);
+        assert!(b.reconstruct97(f64::MAX).is_err());
     }
 }
