@@ -145,7 +145,7 @@ jobs:
   real-model-conversion:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6'))
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7'))
     defaults:
       run:
         working-directory: rptranslate
@@ -176,33 +176,38 @@ jobs:
           cargo build --locked --offline --release -p rpmodel --example stream_weights
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_converted_checkpoint.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/stream_weights
       - name: Validate actual RPModel package through Rust
-        if: contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           cargo build --locked --offline --release -p rpmodel --example verify_package
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_package_integrity.py "$RUNNER_TEMP/rpmodel-v1" target/release/examples/verify_package
       - name: Bind real typed Marian architecture and search profile
-        if: contains(github.event.head_commit.message, 'D1.8c2b') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c2b') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           cargo build --locked --offline --release -p rpinfer --example verify_marian_profile
           target/release/examples/verify_marian_profile "$RUNNER_TEMP/rpmodel-v1"
       - name: Compare real shared embeddings and tied LM head
-        if: contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           cargo build --locked --offline --release -p rpinfer --example real_embedding_reference
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_embeddings.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_embedding_reference
       - name: Compare actual six-layer Marian encoder
-        if: contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           "$RUNNER_TEMP/rp-convert/bin/pip" install --disable-pip-version-check --only-binary=:all: transformers==4.48.3
           cargo build --locked --offline --release -p rpinfer --example real_encoder_reference
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_encoder.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_encoder_reference
       - name: Compare actual six-layer decoder and full model logits
-        if: contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           cargo build --locked --offline --release -p rpinfer --example real_decoder_reference
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_decoder.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_decoder_reference
       - name: Compare actual cached logits and bounded beam generation
-        if: contains(github.event.head_commit.message, 'D1.8c6')
+        if: contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7')
         run: |
           cargo build --locked --offline --release -p rpinfer --example real_generation_reference
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_real_generation.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/real_generation_reference
+      - name: Verify owning model lifecycle and unified token API
+        if: contains(github.event.head_commit.message, 'D1.8c7')
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example verify_full_model
+          target/release/examples/verify_full_model "$RUNNER_TEMP/rpmodel-v1"

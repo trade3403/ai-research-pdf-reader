@@ -33,8 +33,8 @@
 | D1.8c3 | 已通过 | 真实共享词表、位置权重、bias 和 logits |
 | D1.8c4 | 已通过 | 真实六层 Encoder 加载与逐层前向 |
 | D1.8c5 | 已通过 | 真实六层 Decoder 与联合 logits |
-| D1.8c6 | 待验证 | 真实 KV Cache 与 beam generation |
-| D1.8c7 | 未开始 | 完整模型构建与加载验收 |
+| D1.8c6 | 已通过 | 真实 KV Cache 与 beam generation |
+| D1.8c7 | 待验证 | 完整模型构建与加载验收 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -161,8 +161,13 @@ D1.8c2b/c3/c4 [45532734293](https://github.com/trade3403/ai-research-pdf-reader/
 ## 当前阶段 D1.8c6
 新增真实 MarianEncoded：借用同一真实权重/encoder memory、实际 decoder position row 增量输入、6层 self KV immutable snapshot、共享 cross KV，复用原 Cache 256MiB KV payload 门槛与原 search 策略（非 HF beam scorer 等价），支持 full/cached、显式 target mask 保留 start，真实 config 派生 beam 参数。真实 CI 2组 token prefix 含 source/target mask、full/cached 全词表 logits 对照原始 PyTorch（4组910014元素），2组 source ×beam1/4×full/cache=8生成设置，max_new4、原模型 EOS/suppress/penalty、独立全候选扩展与精确序列/EOS/排序、分数 atol/rtol=1e-4、2组 HF greedy 对照；原门槛不变。仅短 token 序列测试，未测长生成速度、真实译文、RSS，cache 仍复制 self KV 前缀而非分页。待 CI。
 
-## 下一阶段 D1.8c7
-完整模型拥有型加载、统一预算、Token 级推理入口与完整性验收。
+实际验收：[ab6c838](https://github.com/trade3403/ai-research-pdf-reader/commit/ab6c838e387b09c70c9e627b781e0001fb4876d9) / [45533581675](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45533581675) completed/success；workspace69/69、portable39/39；真实生成2组、4 logits comparisons/910014元素、8生成设置/20候选、HF greedy2/2，max_abs=2.7179718e-5、cache_diff=0（测试样本）、max_score_error=1.01827798e-5；所有前序真实门槛通过。D1.8c6 已验收。
+
+## 当前阶段 D1.8c7
+新增拥有型 MarianModel：一次验证包、加载256 canonical tensors（唯一共享表）、总权重预算312033188 bytes、提前拒绝低预算，关闭 reader 后纯内存模型；TokenSession 拥有 source memory 与复制/自动 PAD mask，借用不可变模型、每次生成 request-local cache；统一 encode/logits/cached_logits/generate_tokens，默认官方 beam4/max_new511/cache，显式选项 beam1..16、max_new1..511、Full/Cached，保留官方特殊 IDs/EOS/suppress/penalty。真实独立生成参考改用统一接口（原门槛不变），新增真实生命周期 probe：预算、非法 source/mask/length/options、2 session 独立、自动 PAD 与显式 mask 一致、full/cache logits、重复/直接生成及 drop/reload 重现。9个负例，4次生成，260004 logits元素。权重预算不含 KV/临时/RSS；drop/reload 仅功能验证，不宣称 RSS 释放量或速度。暂不接 tokenizer 文本入口；固定审计 profile，不是通用模型 loader。待 CI。
+
+## 下一阶段 D1.8d
+真实模型综合精度、跨内核回归及实际 Token 长度边界验收，再进入文本分词/反分词接入。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

@@ -7,6 +7,7 @@ pub mod layers;
 pub mod marian_decoder;
 pub mod marian_encoder;
 pub mod marian_generation;
+pub mod marian_model;
 pub mod marian_weights;
 pub mod matmul;
 pub mod search;
