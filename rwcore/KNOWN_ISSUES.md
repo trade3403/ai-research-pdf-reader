@@ -88,3 +88,5 @@
 - C4.4a6b: direct Type 4 contiguous matching only, no GDEF ignored-glyph handling, cluster merge, extension lookup or full shaping acceptance. Reference from independent raw byte extraction, not an external shaping engine.
 
 - C4.4a7a only Type 5 format 1 matching, no real font reference yet, no class/coverage formats, chained matching, nested lookup execution/cycle checks, GDEF filtering or full shaping. Overlap validation not comprehensive.
+
+- C4.4a7b: ClassDef and class context synthetic tests only; real font references, coverage format 3, chaining, GDEF and nested execution remain outstanding. Overlap validation not comprehensive.

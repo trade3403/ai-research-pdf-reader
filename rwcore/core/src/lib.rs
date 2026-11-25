@@ -159,3 +159,7 @@ pub use font_ligature_subst::{LigatureLimits,LigatureRule,LigatureMatch,Ligature
 
 pub mod font_context_subst;
 pub use font_context_subst::{ContextLimits,ContextAction,ContextRule,ContextMatch,ContextSubstitution,parse_context_substitution};
+
+pub mod font_class_def;
+pub use font_class_def::{GlyphClassDef,parse_glyph_class_def};
+pub use font_context_subst::{ClassContextSubstitution,parse_class_context_substitution};

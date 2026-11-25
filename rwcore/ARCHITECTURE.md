@@ -96,3 +96,5 @@ C4.4a6a pending CI: LigatureSubst format 1 coverage-indexed ordered sets, nested
 C4.4a6b pending CI: independent raw SFNT GSUB Type 4 reference across ABeeZee Regular/Italic, Aref Ruqaa Regular, Alegreya Sans Regular (18 direct subtables, 142 ordered rules); full face coverage, exact rule order and prefix reference, contiguous contraction. No external shaping engine or lookup scheduling.
 
 C4.4a7a pending CI: GSUB Type 5 format 1 glyph-based context parser, nullable sets, ordered contiguous prefix matches, including empty action list; action sequence/lookup indices validated, cumulative rule/input/action budgets including repeated offsets. No nested execution or GDEF filtering.
+
+C4.4a7b pending CI: shared bounded ClassDef formats 1/2, implicit zero within face domain; class context type 5 format 2 uses first-glyph Coverage gate, class-indexed rule sets and shared bounded parser with format 1. No nested execution.

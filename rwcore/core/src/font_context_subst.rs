@@ -57,10 +57,15 @@ pub fn parse_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:C
     if cov<header||cov>b.len(){return Err(Error::Invalid("context coverage offset"));}
     let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,l.max_sets.min(65536) as u32)?;
     if coverage.len() as usize!=n{return Err(Error::Invalid("context set count"));}
+    let sets=parse_context_sets(b,n,6,header,glyph_count,lookup_count,l)?;
+    Ok(ContextSubstitution{coverage,sets})
+}
+
+fn parse_context_sets(b:&[u8],n:usize,offset_base:usize,header:usize,symbol_bound:u32,lookup_count:usize,l:ContextLimits)->Result<Vec<Option<Vec<ContextRule>>>,Error>{
     let mut sets=Vec::with_capacity(n);
     let(mut rules_total,mut input_total,mut actions_total)=(0,0,0);
     for i in 0..n{
-        let at=usize::from(word(b,6+2*i)?);
+        let at=usize::from(word(b,offset_base+2*i)?);
         if at==0{sets.push(None);continue;}
         if at<header{return Err(Error::Invalid("context set offset"));}
         let count=usize::from(word(b,at)?);
@@ -83,7 +88,7 @@ pub fn parse_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:C
             let mut remaining=Vec::with_capacity(input-1);
             for k in 0..input-1{
                 let id=word(b,p+4+2*k)?;
-                if u32::from(id)>=glyph_count{return Err(Error::Invalid("context input glyph"));}
+                if u32::from(id)>=symbol_bound{return Err(Error::Invalid("context input glyph"));}
                 remaining.push(id);
             }
             let mut refs=Vec::with_capacity(actions);
@@ -100,5 +105,42 @@ pub fn parse_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:C
         }
         sets.push(Some(rules));
     }
-    Ok(ContextSubstitution{coverage,sets})
+    Ok(sets)
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ClassContextSubstitution{
+    coverage:GlyphCoverage,classes:crate::GlyphClassDef,sets:Vec<Option<Vec<ContextRule>>>,
+}
+impl ClassContextSubstitution{
+    pub fn rules(&self,id:u16)->Option<&[ContextRule]>{
+        self.coverage.index(id)?;
+        self.sets.get(usize::from(self.classes.class(id)?))?.as_deref()
+    }
+    /// Rules store trailing class IDs (not glyph IDs). First glyph must be covered.
+    pub fn match_prefix(&self,glyphs:&[u16])->Option<ContextMatch<'_>>{
+        let (&first,tail)=glyphs.split_first()?;
+        for r in self.rules(first)?{
+            if tail.len()>=r.remaining.len()&&r.remaining.iter().zip(tail).all(|(&c,&g)|self.classes.class(g)==Some(c)){
+                return Some(ContextMatch{input_len:r.remaining.len()+1,actions:&r.actions});
+            }
+        }
+        None
+    }
+}
+/// Parse class-based context format 2. Class zero includes unassigned glyphs.
+/// Lookup execution remains separate.
+pub fn parse_class_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassContextSubstitution,Error>{
+    if b.len()>l.max_bytes{return Err(Error::Limit("context bytes"));}
+    if word(b,0)?!=2{return Err(Error::Unsupported("class context format"));}
+    let cov=usize::from(word(b,2)?);
+    let cls=usize::from(word(b,4)?);
+    let n=usize::from(word(b,6)?);
+    if n==0{return Err(Error::Invalid("class context sets"));}
+    if n>l.max_sets{return Err(Error::Limit("context sets"));}
+    let header=8+2*n;
+    if cov<header||cls<header||cov>b.len()||cls>b.len(){return Err(Error::Invalid("class context offset"));}
+    let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,65536)?;
+    let classes=crate::parse_glyph_class_def(&b[cls..],glyph_count,n as u32,l.max_sets,65536)?;
+    let sets=parse_context_sets(b,n,8,header,n as u32,lookup_count,l)?;
+    Ok(ClassContextSubstitution{coverage,classes,sets})
 }

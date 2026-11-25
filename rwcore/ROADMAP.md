@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #93, not full Word compatibility.
+Status below is baseline at CI #94, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -53,8 +53,9 @@ Status below is baseline at CI #93, not full Word compatibility.
 | C4.4a5b | Real-font direct type 3 reference | Verified |
 | C4.4a6a | Standalone ligature substitution and contraction | Verified |
 | C4.4a6b | Real-font direct type 4 reference | Verified |
-| C4.4a7a | Contextual substitution format 1 parsing and matching | Source implemented; CI pending |
-| C4.4a7b | ClassDef and contextual format 2 | Planned |
+| C4.4a7a | Contextual substitution format 1 parsing and matching | Verified |
+| C4.4a7b | ClassDef and contextual format 2 | Source implemented; CI pending |
+| C4.4a7c | Contextual format 3 coverage matching | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
