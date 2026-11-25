@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #57, not full Word compatibility.
+Status below is baseline at CI #58, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -16,8 +16,10 @@ Status below is baseline at CI #57, not full Word compatibility.
 | C2.4d-1 | Floating anchor metadata | Verified |
 | C2.4d-2 | Position and text wrap algorithms | Verified |
 | C2.4e | Picture crop, rotation, geometry | Verified |
-| C2.4f | Media/document integration acceptance | Source implemented; CI pending |
-| C3 | Document tree, incremental editing transactions | Planned |
+| C2.4f | Media/document integration acceptance | Verified |
+| C3.1 | Atomic run edits, positions and anchors | Source implemented; CI pending |
+| C3.2 | Selection ranges and cross-run edits | Planned |
+| C3.3 | Undo/redo, structural transactions and validation | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

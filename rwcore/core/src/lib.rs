@@ -88,3 +88,6 @@ pub use picture_geometry::{parse_picture_geometry, PictureCrop, PictureTransform
 
 pub mod drawing_integration;
 pub use drawing_integration::{PictureGeometryState, RunDrawingKind, RunDrawingAt, PictureKindRef, PictureAtRef, PictureOccurrence, DocumentWithMedia, read_docx_with_media};
+
+pub mod edit;
+pub use edit::{CellStep,RunPath,TextUnit,text_byte_offset,text_offset_from_byte,InsertAffinity,InteriorAnchorPolicy,TextEdit,EditLimits,EditReport,apply_text_transaction};
