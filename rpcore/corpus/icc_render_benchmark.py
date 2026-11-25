@@ -408,18 +408,18 @@ def absolute_matrix_gate(a,lib,work):
     finally:lib.cmsSetAdaptationState(old)
     return results
 
-def partial_render_gate(a,lib,work):
+def partial_render_gate(a,lib,work,profile=None,n=3,expect_change=True,repeat=False):
     # Independent endpoint interpolation: solve CHAD inverse with explicit
     # adjugate, use LCMS relative XYZ and XYZ->RGB transforms. The chosen
     # linear cone-gain policy equals interpolation of the two XYZ endpoints.
     import os
     import math
-    profile=wide_rgb_profile(lib)
+    profile=wide_rgb_profile(lib) if profile is None else profile
     tags={}
     for i in range(S.unpack_from('>I',profile,128)[0]):
         name,off,size=S.unpack_from('>4sII',profile,132+12*i)
         tags[name]=profile[off:off+size]
-    chad=tags[b'chad']
+    chad=tags.get(b'chad',b'sf32'+bytes(4)+S.pack('>9i',65536,0,0,0,65536,0,0,0,65536))
     assert chad[:8]==b'sf32'+bytes(4) and len(chad)==44
     v=[x/65536 for x in S.unpack_from('>9i',chad,8)]
     aa,bb,cc,dd,ee,ff,gg,hh,ii=v
@@ -429,23 +429,24 @@ def partial_render_gate(a,lib,work):
     det=aa*adj[0]+bb*adj[3]+cc*adj[6]
     inverse=[x/det for x in adj]
     white=[x/65536 for x in S.unpack_from('>3i',tags[b'wtpt'],8)]
-    scale=[x/y for x,y in zip(white,(.9642,1.,.8249))]
+    scale=[1.,1.,1.] if profile[8]==2 and profile[12:16]==b'mntr' else [x/y for x,y in zip(white,(.9642,1.,.8249))]
     buf=C.create_string_buffer(profile)
     src=lib.cmsOpenProfileFromMem(buf,len(profile));dst=lib.cmsCreateXYZProfile()
     t=None
     results=[]
     try:
         if not src or not dst:raise RuntimeError('partial reference profile')
-        t=lib.cmsCreateTransform(src,RGB_DOUBLE,dst,XYZ_DOUBLE,1,0)
+        t=lib.cmsCreateTransform(src,RGB_DOUBLE if n==3 else (1<<22)|(3<<16)|(1<<3),dst,XYZ_DOUBLE,1,0)
         if not t:raise RuntimeError('partial reference XYZ')
         samples=[(0,0,0),(255,255,255),(255,0,0),(0,255,0),(0,0,255),(17,127,239),(128,128,128),(2,64,197)]
+        if n==1:samples=[(v,) for v in (0,2,17,64,128,197,239,255)]
         for bits in (8,16):
             raw=samples if bits==8 else [tuple(v*257+(1 if 0<v<255 else 0) for v in row) for row in samples]
-            pdf=work/'partial.pdf';size,rows=make_pdf(pdf,profile,3,raw,bits,intent='AbsoluteColorimetric')
+            pdf=work/'partial.pdf';size,rows=make_pdf(pdf,profile,n,raw,bits,intent='AbsoluteColorimetric')
             relative=[]
             for row in rows:
                 out=(C.c_double*3)()
-                lib.cmsDoTransform(t,(C.c_double*3)(*row['source']),out,1)
+                lib.cmsDoTransform(t,(C.c_double*n)(*row['source']),out,1)
                 relative.append(list(out))
             for degree in (0.,.25,.5,.75,1.):
                 xyz=[]
@@ -457,10 +458,12 @@ def partial_render_gate(a,lib,work):
                     label=f'partial-{bits}-{degree}-{dpi}'
                     png=work/(label+'.png')
                     env=dict(os.environ,RPCORE_RENDER_DPI=str(dpi),RPCORE_ICC_ADAPTATION=str(degree))
+                    if repeat:env['RPCORE_ICC_REPEAT']='1'
                     q=subprocess.run([str(a.probe.resolve()),str(pdf),'render','1',str(png)],env=env,capture_output=True,text=True,timeout=30)
                     fields=dict(line.split('=',1) for line in q.stdout.splitlines() if '=' in line)
                     diag=[v for k,v in fields.items() if k.startswith('icc_diag_')]
-                    if q.returncode or fields.get('status')!='ok' or len(diag)!=2 or any(';rgb_matrix;' not in d for d in diag) or not png.exists():continue
+                    if q.returncode or fields.get('status')!='ok' or len(diag)!=2 or any((';rgb_matrix;' if n==3 else ';gray_trc;') not in d for d in diag) or not png.exists():continue
+                    if repeat and fields.get('icc_repeat')!='ok':continue
                     with Image.open(png) as image:
                         im=image.convert('RGB')
                     if im.size!=tuple(v*dpi//72 for v in size):continue
@@ -477,8 +480,54 @@ def partial_render_gate(a,lib,work):
         if dst:lib.cmsCloseProfile(dst)
     # At least one sample must visibly differ across endpoint degrees.
     endpoints={d:[r['native_rgb'][0] for r in results if r['degree']==d] for d in (0.,1.)}
-    if endpoints[0.]==endpoints[1.]:raise ValueError('partial endpoint output did not change')
+    if (endpoints[0.]!=endpoints[1.])!=expect_change:raise ValueError('unexpected partial endpoint behavior')
     return results
+
+def rebuild_icc(profile,edits):
+    # Synthetic fixture rewrite only; never alter a real calibration profile.
+    tags={}
+    for i in range(S.unpack_from('>I',profile,128)[0]):
+        name,off,size=S.unpack_from('>4sII',profile,132+12*i)
+        tags[name]=profile[off:off+size]
+    for name,data in edits.items():
+        if data is None:tags.pop(name,None)
+        else:tags[name]=data
+    out=bytearray(profile[:128])+bytearray(4+12*len(tags))
+    out[84:100]=bytes(16);S.pack_into('>I',out,128,len(tags))
+    for i,(name,tag) in enumerate(tags.items()):
+        S.pack_into('>4sII',out,132+12*i,name,len(out),len(tag))
+        out+=tag;out+=bytes(-len(out)%4)
+    S.pack_into('>I',out,0,len(out))
+    return bytes(out)
+
+def partial_compat_gate(a,lib,work):
+    import os
+    rgb=wide_rgb_profile(lib)
+    tags={}
+    for i in range(S.unpack_from('>I',rgb,128)[0]):
+        name,off,size=S.unpack_from('>4sII',rgb,132+12*i)
+        tags[name]=rgb[off:off+size]
+    # Original synthetic gray fixture with the same valid D65->D50 CHAD.
+    gray=rebuild_icc(gray_profile(lib),{b'chad':tags[b'chad']})
+    missing=rebuild_icc(rgb,{b'chad':None})
+    results={}
+    for name,profile,n,change in [('gray_chad',gray,1,True),('rgb_missing_chad',missing,3,False)]:
+        rows=partial_render_gate(a,lib,work,profile,n,change,repeat=True)
+        results[name]=rows
+    # A valid but non-Bradford matrix is intentionally unsupported for
+    # partial adaptation; full adaptation must remain native.
+    bad=rebuild_icc(rgb,{b'chad':b'sf32'+bytes(4)+S.pack('>9i',65536,32768,0,0,65536,0,0,0,65536)})
+    pdf=work/'non-bradford.pdf'
+    make_pdf(pdf,bad,3,[(128,128,128)],8,intent='AbsoluteColorimetric')
+    diagnostic=[]
+    for degree in (0.5,1.):
+        png=work/f'non-bradford-{degree}.png'
+        q=subprocess.run([str(a.probe.resolve()),str(pdf),'render','1',str(png)],env=dict(os.environ,RPCORE_RENDER_DPI='72',RPCORE_ICC_ADAPTATION=str(degree)),capture_output=True,text=True,timeout=30)
+        fields=dict(line.split('=',1) for line in q.stdout.splitlines() if '=' in line)
+        diag=[v for k,v in fields.items() if k.startswith('icc_diag_')]
+        wanted=';alternate;ICC non-Bradford CHAD' if degree==0.5 else ';rgb_matrix;'
+        diagnostic.append({'degree':degree,'diagnostics':diag,'pass':q.returncode==0 and fields.get('status')=='ok' and len(diag)==2 and all(wanted in d for d in diag)})
+    return results,diagnostic
 
 def main():
     p=argparse.ArgumentParser()
@@ -565,6 +614,7 @@ def main():
         report['absolute_checks']=absolute_gate(a,lib,work)
         report['absolute_matrix_checks']=absolute_matrix_gate(a,lib,work)
         report['partial_render_checks']=partial_render_gate(a,lib,work)
+        report['partial_compat'],report['partial_diagnostics']=partial_compat_gate(a,lib,work)
     total=288
     passed=sum(r['pass'] for r in report['rows'])
     report['expected_rows']=total
@@ -578,6 +628,9 @@ def main():
         key=render['case'];rr=[r for r in report['rows'] if r['case']==key]
         mx=[max((r[k] for r in rr),default='—') for k in ('parity_error','lcms_error','alpha_error','poppler_error')]
         lines.append(f"| {key} | {len(rr)} | {sum(r['pass'] for r in rr)} | "+' | '.join(map(str,mx))+' |')
+    for key,rows in report['partial_compat'].items():
+        lines+=['',f"Partial compatibility {key}: {sum(r['pass'] for r in rows)}/160 observations passed; max RGB8 error {max((r['max_error'] for r in rows),default='missing')}."]
+    lines+=['',f"Non-Bradford diagnostics: {sum(r['pass'] for r in report['partial_diagnostics'])}/2 passed."]
     lines+=['',f"Partial Bradford render: {sum(r['pass'] for r in report['partial_render_checks'])}/160 observations passed; max RGB8 error {max((r['max_error'] for r in report['partial_render_checks']),default='missing')}."]
     lines+=['',f"Absolute RGB/Gray: {sum(r['pass'] for r in report['absolute_matrix_checks'])}/384 observations passed; max LCMS RGB8 error {max((r['max_error'] for r in report['absolute_matrix_checks']),default='missing')}."]
     lines+=['',f"Absolute legacy: {sum(r['pass'] for r in report['absolute_checks'])}/192 observations passed; max LCMS RGB8 error {max((r['max_error'] for r in report['absolute_checks']),default='missing')}."]
@@ -588,7 +641,7 @@ def main():
         lines.append(f"- {check['profile']}: {check['status']}, max RGB error {check.get('max_rgb_error','—')}, {'PASS' if check['pass'] else 'FAIL'}")
     lines+=['','Unmodified LCMS sRGB and generated wide-gamut matrix profile, sampled baseline and original synthetic CMYK LUT. Includes three synthetic MPE D2B1 profiles (matrix, CLUT, mixed). No measured printer or monitor calibration claim.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
-    return int(len(report['partial_render_checks'])!=160 or not all(r['pass'] for r in report['partial_render_checks']) or len(report['absolute_matrix_checks'])!=384 or not all(r['pass'] for r in report['absolute_matrix_checks']) or len(report['absolute_checks'])!=192 or not all(r['pass'] for r in report['absolute_checks']) or len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
+    return int(len(report['partial_compat'])!=2 or any(len(rows)!=160 or not all(r['pass'] for r in rows) for rows in report['partial_compat'].values()) or len(report['partial_diagnostics'])!=2 or not all(r['pass'] for r in report['partial_diagnostics']) or len(report['partial_render_checks'])!=160 or not all(r['pass'] for r in report['partial_render_checks']) or len(report['absolute_matrix_checks'])!=384 or not all(r['pass'] for r in report['absolute_matrix_checks']) or len(report['absolute_checks'])!=192 or not all(r['pass'] for r in report['absolute_checks']) or len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
 
 if __name__=='__main__':
     raise SystemExit(main())

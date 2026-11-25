@@ -25,6 +25,22 @@ fn report_icc(v:&[rpcore::icc::ProfileDiagnostic]){
     }
     println!("icc_vector_native={}\nicc_vector_alternate={}\nicc_image_native={}\nicc_image_alternate={}",counts[0],counts[1],counts[2],counts[3]);
 }
+// Same Document instance, separate page passes, alternating adaptation.
+fn render_checked(doc:&Document<'_>,p:&PageInfo,opt:Options,fonts:Option<&rpcore::raster::StandardFontSet>,quality:TextQuality,degree:rpcore::icc::AdaptationDegree)->rpcore::Result<rpcore::raster::SubstitutedBitmap>{
+    if std::env::var("RPCORE_ICC_REPEAT").as_deref()!=Ok("1"){
+        return doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,degree);
+    }
+    let full=rpcore::icc::AdaptationDegree::default();
+    let before=doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,full)?;
+    let selected=doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,degree)?;
+    let after=doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,full)?;
+    let repeated=doc.render_page_with_adaptation(p,opt,MAX_CONTENT_BYTES,fonts,quality,degree)?;
+    if before.bitmap!=after.bitmap||before.icc_profiles!=after.icc_profiles||selected.bitmap!=repeated.bitmap||selected.icc_profiles!=repeated.icc_profiles{
+        return Err(Error::Invalid("ICC adaptation repeat mismatch"));
+    }
+    println!("icc_repeat=ok");
+    Ok(selected)
+}
 fn run()->Result<(),Box<dyn std::error::Error>>{
     let mut args=std::env::args_os().skip(1);
     let path=args.next().ok_or("usage: corpus_probe FILE inspect|content|text|render|math [PAGE [OUTPUT.png or normalized rectangle]]")?;
@@ -122,11 +138,11 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
         },
         "render"=>match if let Some(dir)=std::env::var_os("RPCORE_STANDARD_FONT_DIR"){
             let fonts=urw::load(std::path::Path::new(&dir))?;
-            doc.render_page_with_adaptation(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,Some(&fonts),quality,degree).map(|v|{
+            render_checked(&doc,p,Options{scale,allow_missing_text:false},Some(&fonts),quality,degree).map(|v|{
                 let names=v.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(",");
                 println!("substituted_fonts={names}");report_icc(&v.icc_profiles);v.bitmap
             })
-        }else{doc.render_page_with_adaptation(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,None,quality,degree).map(|v|{report_icc(&v.icc_profiles);v.bitmap})}{
+        }else{render_checked(&doc,p,Options{scale,allow_missing_text:false},None,quality,degree).map(|v|{report_icc(&v.icc_profiles);v.bitmap})}{
             Ok(b)=>{
                 if b.missing_text{Err(Error::Invalid("strict render returned missing text"))}else{
                     let png=match b.png(){Ok(v)=>v,Err(e)=>{classify(e);return Ok(());}};
