@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #53, not full Word compatibility.
+Status below is baseline at CI #54, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -13,7 +13,7 @@ Status below is baseline at CI #53, not full Word compatibility.
 | C2.4b | Six raster format header sizes | Verified |
 | C2.4c-1 | Inline DrawingML metadata | Verified |
 | C2.4c-2 | Ordered inline pictures in document runs | Verified |
-| C2.4d-1 | Floating anchor metadata | Next |
+| C2.4d-1 | Floating anchor metadata | Source implemented; CI pending |
 | C2.4d-2 | Position and text wrap algorithms | Planned |
 | C2.4e | Picture crop, rotation, geometry | Planned |
 | C2.4f | Media/document integration acceptance | Planned |

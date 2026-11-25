@@ -107,6 +107,16 @@ pub(crate) fn parse_inline_picture_node(inline:Node<'_, '_>)->Result<InlinePictu
     let (wp,a,pic,r)=if named(inline,WP,"inline"){(WP,A,PIC,R)}
         else if named(inline,WPS,"inline"){(WPS,AS,PICS,RS)}
         else{return Err(Error::Unsupported("inline picture root"));};
+    parse_picture_metadata(inline,wp,a,pic,r)
+}
+/// Shared payload parsing; an anchor is never accepted by the inline API.
+pub(crate) fn parse_anchor_picture_node(anchor:Node<'_, '_>)->Result<InlinePicture,Error>{
+    let (wp,a,pic,r)=if named(anchor,WP,"anchor"){(WP,A,PIC,R)}
+        else if named(anchor,WPS,"anchor"){(WPS,AS,PICS,RS)}
+        else{return Err(Error::Unsupported("floating picture root"));};
+    parse_picture_metadata(anchor,wp,a,pic,r)
+}
+fn parse_picture_metadata(inline:Node<'_, '_>,wp:&str,a:&str,pic:&str,r:&str)->Result<InlinePicture,Error>{
     let extent=one(inline,wp,"extent")?;
     let extent=PictureExtent{cx:positive(extent,"cx")?,cy:positive(extent,"cy")?};
     let document_properties=identity(one(inline,wp,"docPr")?)?;

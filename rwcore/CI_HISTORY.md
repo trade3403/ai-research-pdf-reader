@@ -5,6 +5,7 @@ Earlier runs and their revision-specific acceptance records are retained in READ
 | Run | Code revision | Ubuntu | Windows | macOS | Release |
 |---|---|---:|---:|---:|---|
 | [#53](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45540812833) | 8c64381f980318e01a448d3f86fa1b982da73f4e | 238/238 | 238/238 | 238/238 | All passed |
+| [#54](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45541326941) | 87382c6711bfefd8af0819ff593a6c43bf40c9e8 | 238/238 | 238/238 | 238/238 | All passed |
 
 #53 exact SHA present in all job logs; 0 failed, 0 ignored, 714 executions passed.
 Artifacts metadata verified, unexpired at check:
@@ -13,3 +14,6 @@ Artifacts metadata verified, unexpired at check:
 - Ubuntu lock: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45540812833/artifacts/14989087297
 
 These are Cargo.lock artifacts, not installable software. Artifact bytes/hash comparison not established here.
+
+#54 completed successfully: exact checkout revision verified in each job log, 238 passed per platform, zero failed/ignored, release profile finished. Documentation-only handoff baseline.
+Lock artifacts (metadata, not installer): [macOS](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45541326941/artifacts/14989810839), [Windows](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45541326941/artifacts/14989142251), [Ubuntu](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45541326941/artifacts/14988559215). Artifact ZIP bytes and extracted lockfile equality not verified.

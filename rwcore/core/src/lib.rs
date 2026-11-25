@@ -76,3 +76,6 @@ pub use image_header::{parse_image_dimensions, ImageDimensions, ImageLimits};
 
 pub mod drawing_inline;
 pub use drawing_inline::{parse_inline_picture, emu_to_twips, PictureExtent, PictureIdentity, InlinePicture, InlineMediaBindings};
+
+pub mod drawing_anchor;
+pub use drawing_anchor::{parse_floating_picture, FloatingPicture, AnchorDistances, RelativeFrom, AnchorAlignment, PositionValue, AnchorPosition, AnchorWrap, WrapSide};
