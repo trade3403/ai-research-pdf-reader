@@ -2,6 +2,10 @@
 
 更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.7 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
+## 最新验收记录（优先于历史状态表）
+
+2026-11-25 最新：D1.10f [#97 / 45582922442](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45582922442) 已直接核验 success；CPU 日志 122 workspace + 56 portable = 178/178，INT8 数学 12 组、RPQ8 格式 17 个拒绝，FP32/INT8 各2段4片段、1数值审计、1负例通过。D1.10g [#98 / 45613637482](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482) 的 [CPU 日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45613637482/job/139203295512) 确认 paragraph.rs:526 两处 assert rustfmt 换行失败；Clippy/测试未执行，真实专项查询时仍运行。按日志仅修正两处断言格式，不改变算法和测试。最新 [#99 / 45614479395](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45614479395) 查询时 pending，尚无 jobs 或 commit status，未证明 Token 错误。现可使用 GitHub fetch GET https://api.github.com/repos/trade3403/ai-research-pdf-reader/actions/runs?branch=feature%2Frptranslate&event=push&per_page=5 直接获取 push Run ID；再用 /actions/runs/{id}/jobs 及 job logs 查询。不要使用仅返回 PR 的 commit workflow runs 包装器。状态回传已无必要，本次移除两个新增状态任务，工作流与 af64f5e 版本完全一致，保留原验收命令、条件、权限和全部提交触发标记。未取消已有 CI；新提交全量待验收，不开始下一阶段。
+
 ## 状态总览
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |

@@ -526,8 +526,12 @@ mod tests {
 
     #[test]
     fn repeated_suffix_regression() {
-        assert!(repeated_clause("显示我们二维区域中层的几何。2D区域中层的几何。"));
-        assert!(repeated_clause("结果表明研究区的地震波传播。研究区的地震波传播。"));
+        assert!(repeated_clause(
+            "显示我们二维区域中层的几何。2D区域中层的几何。"
+        ));
+        assert!(repeated_clause(
+            "结果表明研究区的地震波传播。研究区的地震波传播。"
+        ));
         assert!(!repeated_clause("研究区的地震波传播。研究区的地震波衰减。"));
         assert!(!repeated_clause("结果稳定。仍然稳定。"));
     }
