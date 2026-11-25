@@ -49,3 +49,6 @@ pub mod table_properties;
 pub use table_properties::{Appearance, TableWidth, TableEdge, TableColor, TableBorder};
 
 pub use table_properties::{TableShading, TableLayout, CellVerticalAlign, RowHeight, RowHeightRule};
+
+pub mod table_effective;
+pub use table_effective::{resolve_effective_cell, resolve_preferred_width, EffectiveCell, PreferredWidth, TableDirection, PropertySource, Sourced};
