@@ -76,3 +76,5 @@
 - C4.4a3b pending CI: real direct type 1 subtable fixtures only; no extension lookup execution, script/language scheduling, GDEF filtering, Arabic shaping or full shaping acceptance. Reference generated independently from raw font bytes, not an external shaping engine.
 
 - C4.4a4a standalone multiple substitution; zero-length sequences rejected per spec, no real type 2 acceptance yet, no GDEF, cluster propagation or lookup scheduling; overlapping payload validation not comprehensive.
+
+- C4.4a4b: real direct Type 2 reference uses one font family, no extension lookup, GDEF filtering, cluster propagation or Arabic shaping acceptance; independent reference from raw bytes, not external shaping engine.

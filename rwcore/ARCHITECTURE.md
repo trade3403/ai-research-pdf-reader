@@ -84,3 +84,5 @@ C4.4a3a pending CI: standalone type 1 format 1 modulo-65536 delta and format 2 e
 C4.4a3b pending CI: independent offline JS raw SFNT GSUB lookup directory and Coverage decoding produced all direct type 1 mappings for ABeeZee Regular/Italic and Aref Ruqaa Regular. Test integration traverses production GSUB layout and validates each subtable mapping over entire face glyph domain, including misses. Abel fixture has no GSUB. No execution scheduling.
 
 C4.4a4a pending CI: MultipleSubst format 1 coverage-indexed nonempty sequences, validated output IDs, cumulative expanded glyph budget including shared offsets; single-position atomic bounded expansion. No scheduling or recursive substitution.
+
+C4.4a4b pending CI: independently extracted direct Type 2 reference from Aref Ruqaa original SFNT bytes, all six subtables, full face glyph-domain comparison and atomic expansion budget tests. ABeeZee direct Type 2 absence verified in tests. No scheduling.

@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #87, not full Word compatibility.
+Status below is baseline at CI #88, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -47,8 +47,9 @@ Status below is baseline at CI #87, not full Word compatibility.
 | C4.4a2b | GSUB child structures and cross-index validation | Verified |
 | C4.4a3a | Standalone single substitution format 1/2 | Verified |
 | C4.4a3b | Real-font direct type 1 reference and integration | Verified |
-| C4.4a4a | Standalone multiple substitution and bounded expansion | Source implemented; CI pending |
-| C4.4a4b | Real-font direct type 2 reference | Planned |
+| C4.4a4a | Standalone multiple substitution and bounded expansion | Verified |
+| C4.4a4b | Real-font direct type 2 reference | Source implemented; CI pending |
+| C4.4a5 | Alternate substitution | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
