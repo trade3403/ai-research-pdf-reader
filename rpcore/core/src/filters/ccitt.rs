@@ -131,6 +131,7 @@ pub struct MmrImage{
     pub width:u32,pub height:u32,pub stride:usize,pub packed:Vec<u8>,
     pub mode_counts:[u64;9],
     pub encoded_bits:usize,
+    pub eofb_present:bool,
 }
 fn charge(left:&mut u64,n:u64)->Result<()>{
     *left=left.checked_sub(n).ok_or(Error::Limit("CCITT MMR work"))?;
@@ -152,6 +153,17 @@ fn paint(row:&mut[u8],start:u32,end:u32,black:bool){
 /// alignment between rows, uncompressed extension, multi-strip TIFF parser,
 /// error recovery or PDF-specific EndOfBlock policy is implemented here.
 pub fn decode_mmr(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
+    decode_mmr_inner(data,width,height,work_limit,false)
+}
+/// T.88 6.2.6: for a single bitmap with a known byte count, EOFB
+/// is optional. Accept either exact row data plus up to seven alignment
+/// bits, or exact EOFB plus up to seven alignment bits. Alignment bits
+/// are ignored (T.88 does not prescribe their value). Reject any other
+/// full trailing bytes, a deliberately strict subset of optional EOFB.
+pub fn decode_mmr_known_length(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
+    decode_mmr_inner(data,width,height,work_limit,true)
+}
+fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb:bool)->Result<MmrImage>{
     if width==0||height==0{return Err(Error::Invalid("CCITT MMR dimensions"));}
     let area=u64::from(width)*u64::from(height);
     if width>MAX_RUN||height>MAX_RUN||area>MAX_MMR_PIXELS{return Err(Error::Limit("CCITT MMR dimensions"));}
@@ -207,11 +219,17 @@ pub fn decode_mmr(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrIma
             if bit!=previous{refs.push(x);previous=bit;}
         }
     }
-    if reader.mode()?!=Mode::EndOfBlock{return Err(Error::Invalid("CCITT MMR missing EOFB"));}
+    let eofb_present=if optional_eofb&&reader.remaining()<=7{false}else{
+        if reader.mode()?!=Mode::EndOfBlock{return Err(Error::Invalid("CCITT MMR missing EOFB"));}
+        true
+    };
     let encoded_bits=reader.position();
     if reader.remaining()>7{return Err(Error::Invalid("CCITT MMR trailing bytes"));}
-    while reader.remaining()!=0{if reader.bit()?!=0{return Err(Error::Invalid("CCITT MMR nonzero padding"));}}
-    Ok(MmrImage{width,height,stride,packed,mode_counts,encoded_bits})
+    while reader.remaining()!=0{
+        let bit=reader.bit()?;
+        if !optional_eofb&&bit!=0{return Err(Error::Invalid("CCITT MMR nonzero padding"));}
+    }
+    Ok(MmrImage{width,height,stride,packed,mode_counts,encoded_bits,eofb_present})
 }
 
 #[cfg(test)]
@@ -365,5 +383,27 @@ mod tests{
         for b in [pack("001001101010000110111"),pack("011"),pack("000000000001000000000001")]{
             assert!(decode_mmr(&b,13,1,MAX_MMR_WORK).is_err());
         }
+    }
+
+    #[test]fn mmr_known_length_optional_eofb(){
+        // Four white rows: four V0 bits. With and without EOFB.
+        for data in [vec![0xf0],vec![0xff],hex("f0010010"),hex("f001001f")]{
+            let a=decode_mmr_known_length(&data,13,4,MAX_MMR_WORK).unwrap();
+            assert_eq!(a.packed,vec![0;8]);assert_eq!(a.eofb_present,data.len()==4);
+            assert_eq!(a.encoded_bits,if a.eofb_present{28}else{4});
+        }
+        assert!(decode_mmr(&[0xf0],13,4,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&hex("f001001f"),13,4,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr(&hex("f0010010"),13,4,MAX_MMR_WORK).unwrap().eofb_present);
+        let a=decode_mmr_known_length(&[255],1,8,MAX_MMR_WORK).unwrap();
+        assert_eq!(a.encoded_bits,8);assert!(!a.eofb_present);
+    }
+    #[test]fn mmr_known_length_rejects_extra_and_partial_rows(){
+        for s in ["f000","f001","f00100","f001001000","00","e0"]{
+            assert!(decode_mmr_known_length(&hex(s),13,4,MAX_MMR_WORK).is_err(),"{s}");
+        }
+        assert!(decode_mmr_known_length(&[255],1,9,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr_known_length(&[],13,4,MAX_MMR_WORK).is_err());
+        assert!(decode_mmr_known_length(&[0xf0],13,4,0).is_err());
     }
 }
