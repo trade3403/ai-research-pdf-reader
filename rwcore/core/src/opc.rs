@@ -149,6 +149,7 @@ fn read_docx_impl(bytes: &[u8], limits: Limits, load_stories: bool) -> Result<Do
         }
     }
     use crate::section::{DocumentSection, SectionEnd, parse_section_node};
+    let mut table_budget = crate::table::TableBudget::default();
     let mut section_start = 0;
     let mut final_section_seen = false;
     for node in body.children().filter(|n| n.is_element()) {
@@ -167,7 +168,7 @@ fn read_docx_impl(bytes: &[u8], limits: Limits, load_stories: bool) -> Result<Do
             continue;
         }
         if named(node, ns, "tbl") {
-            let table = crate::table::parse_table_node(node, ns)?;
+            let table = crate::table::parse_table_node_budget(node, ns, 1, &mut table_budget)?;
             for message in &table.diagnostics { warn(&mut document, message.clone()); }
             document.blocks.push(Block::Table(Box::new(table)));
             continue;

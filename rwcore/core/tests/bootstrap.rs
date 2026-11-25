@@ -278,7 +278,7 @@ fn main_table_merges_and_direct_properties_use_existing_engines() {
 }
 #[test]
 fn main_table_diagnostics_and_unknown_blocks_retained() {
-    let d=section_doc("<w:sdt/><w:tbl><w:tblPr><w:tblLook/></w:tblPr><w:tr><w:tc><w:tbl/><w:p/></w:tc></w:tr></w:tbl>").unwrap();
+    let d=section_doc("<w:sdt/><w:tbl><w:tblPr><w:tblLook/></w:tblPr><w:tr><w:tc><x:tbl xmlns:x='urn:foreign'/><w:p/></w:tc></w:tr></w:tbl>").unwrap();
     assert!(matches!(&d.blocks[0],Block::Unsupported{name} if name=="sdt"));
     let Block::Table(t)=&d.blocks[1] else {panic!("table expected")};
     assert_eq!(t.diagnostics.len(),2);
@@ -300,4 +300,16 @@ fn main_tables_also_load_in_story_opt_in_reader() {
     assert!(matches!(&d.blocks[0],Block::Table(_)));
     assert!(d.header_footer.is_some());
     assert_eq!(d.sections[0].blocks,0..2);
+}
+
+
+#[test]
+fn main_document_nested_tables_and_aggregate_table_budget() {
+    let d=section_doc("<w:tbl><w:tr><w:tc><w:tbl><w:tr><w:tc><w:p><w:r><w:t>内层</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/></w:tc></w:tr></w:tbl><w:p/>").unwrap();
+    let Block::Table(t)=&d.blocks[0] else {panic!("outer table")};
+    let Block::Table(n)=&t.rows[0].cells[0].blocks[0] else {panic!("inner table")};
+    let Block::Paragraph(p)=&n.rows[0].cells[0].blocks[0] else {panic!("inner paragraph")};
+    assert_eq!(p.text(),"内层");
+    assert_eq!(d.sections[0].blocks,0..2);
+    assert_eq!(section_doc(&"<w:tbl/>".repeat(4097)),Err(Error::Limit("total tables")));
 }

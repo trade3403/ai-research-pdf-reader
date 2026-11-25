@@ -9,6 +9,22 @@ const STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
 const MAX_COLUMNS: usize = 256;
 const MAX_ROWS: usize = 16384;
 const MAX_CELLS: usize = 65536;
+const MAX_NESTING: usize = 16;
+const MAX_TOTAL_TABLES: usize = 4096;
+const MAX_TOTAL_ROWS: usize = 32768;
+
+/// Shared by a whole standalone table tree or by the main document body.
+#[derive(Default)]
+pub(crate) struct TableBudget {
+    tables: usize,
+    rows: usize,
+    cells: usize,
+}
+fn spend(used: &mut usize, limit: usize, label: &'static str) -> Result<(), Error> {
+    if *used >= limit { return Err(Error::Limit(label)); }
+    *used += 1;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Table {
@@ -88,7 +104,7 @@ fn paragraph(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>) -> Paragr
     p
 }
 
-fn cell(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>) -> Result<TableCell, Error> {
+fn cell(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>, depth: usize, budget: &mut TableBudget) -> Result<TableCell, Error> {
     let mut out = TableCell::default();
     let mut seen = false;
     for child in node.children().filter(|n| n.is_element()) {
@@ -112,6 +128,10 @@ fn cell(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>) -> Result<Tabl
             }
         } else if named(child, ns, "p") {
             out.blocks.push(Block::Paragraph(paragraph(child, ns, warnings)));
+        } else if named(child, ns, "tbl") {
+            let nested = parse_table_node_budget(child, ns, depth + 1, budget)?;
+            warnings.extend(nested.diagnostics.iter().cloned());
+            out.blocks.push(Block::Table(Box::new(nested)));
         } else {
             let name = child.tag_name().name().to_owned();
             warnings.push(format!("Unsupported table cell block: {name}"));
@@ -121,7 +141,7 @@ fn cell(node: Node<'_, '_>, ns: &str, warnings: &mut Vec<String>) -> Result<Tabl
     Ok(out)
 }
 
-/// Parse a single table without expanding nested tables or resolving merges.
+/// Parse a bounded table tree, retaining nested tables without resolving merges.
 /// Missing grid metadata and ragged rows are retained, not silently repaired.
 pub fn parse_table(bytes: &[u8], limits: Limits) -> Result<Table, Error> {
     if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
@@ -131,10 +151,12 @@ pub fn parse_table(bytes: &[u8], limits: Limits) -> Result<Table, Error> {
     if !matches!(ns, WORD | STRICT) || !named(root, ns, "tbl") {
         return Err(Error::Invalid("table root"));
     }
-    parse_table_node(root, ns)
+    parse_table_node_budget(root, ns, 1, &mut TableBudget::default())
 }
 
-pub(crate) fn parse_table_node(root: Node<'_, '_>, ns: &str) -> Result<Table, Error> {
+pub(crate) fn parse_table_node_budget(root: Node<'_, '_>, ns: &str, depth: usize, budget: &mut TableBudget) -> Result<Table, Error> {
+    if depth > MAX_NESTING { return Err(Error::Limit("table nesting depth")); }
+    spend(&mut budget.tables, MAX_TOTAL_TABLES, "total tables")?;
     let mut out = Table::default();
     let mut grid_seen = false;
     let mut props_seen = false;
@@ -163,6 +185,7 @@ pub(crate) fn parse_table_node(root: Node<'_, '_>, ns: &str) -> Result<Table, Er
             }
         } else if named(child, ns, "tr") {
             if out.rows.len() >= MAX_ROWS { return Err(Error::Limit("table rows")); }
+            spend(&mut budget.rows, MAX_TOTAL_ROWS, "total table rows")?;
             let mut row = TableRow::default();
             let mut props_seen = false;
             for item in child.children().filter(|n| n.is_element()) {
@@ -187,7 +210,8 @@ pub(crate) fn parse_table_node(root: Node<'_, '_>, ns: &str) -> Result<Table, Er
                     if row.cells.len() >= MAX_COLUMNS { return Err(Error::Limit("table columns")); }
                     if cells >= MAX_CELLS { return Err(Error::Limit("table cells")); }
                     cells += 1;
-                    row.cells.push(cell(item, ns, &mut out.diagnostics)?);
+                    spend(&mut budget.cells, MAX_CELLS, "total table cells")?;
+                    row.cells.push(cell(item, ns, &mut out.diagnostics, depth, budget)?);
                 } else {
                     out.diagnostics.push(format!("Unsupported table row element: {}",item.tag_name().name()));
                 }
