@@ -61,3 +61,6 @@ pub use table_geometry::{compute_table_geometry, compute_declared_grid_geometry,
 
 pub mod table_rows;
 pub use table_rows::{layout_table_rows, place_vertical, TableRowLayout, CellMeasurement, VerticalPlacement};
+
+pub mod table_columns;
+pub use table_columns::{allocate_table_columns, TableColumnLayout, CellWidthMeasurement, CellWidthResult};
