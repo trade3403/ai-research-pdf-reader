@@ -1,4 +1,5 @@
 //! Local translation API and historical D1.0 smoke test.
+pub mod context;
 pub mod glossary;
 pub mod offline;
 pub mod protection;

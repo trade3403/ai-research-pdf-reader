@@ -18,7 +18,12 @@ use rpmodel::{
 };
 use std::path::Path;
 
-use crate::{glossary::Glossary, protection::Term, scientific};
+use crate::{
+    context::{ContextEngine, Decision, DocumentContext},
+    glossary::Glossary,
+    protection::Term,
+    scientific,
+};
 
 pub const LANGUAGE: &str = ">>cmn_Hans<<";
 
@@ -247,6 +252,28 @@ impl TextSession<'_> {
         scientific::translate_indexed_with(text, glossary, |gap| {
             self.translate(gap, options, kernel)
         })
+    }
+
+    /// Classify this segment, then reuse the verified glossary translation path.
+    /// General fallback does not impose domain-specific homonyms.
+    pub fn translate_contextual(
+        &self,
+        text: &str,
+        engine: &ContextEngine,
+        document: Option<&DocumentContext>,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<(Decision, scientific::ScientificTranslation), scientific::Error> {
+        let decision = engine
+            .decide(text, document)
+            .map_err(scientific::Error::Plan)?;
+        let result = self.translate_glossary(
+            text,
+            engine.glossary(decision.domain),
+            options,
+            kernel,
+        )?;
+        Ok((decision, result))
     }
 
     fn validate_scientific(

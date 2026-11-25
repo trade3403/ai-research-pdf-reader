@@ -316,3 +316,11 @@ jobs:
           target/release/examples/glossary_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
           target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain.' 1 64 | grep -F '最大应变'
           if target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" unknown 'strain' 1 64; then exit 1; fi
+      - name: Verify contextual domain selection and term abstention through actual models
+        if: contains(github.event.head_commit.message, 'D1.10d')
+        run: |
+          set -eu
+          cargo build --locked --offline --release -p rptranslate --example context_reference
+          target/release/examples/context_reference "$RUNNER_TEMP/rpmodel-v1" fp32
+          target/release/examples/context_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
+          target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" auto 'Soil shear strain increased.' 1 64 | grep -F '应变'

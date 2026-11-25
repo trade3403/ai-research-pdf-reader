@@ -1,5 +1,6 @@
 use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, matmul::Kernel, mixed_model::PAYLOAD_BYTES};
 use rptranslate::{
+    context::ContextEngine,
     glossary::{Domain, Glossary},
     offline::OfflineTranslator,
 };
@@ -19,8 +20,11 @@ fn run_glossary(
     text: &str,
     rest: &[String],
 ) -> Result<(), String> {
-    let domain = Domain::parse(domain).ok_or("unknown glossary domain")?;
-    let glossary = Glossary::builtin(domain).map_err(|e| format!("{e:?}"))?;
+    let explicit = if domain == "auto" {
+        None
+    } else {
+        Some(Domain::parse(domain).ok_or("unknown glossary domain")?)
+    };
     let translator = if command.ends_with("-int8") {
         OfflineTranslator::load_mixed(Path::new(root), PAYLOAD_BYTES)
     } else {
@@ -35,9 +39,19 @@ fn run_glossary(
         options.max_new = limit.parse().map_err(|_| "invalid token limit")?;
     }
     let session = translator.session().map_err(|e| format!("{e:?}"))?;
-    let result = session
-        .translate_glossary(text, &glossary, options, Kernel::Auto)
-        .map_err(|e| format!("{e:?}"))?;
+    let result = if let Some(domain) = explicit {
+        let glossary = Glossary::builtin(domain).map_err(|e| format!("{e:?}"))?;
+        session
+            .translate_glossary(text, &glossary, options, Kernel::Auto)
+            .map_err(|e| format!("{e:?}"))?
+    } else {
+        let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
+        let (decision, result) = session
+            .translate_contextual(text, &engine, None, options, Kernel::Auto)
+            .map_err(|e| format!("{e:?}"))?;
+        eprintln!("Context decision: {decision:?}");
+        result
+    };
     println!("{}", result.text);
     eprintln!(
         "Term spans: {}; protected spans: {}; fragmented context: {}",
