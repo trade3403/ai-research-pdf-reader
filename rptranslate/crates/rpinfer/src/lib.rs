@@ -4,6 +4,7 @@ pub mod decoder;
 pub mod encoder;
 pub mod layers;
 pub mod matmul;
+pub mod search;
 pub mod seq2seq;
 pub mod tensor;
 pub mod transformer;

@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.5 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.6 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -21,14 +21,15 @@
 | D1.6b | 已通过 | post-norm Encoder 单层、多层与源 mask |
 | D1.6c | 已通过 | post-norm Decoder、causal/self 与 cross attention |
 | D1.6d | 已通过 | Encoder-Decoder 联合前向、共享词嵌入、词表 logits |
-| D1.6e | 待验证 | 逐层精度与框架参考对照 |
-| D1.7 | 未开始 | Beam Search |
+| D1.6e | 已通过 | 逐层精度与框架参考对照 |
+| D1.7a | 待验证 | Greedy/Beam、稳定 log-softmax、EOS 与长度控制 |
+| D1.7b | 未开始 | KV cache、参考搜索对照及完整验收 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 7/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -100,10 +101,13 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 新增 Seq2Seq 与 Encoded 源状态、复用源 memory 和独立 mask、共享 embedding 借用、tied/untied LM Head、全序列 logits、末行 logits 和稳定概率。输出 head 连续行点积、不转置整个词表，仍受 Tensor 与单次 MAC 上限。实际 NumPy 2.3.5 FP64 合成模型参考已生成；测试四种矩阵路径、源/目标不同长度、源 mask、prefix 一致性、异常与 untied 权重。实际验收：首轮 [45526919951](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526919951) rustfmt 失败，按日志修正15组格式；[最终代码 0406dc6](https://github.com/trade3403/ai-research-pdf-reader/commit/0406dc6166ae459970ae7db18296864be92299c2)，[复测 45526983338](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526983338) completed/success。联合前向的 NumPy FP64 参考 memory/hidden/logits/probability、末行投影、源 mask、prefix 一致性、untied 输出权重及边界测试通过；workspace 格式、Clippy、单元测试、Release、自检及 portable-only 通过。D1.6d 通过，完整 D1.6 尚未验收。真实模型加载、KV cache、搜索及推理速度均未验证。
 
 ## 当前阶段 D1.6e
-新增 CI 专用 tiny Marian 权重桥接及 PyTorch 2.6.0 CPU / Transformers 4.48.3 独立参考，固定随机种子，2 encoder + 2 decoder，hidden=8、heads=2、vocab=17、ReLU、共享权重、非零 bias；三组序列与 mask、四种计算路径。对照 embedding、每层 attention post-norm、FFN、最终 norm、logits、末行 logits、概率及 argmax；记录逐项最大绝对误差和相对误差（分母下限1e-6），容差 atol/rtol=1e-5。CI 待验证，未标记完整 D1.6 完成。
+新增 CI 专用 tiny Marian 权重桥接及 PyTorch 2.6.0 CPU / Transformers 4.48.3 独立参考，固定随机种子，2 encoder + 2 decoder，hidden=8、heads=2、vocab=17、ReLU、共享权重、非零 bias；三组序列与 mask、四种计算路径。对照 embedding、每层 attention post-norm、FFN、最终 norm、logits、末行 logits、概率及 argmax；记录逐项最大绝对误差和相对误差（分母下限1e-6），容差 atol/rtol=1e-5。实际验收：[代码 dcb854e](https://github.com/trade3403/ai-research-pdf-reader/commit/dcb854e9cdf52141755577a619fd70e55eb03cff)、[Actions 45527441758](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45527441758) completed/success。首轮三组 rustfmt 修正后，基础 CPU CI 与独立 Marian 对照均通过。PyTorch 2.6.0 CPU / Transformers 4.48.3，三组输入×四种 kernel×19个张量=228项，4336元素，最大绝对误差4.76837158e-7，最大相对误差（分母下限1e-6）0.000130250733，logits 最大绝对误差1.78813934e-7；全部满足 atol+rtol*abs(reference) 联合容差，12组 argmax 一致。小尺寸 Parallel 路径可能自动串行，非真实模型、非速度或翻译质量结论。D1.6 合成模型阶段门槛通过。
 
-## 下一阶段 D1.7
-Greedy/Beam Search、自回归 EOS 与长度控制。
+## 当前阶段 D1.7a
+新增自主 search.rs 和 Encoded::generate 入口：beam 1–16、生成1–512 token、词表<=200000、稳定 FP64 log-softmax、partial top-k、确定性 tie-break、EOS、最小/最大生成长度、可选末步强制 EOS、显式 suppress IDs、长度惩罚。采用每步统一保留完成与活动候选的有界策略，非 HF BeamSearchScorer 等价；强制 EOS 保留模型原概率。源 memory 复用，目标前缀重算。固定概率测试与真实自主合成 Seq2Seq 接口测试待 CI。完整 D1.7 尚未验收。
+
+## 下一阶段 D1.7b
+实现可复用 self/cross KV cache 并对照全前缀；独立搜索参考、实际模型 generation 配置差异及完整阶段验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

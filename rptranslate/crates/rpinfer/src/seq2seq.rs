@@ -1,9 +1,10 @@
-//! Joint encoder/decoder forward inference, no autoregressive search yet.
+//! Joint encoder/decoder inference with bounded full-prefix generation.
 use crate::{
     attention::softmax,
     decoder::{Decoder, DecoderMask},
     encoder::Encoder,
     matmul::Kernel,
+    search::{search, Hypothesis, SearchConfig},
     tensor::{buffer, layout, Error, Tensor},
 };
 
@@ -104,6 +105,16 @@ impl<'a> Seq2Seq<'a> {
 }
 
 impl Encoded<'_, '_> {
+    pub fn generate(&self, config: SearchConfig<'_>) -> Result<Vec<Hypothesis>, Error> {
+        let &[vocab, _] = self.model.decoder.embeddings.shape() else {
+            return Err(Error::Shape);
+        };
+        if config.max_new > self.model.decoder.max_positions {
+            return Err(Error::Limit);
+        }
+        search(vocab, config, |prefix| self.next_logits(prefix, None))
+    }
+
     pub fn memory(&self) -> &Tensor {
         &self.memory
     }
@@ -318,6 +329,19 @@ mod tests {
                 altered.next_logits(&[4, 3], None).unwrap().data(),
                 last.data(),
             );
+            let config = SearchConfig {
+                start: 4,
+                eos: 0,
+                beam_width: 1,
+                min_new: 1,
+                max_new: 2,
+                length_penalty: 0.,
+                suppress: &[],
+                force_eos_at_limit: true,
+            };
+            let generated = source.generate(config).unwrap();
+            assert_eq!(generated[0].tokens, [4, 4, 0]);
+            assert!(generated[0].ended);
             assert_eq!(source.next_logits(&[], None), Err(Error::Shape));
             assert_eq!(source.next_logits(&[5], None), Err(Error::Index));
             assert_eq!(
