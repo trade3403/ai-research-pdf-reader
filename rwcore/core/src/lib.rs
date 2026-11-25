@@ -29,3 +29,6 @@ pub use opc::read_docx_with_stories;
 pub use stories::{Story, StoryCatalog, parse_story, parse_page_settings, PageSettings};
 
 pub use stories::{StoryBinding, PageContext, SectionStories, SelectedStories};
+
+pub mod fields;
+pub use fields::{StoryField, FieldKind, FieldEncoding};

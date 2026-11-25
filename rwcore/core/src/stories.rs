@@ -14,6 +14,8 @@ const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub struct Story {
     pub kind: HeaderFooterKind,
     pub blocks: Vec<Block>,
+    /// Field metadata, independent of the cached paragraph text.
+    pub fields: Vec<crate::fields::StoryField>,
     pub diagnostics: Vec<String>,
 }
 
@@ -42,7 +44,7 @@ fn namespace<'a>(root: roxmltree::Node<'a, '_>, name: &str) -> Result<&'a str, E
 }
 
 /// Parse top-level paragraphs, direct formatting, text, tabs and text breaks.
-/// Other elements (including fields, tables and drawings) remain diagnostics;
+/// Field instructions and cached results are retained separately; nested tables and drawings remain diagnostics;
 /// unsupported top-level blocks retain their names.
 pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Result<Story, Error> {
     if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
@@ -50,7 +52,7 @@ pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Resu
     let root = tree.root_element();
     let name = match kind { HeaderFooterKind::Header => "hdr", HeaderFooterKind::Footer => "ftr" };
     let ns = namespace(root, name)?;
-    let mut out = Story { kind, blocks: Vec::new(), diagnostics: Vec::new() };
+    let mut out = Story { kind, blocks: Vec::new(), fields: Vec::new(), diagnostics: Vec::new() };
     for node in root.children().filter(|n| n.is_element()) {
         if !named(node, ns, "p") {
             let name = node.tag_name().name().to_owned();
@@ -58,6 +60,7 @@ pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Resu
             out.blocks.push(Block::Unsupported { name });
             continue;
         }
+        crate::fields::collect_paragraph_fields(node, ns, out.blocks.len(), &mut out.fields)?;
         let mut p = Paragraph::default();
         let mut properties_seen = false;
         for child in node.children().filter(|n| n.is_element()) {
