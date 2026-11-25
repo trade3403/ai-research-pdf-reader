@@ -109,3 +109,5 @@
 - C4.4a8b1: synthetic wrapper integration with real payloads only. Original native Type 7 fixture needed (C4.4a8b2). Larger Noto Sans/Serif retrieval incomplete; absence of native wrappers there was not established. No Type 8 parser or lookup execution, GDEF filtering, cycle protection, full shaping or Word fidelity. Corpus and dependency audit still outstanding.
 
 - C4.4a9a: single contiguous Type 8 subtable pass only, no full lookup scheduling or GDEF filtering. Probe budget counts coverage queries, not individual binary-search comparisons. No native Type 8 font reference yet; native Type 7 reference also outstanding. Payload overlap validation not comprehensive; nested context execution, cluster propagation, Word fidelity and corpus/security/license gates outstanding.
+
+- C4.4a8b2a: native Type 7 fixture found; all-wrapper metadata and eight representative dispatch tests pending CI. Full target decoding and independent content reference still outstanding; no native Type 8 samples in tested fonts. No claim of native Type 8 acceptance, full GSUB execution or Word fidelity. Corpus/security/license gates remain outstanding.

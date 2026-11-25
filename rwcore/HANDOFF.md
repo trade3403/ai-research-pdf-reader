@@ -53,3 +53,6 @@ C4.4a8b1 source pending CI; parent CI #103 verified 687 tests per platform. Nati
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4a9a source pending CI; parent CI #104 verified 690 tests per platform. Native Type 7 reference remains outstanding. Read DEV_STATE.md and verify exact HEAD; no concurrent writers.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4a8b2a source pending CI; parent CI #105 verified 702 tests per platform. Original Type 7 fixture found during Type 8 search; Type 8 reference remains outstanding. Read DEV_STATE.md and verify exact HEAD; no concurrent writers.

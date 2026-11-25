@@ -63,9 +63,10 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4a7e4 | Real-font direct Type 6 reference acceptance | Verified |
 | C4.4a8a | GSUB extension wrapper and target dispatch | Verified |
 | C4.4a8b1 | Real direct targets in synthetic extension wrappers | Verified |
-| C4.4a8b2 | Original native Type 7 font reference | Outstanding: fixture needed |
-| C4.4a9a | Reverse chained single substitution Type 8 | Source implemented; CI pending |
-| C4.4a9b | Real native Type 8 font reference | Planned |
+| C4.4a8b2a | Native Type 7 wrapper inventory and representative dispatch | Source implemented; CI pending |
+| C4.4a8b2b | Full native Type 7 target decoding and reference checks | Planned |
+| C4.4a9a | Reverse chained single substitution Type 8 | Verified |
+| C4.4a9b | Real native Type 8 font reference | Outstanding: fixture needed |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
