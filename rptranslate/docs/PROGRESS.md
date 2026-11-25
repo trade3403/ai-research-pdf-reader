@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-25 D1.9k [#108 / 45650243619](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45650243619) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45650243619/job/139332476838) 四组差异：mixed_model.rs 两行、lib.rs 模块排序、quantized.rs 迭代器换行、sha256.rs 错误表达式。按 rustfmt 日志逐字修复，不改变算法、默认加载方式、内存安全约束及所有测试。真实专项查询时仍运行，未取消。待新提交全量验收，不提前进入D1.9l。
+
 2026-11-25 D1.9j 基线 c59091649e8deffb20f04c0eb395f742f9be25ea / [#107 / 45644239731](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45644239731) 全量 success；131 workspace + 56 portable=187/187，真实三文件 Rust旧/新/hashlib 摘要一致；FP32 1403.670→1372.914ms、RPQ8 372.722→365.572ms、辅助12.604→12.391ms，加载FP32/INT8 1816.819/989.615ms，跨runner仅观察。用户授权D1.9k首批：自主Linux 64位 mmap RAII只读映射，长度/文件类型/预算校验，显式 unsafe 调用者必须保证文件全程不可变且不截断；默认安全文件读取不改，不向正式CLI暴露。直接slice SHA256与RPQ8映射解包入最终数组，统一manifest、索引、语义、配置和预算校验；内部RPQ8校验仍走原Reader，辅助F32仍解码复制。现有RPQ8交错布局不能直接作为分离的推理数组，非全模型零拷贝或常驻mmap，Windows/其他系统保留原路径，后续D1.13验收；需设计安全不可变安装策略才可默认启用。2新增单测（映射预算/字节、slice尾块），扩展SHA边界；真实97矩阵/159辅助全量位级对照、4篡改分别拒绝和同runner顺序耗时，仅测试私有不可变fixture，不设速度门槛。未本地编译，待CI；不提前进入D1.9l；D2独立。
 
 2026-11-25 D1.9j [#106 / 45641446001](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45641446001) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45641446001/job/139300867217) 仅 sha256.rs:191 assert_eq! 需换行；按 rustfmt 日志逐字修复，不改变算法、SHA校验或测试。真实专项查询时仍运行（科学保护翻译步骤），未取消，尚未取得真实SHA测速完整日志。待新提交全量验收，不提前进入D1.9k。

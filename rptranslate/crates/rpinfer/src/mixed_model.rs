@@ -225,10 +225,8 @@ impl MixedModel {
         }
         let q_file = open_file(root, Q_FILE)?;
         let f_file = open_file(root, F_FILE)?;
-        let q =
-            unsafe { MappedFile::open(&q_file, Q_BYTES + 1024 * 1024) }.map_err(debug_error)?;
-        let f =
-            unsafe { MappedFile::open(&f_file, F_BYTES + 1024 * 1024) }.map_err(debug_error)?;
+        let q = unsafe { MappedFile::open(&q_file, Q_BYTES + 1024 * 1024) }.map_err(debug_error)?;
+        let f = unsafe { MappedFile::open(&f_file, F_BYTES + 1024 * 1024) }.map_err(debug_error)?;
         let q_info =
             digest_slice(q.as_bytes(), (Q_BYTES + 1024 * 1024) as u64).map_err(debug_error)?;
         let f_info =

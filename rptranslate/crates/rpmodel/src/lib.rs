@@ -1,8 +1,8 @@
 //! Model metadata and bounded local weight-file reader.
 pub mod config;
-pub mod marian;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod mapped;
+pub mod marian;
 pub mod normalization;
 pub mod package;
 pub mod quantized;

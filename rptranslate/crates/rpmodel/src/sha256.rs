@@ -100,7 +100,10 @@ pub fn digest_reader(mut reader: impl Read, limit: u64) -> io::Result<(u64, Stri
 pub fn digest_slice(bytes: &[u8], limit: u64) -> io::Result<(u64, String)> {
     let total = bytes.len() as u64;
     if total > limit || total > u64::MAX / 8 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "hash size limit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "hash size limit",
+        ));
     }
     let mut state = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,

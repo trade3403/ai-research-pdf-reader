@@ -313,10 +313,7 @@ impl Reader<Cursor<&[u8]>> {
         let end = usize::try_from(end).map_err(|_| Error::Limit)?;
         let raw = self.inner.get_ref().get(start..end).ok_or(Error::Io)?;
         let size = info.block_size as usize;
-        for ((record, dest), scale) in raw
-            .chunks(size + 4)
-            .zip(codes.chunks_mut(size))
-            .zip(scales)
+        for ((record, dest), scale) in raw.chunks(size + 4).zip(codes.chunks_mut(size)).zip(scales)
         {
             let (header, data) = record.split_at(4);
             let value = f32::from_le_bytes(header.try_into().map_err(|_| Error::Format)?);
