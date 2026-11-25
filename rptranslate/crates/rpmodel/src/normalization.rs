@@ -1,5 +1,7 @@
 //! Independent bounded reader for SentencePiece compiled normalization maps.
 //! Only the default prefix/trim/escape whitespace profile is implemented.
+use std::borrow::Cow;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Format,
@@ -15,8 +17,8 @@ const MAX_PREFIX: usize = 256;
 const SPACE: char = '▁';
 
 pub struct CharsMap<'a> {
-    trie: &'a [u8],
-    pool: &'a str,
+    trie: Cow<'a, [u8]>,
+    pool: Cow<'a, str>,
 }
 
 impl<'a> CharsMap<'a> {
@@ -34,8 +36,8 @@ impl<'a> CharsMap<'a> {
             return Err(Error::Format);
         }
         let map = Self {
-            trie,
-            pool: std::str::from_utf8(pool).map_err(|_| Error::Utf8)?,
+            trie: Cow::Borrowed(trie),
+            pool: Cow::Borrowed(std::str::from_utf8(pool).map_err(|_| Error::Utf8)?),
         };
         let root = map.unit(0)?;
         if root & 0x8000_00ff != 0 {
@@ -43,6 +45,14 @@ impl<'a> CharsMap<'a> {
         }
         map.unit(offset(root))?;
         Ok(map)
+    }
+
+    /// Keep a verified map independently of its source ModelProto bytes.
+    pub fn into_owned(self) -> CharsMap<'static> {
+        CharsMap {
+            trie: Cow::Owned(self.trie.into_owned()),
+            pool: Cow::Owned(self.pool.into_owned()),
+        }
     }
 
     fn unit(&self, i: usize) -> Result<u32, Error> {
@@ -54,7 +64,7 @@ impl<'a> CharsMap<'a> {
         ))
     }
 
-    fn replacement(&self, leaf: u32) -> Result<&'a str, Error> {
+    fn replacement(&self, leaf: u32) -> Result<&str, Error> {
         if leaf & 0x8000_0000 == 0 {
             return Err(Error::Format);
         }
@@ -163,6 +173,16 @@ mod tests {
         assert_eq!(map.normalize("  a ab 学  ").unwrap(), "▁A▁Z▁学");
         assert_eq!(map.normalize("").unwrap(), "");
         assert_eq!(map.normalize("  ").unwrap(), "");
+    }
+
+    #[test]
+    fn owned_map_survives_source_release() {
+        let map = {
+            let bytes = sample();
+            CharsMap::parse(&bytes).unwrap().into_owned()
+        };
+        assert_eq!(map.normalize("  a ab 学  ").unwrap(), "▁A▁Z▁学");
+        assert_eq!(map.normalize("").unwrap(), "");
     }
 
     #[test]

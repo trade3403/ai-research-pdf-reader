@@ -138,7 +138,7 @@ impl Backend {
 pub struct OfflineTranslator {
     model: Backend,
     vocabulary: Vocabulary,
-    source_spm: Vec<u8>,
+    tokenizer: NmtUnigram<'static>,
 }
 
 impl OfflineTranslator {
@@ -185,14 +185,17 @@ impl OfflineTranslator {
         {
             return Err(Error::Profile);
         }
-        let translator = Self {
+        // Construct once, with owned normalization bytes and vocabulary index.
+        let tokenizer = Model::parse(&source_spm)
+            .map_err(Error::SentencePiece)?
+            .nmt_unigram()
+            .map_err(Error::SentencePiece)?
+            .into_owned();
+        Ok(Self {
             model,
             vocabulary,
-            source_spm,
-        };
-        // Fail during loading rather than on the first request.
-        translator.session()?;
-        Ok(translator)
+            tokenizer,
+        })
     }
 
     pub fn default_options(&self) -> GenerationOptions {
@@ -218,16 +221,13 @@ impl OfflineTranslator {
         }
     }
 
-    /// Borrow verified source SPM bytes; build the tokenizer once per batch.
+    /// Borrow the resident model, vocabulary and compiled tokenizer.
+    /// Each translation still creates its own source-specific inference state.
     pub fn session(&self) -> Result<TextSession<'_>, Error> {
-        let tokenizer = Model::parse(&self.source_spm)
-            .map_err(Error::SentencePiece)?
-            .nmt_unigram()
-            .map_err(Error::SentencePiece)?;
         Ok(TextSession {
             model: &self.model,
             vocabulary: &self.vocabulary,
-            tokenizer,
+            tokenizer: &self.tokenizer,
         })
     }
 }
@@ -235,7 +235,7 @@ impl OfflineTranslator {
 pub struct TextSession<'a> {
     model: &'a Backend,
     vocabulary: &'a Vocabulary,
-    tokenizer: NmtUnigram<'a>,
+    tokenizer: &'a NmtUnigram<'static>,
 }
 
 impl TextSession<'_> {
@@ -253,7 +253,7 @@ impl TextSession<'_> {
         let input = format!("{LANGUAGE} {text}");
         let tokens = self
             .vocabulary
-            .encode(&self.tokenizer, &input)
+            .encode(self.tokenizer, &input)
             .map_err(Error::Vocabulary)?;
         if tokens.len() > self.model.config().max_positions {
             return Err(Error::SourceTooLong);

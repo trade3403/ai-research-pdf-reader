@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory() as temp:
 runs = collections.defaultdict(list)
 quality = {}
 loads = 0
+reuse = None
 for line in result.stdout.splitlines():
     fields = line.split("\t")
     if fields[0] == "BENCH_LOAD":
@@ -34,6 +35,13 @@ for line in result.stdout.splitlines():
         assert all(math.isfinite(float(v)) and float(v) > 0 for v in (load, session))
         print(f"BENCH_LOAD model_ms={load} session_ms={session} weight_bytes={payload} avx2={avx}", flush=True)
         loads += 1
+    elif fields[0] == "BENCH_REUSE":
+        _, count, rebuild, reused, equal = fields
+        assert reuse is None and int(count) == 6 and equal == "true"
+        reuse = (float(rebuild), float(reused))
+        assert all(math.isfinite(v) and v > 0 for v in reuse)
+        print(f"RESIDENT_REFERENCE PASS precision=fp32 sessions=6 tokens_equal=true "
+              f"repeat_translation_equal=true rebuild_ms={reuse[0]:.6f} reuse_ms={reuse[1]:.6f}", flush=True)
     elif fields[0] == "BENCH_RUN":
         _, case, repeat, mode, source_tokens, generated, seconds = fields
         case, repeat, source_tokens, generated = map(int, (case, repeat, source_tokens, generated))
@@ -52,7 +60,7 @@ for line in result.stdout.splitlines():
         quality[case] = (text, limit == "1", int(generated))
     else:
         raise AssertionError(line)
-assert loads == 1 and len(runs) == 4 and len(quality) == len(CASES)
+assert loads == 1 and reuse is not None and len(runs) == 4 and len(quality) == len(CASES)
 for case in range(2):
     stats = {}
     for mode in ("Full", "Cached"):

@@ -20,6 +20,7 @@ def run(mode, root, temp):
     assert peak > 0
     runs, quality = collections.defaultdict(list), {}
     load = None
+    reuse = None
     for line in proc.stdout.splitlines():
         fields = line.split("\t")
         if fields[0] == "BENCH_LOAD":
@@ -28,6 +29,11 @@ def run(mode, root, temp):
             assert avx in ("true","false")
             assert all(math.isfinite(float(v)) and float(v)>0 for v in (ms,session))
             load = (float(ms),float(session),avx,int(payload))
+        elif fields[0] == "BENCH_REUSE":
+            _, count, rebuild, reused, equal = fields
+            assert reuse is None and int(count) == 6 and equal == "true"
+            reuse = (float(rebuild), float(reused))
+            assert all(math.isfinite(v) and v > 0 for v in reuse)
         elif fields[0] == "BENCH_RUN":
             _, case, rep, kernel, src, count, seconds = fields
             case, rep, src, count = map(int,(case,rep,src,count))
@@ -44,7 +50,9 @@ def run(mode, root, temp):
             quality[case] = (actual,count,int(cap))
         else:
             raise AssertionError(line)
-    assert load is not None and len(runs)==4 and len(quality)==len(CASES)
+    assert load is not None and reuse is not None and len(runs)==4 and len(quality)==len(CASES)
+    print(f"RESIDENT_REFERENCE PASS precision={mode} sessions=6 tokens_equal=true "
+          f"repeat_translation_equal=true rebuild_ms={reuse[0]:.6f} reuse_ms={reuse[1]:.6f}",flush=True)
     medians = {}
     for (case,kernel), rows in runs.items():
         assert sorted(row[0] for row in rows)==[0,1,2]
@@ -57,7 +65,7 @@ def run(mode, root, temp):
     for case in (0,1):
         assert medians[case,"Full"][:2] == medians[case,"Cached"][:2]
     package_bytes = sum(p.stat().st_size for p in root.iterdir() if p.is_file())
-    print(f"PAIRED_LOAD precision={mode} model_ms={load[0]:.3f} session_ms={load[1]:.3f} "
+    print(f"PAIRED_LOAD precision={mode} model_ms={load[0]:.3f} session_ms={load[1]:.9f} "
           f"avx2={load[2]} payload_bytes={load[3]} package_bytes={package_bytes} peak_rss_kib={peak}",flush=True)
     scores, numbers, terms, capped = [], 0, 0, 0
     for case,(source,reference,expected,groups) in enumerate(CASES):

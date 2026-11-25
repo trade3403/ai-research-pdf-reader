@@ -4,7 +4,8 @@ use rpinfer::{
     matmul::{avx2_available, Kernel},
     mixed_model::PAYLOAD_BYTES,
 };
-use rptranslate::offline::OfflineTranslator;
+use rpmodel::{marian::Vocabulary, package, spm::Model};
+use rptranslate::offline::{Error, OfflineTranslator, LANGUAGE};
 use std::{path::Path, time::Instant};
 
 fn main() -> Result<(), String> {
@@ -19,10 +20,10 @@ fn main() -> Result<(), String> {
     .map_err(|e| format!("{e:?}"))?;
     let load_ms = start.elapsed().as_secs_f64() * 1000.;
     let start = Instant::now();
-    let session = translator.session().map_err(|e| format!("{e:?}"))?;
+    let session = std::hint::black_box(translator.session().map_err(|e| format!("{e:?}"))?);
     let session_ms = start.elapsed().as_secs_f64() * 1000.;
     println!(
-        "BENCH_LOAD\t{load_ms:.3}\t{session_ms:.3}\t{}\t{}",
+        "BENCH_LOAD\t{load_ms:.3}\t{session_ms:.9}\t{}\t{}",
         translator.payload_bytes(),
         avx2_available()
     );
@@ -39,6 +40,51 @@ fn main() -> Result<(), String> {
         max_new: 64,
         mode: GenerationMode::Cached,
     };
+    // Rebuild the previous tokenizer path only as a timing/reference probe.
+    let source_spm = package::tokenizer_asset(Path::new(&path), "source.spm")
+        .map_err(|e| format!("{e:?}"))?;
+    let vocab = package::tokenizer_asset(Path::new(&path), "vocab.json")
+        .map_err(|e| format!("{e:?}"))?;
+    let vocabulary = Vocabulary::parse(std::str::from_utf8(&vocab).map_err(|e| format!("{e:?}"))?)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut rebuild_ms = 0.;
+    let mut reuse_ms = 0.;
+    for text in cases {
+        let start = Instant::now();
+        let tokenizer = Model::parse(&source_spm)
+            .map_err(|e| format!("{e:?}"))?
+            .nmt_unigram()
+            .map_err(|e| format!("{e:?}"))?;
+        let expected = vocabulary
+            .encode(&tokenizer, &format!("{LANGUAGE} {text}"))
+            .map_err(|e| format!("{e:?}"))?;
+        rebuild_ms += start.elapsed().as_secs_f64() * 1000.;
+        let start = Instant::now();
+        let fresh = translator.session().map_err(|e| format!("{e:?}"))?;
+        let actual = fresh.encode(text).map_err(|e| format!("{e:?}"))?;
+        reuse_ms += start.elapsed().as_secs_f64() * 1000.;
+        if actual != expected || fresh.encode(" ") != Err(Error::Empty) {
+            return Err("resident tokenizer mismatch".into());
+        }
+    }
+    drop(vocabulary);
+    drop(vocab);
+    drop(source_spm);
+    let first = session
+        .translate(cases[0], greedy, Kernel::Auto)
+        .map_err(|e| format!("{e:?}"))?;
+    let fresh = translator.session().map_err(|e| format!("{e:?}"))?;
+    fresh
+        .translate(cases[1], greedy, Kernel::Auto)
+        .map_err(|e| format!("{e:?}"))?;
+    let repeated = fresh
+        .translate(cases[0], greedy, Kernel::Auto)
+        .map_err(|e| format!("{e:?}"))?;
+    if first != repeated || first.reached_limit {
+        return Err("resident session state leak".into());
+    }
+    println!("BENCH_REUSE\t6\t{rebuild_ms:.6}\t{reuse_ms:.6}\ttrue");
+
     for mode in [GenerationMode::Full, GenerationMode::Cached] {
         session
             .translate(cases[0], GenerationOptions { mode, ..greedy }, Kernel::Auto)

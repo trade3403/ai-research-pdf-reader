@@ -301,6 +301,14 @@ pub struct NmtUnigram<'a> {
 }
 
 impl NmtUnigram<'_> {
+    /// Retain the compiled tokenizer and its own normalization bytes.
+    pub fn into_owned(self) -> NmtUnigram<'static> {
+        NmtUnigram {
+            normalizer: self.normalizer.into_owned(),
+            tokenizer: self.tokenizer,
+        }
+    }
+
     pub fn encode(&self, input: &str) -> Result<Vec<usize>, Error> {
         let normalized = self
             .normalizer
