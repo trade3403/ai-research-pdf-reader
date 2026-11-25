@@ -109,4 +109,36 @@ mod tests{
             assert!(d.decode(&mut c).is_err());assert!(d.bytes_consumed()<=data.len());
         }
     }
+
+    // Offline reference fixtures: Debian OpenJPEG 2.5.3 static mqc.c.o.
+    // resetstates; setstate(context=18,mps,state); init_enc with leading
+    // zero sentinel; segmark_enc repeated 64 times; flush; numbytes.
+    // Every segmentation symbol is 1010. Reference encoder is NOT linked
+    // into RPCore or required by CI.
+    #[test]fn independent_segmark_vectors(){
+        let vectors=[
+            (0,0,"b6c22000000000000000000000000000000000000000000000000000000000003f"),
+            (0,1,"15804000000000000000000000000000000000000000000000000000000000007f"),
+            (1,0,"2b008000000000000000000000000000000000000000000000000000000000007f"),
+            (1,1,"746230000000000000000000000000000000000000000000000000000000003f"),
+            (6,0,"fca2f000000000000000000000000000000000000000000000000000000000003f"),
+            (6,1,"0000000000000000000000000000000000000000000000000000000000000000"),
+            (14,0,"fca2f000000000000000000000000000000000000000000000000000000000003f"),
+            (14,1,"0000000000000000000000000000000000000000000000000000000000000000"),
+            (45,0,"0000002401509315663b3c0d91864a800000000000000000000000000000000000000000000000000f"),
+            (45,1,"0002001200a8498ab31d9e06c8c325400000000000000000000000000000000000000000000000000f"),
+            (46,0,"ba577fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7f"),
+            (46,1,"3955ff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7fff7f"),
+        ];
+        for (state,mps,hex) in vectors{
+            assert_eq!(hex.len()%2,0);
+            let bytes:Vec<u8>=hex.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+            let mut d=Decoder::new(&bytes,256).unwrap();
+            let mut c=Context::new(state,mps).unwrap();
+            for i in 0..256{
+                assert_eq!(d.decode(&mut c).unwrap(),1-(i%2) as u8,"state {state}, mps {mps}, symbol {i}");
+            }
+            assert!(d.decode(&mut c).is_err());
+        }
+    }
 }
