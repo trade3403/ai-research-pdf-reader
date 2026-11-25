@@ -36,7 +36,8 @@
 | D1.8c6 | 已通过 | 真实 KV Cache 与 beam generation |
 | D1.8c7 | 已通过 | 完整模型构建与加载验收 |
 | D1.8d | 待验证 | 真实跨内核与位置边界 |
-| D1.8e–D1.8f | 未开始 | 文本翻译与性能 |
+| D1.8e | 待验证 | 真实文本翻译 |
+| D1.8f | 未开始 | 性能与质量 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -172,8 +173,13 @@ D1.8c2b/c3/c4 [45532734293](https://github.com/trade3403/ai-research-pdf-reader/
 ## 当前阶段 D1.8d
 D1.8d 新增实际模型跨内核验收程序：真实权重、2组短源/目标及PAD mask，Scalar/Blocked/Auto/Parallel4 四内核，native 明确要求 AVX2 available、portable-only 明确 false；两模式各24个 memory/full/cached logits 张量对照独立 HF eager，16组生成设置（beam1 full/beam4 cached）及40候选序列、排序、EOS、分数对照穷举参考。native 另加64源/16目标 Auto/Parallel4 6张量；512源与512目标 Auto 完整 hidden forward、仅末行 logits 两张量；4项长度/全词表 tensor/KV 预算拒绝。合计 native32、portable24张量；统一 atol/rtol1e-4 不改变前序门槛。512边界不代表511步完整生成，不做512行全词表 logits（超过 Tensor 上限），不测速度或RSS，尚未文本翻译。所有测试待CI。
 
-## 下一阶段 D1.8e
-自主 RPTokenizer 与真实 MarianModel 文本级离线英中翻译接入。
+D1.8d [45534413835](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45534413835) 基础 CI 已通过，真实跨内核专项尚待验收；本批保留全量前序门槛，不宣称已验收。
+
+## 当前阶段 D1.8e
+新增 OfflineTranslator/借用式 TextSession：固定来源的 source.spm/vocab 原字节独立 SHA256 校验，真实词表65001和特殊ID校验，自主 NmtUnigram + 固定 >>cmn_Hans<< + EOS → MarianModel cached beam → Marian 共享网络词表反分词（target.spm 已在包校验，运行不需重新解析 target SPM）；明确拒绝空、调用者语言标记、超长，不截断，返回 source/target IDs、score、reached_limit。新增 rptranslate translate MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW]；保留无模型历史入口显式报错。CI 三句真实英文、beam1/4 六次生成、精确源/目标 token、解码对照、3 HF greedy、独立自定义 beam 参考、中文字符及自然 EOS、CLI、3负例。参考工具 Python 仅CI；Rust runtime 无网络请求，未测速度、真实语料质量；仅固定官方 FP32 profile，非自主训练权重。待CI，不预写译文。
+
+## 下一阶段 D1.8f
+真实英中翻译性能、内存及质量验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

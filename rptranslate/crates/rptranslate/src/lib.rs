@@ -1,4 +1,5 @@
-//! D1.0 offline smoke test and explicit not-ready translation contract.
+//! Local translation API and historical D1.0 smoke test.
+pub mod offline;
 use rpdata::{deduplicate, SentencePair};
 use rpmodel::ModelSpec;
 
@@ -7,6 +8,7 @@ pub enum TranslationError {
     ModelNotReady,
 }
 
+/// Historical model-less entry point: explicit failure rather than a fake translation.
 pub fn translate(_source: &str) -> Result<String, TranslationError> {
     Err(TranslationError::ModelNotReady)
 }

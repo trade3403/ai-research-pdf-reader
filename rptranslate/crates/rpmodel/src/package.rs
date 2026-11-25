@@ -266,6 +266,29 @@ fn regular_file(root: &Path, name: &str) -> Result<File, Error> {
     File::open(path).map_err(|_| Error::Io)
 }
 
+/// Read one small pinned tokenizer asset and verify the exact returned bytes.
+/// No arbitrary path names or unverified tokenizer content are accepted.
+pub fn tokenizer_asset(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
+    if !matches!(name, "source.spm" | "target.spm" | "vocab.json") {
+        return Err(Error::Manifest);
+    }
+    let (_, size, hash) = PINNED_FILES
+        .iter()
+        .find(|(key, _, _)| *key == name)
+        .ok_or(Error::Manifest)?;
+    let mut data = Vec::new();
+    regular_file(root, name)?
+        .take(*size + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| Error::Io)?;
+    let (actual_size, actual_hash) =
+        digest_reader(data.as_slice(), *size).map_err(|_| Error::Integrity)?;
+    if actual_size != *size || actual_hash != *hash {
+        return Err(Error::Integrity);
+    }
+    Ok(data)
+}
+
 /// Open the verified fixed-profile index.
 pub fn open(root: &Path) -> Result<SafeTensorReader<File>, Error> {
     Ok(open_profile(root)?.1)
