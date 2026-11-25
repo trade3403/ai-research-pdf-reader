@@ -9,6 +9,7 @@
 - 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10e 全量后通知用户，等待下一阶段指示。
 
 ## 当前状态（最新优先）
+- D1.10e run [45577712411](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45577712411) 真实模型专项 success：FP32/INT8各4组+1预算负例；论文8/8成功、17术语跨度、0拒绝。严重语义缺陷仍存在：末尾强制补入术语、保留原错误词、重复数值及整句，如峰值加速度为0.1克。0.1 g.；不构成翻译质量通过。CPU Format 失败：search.rs两处、constrained.rs三处换行，已按真实日志修复。保留所有门槛，显式模式不作为默认，待最新全量复验，不启动D1.10f。
 - D1.10d 基线 HEAD 2c6450f / [45573020932](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45573020932) 全量 success，109 workspace+52 portable=161/161；双精度7组各4选择3弃权，真实论文8/8、岩土7/8、术语14。D1.10e 用户授权，本提交实现有序非重叠token约束、EOS偏好或预算强制、词组连续完成、保持原始logp、FP32/INT8全输入缓存/完整前缀共用搜索、无损目标词表DP与文本复验、显式CLI、独立合成和双精度真实测试。约束顺序遵守原文，可能出现末尾补入、重复及语义错误，非全局最优或质量保证；词表不可表示/预算不足/截断显式拒绝。保留旧默认及保护模式和所有前置CI。待最新全量CI，不启动D1.10f。
 - D1.10d run [45572696557](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45572696557) CPU Format 失败：context_reference.rs、context.rs、offline.rs 三处换行，已按实际 rustfmt 日志逐处修复。原真实模型专项仍运行，保留结果；新提交全量复验前不启动 D1.10e。
 - D1.10c 基线 HEAD 14d641b / [45569156783](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45569156783) 全量 success，104 workspace+52 portable=156/156；真实FP32/INT8各8组通过，论文8/8片段，指定术语3/17→17/17，2.632185秒；仅词面恢复，非语义准确率。用户授权 D1.10d。本提交新增自主 Rust distinct-cue 学科评分、强局部覆盖文档先验、局部无证据才用文档先验、混合或弱证据回退通用词典、显式决策报告、auto CLI 和双精度7组（4选择3弃权）与同论文8片段观察。文档上下文由调用方每篇创建，分类为片段级启发式，不是训练分类器或逐词语义模型；默认路径不变。保留 D1.10c/b 全量门槛，待新CI；不启动 D1.10e。

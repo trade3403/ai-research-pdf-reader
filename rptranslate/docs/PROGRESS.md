@@ -277,3 +277,5 @@ D1.10d run [45572696557](https://github.com/trade3403/ai-research-pdf-reader/act
 
 ## D1.10e
 D1.10d 基线 HEAD 2c6450f / [45573020932](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45573020932) 全量 success，109 workspace+52 portable=161/161；双精度7组各4选择3弃权，真实论文8/8、岩土7/8、术语14。D1.10e 用户授权，本提交实现有序非重叠token约束、EOS偏好或预算强制、词组连续完成、保持原始logp、FP32/INT8全输入缓存/完整前缀共用搜索、无损目标词表DP与文本复验、显式CLI、独立合成和双精度真实测试。约束顺序遵守原文，可能出现末尾补入、重复及语义错误，非全局最优或质量保证；词表不可表示/预算不足/截断显式拒绝。保留旧默认及保护模式和所有前置CI。待最新全量CI，不启动D1.10f。
+
+D1.10e run [45577712411](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45577712411) 真实模型专项 success：FP32/INT8各4组+1预算负例；论文8/8成功、17术语跨度、0拒绝。严重语义缺陷仍存在：末尾强制补入术语、保留原错误词、重复数值及整句，如峰值加速度为0.1克。0.1 g.；不构成翻译质量通过。CPU Format 失败：search.rs两处、constrained.rs三处换行，已按真实日志修复。保留所有门槛，显式模式不作为默认，待最新全量复验，不启动D1.10f。

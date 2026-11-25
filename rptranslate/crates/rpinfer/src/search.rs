@@ -215,7 +215,10 @@ fn validate_phrases(
 fn pending_phrase(tokens: &[u32], phrases: &[Vec<u32>]) -> Option<(u32, bool, usize)> {
     let mut rest = tokens;
     for (index, phrase) in phrases.iter().enumerate() {
-        if let Some(at) = rest.windows(phrase.len()).position(|window| window == phrase) {
+        if let Some(at) = rest
+            .windows(phrase.len())
+            .position(|window| window == phrase)
+        {
             rest = &rest[at + phrase.len()..];
             continue;
         }
@@ -223,8 +226,8 @@ fn pending_phrase(tokens: &[u32], phrases: &[Vec<u32>]) -> Option<(u32, bool, us
             .rev()
             .find(|&n| rest.ends_with(&phrase[..n]))
             .unwrap_or(0);
-        let needed = phrase.len() - partial
-            + phrases[index + 1..].iter().map(Vec::len).sum::<usize>();
+        let needed =
+            phrase.len() - partial + phrases[index + 1..].iter().map(Vec::len).sum::<usize>();
         return Some((phrase[partial], partial != 0, needed));
     }
     None

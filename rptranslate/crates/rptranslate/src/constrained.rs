@@ -40,7 +40,10 @@ fn encode_exact(vocab: &Vocabulary, text: &str, blocked: &[u32]) -> Option<Vec<u
                 let Some(tail) = &best[end] else {
                     continue;
                 };
-                if best[start].as_ref().is_none_or(|old| old.len() > tail.len() + 1) {
+                if best[start]
+                    .as_ref()
+                    .is_none_or(|old| old.len() > tail.len() + 1)
+                {
                     let mut candidate = vec![id];
                     candidate.extend_from_slice(tail);
                     best[start] = Some(candidate);
@@ -68,8 +71,8 @@ pub(crate) fn encode_phrases(
         .iter()
         .enumerate()
         .map(|(i, span)| {
-            let ids = encode_exact(vocab, &span.replacement, blocked)
-                .ok_or(Error::Unrepresentable(i))?;
+            let ids =
+                encode_exact(vocab, &span.replacement, blocked).ok_or(Error::Unrepresentable(i))?;
             if ids.len() > 64 {
                 return Err(Error::Limit);
             }
@@ -118,7 +121,10 @@ mod tests {
     fn unrepresentable_span_and_budget() {
         let vocab = Vocabulary::parse(r#"{"</s>":0,"<unk>":1,"<pad>":2,"1":3}"#).unwrap();
         let p = Plan::prepare("1 Hz", &[]).unwrap();
-        assert_eq!(encode_phrases(&vocab, &p, &[]), Err(Error::Unrepresentable(0)));
+        assert_eq!(
+            encode_phrases(&vocab, &p, &[]),
+            Err(Error::Unrepresentable(0))
+        );
         let p = Plan::prepare(&"1 ".repeat(33), &[]).unwrap();
         assert_eq!(encode_phrases(&vocab, &p, &[]), Err(Error::Limit));
     }
