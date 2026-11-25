@@ -19,7 +19,7 @@
 | D1.5b | 已通过 | 多头注意力、LayerNorm、QKV 投影 |
 | D1.6a | 已通过 | Embedding、Marian 位置编码、激活与 FFN |
 | D1.6b | 已通过 | post-norm Encoder 单层、多层与源 mask |
-| D1.6c | 待验证 | post-norm Decoder、causal/self 与 cross attention |
+| D1.6c | 已通过 | post-norm Decoder、causal/self 与 cross attention |
 | D1.6d–D1.6e | 未开始 | 联合推理与逐层对照 |
 | D1.7 | 未开始 | Beam Search |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -93,7 +93,7 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 新增 EncoderLayer、Norm、1–64 层顺序执行、token embedding 入口、显式源 padding keep mask。实际 NumPy 2.3.5 FP64 合成参考对照首层 attention/post-norm、首层及双层输出，验证改变被 mask 的 token 不影响有效位置。实际验收：首轮 [45518807677](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518807677) rustfmt 失败，修正13组格式；第二轮 [45518859608](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518859608) Clippy 指出 FP32 参考常量 excessive_precision，按 FP32 表示修正，不改变测试容差；[最终代码 513bfa1](https://github.com/trade3403/ai-research-pdf-reader/commit/513bfa15639d3a1b96cb8f35b49c3204c3eb38ef)，[复测 45518927770](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518927770) completed/success。两层 Encoder 参考对照、mask 隔离、embedding 入口和边界测试通过，workspace 格式、Clippy、测试、Release、自检与 portable-only 通过。未加载真实模型、未测推理性能，D1.6b 通过，D1.6 整体尚未验收。
 
 ## 当前阶段 D1.6c
-新增 DecoderLayer、目标因果 self attention、源 cross attention、各自残差 post-norm、FFN、1–64 层与显式源/目标 keep masks。完整 prefix 重算，未实现 KV cache；不自动 mask PAD（Marian 起始 token 可与 PAD 同 ID）。实际 NumPy 2.3.5 FP64 生成双层参考，比较首层 self/cross/最终输出与第二层输出，验证 prefix、未来 token、源和目标 padding mask 隔离。CI 待验收。
+新增 DecoderLayer、目标因果 self attention、源 cross attention、各自残差 post-norm、FFN、1–64 层与显式源/目标 keep masks。完整 prefix 重算，未实现 KV cache；不自动 mask PAD（Marian 起始 token 可与 PAD 同 ID）。实际 NumPy 2.3.5 FP64 生成双层参考，比较首层 self/cross/最终输出与第二层输出，验证 prefix、未来 token、源和目标 padding mask 隔离。实际验收：首轮 [45526494539](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526494539) rustfmt 失败，按日志修正9组格式；[最终代码 6d55404](https://github.com/trade3403/ai-research-pdf-reader/commit/6d55404513ed7d0ad5cc9ca050b6dc9f50cd97d0)，[复测 45526552465](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45526552465) completed/success。双层 Decoder 数值对照、因果隔离、prefix 一致性、源与目标 mask 隔离、embedding 入口及边界测试通过，workspace 格式、Clippy、单元测试、Release、自检和 portable-only 均通过。未加载真实权重、无 KV cache、未测推理速度。D1.6c 通过，完整 D1.6 尚未验收。
 
 ## 下一阶段 D1.6d
 Encoder-Decoder 联合推理、词表输出投影、logits 及合成模型端到端对照。
