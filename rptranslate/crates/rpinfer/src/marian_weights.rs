@@ -22,9 +22,16 @@ fn read_dense<R: Read + Seek>(
     name: &str,
     shape: &[usize],
 ) -> Result<Tensor, LoadError> {
-    let info = reader.tensors().get(name).ok_or(ReaderError::MissingTensor)?;
+    let info = reader
+        .tensors()
+        .get(name)
+        .ok_or(ReaderError::MissingTensor)?;
     if info.dtype != Dtype::F32
-        || info.shape.iter().copied().ne(shape.iter().map(|&d| d as u64))
+        || info
+            .shape
+            .iter()
+            .copied()
+            .ne(shape.iter().map(|&d| d as u64))
     {
         return Err(Error::Shape.into());
     }
@@ -67,18 +74,33 @@ impl MarianEmbeddings {
         if payload_bytes > max_bytes {
             return Err(Error::Limit.into());
         }
-        let info = reader.tensors().get("model.shared.weight").ok_or(ReaderError::MissingTensor)?;
+        let info = reader
+            .tensors()
+            .get("model.shared.weight")
+            .ok_or(ReaderError::MissingTensor)?;
         if info.dtype != Dtype::F32 || info.shape != [vocab as u64, hidden as u64] {
             return Err(Error::Shape.into());
         }
         let shared = ChunkedTable::load(reader, "model.shared.weight", 2048, shared_bytes)?;
-        let encoder_positions = read_dense(reader, "model.encoder.embed_positions.weight", &[positions, hidden])?;
-        let decoder_positions = read_dense(reader, "model.decoder.embed_positions.weight", &[positions, hidden])?;
+        let encoder_positions = read_dense(
+            reader,
+            "model.encoder.embed_positions.weight",
+            &[positions, hidden],
+        )?;
+        let decoder_positions = read_dense(
+            reader,
+            "model.decoder.embed_positions.weight",
+            &[positions, hidden],
+        )?;
         let mut bias = read_dense(reader, "final_logits_bias", &[1, vocab])?;
         bias.reshape(&[vocab])?;
         Ok(Self {
-            shared, encoder_positions, decoder_positions, bias,
-            scale: config.embedding_scale, payload_bytes,
+            shared,
+            encoder_positions,
+            decoder_positions,
+            bias,
+            scale: config.embedding_scale,
+            payload_bytes,
         })
     }
 
@@ -125,7 +147,10 @@ impl MarianEmbeddings {
     }
 
     pub fn head(&self) -> OutputHead<'_> {
-        OutputHead { weight: None, bias: Some(&self.bias) }
+        OutputHead {
+            weight: None,
+            bias: Some(&self.bias),
+        }
     }
 
     pub fn project(&self, hidden: &Tensor, last_only: bool) -> Result<Tensor, Error> {
