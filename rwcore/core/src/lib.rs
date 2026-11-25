@@ -64,3 +64,6 @@ pub use table_rows::{layout_table_rows, place_vertical, TableRowLayout, CellMeas
 
 pub mod table_columns;
 pub use table_columns::{allocate_table_columns, TableColumnLayout, CellWidthMeasurement, CellWidthResult};
+
+pub mod table_layout;
+pub use table_layout::{layout_nested_table, TableMeasurer, NestedLayoutOptions, NestedTableLayout, NestedCellLayout, NestedBlockLayout};
