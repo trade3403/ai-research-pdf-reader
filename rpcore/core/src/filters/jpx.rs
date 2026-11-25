@@ -169,6 +169,107 @@ pub fn inspect(data:&[u8])->Result<Header>{
     Ok(h)
 }
 
+
+/// The only two enumerated JP2 color spaces admitted by the scoped pixel
+/// dispatcher. No implicit conversion of sYCC, ICC or mapped channels.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum BaselineColor{Gray,Srgb}
+
+/// Strict pixel-decoding subset of JP2 metadata. The existing inspect()
+/// remains geometry-only for callers that do not request decoded pixels.
+pub fn inspect_jp2_color(data:&[u8])->Result<(Header,BaselineColor)>{
+    let h=inspect(data)?;
+    if h.container!=Container::Jp2{return Err(Error::Invalid("JP2 color requires container"));}
+    let mut pos=SIGNATURE.len();let mut budget=MAX_BOXES;
+    let _=next_box(data,&mut pos,0,&mut budget)?; // ftyp verified by inspect
+    let mut color=None;
+    while pos<data.len(){
+        let v=next_box(data,&mut pos,0,&mut budget)?;
+        match &v.kind{
+            b"jp2h"=>{
+                let mut p=0;let mut first=true;
+                while p<v.payload.len(){
+                    let child=next_box(v.payload,&mut p,v.offset,&mut budget)?;
+                    if first&&&child.kind!=b"ihdr"{return Err(Error::Invalid("JP2 first image header"));}
+                    first=false;
+                    match &child.kind{
+                        b"ihdr"=>{
+                            // inspect verified size, compression and BPC.
+                            if child.payload[12]!=0||child.payload[13]!=0{
+                                return Err(Error::Unsupported("JP2 unknown color/IPR"));
+                            }
+                        }
+                        b"bpcc"=>{}, // checked against SIZ in inspect
+                        b"colr"=>{
+                            if color.is_some(){return Err(Error::Unsupported("JP2 multiple color specifications"));}
+                            if child.payload.len()<3{return Err(Error::Invalid("JP2 color length"));}
+                            if child.payload[0]!=1||child.payload[1]!=0||child.payload[2]!=0{
+                                return Err(Error::Unsupported("JP2 color method/precedence"));
+                            }
+                            if child.payload.len()!=7{return Err(Error::Invalid("JP2 enumerated color length"));}
+                            color=Some(match u32be(child.payload,3)?{
+                                16=>BaselineColor::Srgb,
+                                17=>BaselineColor::Gray,
+                                _=>return Err(Error::Unsupported("JP2 enumerated color space")),
+                            });
+                        }
+                        // No silent channel remapping, alpha or ICC interpretation.
+                        b"cdef"|b"cmap"|b"pclr"=>return Err(Error::Unsupported("JP2 channel mapping")),
+                        b"res "=>{}, // spatial resolution does not change sample values
+                        _=>return Err(Error::Unsupported("JP2 pixel header box")),
+                    }
+                }
+            }
+            b"jp2c"|b"free"|b"skip"|b"xml "|b"uuid"|b"uinf"=>{},
+            _=>return Err(Error::Unsupported("JP2 pixel top-level box")),
+        }
+    }
+    let color=color.ok_or(Error::Invalid("JP2 missing color specification"))?;
+    let expected=match color{BaselineColor::Gray=>1,BaselineColor::Srgb=>3};
+    if h.components.len()!=expected{return Err(Error::Invalid("JP2 color/component mismatch"));}
+    Ok((h,color))
+}
+
+/// A raw grayscale/RGB raster, not a PDF image or color-managed surface.
+/// Raw three-component input assumes RGB order when MCT is absent.
+#[derive(Debug,PartialEq,Eq)]
+pub struct BaselineImage{pub width:usize,pub height:usize,pub color:BaselineColor,pub pixels:Vec<u8>}
+
+/// Decode the scoped 8-bit co-sited grayscale/RGB subset of raw J2K or JP2.
+/// Validate JP2 color metadata before slicing the codestream. Dispatch by
+/// component coding style; never treat mixed wavelets as a single mode.
+pub fn decode_baseline(data:&[u8])->Result<BaselineImage>{
+    use codestream::Wavelet;
+    let h=inspect(data)?;
+    let color=if h.container==Container::Jp2{inspect_jp2_color(data)?.1}else{
+        match h.components.len(){1=>BaselineColor::Gray,3=>BaselineColor::Srgb,
+            _=>return Err(Error::Unsupported("JPX baseline components"))}
+    };
+    let end=h.codestream_offset.checked_add(h.codestream_length).ok_or(Error::Limit("JPX codestream range"))?;
+    let bytes=data.get(h.codestream_offset..end).ok_or(Error::Invalid("JPX codestream range"))?;
+    let c=codestream::inspect_codestream(bytes)?;
+    let wavelet=c.component_coding[0].wavelet;
+    if c.component_coding.iter().any(|s|s.wavelet!=wavelet){
+        return Err(Error::Unsupported("JPX mixed wavelets"));
+    }
+    let (width,height,pixels)=match (color,wavelet){
+        (BaselineColor::Gray,Wavelet::Reversible53)=>{
+            let a=gray53::decode_gray53(bytes)?;(a.width,a.height,a.pixels)
+        }
+        (BaselineColor::Srgb,Wavelet::Reversible53)=>{
+            let a=gray53::decode_rgb53(bytes)?;(a.width,a.height,a.pixels)
+        }
+        (BaselineColor::Gray,Wavelet::Irreversible97)=>{
+            let a=gray53::decode_gray97_centered(bytes)?;
+            (a.width,a.height,a.samples.into_iter().map(|v|(v+128.).round().clamp(0.,255.)as u8).collect())
+        }
+        (BaselineColor::Srgb,Wavelet::Irreversible97)=>{
+            let a=gray53::decode_rgb97(bytes)?;(a.width,a.height,a.pixels)
+        }
+    };
+    Ok(BaselineImage{width,height,color,pixels})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -240,5 +341,72 @@ mod tests{
         let mut dict=std::collections::BTreeMap::new();dict.insert(b"Filter".to_vec(),Object::Name(b"JPXDecode".to_vec()));
         let obj=Object::Stream{dict,data:hex(GRAY)};
         assert!(matches!(super::super::decode(&obj,1024),Err(Error::Unsupported("stream filter"))));
+    }
+
+    // Historical independently generated JP2 references. Additional wrappers
+    // below are constructed from existing verified raw codestream fixtures.
+    #[test]fn jp2_color_real_headers(){
+        for (fixture,color) in [(GRAY,BaselineColor::Gray),(RGB,BaselineColor::Srgb)]{
+            let data=hex(fixture);
+            let (h,c)=inspect_jp2_color(&data).unwrap();
+            assert_eq!(c,color);assert_eq!(h,inspect(&data).unwrap());
+        }
+    }
+    fn wrap_jp2(raw:&[u8],enumerated:u32,extra:&[u8])->Vec<u8>{
+        let h=inspect(raw).unwrap();
+        let mut ih=Vec::new();ih.extend(h.height.to_be_bytes());ih.extend(h.width.to_be_bytes());
+        ih.extend((h.components.len()as u16).to_be_bytes());ih.extend([7,7,0,0]);
+        let mut header=box_bytes(b"ihdr",&ih);
+        let mut colr=vec![1,0,0];colr.extend(enumerated.to_be_bytes());
+        header.extend(box_bytes(b"colr",&colr));header.extend(extra);
+        let mut data=SIGNATURE.to_vec();data.extend(box_bytes(b"ftyp",b"jp2 \0\0\0\0jp2 "));
+        data.extend(box_bytes(b"jp2h",&header));data.extend(box_bytes(b"jp2c",raw));data
+    }
+    #[test]fn jp2_dispatch_reversible(){
+        for (fixture,color) in [(GRAY,BaselineColor::Gray),(RGB,BaselineColor::Srgb)]{
+            let data=hex(fixture);let h=inspect(&data).unwrap();
+            let raw=&data[h.codestream_offset..h.codestream_offset+h.codestream_length];
+            let a=decode_baseline(&data).unwrap();let b=decode_baseline(raw).unwrap();
+            assert_eq!(a,b);assert_eq!((a.width,a.height,a.color),(7,5,color));
+            assert_eq!(a.pixels.len(),35*if color==BaselineColor::Gray{1}else{3});
+        }
+    }
+    #[test]fn jp2_dispatch_irreversible(){
+        // Existing h2b zero and h3 direct RGB raw fixtures, not newly encoded.
+        let gray=hex("ff4fff510029000000000005000000050000000000000000000000050000000500000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000100001ff938080ffd9");
+        let rgb=hex("ff4fff51002f000000000005000000030000000000000000000000050000000300000000000000000003070101070101070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000560001ff93e7ed0efda0800650755682a4deb51fad11e62edd01d8be8fe7ed0efda0a005a7ecf01b757433609a96865e7f002b779b1fe7ed0efda0600ef58e3ef470c6917e13d6fbbc5f065fb3ffd9");
+        let a=decode_baseline(&wrap_jp2(&gray,17,&[])).unwrap();
+        assert_eq!(a.pixels,vec![128;25]);assert_eq!(a,decode_baseline(&gray).unwrap());
+        let a=decode_baseline(&wrap_jp2(&rgb,16,&[])).unwrap();
+        assert_eq!(a,decode_baseline(&rgb).unwrap());
+        let reference=hex("163c6086acd0f61a3e648aaed4f81c42668cb2d6fc20446a90b4dafe22486c92b8dc00264a7096bae004284e72");
+        assert_eq!(a.pixels.len(),reference.len());
+        assert!(a.pixels.iter().zip(reference).all(|(&v,e)|v.abs_diff(e)<=1));
+    }
+    #[test]fn jp2_color_rejects_mapping_and_unknown(){
+        let data=hex(GRAY);let h=inspect(&data).unwrap();
+        let raw=&data[h.codestream_offset..];
+        for extra in [box_bytes(b"cdef",&[0,0]),box_bytes(b"pclr",&[]),
+            box_bytes(b"cmap",&[]),box_bytes(b"colr",&[1,0,0,0,0,0,17]),
+            box_bytes(b"zzzz",&[])]{
+            assert!(decode_baseline(&wrap_jp2(raw,17,&extra)).is_err());
+        }
+        for color in [16,18,0,255]{assert!(decode_baseline(&wrap_jp2(raw,color,&[])).is_err());}
+        let mut a=wrap_jp2(raw,17,&[]);
+        let p=a.windows(4).position(|v|v==b"colr").unwrap()+4;
+        a[p]=2;assert!(decode_baseline(&a).is_err());
+        a[p]=1;a[p+1]=1;assert!(decode_baseline(&a).is_err());
+        a[p+1]=0;a[p+2]=1;assert!(decode_baseline(&a).is_err());
+        a[p+2]=0;a[p-4..p].copy_from_slice(b"free");assert!(decode_baseline(&a).is_err());
+    }
+    #[test]fn jp2_color_extended_and_truncation(){
+        let data=hex(GRAY);let h=inspect(&data).unwrap();let p=h.codestream_offset-8;
+        let mut long=data[..p].to_vec();long.extend(1u32.to_be_bytes());long.extend(b"jp2c");
+        long.extend((16+h.codestream_length as u64).to_be_bytes());long.extend(&data[h.codestream_offset..]);
+        assert_eq!(decode_baseline(&long).unwrap(),decode_baseline(&data).unwrap());
+        let mut end=data.clone();end[p..p+4].fill(0);
+        assert_eq!(decode_baseline(&end).unwrap(),decode_baseline(&data).unwrap());
+        assert!(decode_baseline(&data[..data.len()-1]).is_err());
+        assert!(inspect_jp2_color(&data[h.codestream_offset..]).is_err());
     }
 }
