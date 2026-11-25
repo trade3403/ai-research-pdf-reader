@@ -101,7 +101,7 @@ impl<'a> Profile<'a>{
 
 }
 #[derive(Debug)]
-enum Curve{Identity,Gamma(f64),Table(Vec<u16>)}
+enum Curve{Identity,Gamma(f64),Table(Vec<u16>),Parametric{kind:u16,p:[f64;7]}}
 impl Curve{
     fn parse(b:&[u8])->Result<Self>{
         if b.len()<12||b[4..8]!=[0;4]{return Err(Error::Invalid("ICC curve header"));}
@@ -121,11 +121,29 @@ impl Curve{
                 }
             }
             b"para"=>{
-                if u16be(b,8)?!=0{return Err(Error::Unsupported("ICC parametric curve function"));}
-                if b.len()!=16||u16be(b,10)?!=0{return Err(Error::Invalid("ICC parametric curve size"));}
-                let g=fixed(b,12)?;
-                if g<=0.{return Err(Error::Invalid("ICC gamma"));}
-                Ok(Self::Gamma(g))
+                let kind=u16be(b,8)?;
+                let n=match kind{0=>1,1=>3,2=>4,3=>5,4=>7,_=>return Err(Error::Unsupported("ICC parametric curve function"))};
+                if b.len()!=12+4*n||u16be(b,10)?!=0{return Err(Error::Invalid("ICC parametric curve size"));}
+                let mut p=[0.;7];for i in 0..n{p[i]=fixed(b,12+4*i)?;}
+                if p[0]<=0.{return Err(Error::Invalid("ICC gamma"));}
+                if kind==0{return Ok(Self::Gamma(p[0]));}
+                if p[1]<=0.{return Err(Error::Unsupported("ICC parametric slope"));}
+                if kind>=3{
+                    let d=p[4];
+                    if !(0. ..=1.).contains(&d)||p[3]<0.{return Err(Error::Unsupported("ICC parametric linear branch"));}
+                    if p[1]*d+p[2]< -1./65536.{return Err(Error::Unsupported("ICC parametric power domain"));}
+                    // Allow small fixed-point rounding discrepancies at the join,
+                    // but reject larger discontinuities in this bounded subset.
+                    let lower=p[3]*d+if kind==4{p[6]}else{0.};
+                    let upper=(p[1]*d+p[2]).max(0.).powf(p[0])+if kind==4{p[5]}else{0.};
+                    if !upper.is_finite()||(upper-lower).abs()>0.001{return Err(Error::Unsupported("ICC parametric discontinuity"));}
+                }
+                let curve=Self::Parametric{kind,p};
+                let lo=curve.eval(0.);let hi=curve.eval(1.);
+                if !lo.is_finite()||!hi.is_finite()||lo< -0.001||hi>1.001||hi<lo{
+                    return Err(Error::Unsupported("ICC parametric range"));
+                }
+                Ok(curve)
             }
             _=>Err(Error::Unsupported("ICC curve type")),
         }
@@ -134,6 +152,17 @@ impl Curve{
         let x=x.clamp(0.,1.);
         match self{
             Self::Identity=>x,Self::Gamma(g)=>x.powf(*g),
+            Self::Parametric{kind,p}=>{
+                let [g,a,b,c,d,e,f]=*p;
+                let power=|| (a*x+b).max(0.).powf(g);
+                match kind{
+                    1=>if x>= -b/a{power()}else{0.},
+                    2=>if x>= -b/a{power()+c}else{c},
+                    3=>if x>=d{power()}else{c*x},
+                    4=>if x>=d{power()+e}else{c*x+f},
+                    _=>unreachable!(),
+                }
+            }
             Self::Table(t)=>{
                 let p=x*(t.len()-1)as f64;let i=p.floor()as usize;
                 let f=p-i as f64;
@@ -399,5 +428,30 @@ mod tests{
             assert!(l.to_xyz_d50(x).unwrap().iter().all(|v|v.abs()<1e-10));
         }}
         let b=lut_profile(2);assert!(Profile::parse(&b).unwrap().cmyk_a2b0().unwrap().to_lab_d50([0.;4]).is_err());
+    }
+    #[test]fn parametric_types_and_branch_boundaries(){
+        let make=|kind:u16,p:&[f64]|{
+            let mut b=b"para\0\0\0\0".to_vec();b.extend_from_slice(&kind.to_be_bytes());b.extend_from_slice(&[0,0]);
+            for &v in p{b.extend_from_slice(&((v*65536.).round()as i32).to_be_bytes());}b
+        };
+        let near=|a:f64,b:f64|assert!((a-b).abs()<0.0001,"{a} != {b}");
+        let t=Curve::parse(&make(1,&[2.,1.,-0.25])).unwrap();
+        near(t.eval(0.1),0.);near(t.eval(0.25),0.);near(t.eval(0.75),0.25);
+        let t=Curve::parse(&make(2,&[2.,1.,-0.25,0.125])).unwrap();
+        near(t.eval(0.1),0.125);near(t.eval(0.75),0.375);
+        let t=Curve::parse(&make(3,&[2.,1.,0.,0.5,0.5])).unwrap();
+        near(t.eval(0.25),0.125);near(t.eval(0.5),0.25);near(t.eval(0.75),0.5625);
+        let t=Curve::parse(&make(4,&[2.,1.,0.,0.5,0.5,0.,0.])).unwrap();
+        near(t.eval(0.25),0.125);near(t.eval(0.75),0.5625);
+        let t=Curve::parse(&make(4,&[2.,0.5,0.,0.125,0.5,0.125,0.125])).unwrap();
+        near(t.eval(0.25),0.15625);near(t.eval(0.75),0.265625);
+        let t=Curve::parse(&make(3,&[2.4,1./1.055,0.055/1.055,1./12.92,0.04045])).unwrap();
+        near(t.eval(0.02),0.02/12.92);near(t.eval(0.5),((0.5_f64+0.055)/1.055).powf(2.4));
+        assert!(Curve::parse(&make(1,&[2.,0.,0.])).is_err());
+        assert!(Curve::parse(&make(3,&[2.,1.,-0.75,0.5,0.5])).is_err());
+        assert!(Curve::parse(&make(3,&[2.,1.,0.,0.1,0.5])).is_err());
+        assert!(Curve::parse(&make(4,&[2.,1.,0.,-0.5,0.5,0.,0.])).is_err());
+        assert!(Curve::parse(&make(4,&[2.,1.,0.,0.5,0.5])).is_err());
+        assert!(Curve::parse(&make(5,&[])).is_err());
     }
 }
