@@ -171,18 +171,17 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet
     wavelet53::inverse53_levels(w,ht,t.bounds.x0 as u32,t.bounds.y0 as u32,&planes[0][0].values,&details)
 }
 
-/// Experimental irreversible single-tile grayscale component reconstruction.
+/// Experimental irreversible grayscale component reconstruction.
 /// Samples are row-major, centered, unrounded and unclipped; this is not a
 /// PDF image rendering entry point. No color transform or JP2 interpretation.
 #[derive(Debug,PartialEq)]
 pub struct Gray97Samples{pub width:usize,pub height:usize,pub samples:Vec<f64>}
 
 pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
-    use super::{codestream::inverse_quantization as iq,wavelet97::{self,Detail97}};
     let c=inspect_codestream(data)?;
     let h=&c.geometry;
     if h.container!=Container::RawCodestream||h.components.len()!=1||c.coding.mct||
-        h.tiles_x!=1||h.tiles_y!=1||c.tile_parts.len()!=1||c.coding.layers>256{
+        c.coding.layers>256{
         return Err(Error::Unsupported("JPX gray97 container/components/tiles/layers"));
     }
     let g=&h.components[0];let style=&c.component_coding[0];let q=&c.component_quantization[0];
@@ -195,13 +194,53 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
     if area==0||area>MAX_PIXELS||w>1_048_576||ht>1_048_576{
         return Err(Error::Limit("JPX gray97 area"));
     }
-    let plan=geometry::plan(&c,0)?;
-    let t=&plan.components[0];
-    if t.bounds.x0!=i64::from(h.x_origin)||t.bounds.y0!=i64::from(h.y_origin)||
-        t.bounds.width()!=w as i64||t.bounds.height()!=ht as i64{
-        return Err(Error::Invalid("JPX gray97 tile placement"));
+    let tiles=u64::from(h.tiles_x)*u64::from(h.tiles_y);
+    if tiles>4096{return Err(Error::Limit("JPX gray97 tile count"));}
+    if c.tile_parts.len()!=tiles as usize||c.tile_parts.iter().any(|p|p.index!=0||p.declared_parts>1){
+        return Err(Error::Unsupported("JPX gray97 multiple tile parts"));
     }
-    let packets=packet::inspect_planned_packets(data,&c,&plan)?;
+    let mut samples=vec![0.;area];
+    let mut covered=0usize;
+    let mut work=0usize;
+    let mut geometry_work=0usize;
+    let mut segment_bytes=0usize;
+    for i in 0..tiles{
+        let plan=geometry::plan(&c,i as u16)?;
+        geometry_work=geometry_work.checked_add(plan.codeblock_count)
+            .and_then(|n|n.checked_add(plan.packets.len())).ok_or(Error::Limit("JPX gray97 geometry work"))?;
+        if geometry_work>2_000_000{return Err(Error::Limit("JPX gray97 geometry work"));}
+        let b=plan.components[0].bounds;
+        if b.x0<i64::from(h.x_origin)||b.y0<i64::from(h.y_origin)||
+            b.x1>i64::from(h.x_origin)+w as i64||b.y1>i64::from(h.y_origin)+ht as i64{
+            return Err(Error::Invalid("JPX gray97 tile placement"));
+        }
+        let (tw,th)=(b.width()as usize,b.height()as usize);
+        let n=tw.checked_mul(th).ok_or(Error::Limit("JPX gray97 tile area"))?;
+        covered=covered.checked_add(n).ok_or(Error::Limit("JPX gray97 coverage"))?;
+        if n==0||covered>area{return Err(Error::Invalid("JPX gray97 tile coverage"));}
+        let packets=packet::inspect_planned_packets(data,&c,&plan)?;
+        let tile=decode_tile97(data,&c,&plan,&packets,&mut work,&mut segment_bytes)?;
+        if tile.len()!=n{return Err(Error::Invalid("JPX gray97 tile samples"));}
+        let ox=(b.x0-i64::from(h.x_origin))as usize;
+        let oy=(b.y0-i64::from(h.y_origin))as usize;
+        for y in 0..th{
+            let dst=(oy+y)*w+ox;
+            samples[dst..dst+tw].copy_from_slice(&tile[y*tw..(y+1)*tw]);
+        }
+    }
+    if covered!=area{return Err(Error::Invalid("JPX gray97 coverage"));}
+    Ok(Gray97Samples{width:w,height:ht,samples})
+}
+
+fn decode_tile97(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,packets:&packet::TilePackets,
+    work:&mut usize,segment_bytes:&mut usize)->Result<Vec<f64>>{
+    use super::{codestream::inverse_quantization as iq,wavelet97::{self,Detail97}};
+    let t=&plan.components[0];
+    let g=&c.geometry.components[0];
+    let style=&c.component_coding[0];
+    let q=&c.component_quantization[0];
+    let (w,ht)=(t.bounds.width()as usize,t.bounds.height()as usize);
+    let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray97 tile area"))?;
     struct FloatPlane{bounds:Rect,values:Vec<f64>,delta:f64}
     let mut planes:Vec<Vec<FloatPlane>>=Vec::new();
     let mut total=0usize;
@@ -223,7 +262,6 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
     // Same baseline continuous MQ segment contract as gray53. Contributions
     // across all quality layers are assembled before decoding each block.
     let mut segments:BTreeMap<(usize,usize,usize,usize),Segment>=BTreeMap::new();
-    let mut segment_bytes=0usize;
     for p in &packets.packets{
         for e in &p.contributions{
             let key=(usize::from(p.packet.resolution),p.packet.precinct,band_index(e.band),e.block);
@@ -234,12 +272,11 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
             seg.passes=seg.passes.checked_add(e.passes).ok_or(Error::Limit("JPX gray97 passes"))?;
             if seg.passes>109{return Err(Error::Unsupported("JPX gray97 multiple segments"));}
             let bytes=data.get(e.data.clone()).ok_or(Error::Invalid("JPX gray97 contribution range"))?;
-            segment_bytes=segment_bytes.checked_add(bytes.len()).ok_or(Error::Limit("JPX gray97 segment bytes"))?;
-            if segment_bytes>crate::MAX_BYTES{return Err(Error::Limit("JPX gray97 segment bytes"));}
+            *segment_bytes=segment_bytes.checked_add(bytes.len()).ok_or(Error::Limit("JPX gray97 segment bytes"))?;
+            if *segment_bytes>crate::MAX_BYTES{return Err(Error::Limit("JPX gray97 segment bytes"));}
             seg.bytes.extend_from_slice(bytes);
         }
     }
-    let mut work=0usize;
     for ((ri,pi,bi,block_index),seg) in segments{
         let precinct=&t.resolutions[ri].precincts[pi];
         let band=precinct.bands.iter().find(|b|b.band==seg.band).ok_or(Error::Invalid("JPX gray97 band"))?;
@@ -248,8 +285,8 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
         let (bw,bh)=(block.width()as usize,block.height()as usize);
         let charge=bw.checked_mul(bh).and_then(|n|n.checked_mul(usize::from(seg.passes)))
             .ok_or(Error::Limit("JPX gray97 work"))?;
-        work=work.checked_add(charge).ok_or(Error::Limit("JPX gray97 work"))?;
-        if work>MAX_WORK{return Err(Error::Limit("JPX gray97 work"));}
+        *work=work.checked_add(charge).ok_or(Error::Limit("JPX gray97 work"))?;
+        if *work>MAX_WORK{return Err(Error::Limit("JPX gray97 work"));}
         let target=&mut planes[ri][if ri==0{0}else{bi-1}];
         let b=target.bounds;
         if block.x0<b.x0||block.y0<b.y0||block.x1>b.x1||block.y1>b.y1{
@@ -265,8 +302,7 @@ pub fn decode_gray97_centered(data:&[u8])->Result<Gray97Samples>{
         }
     }
     let details:Vec<_>=planes.iter().skip(1).map(|r|Detail97{hl:&r[0].values,lh:&r[1].values,hh:&r[2].values}).collect();
-    let samples=wavelet97::inverse97_levels(w,ht,h.x_origin,h.y_origin,&planes[0][0].values,&details)?;
-    Ok(Gray97Samples{width:w,height:ht,samples})
+    wavelet97::inverse97_levels(w,ht,t.bounds.x0 as u32,t.bounds.y0 as u32,&planes[0][0].values,&details)
 }
 
 #[cfg(test)]
@@ -470,5 +506,38 @@ mod tests{
         assert!(decode_gray97_centered(&[]).is_err());
         let mut a=hex(ONE97);a[42]=0x87;assert!(decode_gray97_centered(&a).is_err());
         let mut a=hex(ONE97);a[42]=15;assert!(decode_gray97_centered(&a).is_err());
+    }
+
+    // Independent Pillow/OpenJPEG 2.5.4 generated and decoded locally this turn.
+    // Source (i*37+23)%256, irreversible, 4x4 codeblocks, raw J2K.
+    const GRAY97_TILES:&str="ff4fff510029000000000009000000070000000000000000000000050000000400000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000340001ff93cfc020076634527310376fc3ed058fc0221f6828105a85e1c90fdcde4538d9f8bf0c014c240bff90000a0001000000360001ff93e41f085fc00c0bb707102fc3ed05c9f681ff18243ed0500e3036cc470567070c4b5fdf10917525bfff90000a00020000002e0001ff93cfc020142480413eedb9e1c3ed058fc0121f68180bcd8d51440dd3e7cb0bbd77ff90000a0003000000310001ff93e7f0039f501805a17202797fc3ed05c21f083fb40a0fa80c0f477d0c5f08041f0c20bfffd9";
+    #[test]fn gray97_tiles_reference(){
+        let c=inspect_codestream(&hex(GRAY97_TILES)).unwrap();
+        assert_eq!((c.tile_parts.len(),c.coding.style.levels,c.coding.layers),(4,1,1));
+        compare_gray97(GRAY97_TILES,9,7,&[23,60,97,134,171,208,245,25,63,100,137,174,211,248,28,66,103,140,177,214,251,32,69,106,143,180,217,254,35,72,109,147,183,220,1,38,75,112,149,186,223,4,41,78,114,152,189,227,7,44,81,118,155,192,229,10,47,84,121,158,195,232,13]);
+    }
+    const GRAY97_LEVELS:&str="ff4fff510029000000000009000000070000000000000000000000090000000700000000000000000001070101ff52000c00000001000200000000ff5c0011425f5250055005504757d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000740001ff93c1f684000a768d7dd3e1a47fc0f9c1c7e0111f802804e68804bd94efea2340550fc7b92861c3ed12c7f010fe00d0fb434000275a1941ada7d54fe3fee75f6c3b19d2df1284bb19744e62172a36332e5fe79c430c0bb36eff7f0c1bf6addc188c1c00a6dfaf4fffd9";
+    #[test]fn gray97_levels_reference(){
+        let c=inspect_codestream(&hex(GRAY97_LEVELS)).unwrap();
+        assert_eq!((c.tile_parts.len(),c.coding.style.levels,c.coding.layers),(1,2,1));
+        compare_gray97(GRAY97_LEVELS,9,7,&[23,60,97,134,171,208,245,26,64,100,137,174,211,248,29,66,103,140,176,214,251,31,69,106,143,180,217,254,35,72,109,146,183,220,1,38,75,112,149,186,223,4,41,78,116,153,189,226,7,44,81,118,155,193,229,11,47,84,122,158,195,233,13]);
+    }
+    const GRAY97_LAYERS:&str="ff4fff51002900000000000c0000000900000000000000000000000c0000000900000000000000000001070101ff52000c00000003000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000c30001ff93e786f84016e43146e6140f51ee0ab1c7f0601431e37df7511718b67ce13e0c15fa0d1062d1f0a143201a6693a7bc1180189bfd619f5837d6057da0608782d9d6f9e56fe8543797df4dae8908539fdb42063107df689fd60b7da0b7da07f7077da0ff5a27f6030014641928f233adad0f09feff0e2b97dca05f5574df82dcfd05aef83a5f0b90cfb978fa5d06cace0c65aeb987f17fef84985b7c85c714309f7781cccbaa5999678407bd84fa961d63663edb789f97ffd9";
+    #[test]fn gray97_layers_reference(){
+        let c=inspect_codestream(&hex(GRAY97_LAYERS)).unwrap();
+        assert_eq!((c.tile_parts.len(),c.coding.style.levels,c.coding.layers),(1,1,3));
+        compare_gray97(GRAY97_LAYERS,12,9,&[23,60,96,134,171,208,245,26,62,100,137,173,212,248,29,66,103,140,177,214,251,32,69,106,143,180,217,254,35,72,109,146,183,220,1,38,75,112,149,186,223,4,41,78,115,152,189,226,7,44,80,118,155,192,229,10,47,84,121,158,194,233,13,50,87,124,161,198,235,16,53,90,127,164,201,239,19,55,93,130,167,204,241,22,59,96,133,170,207,244,25,62,99,136,173,209,247,27,65,102,139,175,213,250,31,68,105,142]);
+    }
+    const GRAY97_OFFSET:&str="ff4fff510029000000000008000000070000000100000001000000050000000400000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000001e0001ff93cfc00c076b5fc1f501401d08075f09a1ff90000a00010000001e0001ff93cfc00802cfc1f501c01d0809d77f099fff90000a00020000001d0001ff93c7da0a0918538617c1f50180095c73ff90000a0003000000260001ff93cfc00c0456dfcfcc160fa8061f681810847b1705070c4db9ffd9";
+    #[test]fn gray97_offset_reference(){
+        let c=inspect_codestream(&hex(GRAY97_OFFSET)).unwrap();
+        assert_eq!((c.tile_parts.len(),c.coding.style.levels,c.coding.layers),(4,1,1));
+        compare_gray97(GRAY97_OFFSET,7,6,&[23,60,97,134,171,208,246,26,63,100,137,174,211,249,29,66,103,140,177,214,251,32,69,106,143,180,217,254,35,72,109,146,183,220,1,38,75,112,149,186,223,5]);
+    }
+    #[test]fn gray97_missing_tile_rejected(){
+        let mut a=hex(GRAY97_TILES);
+        let c=inspect_codestream(&a).unwrap();
+        a.drain(c.tile_parts.last().unwrap().span.clone());
+        assert!(decode_gray97_centered(&a).is_err());
     }
 }
