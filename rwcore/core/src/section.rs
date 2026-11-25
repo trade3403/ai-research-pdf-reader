@@ -1,10 +1,28 @@
 //! C2.2a: bounded, renderer-neutral section properties.
 use crate::opc::{xml, named, Error, Limits};
 use roxmltree::Node;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, BTreeMap};
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
+const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const STRICT_REL: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HeaderFooterVariant { Default, First, Even }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderFooterKind { Header, Footer }
+
+/// Explicit page numbering attributes, not evaluated page fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageNumberProperties {
+    pub start: Option<i32>,
+    pub format: Option<String>,
+    pub chapter_style: Option<u8>,
+    pub chapter_separator: Option<String>,
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation { Portrait, Landscape }
@@ -19,6 +37,10 @@ pub struct SectionProperties {
     pub orientation: Option<Orientation>,
     pub margins: PageMargins,
     pub columns: Option<Columns>,
+    pub headers: BTreeMap<HeaderFooterVariant, String>,
+    pub footers: BTreeMap<HeaderFooterVariant, String>,
+    pub title_page: Option<bool>,
+    pub page_number: Option<PageNumberProperties>,
     pub diagnostics: Vec<String>,
 }
 
@@ -133,7 +155,24 @@ pub(crate) fn parse_section_node(root: Node<'_, '_>, ns: &str) -> Result<Section
     let mut seen = BTreeSet::new();
     for child in root.children().filter(|n| n.is_element()) {
         let key = child.tag_name().name();
-        if child.tag_name().namespace() != Some(ns) || !matches!(key, "type" | "pgSz" | "pgMar" | "cols") {
+        if child.tag_name().namespace() == Some(ns) && matches!(key, "headerReference" | "footerReference") {
+            let variant = match child.attribute((ns, "type")) {
+                Some("default") => HeaderFooterVariant::Default,
+                Some("first") => HeaderFooterVariant::First,
+                Some("even") => HeaderFooterVariant::Even,
+                _ => return Err(Error::Invalid("invalid header/footer variant")),
+            };
+            let rel_ns = if ns == STRICT { STRICT_REL } else { REL };
+            let id = child.attribute((rel_ns, "id")).filter(|s| !s.is_empty() && !s.chars().any(char::is_whitespace))
+                .ok_or(Error::Invalid("missing or invalid header/footer relationship ID"))?;
+            if id.len() > 1024 { return Err(Error::Limit("header/footer relationship ID")); }
+            let map = if key == "headerReference" { &mut out.headers } else { &mut out.footers };
+            if map.insert(variant, id.to_owned()).is_some() {
+                return Err(Error::Invalid("duplicate header/footer variant"));
+            }
+            continue;
+        }
+        if child.tag_name().namespace() != Some(ns) || !matches!(key, "type" | "pgSz" | "pgMar" | "cols" | "titlePg" | "pgNumType") {
             out.diagnostics.push(format!("Unsupported section property: {key}"));
             continue;
         }
@@ -176,6 +215,34 @@ pub(crate) fn parse_section_node(root: Node<'_, '_>, ns: &str) -> Result<Section
                 Ok(true)
             })?,
             "cols" => out.columns = Some(parse_columns(child, ns, &mut out.diagnostics)?),
+            "titlePg" => out.title_page = Some(match child.attribute((ns, "val")) {
+                Some(value) => boolean(value)?,
+                None => true,
+            }),
+            "pgNumType" => {
+                let mut props = PageNumberProperties::default();
+                attributes(child, ns, &mut out.diagnostics, |key, value| {
+                    match key {
+                        "start" => props.start = Some(number(value)?),
+                        "fmt" if !value.is_empty() => props.format = Some(value.to_owned()),
+                        "fmt" => return Err(Error::Invalid("empty page number format")),
+                        "chapStyle" => {
+                            let level: u8 = number(value)?;
+                            if !(1..=9).contains(&level) { return Err(Error::Invalid("invalid chapter style level")); }
+                            props.chapter_style = Some(level);
+                        }
+                        "chapSep" => {
+                            if !matches!(value, "hyphen" | "period" | "colon" | "emDash" | "enDash") {
+                                return Err(Error::Invalid("invalid chapter separator"));
+                            }
+                            props.chapter_separator = Some(value.to_owned());
+                        }
+                        _ => return Ok(false),
+                    }
+                    Ok(true)
+                })?;
+                out.page_number = Some(props);
+            }
             _ => unreachable!(),
         }
     }
@@ -195,4 +262,32 @@ pub struct DocumentSection {
     pub blocks: std::ops::Range<usize>,
     pub properties: Option<SectionProperties>,
     pub end: SectionEnd,
+}
+
+
+/// Resolve an explicit section reference against the main document's own
+/// relationships. No inheritance, part loading, external fetch or field evaluation.
+pub fn resolve_header_footer<'a>(
+    graph: &'a crate::PackageGraph,
+    section: &SectionProperties,
+    kind: HeaderFooterKind,
+    variant: HeaderFooterVariant,
+) -> Result<Option<&'a str>, Error> {
+    use crate::{ResourceKind, Target};
+    let (refs, expected, mime) = match kind {
+        HeaderFooterKind::Header => (&section.headers, ResourceKind::Header, "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"),
+        HeaderFooterKind::Footer => (&section.footers, ResourceKind::Footer, "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"),
+    };
+    let Some(id) = refs.get(&variant) else { return Ok(None); };
+    let mut matches = graph.relationships.iter().filter(|r| r.source == graph.main_part && &r.id == id);
+    let rel = matches.next().ok_or(Error::Invalid("missing header/footer relationship"))?;
+    if matches.next().is_some() { return Err(Error::Invalid("ambiguous header/footer relationship")); }
+    if rel.kind != expected { return Err(Error::Invalid("header/footer relationship kind")); }
+    let Target::Internal(name) = &rel.target else {
+        return Err(Error::Unsupported("external header/footer reference"));
+    };
+    if graph.parts.get(name).and_then(|m| m.as_deref()) != Some(mime) {
+        return Err(Error::Invalid("header/footer content type"));
+    }
+    Ok(Some(name.as_str()))
 }

@@ -225,11 +225,27 @@ fn rejects_ambiguous_and_invalid_section_boundaries() {
 
 #[test]
 fn section_warnings_propagate_without_changing_text() {
-    let d = section_doc("<w:p><w:pPr><w:sectPr><w:headerReference/></w:sectPr></w:pPr><w:r><w:t>科研</w:t></w:r></w:p><w:sectPr><w:pgNumType/></w:sectPr>").unwrap();
+    let d = section_doc("<w:p><w:pPr><w:sectPr><w:pgBorders/></w:sectPr></w:pPr><w:r><w:t>科研</w:t></w:r></w:p><w:sectPr><w:docGrid/></w:sectPr>").unwrap();
     assert_eq!(d.diagnostics.len(),2);
     assert_eq!(d.sections[0].properties.as_ref().unwrap().diagnostics.len(),1);
     assert_eq!(d.sections[1].properties.as_ref().unwrap().diagnostics.len(),1);
     let Block::Paragraph(p) = &d.blocks[0] else { panic!("paragraph expected") };
     assert_eq!(p.text(),"科研");
     assert!(p.properties.diagnostics.is_empty());
+}
+
+
+#[test]
+fn document_sections_preserve_header_footer_and_page_number_metadata() {
+    use rwcore::section::HeaderFooterVariant as V;
+    let d = section_doc("<w:p><w:pPr><w:sectPr xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><w:headerReference w:type='first' r:id='h1'/><w:titlePg/><w:pgNumType w:start='1' w:fmt='lowerRoman'/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><w:footerReference w:type='default' r:id='f2'/><w:pgNumType w:start='1' w:fmt='decimal'/></w:sectPr>").unwrap();
+    let first=d.sections[0].properties.as_ref().unwrap();
+    let last=d.sections[1].properties.as_ref().unwrap();
+    assert_eq!(first.headers[&V::First],"h1");
+    assert_eq!(first.title_page,Some(true));
+    assert_eq!(first.page_number.as_ref().unwrap().format.as_deref(),Some("lowerRoman"));
+    assert_eq!(last.footers[&V::Default],"f2");
+    assert_eq!(last.page_number.as_ref().unwrap().start,Some(1));
+    assert_eq!(last.page_number.as_ref().unwrap().format.as_deref(),Some("decimal"));
+    assert!(d.diagnostics.is_empty());
 }

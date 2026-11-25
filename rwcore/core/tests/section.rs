@@ -50,7 +50,7 @@ fn invalid_duplicate_and_bounded_columns() {
 }
 #[test]
 fn namespace_limits_and_unsupported_metadata() {
-    let s = section("<w:pgSz w:w='100' w:code='9'/><w:headerReference/><w:pgNumType/>");
+    let s = section("<w:pgSz w:w='100' w:code='9'/><w:pgBorders/><w:docGrid/>");
     let strict = s.replace(NS,"http://purl.oclc.org/ooxml/wordprocessingml/main");
     let p = parse_section(strict.as_bytes(),Limits::default()).unwrap();
     assert_eq!(p.width_twips,Some(100));
@@ -58,4 +58,76 @@ fn namespace_limits_and_unsupported_metadata() {
     assert_eq!(parse_section(s.as_bytes(),Limits { max_part_bytes: 1, ..Limits::default() }),Err(Error::Limit("part bytes")));
     assert!(parse_section(s.as_bytes(),Limits { max_xml_nodes: 1, ..Limits::default() }).is_err());
     assert!(parse_section(b"<sectPr/>",Limits::default()).is_err());
+}
+
+
+const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+fn with_refs(body: &str) -> String {
+    format!("<w:sectPr xmlns:w='{NS}' xmlns:r='{RNS}'>{body}</w:sectPr>")
+}
+
+#[test]
+fn page_variants_and_numbering_attributes() {
+    use rwcore::section::HeaderFooterVariant as V;
+    let s = parse_section(with_refs("<w:headerReference w:type='default' r:id='h1'/><w:headerReference w:type='first' r:id='h2'/><w:footerReference w:type='even' r:id='f1'/><w:titlePg/><w:pgNumType w:start='3' w:fmt='lowerRoman' w:chapStyle='2' w:chapSep='hyphen'/>").as_bytes(),Limits::default()).unwrap();
+    assert_eq!(s.headers[&V::Default],"h1");
+    assert_eq!(s.headers[&V::First],"h2");
+    assert_eq!(s.footers[&V::Even],"f1");
+    assert_eq!(s.title_page,Some(true));
+    let p = s.page_number.unwrap();
+    assert_eq!(p.start,Some(3));
+    assert_eq!(p.format.as_deref(),Some("lowerRoman"));
+    assert_eq!(p.chapter_style,Some(2));
+    assert_eq!(p.chapter_separator.as_deref(),Some("hyphen"));
+    assert!(s.diagnostics.is_empty());
+}
+#[test]
+fn strict_reference_namespace_and_explicit_false() {
+    use rwcore::section::HeaderFooterVariant as V;
+    let xml = with_refs("<w:footerReference w:type='default' r:id='f'/><w:titlePg w:val='0'/><w:pgNumType/>")
+        .replace(NS,"http://purl.oclc.org/ooxml/wordprocessingml/main")
+        .replace(RNS,"http://purl.oclc.org/ooxml/officeDocument/relationships");
+    let s = parse_section(xml.as_bytes(),Limits::default()).unwrap();
+    assert_eq!(s.footers[&V::Default],"f");
+    assert_eq!(s.title_page,Some(false));
+    assert_eq!(s.page_number,Some(Default::default()));
+}
+#[test]
+fn rejects_invalid_or_duplicate_references_and_page_properties() {
+    for body in ["<w:headerReference w:type='default'/>",
+        "<w:headerReference w:type='bad' r:id='h'/>",
+        "<w:headerReference w:type='first' r:id='h'/><w:headerReference w:type='first' r:id='h2'/>",
+        "<w:footerReference w:type='even' r:id='a b'/>",
+        "<w:pgNumType w:start='bad'/>",
+        "<w:pgNumType w:chapStyle='10'/>",
+        "<w:pgNumType w:chapSep='bad'/>",
+        "<w:titlePg/><w:titlePg/>"] {
+        assert!(parse_section(with_refs(body).as_bytes(),Limits::default()).is_err(),"{body}");
+    }
+}
+#[test]
+fn explicit_relationship_resolution_checks_scope_kind_and_mime() {
+    use rwcore::{PackageGraph, Relationship, ResourceKind, Target};
+    use rwcore::section::{resolve_header_footer, HeaderFooterKind as K, HeaderFooterVariant as V};
+    let s = parse_section(with_refs("<w:headerReference w:type='default' r:id='h'/>").as_bytes(),Limits::default()).unwrap();
+    let path = "custom/heading.xml";
+    let mut g = PackageGraph {
+        main_part: "custom/main.xml".into(),
+        parts: [(path.to_owned(),Some("application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml".into()))].into(),
+        relationships: vec![Relationship {source:"custom/main.xml".into(),id:"h".into(),kind:ResourceKind::Header,
+            relationship_type:format!("{RNS}/header"),target:Target::Internal(path.into())}],
+    };
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::Default),Ok(Some(path)));
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::First),Ok(None));
+    g.relationships[0].source="other.xml".into();
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::Default),Err(Error::Invalid("missing header/footer relationship")));
+    g.relationships[0].source=g.main_part.clone();
+    g.relationships[0].kind=ResourceKind::Footer;
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::Default),Err(Error::Invalid("header/footer relationship kind")));
+    g.relationships[0].kind=ResourceKind::Header;
+    g.relationships[0].target=Target::External("https://example.org/header.xml".into());
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::Default),Err(Error::Unsupported("external header/footer reference")));
+    g.relationships[0].target=Target::Internal(path.into());
+    g.parts.insert(path.into(),Some("application/xml".into()));
+    assert_eq!(resolve_header_footer(&g,&s,K::Header,V::Default),Err(Error::Invalid("header/footer content type")));
 }
