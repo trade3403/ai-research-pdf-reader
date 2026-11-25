@@ -57,7 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_keep: Some(&[true, true, false, true]),
         },
         Case {
-            source: &[4, 17, 28, 109, 2047, 2048, 4096, 12991, 32000, 50000, 64999, 0],
+            source: &[
+                4, 17, 28, 109, 2047, 2048, 4096, 12991, 32000, 50000, 64999, 0,
+            ],
             source_keep: None,
             target: &[65000, 32000, 4096, 2048, 1],
             target_keep: None,
