@@ -79,3 +79,6 @@ C4.4b5 source pending CI; parent CI #112 verified 751 tests per platform. Read D
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4c1 source pending CI; parent CI #113 verified 757 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Base plan is not execution or a full script-specific shaping plan.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4c2 source pending CI; parent CI #114 verified 770 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Real plan reference is not actual shaping execution.

@@ -127,3 +127,5 @@
 - C4.4b5: real lookup flag reference covers observed flags in seven fonts; absent combinations (including RightToLeft and simultaneous IgnoreMarks/UseMarkFilteringSet) retain synthetic checks. Reference is independent raw-data eligibility only, not external shaper equivalence or filtered substitution. Full scheduling, nested execution, clusters, GPOS and Word fidelity outstanding.
 
 - C4.4c1: base plan only, no FeatureVariations evaluation, automatic script/language identification, script-specific staging or feature values/masks. Cross-index validation covers selected LangSys and selected feature lookup refs; not an entire public-layout validator. Lookup execution, filtering during matching, cycles, clusters, GPOS and Word fidelity outstanding. Real plan reference acceptance pending next stage.
+
+- C4.4c2: original fixtures lack RequiredFeature and nonzero FeatureVariations (synthetic checks retained). Independent reference validates base plan only, not script-specific shaping stages, feature values/masks, external shaper equivalence or execution. Native Type 8 and real point-attachment samples still outstanding.
