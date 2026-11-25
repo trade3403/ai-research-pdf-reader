@@ -1,7 +1,7 @@
 //! Native T.88 generic-region header and causal arithmetic templates.
 //! Context bits are assigned in reverse nominal reading order (LSB at
 //! the nearest previously coded pixel); adaptive slots never move bits.
-//! This stage does not reconstruct pixels or invoke QM.
+//! Scoped known-length, explicitly terminated generic arithmetic reconstruction.
 use crate::{Error,Result,MAX_BYTES};
 use super::bitmap::{self,Bitmap,RegionInfo};
 
@@ -94,6 +94,76 @@ pub fn parse(data:&[u8])->Result<(GenericHeader,&[u8])>{
     let neighborhood=Neighborhood::new(template,&adaptive[..count])?;
     Ok((GenericHeader{region,coding:Coding::Arithmetic{neighborhood,typical_prediction:typical}},&rest[count*2..]))
 }
+
+/// Maximum conservative per-region work units (neighbor reads, pixel writes
+/// and optional row prediction decisions). This is not a wall-time estimate.
+pub const MAX_GENERIC_WORK:u64=100_000_000;
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedGeneric{
+    pub region:RegionInfo,
+    pub bitmap:Bitmap,
+    pub decisions:usize,
+    pub copied_rows:u32,
+}
+
+/// Decode a complete arithmetic-coded generic region segment body, using
+/// fresh contexts. The upper-bound work and decision budgets are checked
+/// before allocation or pixel reconstruction. TPGD toggles LTP using the
+/// SLTP context in the same bank; a typical first row is all zero.
+/// No external skip bitmap, MMR, retained contexts or unknown-length
+/// segment is supported. Explicit arithmetic termination is required.
+pub fn decode_arithmetic(data:&[u8],work_limit:u64)->Result<DecodedGeneric>{
+    use super::qm::{Context,Decoder};
+    let (header,payload)=parse(data)?;
+    let (neighborhood,typical_prediction)=match header.coding{
+        Coding::Arithmetic{neighborhood,typical_prediction}=>(neighborhood,typical_prediction),
+        Coding::Mmr=>return Err(Error::Unsupported("JBIG2 generic MMR decoder")),
+    };
+    let r=header.region;
+    let template=neighborhood.template();
+    let area=u64::from(r.width)*u64::from(r.height);
+    let row_work=if typical_prediction{u64::from(r.height)}else{0};
+    let work=area.checked_mul(template.bits()as u64+1).and_then(|n|n.checked_add(row_work))
+        .ok_or(Error::Limit("JBIG2 generic work"))?;
+    if work>work_limit.min(MAX_GENERIC_WORK){return Err(Error::Limit("JBIG2 generic work"));}
+    let upper=usize::try_from(area.checked_add(row_work).ok_or(Error::Limit("JBIG2 generic decisions"))?)
+        .map_err(|_|Error::Limit("JBIG2 generic decisions"))?;
+    let mut decoder=Decoder::new(payload,upper)?;
+    let mut contexts=Vec::new();
+    contexts.try_reserve_exact(template.context_count()).map_err(|_|Error::Limit("JBIG2 generic contexts"))?;
+    contexts.resize(template.context_count(),Context::default());
+    let mut image=Bitmap::new(r.width,r.height,false)?;
+    let mut ltp=false;
+    let mut decisions=0usize;
+    let mut copied_rows=0u32;
+    for y in 0..r.height{
+        if typical_prediction{
+            let sltp=decoder.decode(&mut contexts[template.sltp_context()])?!=0;
+            decisions+=1;
+            ltp^=sltp;
+            if ltp{
+                copied_rows+=1;
+                if y!=0{
+                    for x in 0..r.width{
+                        let bit=image.sample(i64::from(x),i64::from(y)-1);
+                        image.set(x,y,bit)?;
+                    }
+                }
+                continue;
+            }
+        }
+        for x in 0..r.width{
+            let cx=neighborhood.context(&image,x,y)?;
+            let bit=decoder.decode(&mut contexts[cx])?!=0;
+            decisions+=1;
+            image.set(x,y,bit)?;
+        }
+    }
+    // Marker fill is normative, not an authenticity check; unused encoded
+    // bytes before the marker may occur and are not a decision-count proof.
+    Ok(DecodedGeneric{region:r,bitmap:image,decisions,copied_rows})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -179,5 +249,71 @@ mod tests{
         assert!(parse(&body(2,&[127,1])).is_err());
         let b=body(6,&[128,128]);let (h,_)=parse(&b).unwrap();
         match h.coding{Coding::Arithmetic{neighborhood,..}=>assert_eq!(neighborhood.slots()[4],at(-128,-128)),_=>panic!("expected arithmetic")}
+    }
+
+    fn unhex(s:&str)->Vec<u8>{
+        s.as_bytes().chunks_exact(2).map(|b|u8::from_str_radix(std::str::from_utf8(b).unwrap(),16).unwrap()).collect()
+    }
+    fn fixture(w:u32,h:u32,flags:u8,adaptive:&[u8],code:&str)->Vec<u8>{
+        let mut data=Vec::new();
+        for n in [w,h,2,3]{data.extend(n.to_be_bytes());}
+        data.push(2); // XOR, common region metadata only.
+        data.push(flags);data.extend(adaptive);data.extend(unhex(code));data
+    }
+    // Separate offline JavaScript arithmetic encoder, Annex E interval
+    // selection and byteout/flush. Shared normative probability table.
+    // Pixel references come from unpacked source rows, high-to-low
+    // nominal coordinate lists, independently of the Rust bitmap code.
+    fn check(w:u32,flags:u8,adaptive:&[u8],code:&str,packed:&str,decisions:usize,copied:u32){
+        let data=fixture(w,8,flags,adaptive,code);
+        let d=decode_arithmetic(&data,MAX_GENERIC_WORK).unwrap();
+        assert_eq!((d.region.width,d.region.height,d.region.x,d.region.y),(w,8,2,3));
+        assert_eq!(d.region.op,bitmap::ComposeOp::Xor);
+        assert_eq!((d.bitmap.width(),d.bitmap.height()),(w,8));
+        assert_eq!(d.bitmap.packed(),unhex(packed).as_slice());
+        assert_eq!((d.decisions,d.copied_rows),(decisions,copied));
+        let again=decode_arithmetic(&data,MAX_GENERIC_WORK).unwrap();
+        assert_eq!(d,again);
+    }
+    #[test]fn generic_decode_template0_reference(){
+        check(13,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac",
+            "9130e0e00000e0e091304a50aaa85b48",104,0);
+    }
+    #[test]fn generic_decode_template1_prediction_reference(){
+        check(14,10,&[3,255],"b7536866348bffac",
+            "00000000fffcfffcfffcb4a455545554",50,5);
+    }
+    #[test]fn generic_decode_template2_reference(){
+        check(15,4,&[2,255],"483230ed786d39a11ce4ca597ca6b3ffac",
+            "1332e1e00000f0e099124a5aaaaada48",120,0);
+    }
+    #[test]fn generic_decode_template3_prediction_reference(){
+        check(16,14,&[2,255],"b70c7c882eb7ffac",
+            "00000000ffffffffffff94a555555555",56,5);
+    }
+    #[test]fn generic_decode_adaptive_and_narrow_reference(){
+        check(17,8,&[255,0,4,255,0,253,251,254],"b42e1345ba7fffac",
+            "0000000000000000000000000000004b4a00aaaa80aaaa80",42,6);
+        check(1,14,&[1,254],"ba2fffac","0000808080800000",10,6);
+    }
+    #[test]fn generic_decode_work_limits(){
+        let data=fixture(13,8,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac");
+        assert!(matches!(decode_arithmetic(&data,13*8*17-1),Err(Error::Limit(_))));
+        assert!(decode_arithmetic(&data,13*8*17).is_ok());
+        let data=fixture(14,8,10,&[3,255],"b7536866348bffac");
+        assert!(matches!(decode_arithmetic(&data,14*8*14+7),Err(Error::Limit(_))));
+        assert!(decode_arithmetic(&data,14*8*14+8).is_ok());
+        let huge=fixture(10_000,10_000,0,&[3,255,253,255,2,254,254,254],"ffac");
+        assert!(matches!(decode_arithmetic(&huge,u64::MAX),Err(Error::Limit(_))));
+    }
+    #[test]fn generic_decode_malformed_and_mmr(){
+        let data=fixture(13,8,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac");
+        for end in 0..data.len(){assert!(decode_arithmetic(&data[..end],MAX_GENERIC_WORK).is_err());}
+        let mut trailing=data.clone();trailing.push(0);
+        assert!(decode_arithmetic(&trailing,MAX_GENERIC_WORK).is_err());
+        let mut bad=data.clone();let last=bad.len()-1;bad[last]=0xad;
+        assert!(decode_arithmetic(&bad,MAX_GENERIC_WORK).is_err());
+        let mmr=fixture(13,8,1,&[],"ffac");
+        assert!(matches!(decode_arithmetic(&mmr,MAX_GENERIC_WORK),Err(Error::Unsupported(_))));
     }
 }
