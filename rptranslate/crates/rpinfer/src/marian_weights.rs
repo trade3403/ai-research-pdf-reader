@@ -123,6 +123,10 @@ impl MarianEmbeddings {
         self.payload_bytes
     }
 
+    pub fn embedding_scale(&self) -> f32 {
+        self.scale
+    }
+
     pub fn tokens(&self, ids: &[u32]) -> Result<Tensor, Error> {
         embedding(&self.shared, ids, self.scale)
     }

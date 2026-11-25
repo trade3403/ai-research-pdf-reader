@@ -4,8 +4,9 @@ use crate::{
     decoder::Decoder,
     layers::MultiHead,
     matmul::Kernel,
-    tensor::{buffer, layout, Error, Tensor},
-    transformer::input_embeddings,
+    tensor::{buffer, layout, Binary, Error, Tensor},
+    transformer::{embedding, input_embeddings},
+    vocabulary::RowTable,
 };
 use std::rc::Rc;
 
@@ -49,6 +50,7 @@ fn append_row(old: &Tensor, row: &Tensor) -> Result<Tensor, Error> {
 
 pub(crate) struct Cache<'m, 'a> {
     decoder: &'m Decoder<'a>,
+    positions: Option<&'a Tensor>,
     cross: Rc<Vec<Kv>>,
     own: Vec<Kv>,
     source_keep: Option<&'m [bool]>,
@@ -66,6 +68,18 @@ impl<'m, 'a> Cache<'m, 'a> {
         branches: usize,
         kernel: Kernel,
     ) -> Result<Self, Error> {
+        Self::new_with_positions(decoder, memory, source_keep, limit, branches, kernel, None)
+    }
+
+    pub(crate) fn new_with_positions(
+        decoder: &'m Decoder<'a>,
+        memory: &Tensor,
+        source_keep: Option<&'m [bool]>,
+        limit: usize,
+        branches: usize,
+        kernel: Kernel,
+        positions: Option<&'a Tensor>,
+    ) -> Result<Self, Error> {
         let &[source, hidden] = memory.shape() else {
             return Err(Error::Shape);
         };
@@ -76,6 +90,7 @@ impl<'m, 'a> Cache<'m, 'a> {
             || hidden == 0
             || width != hidden
             || decoder.layers.is_empty()
+            || positions.is_some_and(|p| p.shape() != [decoder.max_positions, hidden])
             || source_keep.is_some_and(|m| m.len() != source)
         {
             return Err(Error::Shape);
@@ -107,6 +122,7 @@ impl<'m, 'a> Cache<'m, 'a> {
         }
         Ok(Self {
             decoder,
+            positions,
             cross: Rc::new(cross),
             own: Vec::new(),
             source_keep,
@@ -125,13 +141,23 @@ impl<'m, 'a> Cache<'m, 'a> {
         }
         let mut target_keep = self.target_keep.clone();
         target_keep.push(keep);
-        let mut x = input_embeddings(
-            self.decoder.embeddings,
-            &[token],
-            self.decoder.embedding_scale,
-            offset,
-            self.decoder.max_positions,
-        )?;
+        let mut x = if let Some(positions) = self.positions {
+            let tokens = embedding(
+                self.decoder.embeddings,
+                &[token],
+                self.decoder.embedding_scale,
+            )?;
+            let row = Tensor::new(&[1, tokens.shape()[1]], positions.row(offset)?.to_vec())?;
+            tokens.binary(&row, Binary::Add)?
+        } else {
+            input_embeddings(
+                self.decoder.embeddings,
+                &[token],
+                self.decoder.embedding_scale,
+                offset,
+                self.decoder.max_positions,
+            )?
+        };
         let mut own = Vec::new();
         for (i, layer) in self.decoder.layers.iter().enumerate() {
             let row = Kv::project(&layer.self_attention, &x, self.kernel)?;
@@ -170,6 +196,7 @@ impl<'m, 'a> Cache<'m, 'a> {
         Ok((
             Self {
                 decoder: self.decoder,
+                positions: self.positions,
                 cross: Rc::clone(&self.cross),
                 own,
                 source_keep: self.source_keep,

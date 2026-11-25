@@ -29,11 +29,12 @@
 | D1.8b | 已通过 | 大词表分块读取、共享权重、投影 |
 | D1.8c1 | 已通过 | 固定官方权重安全转换与 RPModel v1 |
 | D1.8c2a | 已通过 | SHA256、严格 manifest、固定配置 profile、权重索引 |
-| D1.8c2b | 待验证 | 类型化配置和 search 参数绑定 |
-| D1.8c3 | 待验证 | 真实共享词表、位置权重、bias 和 logits |
-| D1.8c4 | 待验证 | 真实六层 Encoder 加载与逐层前向 |
-| D1.8c5 | 待验证 | 真实六层 Decoder 与联合 logits |
-| D1.8c6–D1.8c7 | 未开始 | 真实生成与完整模型构建 |
+| D1.8c2b | 已通过 | 类型化配置和 search 参数绑定 |
+| D1.8c3 | 已通过 | 真实共享词表、位置权重、bias 和 logits |
+| D1.8c4 | 已通过 | 真实六层 Encoder 加载与逐层前向 |
+| D1.8c5 | 已通过 | 真实六层 Decoder 与联合 logits |
+| D1.8c6 | 待验证 | 真实 KV Cache 与 beam generation |
+| D1.8c7 | 未开始 | 完整模型构建与加载验收 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -155,8 +156,13 @@ D1.8c2b/c3/c4 [45532734293](https://github.com/trade3403/ai-research-pdf-reader/
 ## 当前阶段 D1.8c5
 新增 MarianDecoder：156层张量、100896768 bytes 权重预算，真实 causal self/cross attention、FFN/Swish、post-norm、实际位置表，复用共享 embedding，前缀重算、全/末行 tied logits。测试3组 source/target（含 source PAD 和 target key mask/start），真实 HF MarianMTModel eager 逐层3个 norm、memory、input、hidden、完整词表及末行 logits，共69张量、13行 argmax、预设 atol/rtol=1e-4，额外 causal 首行不受未来 token、预算和非法 mask 检查；原 c3/c4 门槛不变。总纯权重312033188 bytes，非实测 RSS；尚未真实缓存或生成译文。待 CI。
 
-## 下一阶段 D1.8c6
-实际共享权重、位置表和真实 Decoder 的 KV Cache 与 Beam Search 接入、独立生成验收。
+实际验收：[5fc2a97](https://github.com/trade3403/ai-research-pdf-reader/commit/5fc2a973ca96be8750f7893e2b210235f98624e5) / [45533198998](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45533198998) completed/success；workspace69/69、portable39/39，真实配置、包及逐位转换复测通过；embedding 33869801位一致、288676计算元素、max_abs=2.02655792e-6；encoder 42/42、164864元素、max_abs=1.90734863e-5、memory max_abs=2.28732824e-6；decoder 69/69、958165元素、max_abs=4.19616699e-5、logits max_abs=2.67028809e-5、argmax13/13。D1.8c2b/c3/c4/c5 全门槛通过。
+
+## 当前阶段 D1.8c6
+新增真实 MarianEncoded：借用同一真实权重/encoder memory、实际 decoder position row 增量输入、6层 self KV immutable snapshot、共享 cross KV，复用原 Cache 256MiB KV payload 门槛与原 search 策略（非 HF beam scorer 等价），支持 full/cached、显式 target mask 保留 start，真实 config 派生 beam 参数。真实 CI 2组 token prefix 含 source/target mask、full/cached 全词表 logits 对照原始 PyTorch（4组910014元素），2组 source ×beam1/4×full/cache=8生成设置，max_new4、原模型 EOS/suppress/penalty、独立全候选扩展与精确序列/EOS/排序、分数 atol/rtol=1e-4、2组 HF greedy 对照；原门槛不变。仅短 token 序列测试，未测长生成速度、真实译文、RSS，cache 仍复制 self KV 前缀而非分页。待 CI。
+
+## 下一阶段 D1.8c7
+完整模型拥有型加载、统一预算、Token 级推理入口与完整性验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
