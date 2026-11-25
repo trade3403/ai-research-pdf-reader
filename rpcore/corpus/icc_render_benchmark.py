@@ -155,14 +155,14 @@ def convert(lib,t,x):
 def stream(dictionary,data):
     return f'<< {dictionary} /Length {len(data)} >>\nstream\n'.encode()+data+b'\nendstream'
 
-def make_pdf(path,profile,n,samples,bits):
+def make_pdf(path,profile,n,samples,bits,intent=None):
     # Each row contains vector fill, wide stroke, image, and image on white
     # with a separate 128/255 soft mask. Interior-only sampling avoids edges.
     w,h=192,48*len(samples)
     objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',b'',b'',
              stream(f'/N {n}',profile),
              stream('/Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8',b'\x80')]
-    cmds=[];names=[];rows=[]
+    cmds=[f'/{intent} ri'] if intent else [];names=[];rows=[]
     maxv=(1<<bits)-1
     for i,raw in enumerate(samples):
         y=h-(i+1)*48+4
@@ -252,6 +252,86 @@ def intent_gate(a,lib,work):
         if im is not None:im.save(a.out/f'intent-{dpi}-native.png')
     return results
 
+def absolute_gate(a,lib,work):
+    # Original synthetic output profiles, non-D50 media white and unchanged
+    # D50 PCS illuminant. Independent LCMS absolute transform is the oracle.
+    from icc_mpe_reference import head, directory, matrix
+    white=(.82,.88,.69)
+    raw8=[(0,0,0,0),(255,0,0,0),(0,255,0,0),(0,0,255,0),
+          (0,0,0,255),(64,128,192,32),(128,128,128,128),(255,255,255,255)]
+    def rebuild(src,mode):
+        tags=[]
+        for i in range(S.unpack_from('>I',src,128)[0]):
+            name,off,size=S.unpack_from('>4sII',src,132+12*i)
+            payload=src[off:off+size]
+            if name==b'wtpt':
+                payload=b'XYZ '+bytes(4)+S.pack('>iii',*(round(v*65536) for v in white))
+            tags.append((name,payload))
+        if mode=='preferred':
+            tags=[(b'A2B1' if k==b'A2B0' else k,v) for k,v in tags]
+        elif mode=='unsupported':
+            # Structurally valid ICC tag with unsupported native LUT type.
+            tags.append((b'A2B1',b'zzzz'+bytes(48)))
+        out=bytearray(src[:128])+bytearray(4+12*len(tags))
+        out[84:100]=bytes(16)
+        S.pack_into('>I',out,128,len(tags))
+        for i,(name,payload) in enumerate(tags):
+            S.pack_into('>4sII',out,132+12*i,name,len(out),len(payload))
+            out+=payload;out+=bytes(-len(out)%4)
+        S.pack_into('>I',out,0,len(out))
+        return bytes(out)
+    def oracle(profile,samples):
+        # Call LCMS's own intent=3 transform, not RPCore's white scaling formula.
+        buf=C.create_string_buffer(profile)
+        src=lib.cmsOpenProfileFromMem(buf,len(profile));dst=lib.cmsCreate_sRGBProfile()
+        t=None
+        try:
+            if not src or not dst:raise RuntimeError('absolute profile open')
+            t=lib.cmsCreateTransform(src,(1<<22)|(6<<16)|(4<<3),dst,RGB8,3,0)
+            if not t:raise RuntimeError('absolute transform creation')
+            out=[]
+            for x in samples:
+                # LCMS floating CMYK uses percent, not normalized channels.
+                v=(C.c_double*4)(*(100*z for z in x));rgb=(C.c_uint8*3)()
+                lib.cmsDoTransform(t,v,rgb,1);out.append(list(rgb))
+            return out
+        finally:
+            if t:lib.cmsDeleteTransform(t)
+            if src:lib.cmsCloseProfile(src)
+            if dst:lib.cmsCloseProfile(dst)
+    results=[]
+    for kind,src in [('mft2',cmyk_fixture(2,2)),('mab',mab_fixture(2,True))]:
+        for mode in ('preferred','missing','unsupported'):
+            profile=rebuild(src,mode)
+            # LCMS is not required to accept the intentionally unsupported
+            # tag; reference the identical valid fallback profile instead.
+            reference_profile=rebuild(src,'missing') if mode=='unsupported' else profile
+            tag='A2B1' if mode=='preferred' else 'A2B0'
+            want=('cmyk_' if kind=='mft2' else 'mab_')+tag
+            for bits in (8,16):
+                samples=raw8 if bits==8 else [tuple(v*257+(1 if 0<v<255 else 0) for v in row) for row in raw8]
+                label=f'absolute-{kind}-{mode}-{bits}'
+                pdf=work/(label+'.pdf')
+                size,rows=make_pdf(pdf,profile,4,samples,bits,intent='AbsoluteColorimetric')
+                expected=oracle(reference_profile,[r['source'] for r in rows])
+                for dpi in (72,144):
+                    native,ref,im,ri=render_pair(a,pdf,1,dpi,work,f'{label}-{dpi}',None)
+                    diag=[v for k,v in native.items() if k.startswith('icc_diag_')]
+                    ok=im is not None and im.size==tuple(v*dpi//72 for v in size)
+                    ok=ok and native.get('icc_vector_native')=='1' and native.get('icc_image_native')=='1' and native.get('icc_vector_alternate')=='0' and native.get('icc_image_alternate')=='0'
+                    ok=ok and len(diag)==2 and all(';'+want+';' in d for d in diag)
+                    if not ok:continue
+                    for row,ex in zip(rows,expected):
+                        colors,spread=zip(*(measure(im,tuple(v*dpi//72 for v in box)) for box in row['boxes']))
+                        delta=max(error(c,ex) for c in colors[:3])
+                        parity=max(error(colors[0],c) for c in colors[:3])
+                        alpha=error(colors[3],[round((v*128+255*127)/255) for v in colors[2]])
+                        results.append({'case':label,'dpi':dpi,'raw':row['raw'],'expected_rgb':ex,'native_rgb':colors,
+                            'max_error':delta,'parity':parity,'alpha':alpha,
+                            'pass':delta<=2 and parity<=1 and alpha<=1 and max(spread)==0})
+                    im.save(a.out/f'{label}-{dpi}-native.png')
+    return results
+
 def main():
     p=argparse.ArgumentParser()
     for k in ('probe','reference','out'):
@@ -334,6 +414,7 @@ def main():
                             'poppler_error':max(error(x,y) for x,y in zip(nv,rv)),
                             'pass':parity<=1 and oracle<=2 and ae<=1 and max(ns)==0})
         report['intent_checks']=intent_gate(a,lib,work)
+        report['absolute_checks']=absolute_gate(a,lib,work)
     total=288
     passed=sum(r['pass'] for r in report['rows'])
     report['expected_rows']=total
@@ -347,6 +428,7 @@ def main():
         key=render['case'];rr=[r for r in report['rows'] if r['case']==key]
         mx=[max((r[k] for r in rr),default='—') for k in ('parity_error','lcms_error','alpha_error','poppler_error')]
         lines.append(f"| {key} | {len(rr)} | {sum(r['pass'] for r in rr)} | "+' | '.join(map(str,mx))+' |')
+    lines+=['',f"Absolute legacy: {sum(r['pass'] for r in report['absolute_checks'])}/192 observations passed; max LCMS RGB8 error {max((r['max_error'] for r in report['absolute_checks']),default='missing')}."]
     lines+=['',f"Intent switching: {sum(r['pass'] for r in report['intent_checks'])}/16 observations passed."]
     lines+=['',f'Passed {passed}/{total} paired color observations; {len(report["renders"])} page comparisons.',
             '', 'Native RGB matrix checks:']
@@ -354,7 +436,7 @@ def main():
         lines.append(f"- {check['profile']}: {check['status']}, max RGB error {check.get('max_rgb_error','—')}, {'PASS' if check['pass'] else 'FAIL'}")
     lines+=['','Unmodified LCMS sRGB and generated wide-gamut matrix profile, sampled baseline and original synthetic CMYK LUT. Includes three synthetic MPE D2B1 profiles (matrix, CLUT, mixed). No measured printer or monitor calibration claim.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
-    return int(len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
+    return int(len(report['absolute_checks'])!=192 or not all(r['pass'] for r in report['absolute_checks']) or len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
 
 if __name__=='__main__':
     raise SystemExit(main())
