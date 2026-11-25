@@ -70,3 +70,6 @@ pub use table_layout::{layout_nested_table, TableMeasurer, NestedLayoutOptions, 
 
 pub mod media;
 pub use media::{load_media, MediaLimits, MediaCatalog, MediaResource, MediaBinding, ImageFormat};
+
+pub mod image_header;
+pub use image_header::{parse_image_dimensions, ImageDimensions, ImageLimits};
