@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D1.11d [#118 / 45695223994](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45695223994) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45695223994/job/139490770275) document.rs:481/495/502/745/765 五组差异。按rustfmt日志逐字修复，不改变算法、质量报告、独立审计门槛或历史测试。真实模型专项查询时仍运行（段落上下文与重复抑制），未主动取消，综合质量对照结果尚未取得。待修复版全量验收，不提前进入D1.12。
+
 2026-11-26 D1.11c 基线 ab78adc9bff2bfc708072a22ccffccd8d2ca4f26 / [#117 / 45686977137](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45686977137) 全量 success；143 workspace +56 portable=199/199。INT8 269块首轮234、第二轮240、第三轮242接受/27拒绝（89.96%词面覆盖），5221/6036词、245数字串、251内部段，427.412269s、976.624776ms模型加载、122452KiB RSS；28数值重试恢复2，剩余新增候选失败20 Generation/1 ExtraSurface/5 UnexpectedBoilerplate；FP32 8样本4接受4拒绝。#116 同样覆盖，跨runner耗时仅观察。用户授权D1.11d：新增自主 document::assess 和 QualitySummary/QualityError，对原始输入及三轮恢复报告重新验证有序ID映射、重试预算和资格/状态、源UTF8覆盖、输出预算、原Plan逐段词面审计、数值恢复扩展Plan审计；独立统计接受/拒绝、词数、数字串、段数及各轮恢复数量。无额外推理，无运行时Python依赖。Rust公开接口明确需要人工语义复核，存在拒译时不得宣称全文成功；不提供发布批准。新增3 Rust回归测试：摘要与人工复核标志、伪造数值输出拒绝、无效重试来源及状态拒绝。真实全文探针输出结构化SUMMARY，Python独立重算11项数值和2个布尔状态，冻结固定论文样本最低历史覆盖234/240/242及5221词、245数字串，FP32样本>=4；新门槛针对固定样本不等于通用准确率。保持全部历史模型/格式/算法测试和免费CPU预算，未本地编译，待CI。工程封版不是发布或质量合格，27拒译、未人工双语评价、单篇论文、未覆盖表格/参考文献/图片/附录、Windows兼容待验收均为限制。D2训练蒸馏独立项目。
 
 2026-11-26 D1.11c [#116 / 45684415371](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45684415371) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45684415371/job/139453098073) 五组差异：document_reference.rs:83/130、document.rs:514、paragraph.rs:409、protection.rs:496。逐字按rustfmt日志修复，仅格式，不改变算法、预算、审计或测试。真实专项查询时仍运行（科学保护翻译测试），尚未取得第三轮数值恢复结果；未主动取消。待修复版全量验收，不提前进入D1.11d。

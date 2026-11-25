@@ -481,8 +481,9 @@ pub fn assess(
                 paragraph::audit(source, &plan, &segment.text)
                     .map_err(|e| QualityError::Lexical(block.id, e))?;
                 if num.is_some() {
-                    let extended = crate::protection::Plan::prepare_indexed_numeric(source, glossary)
-                        .map_err(|e| QualityError::Plan(block.id, e))?;
+                    let extended =
+                        crate::protection::Plan::prepare_indexed_numeric(source, glossary)
+                            .map_err(|e| QualityError::Plan(block.id, e))?;
                     paragraph::audit(source, &extended, &segment.text)
                         .map_err(|e| QualityError::Lexical(block.id, e))?;
                 }
@@ -495,14 +496,17 @@ pub fn assess(
             summary.rejected += 1;
         }
     }
-    for id in retries.iter().map(|r| r.id).chain(numeric.iter().map(|r| r.id)) {
+    for id in retries
+        .iter()
+        .map(|r| r.id)
+        .chain(numeric.iter().map(|r| r.id))
+    {
         if blocks.binary_search_by_key(&id, |b| b.id).is_err() {
             return Err(QualityError::Provenance(id));
         }
     }
-    summary.first_pass_accepted = summary.accepted
-        - summary.beam_recovered
-        - summary.numeric_recovered;
+    summary.first_pass_accepted =
+        summary.accepted - summary.beam_recovered - summary.numeric_recovered;
     Ok(summary)
 }
 
@@ -745,7 +749,10 @@ mod tests {
         let engine = ContextEngine::builtin().unwrap();
         assert_eq!(
             assess(&blocks, &report, &engine),
-            Err(QualityError::Lexical(1, paragraph::QualityIssue::NumericMismatch))
+            Err(QualityError::Lexical(
+                1,
+                paragraph::QualityIssue::NumericMismatch
+            ))
         );
     }
 
@@ -765,10 +772,16 @@ mod tests {
             numeric: vec![],
         };
         let engine = ContextEngine::builtin().unwrap();
-        assert_eq!(assess(&blocks, &report, &engine), Err(QualityError::Provenance(99)));
+        assert_eq!(
+            assess(&blocks, &report, &engine),
+            Err(QualityError::Provenance(99))
+        );
         report.previous.retries[0].id = 1;
         report.previous.retries[0].recovered = false;
-        assert_eq!(assess(&blocks, &report, &engine), Err(QualityError::Provenance(1)));
+        assert_eq!(
+            assess(&blocks, &report, &engine),
+            Err(QualityError::Provenance(1))
+        );
         report.previous.retries[0].recovered = true;
         let summary = assess(&blocks, &report, &engine).unwrap();
         assert_eq!(summary.first_pass_accepted, 0);
