@@ -101,6 +101,16 @@ def report(folder):
     print(f"PAPER_PAIRED sample_segments={len(fp32)} speedup={a / b:.6f} "
           f"identical_text={sum(fp32[k][4] == int8[k][4] for k in fp32)}/{len(fp32)} "
           "quality=observational no_reference_translation=true")
+    # Bounded preview only; full paper and translations remain in runner temp.
+    import json
+    for key in sample:
+        print("PAPER_PREVIEW " + json.dumps({
+            "segment": int(key),
+            "source": source[key],
+            "fp32": fp32[key][4],
+            "int8": int8[key][4],
+        }, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     if sys.argv[1] == "prepare":
