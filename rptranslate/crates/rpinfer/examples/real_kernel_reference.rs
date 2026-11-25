@@ -33,8 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if avx2_available() == portable {
         return Err("expected native AVX2 or forced portable fallback".into());
     }
-    let model = MarianModel::load(Path::new(&path), MODEL_PAYLOAD_BYTES)
-        .map_err(|e| format!("{e:?}"))?;
+    let model =
+        MarianModel::load(Path::new(&path), MODEL_PAYLOAD_BYTES).map_err(|e| format!("{e:?}"))?;
     let mut out = BufWriter::with_capacity(64 * 1024, io::stdout().lock());
     let kernels = [
         Kernel::Scalar,
@@ -74,7 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .map_err(|e| format!("{e:?}"))?;
                 for (rank, h) in hypotheses.iter().enumerate() {
-                    let tokens = h.tokens.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+                    let tokens = h
+                        .tokens
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
                     writeln!(
                         out,
                         "{width}|{rank}|{tokens}|{:.17}|{:.17}|{}",
@@ -101,11 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             write_tensor(&mut out, session.memory())?;
             write_tensor(
                 &mut out,
-                &session.logits(&target, None, false).map_err(|e| format!("{e:?}"))?,
+                &session
+                    .logits(&target, None, false)
+                    .map_err(|e| format!("{e:?}"))?,
             )?;
             write_tensor(
                 &mut out,
-                &session.cached_logits(&target, None).map_err(|e| format!("{e:?}"))?,
+                &session
+                    .cached_logits(&target, None)
+                    .map_err(|e| format!("{e:?}"))?,
             )?;
         }
         // The 512-position boundary is a full decoder hidden forward but only
@@ -121,22 +130,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write_tensor(&mut out, session.memory())?;
         write_tensor(
             &mut out,
-            &session.logits(&target, None, true).map_err(|e| format!("{e:?}"))?,
+            &session
+                .logits(&target, None, true)
+                .map_err(|e| format!("{e:?}"))?,
         )?;
         if model.encode(&[0; 513], None, Kernel::Auto).err() != Some(Error::Limit)
             || session.logits(&[0; 513], None, true).err() != Some(Error::Limit)
             || session.cached_logits(&target, None).err() != Some(Error::Limit)
-            || session.generate(GenerationOptions {
-                beam_width: 16,
-                max_new: 511,
-                mode: GenerationMode::Cached,
-            }).err() != Some(Error::Limit)
+            || session
+                .generate(GenerationOptions {
+                    beam_width: 16,
+                    max_new: 511,
+                    mode: GenerationMode::Cached,
+                })
+                .err()
+                != Some(Error::Limit)
         {
             return Err("expected source/target/tensor/KV limit rejection".into());
         }
         eprintln!("REAL_POSITION_BOUNDARY PASS source=512 target=512 last_only=true rejected=4");
     }
     out.flush()?;
-    eprintln!("REAL_KERNEL_PROBE PASS mode={mode} avx2={}", avx2_available());
+    eprintln!(
+        "REAL_KERNEL_PROBE PASS mode={mode} avx2={}",
+        avx2_available()
+    );
     Ok(())
 }
