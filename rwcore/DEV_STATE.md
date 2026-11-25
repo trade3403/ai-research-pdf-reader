@@ -1,5 +1,5 @@
 # C 线路当前研发检查点
 
-- Verified baseline 0e51207f383da8ed1ca05f9ac844cd6b7ec30dfa, CI #78 https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45601402860 : 519/platform, 1557 total, zero failed/ignored, locked Release builds verified.
-- Current C4.3h-2d1: independently decoded real composite translation geometry, two additional regressions, 521/platform expected, pending CI.
-- Next: verify actual logs; then C4.3h-2d2 additional font family and independent reference validation. Transformed/point-attached real composite reference remains outstanding.
+- Verified baseline 447ed2146be9caa7c4313cff89f43b124ac9d6cb, CI #79 https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45603009613 : 521/platform, 1563 total, zero failed/ignored, locked Release builds verified.
+- Current C4.3h-2d2: second font family Abel Regular, 2048 UPEM, original license and binary, independent nominal metrics and generalized grayscale oracle. Six additional tests (527/platform, 1581 expected), pending CI.
+- Next verify exact HEAD and actual logs; fix evidenced failures. Continue C4.3h-2e transformed/point-attached real composite geometry and bounded stage acceptance. No broad Word fidelity or CJK acceptance.

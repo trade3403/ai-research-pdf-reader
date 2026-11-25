@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #78, not full Word compatibility.
+Status below is baseline at CI #79, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -37,8 +37,9 @@ Status below is baseline at CI #78, not full Word compatibility.
 | C4.3h-2a | Licensed real-font fixture and nominal metric reference checks | Verified |
 | C4.3h-2b | Test-only independent grayscale sampling on shared paths | Verified |
 | C4.3h-2c | Independent simple geometry and italic fixture | Verified |
-| C4.3h-2d1 | Independent translated composite geometry | Source implemented; CI pending |
-| C4.3h-2d2 | Additional font family validation | Planned |
+| C4.3h-2d1 | Independent translated composite geometry | Verified |
+| C4.3h-2d2 | Additional font family validation | Source implemented; CI pending |
+| C4.3h-2e | Transformed/point-attached real geometry and bounded acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

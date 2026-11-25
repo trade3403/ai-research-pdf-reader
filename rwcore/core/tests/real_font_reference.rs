@@ -3,10 +3,10 @@
 use rwcore::*;
 const FONT: &[u8] = include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf");
 type P = (f64,f64);
-fn reference(path:&GlyphPath, v:RasterViewport, ppem:f64, ox:f64, oy:f64)->GlyphBitmap {
+fn reference(path:&GlyphPath, v:RasterViewport, ppem:f64, ox:f64, oy:f64, units:f64)->GlyphBitmap {
     assert!(v.width<=128 && v.height<=128 && path.commands().len()<=512);
-    let cv=|p:PathPoint| (ox+p.x as f64/PATH_ONE as f64*ppem/1000.0,
-                         oy-p.y as f64/PATH_ONE as f64*ppem/1000.0);
+    let cv=|p:PathPoint| (ox+p.x as f64/PATH_ONE as f64*ppem/units,
+                         oy-p.y as f64/PATH_ONE as f64*ppem/units);
     let mut edges:Vec<(P,P)>=Vec::new();
     let mut cur=(0.0,0.0);
     let mut start=cur;
@@ -50,8 +50,8 @@ fn reference(path:&GlyphPath, v:RasterViewport, ppem:f64, ox:f64, oy:f64)->Glyph
     }
     GlyphBitmap{viewport:v,alpha}
 }
-fn check(ch:char, ppem:u32, ox:i64, oy:i64) {
-    let c=parse_font(FONT,FontLimits::default()).unwrap();
+fn check_font(font:&[u8], ch:char, ppem:u32, ox:i64, oy:i64) {
+    let c=parse_font(font,FontLimits::default()).unwrap();
     let f=c.face(0).unwrap();
     let r=parse_true_type_renderer(f,RenderFontLimits::default()).unwrap();
     let o=parse_true_type_outlines(f,OutlineLimits::default()).unwrap();
@@ -65,7 +65,7 @@ fn check(ch:char, ppem:u32, ox:i64, oy:i64) {
     let expanded=if v.width==0||v.height==0 {v} else {
         RasterViewport{left:v.left-1,top:v.top-1,width:v.width+2,height:v.height+2}
     };
-    let expected=reference(&path,expanded,ppem as f64,ox as f64/64.0,oy as f64/64.0);
+    let expected=reference(&path,expanded,ppem as f64,ox as f64/64.0,oy as f64/64.0,r.metrics().head().units_per_em as f64);
     let e=compare_glyph_bitmaps(&actual.bitmap,&expected,16384).unwrap();
     println!("reference {ch:?} {ppem}px origin=({ox},{oy}): {e:?}");
     if ch==' ' {assert_eq!(e.actual_ink+e.reference_ink,0);return;}
@@ -75,9 +75,16 @@ fn check(ch:char, ppem:u32, ox:i64, oy:i64) {
     assert!(e.absolute_error<=e.reference_ink/20+32, "{ch:?}: {e:?}");
     assert!(e.max_error<=64, "{ch:?}: {e:?}");
 }
+fn check(ch:char,ppem:u32,ox:i64,oy:i64){check_font(FONT,ch,ppem,ox,oy);}
 #[test] fn real_reference_a(){check('A',16,0,0);}
 #[test] fn real_reference_o(){check('O',24,0,0);}
 #[test] fn real_reference_descender(){check('g',20,17,-23);}
 #[test] fn real_reference_composite(){check('é',20,32,16);}
 #[test] fn real_reference_ring(){check('Å',24,-19,31);}
 #[test] fn real_reference_space(){check(' ',16,0,0);}
+
+const ABEL:&[u8]=include_bytes!("fixtures/abel/Abel-Regular.ttf");
+#[test] fn abel_reference_a(){check_font(ABEL,'A',16,0,0);}
+#[test] fn abel_reference_o(){check_font(ABEL,'O',24,0,0);}
+#[test] fn abel_reference_g(){check_font(ABEL,'g',20,17,-23);}
+#[test] fn abel_reference_composite(){check_font(ABEL,'é',20,32,16);}
