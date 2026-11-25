@@ -19,9 +19,10 @@ use rpmodel::{
 use std::path::Path;
 
 use crate::{
+    constrained::{self, ConstrainedTranslation},
     context::{ContextEngine, Decision, DocumentContext},
     glossary::Glossary,
-    protection::Term,
+    protection::{Kind, Plan, Term},
     scientific,
 };
 
@@ -97,6 +98,37 @@ impl Backend {
                         },
                     )?
                     .generate(options)
+            }
+        }
+    }
+
+    fn generate_constrained(
+        &self,
+        source: &[u32],
+        options: GenerationOptions,
+        kernel: Kernel,
+        phrases: &[Vec<u32>],
+    ) -> Result<Vec<Hypothesis>, InferError> {
+        match self {
+            Self::Fp32(model) => model
+                .encode(source, None, kernel)?
+                .generate_constrained(options, phrases),
+            Self::Int8(model) => {
+                let integer = if matches!(kernel, Kernel::Scalar) {
+                    Int8Kernel::Scalar
+                } else {
+                    Int8Kernel::Auto
+                };
+                model
+                    .encode_mixed(
+                        source,
+                        None,
+                        MixedKernels {
+                            integer,
+                            float: kernel,
+                        },
+                    )?
+                    .generate_constrained(options, phrases)
             }
         }
     }
@@ -270,6 +302,65 @@ impl TextSession<'_> {
         let result =
             self.translate_glossary(text, engine.glossary(decision.domain), options, kernel)?;
         Ok((decision, result))
+    }
+
+    /// Whole-segment encoder input, ordered exact target phrases, no gap calls.
+    /// Unsupported literals and capped output fail closed.
+    pub fn translate_constrained(
+        &self,
+        text: &str,
+        glossary: &Glossary,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<ConstrainedTranslation, constrained::Error> {
+        let source_tokens = self.encode(text).map_err(constrained::Error::Input)?;
+        let plan = Plan::prepare_indexed(text, glossary).map_err(constrained::Error::Plan)?;
+        let phrases = constrained::encode_phrases(
+            self.vocabulary,
+            &plan,
+            &self.model.config().generation.suppress,
+        )?;
+        let hypotheses = self
+            .model
+            .generate_constrained(&source_tokens, options, kernel, &phrases)
+            .map_err(|e| constrained::Error::Input(Error::Inference(e)))?;
+        let mut capped = false;
+        let mut missing = None;
+        for best in hypotheses {
+            if !best.ended || best.tokens.len() - 1 == options.max_new {
+                capped = true;
+                continue;
+            }
+            let text = self
+                .vocabulary
+                .decode_skipping_special(&best.tokens)
+                .map_err(|e| constrained::Error::Input(Error::Vocabulary(e)))?;
+            if text.is_empty() {
+                continue;
+            }
+            if let Err(error) = constrained::verify(&plan, &text) {
+                missing = Some(error);
+                continue;
+            }
+            return Ok(ConstrainedTranslation {
+                translation: Translation {
+                    text,
+                    source_tokens,
+                    target_tokens: best.tokens,
+                    score: best.score,
+                    reached_limit: false,
+                },
+                protected_spans: plan.spans().len(),
+                term_spans: plan.spans().iter().filter(|s| s.kind == Kind::Term).count(),
+            });
+        }
+        if let Some(error) = missing {
+            return Err(error);
+        }
+        if capped {
+            return Err(constrained::Error::Truncated);
+        }
+        Err(constrained::Error::Input(Error::NoTranslation))
     }
 
     fn validate_scientific(

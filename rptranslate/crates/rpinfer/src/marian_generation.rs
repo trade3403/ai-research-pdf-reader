@@ -5,7 +5,7 @@ use crate::{
     marian_decoder::MarianDecoder,
     marian_weights::{MarianEmbeddings, Side},
     matmul::Kernel,
-    search::{search, validate, Hypothesis, SearchConfig},
+    search::{search_constrained, validate, Hypothesis, SearchConfig},
     tensor::{buffer, layout, Error, Tensor},
     vocabulary::RowTable,
 };
@@ -109,16 +109,32 @@ impl<'a> MarianEncoded<'a> {
     }
 
     pub fn generate(&self, config: SearchConfig<'_>) -> Result<Vec<Hypothesis>, Error> {
+        self.generate_constrained(config, &[])
+    }
+
+    pub fn generate_constrained(
+        &self,
+        config: SearchConfig<'_>,
+        phrases: &[Vec<u32>],
+    ) -> Result<Vec<Hypothesis>, Error> {
         validate(config, self.vocab())?;
         if config.max_new > self.embeddings.positions(Side::Decoder).shape()[0] {
             return Err(Error::Limit);
         }
-        search(self.vocab(), config, |prefix| {
+        search_constrained(self.vocab(), config, phrases, |prefix| {
             self.logits(prefix, None, true)
         })
     }
 
     pub fn generate_cached(&self, config: SearchConfig<'_>) -> Result<Vec<Hypothesis>, Error> {
+        self.generate_cached_constrained(config, &[])
+    }
+
+    pub fn generate_cached_constrained(
+        &self,
+        config: SearchConfig<'_>,
+        phrases: &[Vec<u32>],
+    ) -> Result<Vec<Hypothesis>, Error> {
         validate(config, self.vocab())?;
         let layers = self.decoder.layers();
         let positions = self.embeddings.positions(Side::Decoder);
@@ -140,7 +156,7 @@ impl<'a> MarianEncoded<'a> {
         let mut previous = BTreeMap::new();
         let mut current = BTreeMap::new();
         let mut depth = 1;
-        search(self.vocab(), config, |prefix| {
+        search_constrained(self.vocab(), config, phrases, |prefix| {
             if prefix.len() == depth + 1 {
                 previous = std::mem::take(&mut current);
                 depth += 1;

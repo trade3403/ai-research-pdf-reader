@@ -215,11 +215,19 @@ impl TokenSession<'_> {
     }
 
     pub fn generate(&self, options: GenerationOptions) -> Result<Vec<Hypothesis>, Error> {
+        self.generate_constrained(options, &[])
+    }
+
+    pub fn generate_constrained(
+        &self,
+        options: GenerationOptions,
+        phrases: &[Vec<u32>],
+    ) -> Result<Vec<Hypothesis>, Error> {
         let search = search_options(&self.model.config, options)?;
         let encoded = self.encoded()?;
         match options.mode {
-            GenerationMode::Full => encoded.generate(search),
-            GenerationMode::Cached => encoded.generate_cached(search),
+            GenerationMode::Full => encoded.generate_constrained(search, phrases),
+            GenerationMode::Cached => encoded.generate_cached_constrained(search, phrases),
         }
     }
 }

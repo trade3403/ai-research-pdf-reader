@@ -324,3 +324,11 @@ jobs:
           target/release/examples/context_reference "$RUNNER_TEMP/rpmodel-v1" fp32
           target/release/examples/context_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
           target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" auto 'Soil shear strain increased.' 1 64 | grep -F '应变'
+      - name: Verify whole-source ordered terminology constraints on actual FP32 and INT8
+        if: contains(github.event.head_commit.message, 'D1.10e')
+        run: |
+          set -eu
+          cargo build --locked --offline --release -p rptranslate --example constrained_reference
+          target/release/examples/constrained_reference "$RUNNER_TEMP/rpmodel-v1" fp32
+          target/release/examples/constrained_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
+          target/release/rptranslate translate-constrained-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain.' 1 128 | grep -F '最大应变'

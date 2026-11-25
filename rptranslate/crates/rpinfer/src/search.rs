@@ -67,9 +67,22 @@ fn rank(a: &Hypothesis, b: &Hypothesis) -> std::cmp::Ordering {
 pub fn search(
     vocab: usize,
     config: SearchConfig<'_>,
+    logits: impl FnMut(&[u32]) -> Result<Tensor, Error>,
+) -> Result<Vec<Hypothesis>, Error> {
+    search_constrained(vocab, config, &[], logits)
+}
+
+/// Ordered non-overlapping token phrases. A partial phrase is completed
+/// contiguously; an EOS preference or exhausted slack forces the next phrase.
+/// Original model log probabilities are retained, even for forced tokens.
+pub fn search_constrained(
+    vocab: usize,
+    config: SearchConfig<'_>,
+    phrases: &[Vec<u32>],
     mut logits: impl FnMut(&[u32]) -> Result<Tensor, Error>,
 ) -> Result<Vec<Hypothesis>, Error> {
     validate(config, vocab)?;
+    validate_phrases(config, vocab, phrases)?;
     let mut blocked = vec![false; vocab];
     for &id in config.suppress {
         blocked[id as usize] = true;
@@ -99,12 +112,34 @@ pub fn search(
                 .sum::<f64>()
                 .ln();
             let forced = config.force_eos_at_limit && step == config.max_new;
+            let pending = pending_phrase(&beam.tokens[1..], phrases);
+            let force_token = if let Some((id, partial, needed)) = pending {
+                let remaining = config.max_new - step + 1;
+                if remaining <= needed {
+                    return Err(Error::Limit);
+                }
+                let eos_preferred = step >= config.min_new
+                    && values.iter().enumerate().all(|(i, &v)| {
+                        blocked[i]
+                            || v < values[config.eos as usize]
+                            || (v == values[config.eos as usize] && i >= config.eos as usize)
+                    });
+                if partial || remaining == needed + 1 || eos_preferred {
+                    Some(id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let mut candidates: Vec<_> = values
                 .iter()
                 .enumerate()
                 .filter_map(|(id, &x)| {
                     if blocked[id]
                         || (id == config.eos as usize && step < config.min_new)
+                        || (id == config.eos as usize && pending.is_some())
+                        || force_token.is_some_and(|token| id != token as usize)
                         || (forced && id != config.eos as usize)
                     {
                         None
@@ -144,6 +179,55 @@ pub fn search(
         }
     }
     Ok(beams)
+}
+
+fn validate_phrases(
+    config: SearchConfig<'_>,
+    vocab: usize,
+    phrases: &[Vec<u32>],
+) -> Result<(), Error> {
+    if phrases.len() > 32 {
+        return Err(Error::Limit);
+    }
+    let mut total = 0;
+    for phrase in phrases {
+        if phrase.is_empty() || phrase.len() > 64 {
+            return Err(Error::Limit);
+        }
+        if phrase.iter().any(|&id| {
+            id as usize >= vocab
+                || id == config.start
+                || id == config.eos
+                || config.suppress.contains(&id)
+        }) {
+            return Err(Error::Shape);
+        }
+        total += phrase.len();
+    }
+    if total >= config.max_new {
+        return Err(Error::Limit);
+    }
+    Ok(())
+}
+
+/// First unfinished ordered phrase, its longest partial suffix, and the
+/// minimum number of additional non-EOS tokens required by all phrases.
+fn pending_phrase(tokens: &[u32], phrases: &[Vec<u32>]) -> Option<(u32, bool, usize)> {
+    let mut rest = tokens;
+    for (index, phrase) in phrases.iter().enumerate() {
+        if let Some(at) = rest.windows(phrase.len()).position(|window| window == phrase) {
+            rest = &rest[at + phrase.len()..];
+            continue;
+        }
+        let partial = (1..phrase.len().min(rest.len() + 1))
+            .rev()
+            .find(|&n| rest.ends_with(&phrase[..n]))
+            .unwrap_or(0);
+        let needed = phrase.len() - partial
+            + phrases[index + 1..].iter().map(Vec::len).sum::<usize>();
+        return Some((phrase[partial], partial != 0, needed));
+    }
+    None
 }
 
 /// Supported Marian generation metadata subset. Total lengths include start.

@@ -9,7 +9,7 @@ use crate::{
     matmul::Kernel,
     mixed_model::MixedModel,
     quantized_linear::{Int8Kernel, QuantizedLinear},
-    search::{search, Hypothesis},
+    search::{search_constrained, Hypothesis},
     tensor::{buffer, layout, Binary, Error, Tensor},
     transformer::{activate, Activation},
 };
@@ -415,16 +415,24 @@ impl MixedSession<'_> {
     }
 
     pub fn generate(&self, options: GenerationOptions) -> Result<Vec<Hypothesis>, Error> {
+        self.generate_constrained(options, &[])
+    }
+
+    pub fn generate_constrained(
+        &self,
+        options: GenerationOptions,
+        phrases: &[Vec<u32>],
+    ) -> Result<Vec<Hypothesis>, Error> {
         let config = search_options(self.model.config(), options)?;
         let vocab = self.model.config().vocab;
         if options.mode == GenerationMode::Full {
-            return search(vocab, config, |ids| self.logits(ids, None, true));
+            return search_constrained(vocab, config, phrases, |ids| self.logits(ids, None, true));
         }
         let root = self.root(config.max_new, config.beam_width)?;
         let mut previous = BTreeMap::new();
         let mut current = BTreeMap::new();
         let mut depth = 1;
-        search(vocab, config, |prefix| {
+        search_constrained(vocab, config, phrases, |prefix| {
             if prefix.len() == depth + 1 {
                 previous = std::mem::take(&mut current);
                 depth += 1;

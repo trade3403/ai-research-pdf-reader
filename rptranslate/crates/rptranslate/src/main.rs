@@ -39,6 +39,26 @@ fn run_glossary(
         options.max_new = limit.parse().map_err(|_| "invalid token limit")?;
     }
     let session = translator.session().map_err(|e| format!("{e:?}"))?;
+    if command.starts_with("translate-constrained") {
+        let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
+        let domain = if let Some(domain) = explicit {
+            domain
+        } else {
+            let decision = engine.decide(text, None).map_err(|e| format!("{e:?}"))?;
+            eprintln!("Context decision: {decision:?}");
+            decision.domain
+        };
+        let glossary = Glossary::builtin(domain).map_err(|e| format!("{e:?}"))?;
+        let result = session
+            .translate_constrained(text, &glossary, options, Kernel::Auto)
+            .map_err(|e| format!("{e:?}"))?;
+        println!("{}", result.translation.text);
+        eprintln!(
+            "Term spans: {}; protected spans: {}; whole source: true",
+            result.term_spans, result.protected_spans
+        );
+        return Ok(());
+    }
     let result = if let Some(domain) = explicit {
         let glossary = Glossary::builtin(domain).map_err(|e| format!("{e:?}"))?;
         session
@@ -68,8 +88,13 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("Self-check only; no model loaded; no network requests");
         }
         [command, root, domain, text, rest @ ..]
-            if matches!(command.as_str(), "translate-glossary" | "translate-glossary-int8")
-                && rest.len() <= 2 =>
+            if matches!(
+                command.as_str(),
+                "translate-glossary"
+                    | "translate-glossary-int8"
+                    | "translate-constrained"
+                    | "translate-constrained-int8"
+            ) && rest.len() <= 2 =>
         {
             run_glossary(command, root, domain, text, rest)?;
         }
@@ -111,7 +136,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
+                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-constrained[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
                     .into(),
             )
         }
