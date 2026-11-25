@@ -1,6 +1,8 @@
 import unittest
 from PIL import Image
-from visual import compare
+from visual import compare, parse_image_list, jpx_summary
+
+IMAGE_HEADER = 'page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio\n-----\n'
 
 class VisualTests(unittest.TestCase):
     def test_identical_and_blank(self):
@@ -56,6 +58,28 @@ class VisualTests(unittest.TestCase):
         c,_=compare(a,a)
         self.assertEqual(c["native_ink_fraction"],1)
         self.assertEqual(c["ink_iou"],1)
+
+class JpxInventoryTests(unittest.TestCase):
+    def test_inventory_distinguishes_encoding_column(self):
+        rows = IMAGE_HEADER + "1 0 image 4 4 gray 1 8 jpx no 5 0 72 72 214B 1338%\n2 1 image 4 4 rgb 3 8 jpeg no 6 0 72 72 100B 200%\n"
+        v = parse_image_list(rows,2)
+        self.assertEqual(v["image_rows"],2)
+        self.assertEqual(len(v["jpx_rows"]),1)
+        self.assertEqual(v["jpx_rows"][0]["page"],1)
+    def test_inventory_rejects_bad_rows(self):
+        for value in ["",IMAGE_HEADER+"1 2 image",IMAGE_HEADER+"3 0 image 4 4 gray 1 8 jpx no"]:
+            with self.assertRaises(ValueError):
+                parse_image_list(value,2)
+    def test_zero_hits_is_not_success(self):
+        d={"jpx_inventory":{"status":"ok","complete":True,"jpx_rows":[]}}
+        self.assertEqual(jpx_summary([d])["status"],"coverage_gap")
+        self.assertEqual(jpx_summary([d,{}])["status"],"inventory_incomplete")
+    def test_compare_is_observational(self):
+        d={"jpx_inventory":{"status":"ok","complete":True,"jpx_rows":[{"page":1},{"page":1}]}}
+        self.assertEqual(jpx_summary([d])["status"],"comparison_incomplete")
+        d["jpx_pages"]=[{"comparison":{"status":"compared"}}]
+        self.assertEqual(jpx_summary([d])["status"],"compared_observational")
+        self.assertEqual(jpx_summary([d])["jpx_image_rows"],2)
 
 if __name__=="__main__":
     unittest.main()
