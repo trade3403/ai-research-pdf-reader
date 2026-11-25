@@ -195,6 +195,63 @@ def make_pdf(path,profile,n,samples,bits):
 def error(a,b):
     return max(abs(x-y) for x,y in zip(a,b))
 
+def intent_gate(a,lib,work):
+    # One profile, one image object, four visibly different transforms.
+    from icc_mpe_reference import head, directory, matrix
+    names=('Perceptual','RelativeColorimetric','Saturation','AbsoluteColorimetric')
+    offsets=((.2,.2,.2),(.35,.35,.35),(.5,.5,.5),(.65,.65,.65))
+    wp=b'XYZ '+bytes(4)+S.pack('>iii',round(.9642*65536),65536,round(.8249*65536))
+    tags=[(f'D2B{i}'.encode(),directory(head(b'mpet',4,3)+S.pack('>I',1),
+        [matrix(4,3,[.05,0,0,0,0,.05,0,0,0,0,.05,0],v)])) for i,v in enumerate(offsets)]
+    tags.append((b'wtpt',wp))
+    profile=bytearray(132+12*len(tags));profile[8:10]=bytes([4,0x30])
+    profile[12:24]=b'prtrCMYKXYZ ';profile[36:40]=b'acsp';profile[68:80]=wp[8:]
+    S.pack_into('>I',profile,128,len(tags))
+    for i,(tag,payload) in enumerate(tags):
+        S.pack_into('>4sII',profile,132+12*i,tag,len(profile),len(payload))
+        profile+=payload;profile+=bytes(-len(profile)%4)
+    S.pack_into('>I',profile,0,len(profile))
+    # Keep the same source values and selected ICC spaces across ri changes.
+    # Nested q/Q restores both intent and previously selected source color.
+    steps=[('',1),('q /Perceptual ri',0),('q /Saturation ri',2),
+           ('/Abs gs',3),('Q',0),('Q',1),('/Saturation ri',2),('/RelativeColorimetric ri',1)]
+    w,h=144,48*len(steps);raw=(64,128,192,32)
+    vals=' '.join(f'{v/255:.12f}' for v in raw)
+    cmds=[f'/C cs {vals} sc /C CS {vals} SC 40 w']
+    rows=[]
+    for i,(op,intent) in enumerate(steps):
+        y=h-(i+1)*48+4
+        cmds += [op,f'4 {y} 40 40 re f',f'68 {y} m 68 {y+40} l S',f'q 40 0 0 40 100 {y} cm /I Do Q']
+        rows.append((intent,[[x,h-y-28,x+16,h-y-12] for x in (16,60,112)]))
+    objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Contents 4 0 R /Resources << /ColorSpace << /C [/ICCBased 5 0 R] >> /XObject << /I 6 0 R >> /ExtGState << /Abs << /RI /AbsoluteColorimetric >> >> >> >>'.encode(),
+        stream('',('\n'.join(cmds)+'\n').encode()),stream('/N 4',bytes(profile)),
+        stream('/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 5 0 R] /BitsPerComponent 8',bytes(raw))]
+    pdf=work/'intent.pdf';buf=bytearray(b'%PDF-1.4\n');offs=[]
+    for i,o in enumerate(objects,1):
+        offs.append(len(buf));buf+=f'{i} 0 obj\n'.encode()+o+b'\nendobj\n'
+    x=len(buf);buf+=f'xref\n0 {len(objects)+1}\n0000000000 65535 f \n'.encode()
+    for off in offs:buf+=f'{off:010d} 00000 n \n'.encode()
+    buf+=f'trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n'.encode();pdf.write_bytes(buf)
+    expected=oracle_rgb(lib,bytes(profile),[[v[j]+.05*raw[j]/255 for j in range(3)] for v in offsets],xyz=True)
+    if len(set(map(tuple,expected)))!=4:raise RuntimeError('intent fixture colors not distinct')
+    results=[]
+    for dpi in (72,144):
+        native,ref,im,ri=render_pair(a,pdf,1,dpi,work,f'intent-{dpi}',None)
+        diag=[v for k,v in native.items() if k.startswith('icc_diag_')]
+        ok=im is not None and im.size==(w*dpi//72,h*dpi//72)
+        ok=ok and native.get('icc_vector_native')=='4' and native.get('icc_image_native')=='4' and native.get('icc_vector_alternate')=='0' and native.get('icc_image_alternate')=='0'
+        ok=ok and len(diag)==8 and all(sum(';mpe_D2B'+str(i)+';' in d for d in diag)==2 for i in range(4))
+        for intent,boxes in rows:
+            if not ok:continue
+            colors,spread=zip(*(measure(im,tuple(v*dpi//72 for v in box)) for box in boxes))
+            delta=max(error(c,expected[intent]) for c in colors)
+            parity=max(error(colors[0],c) for c in colors)
+            results.append({'dpi':dpi,'intent':names[intent],'native_rgb':colors,'expected_rgb':expected[intent],
+                'max_error':delta,'parity':parity,'pass':delta<=2 and parity<=1 and max(spread)==0})
+        if im is not None:im.save(a.out/f'intent-{dpi}-native.png')
+    return results
+
 def main():
     p=argparse.ArgumentParser()
     for k in ('probe','reference','out'):
@@ -276,6 +333,7 @@ def main():
                             'parity_error':parity,'lcms_error':oracle,'alpha_error':ae,
                             'poppler_error':max(error(x,y) for x,y in zip(nv,rv)),
                             'pass':parity<=1 and oracle<=2 and ae<=1 and max(ns)==0})
+        report['intent_checks']=intent_gate(a,lib,work)
     total=288
     passed=sum(r['pass'] for r in report['rows'])
     report['expected_rows']=total
@@ -289,13 +347,14 @@ def main():
         key=render['case'];rr=[r for r in report['rows'] if r['case']==key]
         mx=[max((r[k] for r in rr),default='—') for k in ('parity_error','lcms_error','alpha_error','poppler_error')]
         lines.append(f"| {key} | {len(rr)} | {sum(r['pass'] for r in rr)} | "+' | '.join(map(str,mx))+' |')
+    lines+=['',f"Intent switching: {sum(r['pass'] for r in report['intent_checks'])}/16 observations passed."]
     lines+=['',f'Passed {passed}/{total} paired color observations; {len(report["renders"])} page comparisons.',
             '', 'Native RGB matrix checks:']
     for check in report['native_matrix_checks']:
         lines.append(f"- {check['profile']}: {check['status']}, max RGB error {check.get('max_rgb_error','—')}, {'PASS' if check['pass'] else 'FAIL'}")
     lines+=['','Unmodified LCMS sRGB and generated wide-gamut matrix profile, sampled baseline and original synthetic CMYK LUT. Includes three synthetic MPE D2B1 profiles (matrix, CLUT, mixed). No measured printer or monitor calibration claim.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
-    return int(len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
+    return int(len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
 
 if __name__=='__main__':
     raise SystemExit(main())
