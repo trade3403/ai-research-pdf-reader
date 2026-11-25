@@ -518,4 +518,33 @@ mod tests{
         assert!(decode_codeblock(&[0],65,65,Band::Ll,1,4,0).is_err());
         for style in 1..=255{assert!(matches!(decode_codeblock(&[0],1,1,Band::Ll,1,4,style),Err(Error::Unsupported("JPX EBCOT coding style"))));}
     }
+
+    // Pillow/OpenJPEG 2.5.4, lossless 8-bit grayscale, one resolution,
+    // one layer and one codeblock. With no DWT the independently known
+    // quantized coefficients are exactly the original samples minus 128.
+    fn independent_gray(w:usize,h:usize,hex:&str,pixels:&[i32]){
+        let data:Vec<u8>=hex.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        let p=super::super::packet::inspect_packets(&data,0).unwrap();
+        assert_eq!(p.packets.len(),1);
+        let entries=&p.packets[0].contributions;
+        assert_eq!(entries.len(),1);
+        let e=&entries[0];
+        assert_eq!(e.first_pass,0);
+        assert_eq!(e.band,Band::Ll);
+        assert_eq!((e.passes-1)%3,0);
+        // QCD exponent 8, two guard bits: Mb=9.
+        let plane=8-e.zero_bit_planes;
+        assert_eq!(u16::from(plane)*3+1,e.passes);
+        let b=decode_codeblock(&data[e.data.clone()],w,h,e.band,plane,e.passes,0).unwrap();
+        assert_eq!(b.signed_coefficients(),pixels.iter().map(|v|v-128).collect::<Vec<_>>());
+    }
+    #[test]fn independent_real_single_coefficient(){
+        independent_gray(1,1,"ff4fff510029000000000001000000010000000000000000000000010000000100000000000000000001070101ff52000c00000001000000000001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000120001ff93c0f84100ffd9",&[135]);
+    }
+    #[test]fn independent_real_mixed_coefficients(){
+        independent_gray(4,4,"ff4fff510029000000000004000000040000000000000000000000040000000400000000000000000001070101ff52000c00000001000000000001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000001e0001ff93df806818aa09fcb2996738ca69cbe485ffd9",&[128,129,127,130,125,140,116,128,255,0,128,129,130,131,132,133]);
+    }
+    #[test]fn independent_real_partial_stripe(){
+        independent_gray(3,5,"ff4fff510029000000000003000000050000000000000000000000030000000500000000000000000001070101ff52000c00000001000001010001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000001a0001ff93c1f209002e709cb049aa11cdffd9",&[128,127,130,125,132,123,134,121,136,119,138,117,140,115,142]);
+    }
 }
