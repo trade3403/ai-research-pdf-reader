@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: ddda4958732c114ddc9903221aec1c0fb1b71316
-- CI #60: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45560027804
-- Verified: Ubuntu 304/304, Windows 304/304, macOS 304/304; total 912/912; zero failed/ignored; all release builds passed.
-- Current stage: C3.3a bounded in-memory undo/redo, incremental run text and anchor snapshots; 12 new regressions (316 per platform / 948 executions expected, PENDING CI).
-- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C3.3b structural transactions and validation (start with paragraph/run split and join constraints).
-- Scope: private document ownership, session-local revision guards, C3.1 staged edits and C3.2 selection plan reuse, before/after text plus both anchor offset arrays, atomic rejection, oldest undo eviction, redo invalidation on real new edits. Limits count retained text bytes/offsets/run changes/entries, not allocator overhead. No persistent journal, crash recovery, structural history, external mutable access, or DOCX serialization.
+- Last verified baseline: 8ad0fdbfb0de7091a48c0b933fe4dab3fc3907aa
+- CI #61: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45566499551
+- Verified: Ubuntu 316/316, Windows 316/316, macOS 316/316; total 948/948; zero failed/ignored; locked release builds passed.
+- Current stage: C3.3b atomic paragraph structure transactions; 12 new regressions (328 per platform / 984 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C3.3c integrate structural history and path/revision-safe undo/redo before C4.
+- Scope: one contiguous existing paragraph-only sibling range in body or nested body cell, local staged copies, split at run boundary or Unicode point, explicit anchor side, join formatting policy, section partition validation and range shifts. No cross-section/cell joins, nonparagraph structural changes, story editing or structural history yet. Standalone API must not reuse stale text paths; DocumentEditor remains text-only until C3.3c.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.
