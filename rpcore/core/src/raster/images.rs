@@ -375,6 +375,6 @@ mod jpx_pdf_tests{
         let doc=Document::open(&bytes).unwrap();let stream=doc.resolve(5,0).unwrap();
         assert!(crate::filters::decode(&stream,64).is_err());
         let mut budget=Budget{work:super::super::MAX_WORK-1,stage:"JPX test budget"};
-        assert!(load(&doc,(5,0),&mut budget,&mut IccCache::default(),crate::icc::RenderingIntent::default()).is_err());
+        assert!(load(&doc,(5,0),&mut budget,&mut IccCache::default(),crate::icc::RenderingIntent::RelativeColorimetric).is_err());
     }
 }
