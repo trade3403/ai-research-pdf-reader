@@ -1,24 +1,27 @@
-//! Authenticated R2/R3/R4 object decoding, not an encryption writer.
+//! Authenticated R2–R6 object decoding, not an encryption writer.
 //! No key export, Debug, guaranteed zeroization or side-channel audit.
-use super::{legacy::{md5,Rc4},aes::Aes128,CryptMethod,EncryptionInfo};
+use super::{legacy::{md5,Rc4},aes::{Aes128,Aes256},CryptMethod,EncryptionInfo};
 use crate::{Error,Object,Result,MAX_DEPTH,MAX_BYTES};
 
 pub(crate) struct ObjectCrypto{
-    key:[u8;16],len:usize,encrypt_ref:Option<(u32,u16)>,
+    key:[u8;32],len:usize,encrypt_ref:Option<(u32,u16)>,
     revision:u8,strings:CryptMethod,streams:CryptMethod,embedded:CryptMethod,metadata:bool,
 }
 impl ObjectCrypto{
     #[cfg(test)]
     pub(super) fn new(key:[u8;16],len:usize,encrypt_ref:Option<(u32,u16)>)->Result<Self>{
-        Self::with_info(key,encrypt_ref,&EncryptionInfo{version:1,revision:2,key_bits:(len*8) as u16,permissions:-4,encrypt_metadata:true,strings:CryptMethod::Rc4,streams:CryptMethod::Rc4,embedded_files:CryptMethod::Rc4})
+        let mut full=[0;32];full[..16].copy_from_slice(&key);
+        Self::with_info(full,encrypt_ref,&EncryptionInfo{version:1,revision:2,key_bits:(len*8) as u16,permissions:-4,encrypt_metadata:true,strings:CryptMethod::Rc4,streams:CryptMethod::Rc4,embedded_files:CryptMethod::Rc4})
     }
-    pub(super) fn with_info(key:[u8;16],encrypt_ref:Option<(u32,u16)>,info:&EncryptionInfo)->Result<Self>{
+    pub(super) fn with_info(key:[u8;32],encrypt_ref:Option<(u32,u16)>,info:&EncryptionInfo)->Result<Self>{
         let len=usize::from(info.key_bits/8);
-        if !(5..=16).contains(&len){return Err(Error::Invalid("legacy file key length"));}
+        if (info.revision>=5&&len!=32)||(info.revision<5&&!(5..=16).contains(&len)){return Err(Error::Invalid("PDF file key length"));}
         for method in [info.strings,info.streams,info.embedded_files]{
             match method{
-                CryptMethod::Identity|CryptMethod::Rc4=>{},
+                CryptMethod::Identity=>{},
+                CryptMethod::Rc4 if info.revision<5=>{},
                 CryptMethod::Aes128 if len==16&&info.revision==4=>{},
+                CryptMethod::Aes256 if len==32&&info.revision>=5=>{},
                 _=>return Err(Error::Unsupported("legacy object crypt method")),
             }
         }
@@ -26,6 +29,12 @@ impl ObjectCrypto{
     }
     pub(crate) fn decrypt(&self,id:u32,generation:u16,value:&mut Object)->Result<()>{
         if self.encrypt_ref==Some((id,generation)){return Err(Error::Unsupported("encryption dictionary access"));}
+        if self.revision>=5{
+            // AESV3 uses the authenticated 256-bit file key directly.
+            let keys=Keys{rc4:[0;16],rc4_len:0,aes:[0;16],modern:self.key};
+            let mut remaining=MAX_BYTES;
+            return self.visit(value,&keys,0,&mut remaining);
+        }
         let mut seed=[0u8;25];
         seed[..self.len].copy_from_slice(&self.key[..self.len]);
         seed[self.len..self.len+3].copy_from_slice(&id.to_le_bytes()[..3]);
@@ -33,7 +42,7 @@ impl ObjectCrypto{
         let rc4=md5(&seed[..self.len+5])?;
         seed[self.len+5..self.len+9].copy_from_slice(b"sAlT");
         let aes=md5(&seed[..self.len+9])?;
-        let keys=Keys{rc4,rc4_len:(self.len+5).min(16),aes};
+        let keys=Keys{rc4,rc4_len:(self.len+5).min(16),aes,modern:[0;32]};
         let mut remaining=MAX_BYTES;
         self.visit(value,&keys,0,&mut remaining)
     }
@@ -56,14 +65,14 @@ impl ObjectCrypto{
                 let method=match dict.get(b"Type".as_slice()){
                     Some(Object::Name(n)) if n==b"Metadata"&&!self.metadata=>CryptMethod::Identity,
                     Some(Object::Name(n)) if n==b"EmbeddedFile"=>self.embedded,
-                    Some(Object::Ref(..)) if self.revision==4=>return Err(Error::Unsupported("indirect encrypted stream Type")),
+                    Some(Object::Ref(..)) if self.revision>=4=>return Err(Error::Unsupported("indirect encrypted stream Type")),
                     _=>self.streams,
                 };
                 // The stream dictionary's strings follow StrF even when the
                 // stream payload is exempt (e.g. unencrypted metadata).
                 for v in dict.values_mut(){self.visit(v,keys,depth+1,remaining)?;}
                 decrypt_bytes(data,method,keys,remaining)?;
-                if method==CryptMethod::Aes128{
+                if matches!(method,CryptMethod::Aes128|CryptMethod::Aes256){
                     // The original encrypted Length was used for bounded
                     // reading; returned decrypted stream length is normalized.
                     dict.insert(b"Length".to_vec(),Object::Number(data.len() as f64));
@@ -74,13 +83,14 @@ impl ObjectCrypto{
         Ok(())
     }
 }
-struct Keys{rc4:[u8;16],rc4_len:usize,aes:[u8;16]}
+struct Keys{rc4:[u8;16],rc4_len:usize,aes:[u8;16],modern:[u8;32]}
 fn decrypt_bytes(data:&mut Vec<u8>,method:CryptMethod,keys:&Keys,remaining:&mut usize)->Result<()>{
     *remaining=remaining.checked_sub(data.len()).ok_or(Error::Limit("encrypted object bytes"))?;
     match method{
         CryptMethod::Identity=>Ok(()),
         CryptMethod::Rc4=>Rc4::new(&keys.rc4[..keys.rc4_len])?.apply(data),
         CryptMethod::Aes128=>{*data=Aes128::new(&keys.aes)?.pdf_decrypt(data)?;Ok(())},
+        CryptMethod::Aes256=>{*data=Aes256::new(&keys.modern)?.pdf_decrypt(data)?;Ok(())},
         _=>Err(Error::Unsupported("legacy object crypt method")),
     }
 }
@@ -260,7 +270,7 @@ mod r4_tests{
     }
     #[test]fn r4_rejects_truncated_ciphertext_and_indirect_type(){
         let info=EncryptionInfo{version:4,revision:4,key_bits:128,permissions:-4,encrypt_metadata:false,strings:CryptMethod::Aes128,streams:CryptMethod::Aes128,embedded_files:CryptMethod::Identity};
-        let c=ObjectCrypto::with_info([0;16],None,&info).unwrap();
+        let c=ObjectCrypto::with_info([0;32],None,&info).unwrap();
         assert!(c.decrypt(3,0,&mut Object::String(vec![0;31])).is_err());
         let mut d=std::collections::BTreeMap::new();d.insert(b"Type".to_vec(),Object::Ref(9,0));
         assert!(c.decrypt(4,0,&mut Object::Stream{dict:d,data:vec![0;32]}).is_err());

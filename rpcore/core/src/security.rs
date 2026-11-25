@@ -1,4 +1,4 @@
-//! Structural inspection and authenticated R2/R3/R4 RC4/AESV2 decoding.
+//! Structural inspection and authenticated R2–R6 RC4/AESV2/AESV3 decoding.
 //! Only the explicit authenticated open path exposes supported encrypted documents. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
 mod legacy;
 mod auth;
@@ -6,9 +6,8 @@ mod object_crypto;
 // Block encryption is retained for primitive tests and future R6 integration.
 #[allow(dead_code)]
 mod aes;
-// Private digest primitives until modern password authentication is integrated.
-#[allow(dead_code)]
 mod sha2;
+mod modern;
 pub(crate) use object_crypto::ObjectCrypto;
 pub use auth::PasswordStatus;
 use crate::{Document,Error,Object,Result,xref::Entry};
@@ -149,13 +148,16 @@ impl TrailerSecurity{
         let reference=match &self.encrypt{Some(Object::Ref(id,g))=>Some((*id,*g)),_=>None};
         let Some((d,id))=self.bootstrap(doc)? else{return Ok(None);};
         let info=parse(&d)?;
-        let (role,key)=auth::authenticate(&d,&id,&info,password)?;
+        let (role,key)=if info.revision>=5{modern::authenticate(&d,&info,password)?}else{
+            let (role,key)=auth::authenticate(&d,&id,&info,password)?;
+            (role,key.map(|k|{let mut full=[0;32];full[..16].copy_from_slice(&k);full}))
+        };
         let key=key.ok_or(Error::Invalid("incorrect PDF password"))?;
         if role==PasswordStatus::User{
             let mask=if info.revision==2{0x3c}else{0xf3c};
             if info.permissions&mask!=mask{return Err(Error::Unsupported("restricted PDF user permissions"));}
         }
-        if info.revision==4{
+        if info.revision>=4{
             // Separate embedded-file authentication is not yet implemented.
             if let Some(Object::Dict(cf))=d.get(b"CF".as_slice()){
                 if cf.values().any(|v|matches!(v,Object::Dict(e) if matches!(e.get(b"AuthEvent".as_slice()),Some(Object::Name(n)) if n==b"EFOpen"))){
@@ -168,7 +170,7 @@ impl TrailerSecurity{
     pub(crate) fn authenticate(self,doc:&Document<'_>,password:&[u8])->Result<PasswordStatus>{
         let Some((d,id))=self.bootstrap(doc)? else{return Ok(PasswordStatus::Unencrypted);};
         let info=parse(&d)?;
-        auth::verify(&d,&id,&info,password)
+        if info.revision>=5{modern::authenticate(&d,&info,password).map(|(role,_)|role)}else{auth::verify(&d,&id,&info,password)}
     }
 }
 

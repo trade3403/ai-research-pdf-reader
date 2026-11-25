@@ -196,18 +196,27 @@ impl<'a> Document<'a>{
         let (doc,security)=Self::index(bytes,true)?;
         security.inspect(&doc)
     }
-    /// Verify a supplied R2/R3/R4 PDF password. No key or readable Document is returned.
-    /// Password bytes use the caller's legacy PDF encoding, not implicit UTF-8 conversion.
+    /// Verify a supplied PDF password. No key or readable Document is returned.
+    /// Caller supplies prepared bytes: legacy encoding for R2–R4, prepared UTF-8
+    /// for R5/R6. This API does not perform Unicode normalization.
     pub fn authenticate_legacy_password(bytes:&'a [u8],password:&[u8])->Result<crate::security::PasswordStatus>{
         let (doc,security)=Self::index(bytes,true)?;
         security.authenticate(&doc,password)
     }
-    /// Read-only authenticated R2/R3/R4 open. Restricted user permissions are
+    /// Read-only authenticated R2–R6 open. Restricted user permissions are
     /// rejected until application enforcement is available. No password logging.
     pub fn open_with_legacy_password(bytes:&'a [u8],password:&[u8])->Result<Self>{
         let (mut doc,security)=Self::index(bytes,true)?;
         doc.encryption=security.unlock(&doc,password)?;
         Ok(doc)
+    }
+    /// Revision-neutral alias for the authenticated byte-password API.
+    pub fn open_with_password(bytes:&'a [u8],password:&[u8])->Result<Self>{
+        Self::open_with_legacy_password(bytes,password)
+    }
+    /// Revision-neutral alias; caller prepares password bytes for the revision.
+    pub fn authenticate_password(bytes:&'a [u8],password:&[u8])->Result<crate::security::PasswordStatus>{
+        Self::authenticate_legacy_password(bytes,password)
     }
     fn index(bytes:&'a [u8],inspect:bool)->Result<(Self,crate::security::TrailerSecurity)>{
         if bytes.len()>MAX_BYTES{return Err(Error::Limit("file size"));}
