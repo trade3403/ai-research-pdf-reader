@@ -111,7 +111,7 @@ jobs:
           mkdir -p rpcore/target/visual-72dpi-report
           dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-72dpi-report/test-package-versions.txt
           sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-72dpi-report/font-sha256.txt
-          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --jpx-inventory
       - if: always()
         run: |
           mkdir -p rpcore/target/visual-fine-72dpi-report
