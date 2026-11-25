@@ -76,10 +76,12 @@ impl Attention<'_> {
             let kh = head_slice(&kv.k, start, 64)?;
             let vh = head_slice(&kv.v, start, 64)?;
             let context = scaled_dot_product(&qh, &kh, &vh, mask, kernels.float)?.context;
-            for (row, part) in joined
-                .chunks_exact_mut(512)
-                .zip(context.data().chunks_exact(64))
-            {
+            let (joined_rows, joined_tail) = joined.as_chunks_mut::<512>();
+            let (parts, part_tail) = context.data().as_chunks::<64>();
+            if !joined_tail.is_empty() || !part_tail.is_empty() || joined_rows.len() != parts.len() {
+                return Err(Error::Shape);
+            }
+            for (row, part) in joined_rows.iter_mut().zip(parts) {
                 row[start..start + 64].copy_from_slice(part);
             }
         }

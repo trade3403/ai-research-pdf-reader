@@ -68,13 +68,12 @@ fn right_boundary(s: &str, at: usize) -> bool {
 }
 
 fn escaped(s: &str, at: usize) -> bool {
-    s.as_bytes()[..at]
+    !s.as_bytes()[..at]
         .iter()
         .rev()
         .take_while(|&&b| b == b'\\')
         .count()
-        % 2
-        != 0
+        .is_multiple_of(2)
 }
 
 fn math_end(s: &str, start: usize) -> Result<Option<usize>, Error> {
