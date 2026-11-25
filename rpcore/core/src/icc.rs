@@ -974,3 +974,64 @@ mod chad_tests{
         assert!(invert_chad([[f64::NAN,0.,0.],[0.,1.,0.],[0.,0.,1.]]).is_err());
     }
 }
+
+#[cfg(test)]
+mod chad_tag_tests{
+    use super::*;
+    fn profile(version:u8,space:Signature,white:[f64;3],chad:Option<Vec<u8>>)->Vec<u8>{
+        let mut wt=b"XYZ \0\0\0\0".to_vec();
+        for v in white{wt.extend_from_slice(&((v*65536.).round() as i32).to_be_bytes());}
+        let mut tags=vec![(*b"wtpt",wt)];
+        if let Some(v)=chad{tags.push((*b"chad",v));}
+        let mut b=vec![0;132+12*tags.len()];b[8]=version;
+        b[12..16].copy_from_slice(b"mntr");b[16..20].copy_from_slice(&space);
+        b[20..24].copy_from_slice(b"XYZ ");b[36..40].copy_from_slice(b"acsp");
+        for (i,v) in [0.9642_f64,1.,0.8249].into_iter().enumerate(){
+            b[68+4*i..72+4*i].copy_from_slice(&((v*65536.).round() as i32).to_be_bytes());
+        }
+        b[128..132].copy_from_slice(&(tags.len() as u32).to_be_bytes());
+        for (i,(name,data)) in tags.into_iter().enumerate(){
+            let p=132+12*i;let off=b.len() as u32;
+            b[p..p+4].copy_from_slice(&name);b[p+4..p+8].copy_from_slice(&off.to_be_bytes());
+            b[p+8..p+12].copy_from_slice(&(data.len() as u32).to_be_bytes());
+            b.extend(data);while b.len()%4!=0{b.push(0);}
+        }
+        let size=b.len() as u32;b[..4].copy_from_slice(&size.to_be_bytes());b
+    }
+    fn chad(m:[[f64;3];3])->Vec<u8>{
+        let mut b=b"sf32\0\0\0\0".to_vec();
+        for v in m.into_iter().flatten(){b.extend_from_slice(&((v*65536.).round() as i32).to_be_bytes());}b
+    }
+    #[test]fn parses_signed_fixed_row_major(){
+        let m=[[1.,-0.125,0.],[0.,1.,0.25],[0.,0.,1.]];
+        let b=profile(4,*b"RGB ",[0.9642,1.,0.8249],Some(chad(m)));
+        let p=Profile::parse(&b).unwrap();assert_eq!(p.chromatic_adaptation().unwrap(),Some(m));
+        let w=p.unadapted_pcs_white().unwrap().unwrap();
+        for i in 0..3{assert!(((0..3).map(|j|m[i][j]*w[j]).sum::<f64>()-p.illuminant[i]).abs()<1e-12);}
+    }
+    #[test]fn rejects_malformed_chad(){
+        let good=chad([[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]);
+        let mut bad=good.clone();bad[0]=b'x';
+        let mut reserved=good.clone();reserved[4]=1;
+        let mut truncated=good.clone();truncated.pop();
+        for v in [bad,reserved,truncated,chad([[0.;3];3])]{
+            let b=profile(4,*b"GRAY",[0.9642,1.,0.8249],Some(v));
+            let p=Profile::parse(&b).unwrap();
+            assert!(p.chromatic_adaptation().is_err());assert!(p.absolute_matrix_scale().is_err());
+        }
+    }
+    #[test]fn version_and_full_adaptation_white_policy(){
+        for space in [*b"RGB ",*b"GRAY"]{
+            let white=[0.8,0.9,0.7];
+            let b=profile(2,space,white,None);let p=Profile::parse(&b).unwrap();
+            assert_eq!(p.absolute_matrix_scale().unwrap(),[1.;3]);assert_eq!(p.chromatic_adaptation().unwrap(),None);
+            let b=profile(4,space,white,Some(chad([[1.,0.,0.],[0.,1.,0.],[0.,0.,0.75]])));
+            let p=Profile::parse(&b).unwrap();let scale=p.absolute_matrix_scale().unwrap();
+            for i in 0..3{assert!((scale[i]*[0.9642,1.,0.8249][i]-white[i]).abs()<1e-5);}
+        }
+    }
+    #[test]fn rejects_invalid_media_white(){
+        let b=profile(4,*b"GRAY",[0.,1.,0.8],None);
+        assert!(Profile::parse(&b).unwrap().absolute_matrix_scale().is_err());
+    }
+}

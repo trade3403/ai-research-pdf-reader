@@ -332,6 +332,82 @@ def absolute_gate(a,lib,work):
                     im.save(a.out/f'{label}-{dpi}-native.png')
     return results
 
+def absolute_matrix_gate(a,lib,work):
+    # LCMS generates independent v2/v4 RGB and Gray matrix/TRC fixtures.
+    # LCMS absolute rendering uses full adaptation (state 1).
+    lib.cmsSetProfileVersion.argtypes=[C.c_void_p,C.c_double]
+    lib.cmsSetProfileVersion.restype=None
+    lib.cmsSetAdaptationState.argtypes=[C.c_double]
+    lib.cmsSetAdaptationState.restype=C.c_double
+    def generate(n,version,xy):
+        curve=lib.cmsBuildGamma(None,2.2)
+        if not curve:raise RuntimeError('absolute matrix gamma')
+        try:
+            wp=(C.c_double*3)(xy[0],xy[1],1.)
+            if n==1:h=lib.cmsCreateGrayProfile(wp,curve)
+            else:
+                primaries=(C.c_double*9)(.64,.33,1.,.21,.71,1.,.15,.06,1.)
+                h=lib.cmsCreateRGBProfile(wp,primaries,(C.c_void_p*3)(curve,curve,curve))
+            if not h:raise RuntimeError('absolute matrix fixture')
+            lib.cmsSetProfileVersion(h,version)
+            return serialize_profile(lib,h)
+        finally:lib.cmsFreeToneCurve(curve)
+    def expected(profile,n,rows):
+        buf=C.create_string_buffer(profile)
+        src=lib.cmsOpenProfileFromMem(buf,len(profile));dst=lib.cmsCreate_sRGBProfile()
+        t=None
+        try:
+            if not src or not dst:raise RuntimeError('absolute matrix open')
+            fmt=RGB_DOUBLE if n==3 else (1<<22)|(3<<16)|(1<<3)
+            t=lib.cmsCreateTransform(src,fmt,dst,RGB8,3,0)
+            if not t:raise RuntimeError('absolute matrix transform')
+            out=[]
+            for row in rows:
+                v=(C.c_double*n)(*row['source']);rgb=(C.c_uint8*3)()
+                lib.cmsDoTransform(t,v,rgb,1);out.append(list(rgb))
+            return out
+        finally:
+            if t:lib.cmsDeleteTransform(t)
+            if src:lib.cmsCloseProfile(src)
+            if dst:lib.cmsCloseProfile(dst)
+    cases=[]
+    for version in (2.1,4.3):
+        for label,xy in [('d50',(.3457,.3585)),('d65',(.3127,.3290)),('warm',(.40,.38))]:
+            for n in (1,3):
+                cases.append((f'v{int(version)}-{label}-{n}',generate(n,version,xy),n))
+    rgb=[(0,0,0),(255,255,255),(255,0,0),(0,255,0),(0,0,255),(17,127,239),(128,128,128),(2,64,197)]
+    gray=[(v,) for v in (0,2,17,64,128,197,239,255)]
+    results=[];old=lib.cmsSetAdaptationState(1.)
+    try:
+        for name,profile,n in cases:
+            tag='rgb_matrix' if n==3 else 'gray_trc'
+            # Assert generated profile class/version and native path; no
+            # device fallback may masquerade as identity RGB/gray.
+            if profile[8] not in (2,4) or profile[12:16]!=b'mntr':raise ValueError('matrix fixture header')
+            for bits in (8,16):
+                samples=rgb if n==3 else gray
+                if bits==16:samples=[tuple(v*257+(1 if 0<v<255 else 0) for v in row) for row in samples]
+                label=f'matrix-absolute-{name}-{bits}'
+                pdf=work/(label+'.pdf')
+                size,rows=make_pdf(pdf,profile,n,samples,bits,intent='AbsoluteColorimetric')
+                ex=expected(profile,n,rows)
+                for dpi in (72,144):
+                    native,ref,im,ri=render_pair(a,pdf,1,dpi,work,f'{label}-{dpi}',None)
+                    diag=[v for k,v in native.items() if k.startswith('icc_diag_')]
+                    ok=im is not None and im.size==tuple(v*dpi//72 for v in size)
+                    ok=ok and (native.get('icc_vector_native'),native.get('icc_image_native'),native.get('icc_vector_alternate'),native.get('icc_image_alternate'))==('1','1','0','0')
+                    ok=ok and len(diag)==2 and all(';'+tag+';' in d for d in diag)
+                    if not ok:continue
+                    for row,want in zip(rows,ex):
+                        nv,ns=zip(*(measure(im,tuple(v*dpi//72 for v in b)) for b in row['boxes']))
+                        delta=max(error(v,want) for v in nv[:3])
+                        parity=max(error(nv[0],v) for v in nv[:3])
+                        alpha=error(nv[3],[round((v*128+255*127)/255) for v in nv[2]])
+                        results.append({'case':label,'dpi':dpi,'raw':row['raw'],'expected_rgb':want,'native_rgb':nv,
+                            'max_error':delta,'parity':parity,'alpha':alpha,'pass':delta<=2 and parity<=1 and alpha<=1 and max(ns)==0})
+    finally:lib.cmsSetAdaptationState(old)
+    return results
+
 def main():
     p=argparse.ArgumentParser()
     for k in ('probe','reference','out'):
@@ -415,6 +491,7 @@ def main():
                             'pass':parity<=1 and oracle<=2 and ae<=1 and max(ns)==0})
         report['intent_checks']=intent_gate(a,lib,work)
         report['absolute_checks']=absolute_gate(a,lib,work)
+        report['absolute_matrix_checks']=absolute_matrix_gate(a,lib,work)
     total=288
     passed=sum(r['pass'] for r in report['rows'])
     report['expected_rows']=total
@@ -428,6 +505,7 @@ def main():
         key=render['case'];rr=[r for r in report['rows'] if r['case']==key]
         mx=[max((r[k] for r in rr),default='—') for k in ('parity_error','lcms_error','alpha_error','poppler_error')]
         lines.append(f"| {key} | {len(rr)} | {sum(r['pass'] for r in rr)} | "+' | '.join(map(str,mx))+' |')
+    lines+=['',f"Absolute RGB/Gray: {sum(r['pass'] for r in report['absolute_matrix_checks'])}/384 observations passed; max LCMS RGB8 error {max((r['max_error'] for r in report['absolute_matrix_checks']),default='missing')}."]
     lines+=['',f"Absolute legacy: {sum(r['pass'] for r in report['absolute_checks'])}/192 observations passed; max LCMS RGB8 error {max((r['max_error'] for r in report['absolute_checks']),default='missing')}."]
     lines+=['',f"Intent switching: {sum(r['pass'] for r in report['intent_checks'])}/16 observations passed."]
     lines+=['',f'Passed {passed}/{total} paired color observations; {len(report["renders"])} page comparisons.',
@@ -436,7 +514,7 @@ def main():
         lines.append(f"- {check['profile']}: {check['status']}, max RGB error {check.get('max_rgb_error','—')}, {'PASS' if check['pass'] else 'FAIL'}")
     lines+=['','Unmodified LCMS sRGB and generated wide-gamut matrix profile, sampled baseline and original synthetic CMYK LUT. Includes three synthetic MPE D2B1 profiles (matrix, CLUT, mixed). No measured printer or monitor calibration claim.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
-    return int(len(report['absolute_checks'])!=192 or not all(r['pass'] for r in report['absolute_checks']) or len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
+    return int(len(report['absolute_matrix_checks'])!=384 or not all(r['pass'] for r in report['absolute_matrix_checks']) or len(report['absolute_checks'])!=192 or not all(r['pass'] for r in report['absolute_checks']) or len(report['intent_checks'])!=16 or not all(r['pass'] for r in report['intent_checks']) or len(report['renders'])!=36 or len(report['rows'])!=total or passed!=total or len(report['native_matrix_checks'])!=3 or not all(x['pass'] for x in report['native_matrix_checks']))
 
 if __name__=='__main__':
     raise SystemExit(main())
