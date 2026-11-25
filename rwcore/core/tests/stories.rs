@@ -76,3 +76,86 @@ fn settings_preserve_absent_false_and_reject_duplicates() {
     let s=format!("<w:settings xmlns:w='{W}'><w:evenAndOddHeaders/><w:evenAndOddHeaders/></w:settings>");
     assert_eq!(parse_page_settings(s.as_bytes(),Limits::default()),Err(Error::Invalid("duplicate evenAndOddHeaders")));
 }
+
+
+use rwcore::section::HeaderFooterVariant as V;
+use rwcore::{PageContext, StoryCatalog, PageSettings};
+
+fn context(first: bool, even: bool) -> PageContext {
+    PageContext { first_in_section: first, even_page: even }
+}
+
+#[test]
+fn section_selection_inherits_independent_variants_and_kinds() {
+    let body="<w:p><w:pPr><w:sectPr><w:headerReference w:type='default' r:id='h1'/><w:footerReference w:type='default' r:id='f'/><w:headerReference w:type='first' r:id='h1'/></w:sectPr></w:pPr></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type='even' r:id='h2'/><w:titlePg/></w:sectPr></w:pPr></w:p><w:sectPr/>";
+    let d=read_docx_with_stories(&fixture(body,&rels(),&header(),H),Limits::default()).unwrap();
+    let s=d.section_stories().unwrap();
+    assert_eq!(s.len(),3);
+    let first=s[1].select(context(true,true));
+    assert_eq!(first.variant,V::First);
+    assert_eq!(first.header.unwrap().source_section,0);
+    assert!(first.footer.is_none());
+    let even=s[1].select(context(false,true));
+    assert_eq!(even.variant,V::Even);
+    assert_eq!(even.header.unwrap().source_section,1);
+    assert!(even.footer.is_none());
+    let odd=s[2].select(context(true,false));
+    assert_eq!(odd.variant,V::Default);
+    assert_eq!(odd.header.unwrap().source_section,0);
+    assert_eq!(odd.footer.unwrap().source_section,0);
+    assert_eq!(s[2].select(context(false,true)).header.unwrap().source_section,1);
+}
+
+#[test]
+fn inactive_variants_do_not_fallback_when_enabled() {
+    let body="<w:sectPr><w:headerReference w:type='default' r:id='h1'/><w:footerReference w:type='default' r:id='f'/><w:titlePg/></w:sectPr>";
+    let d=read_docx_with_stories(&fixture(body,&rels(),&header(),H),Limits::default()).unwrap();
+    let s=d.section_stories().unwrap();
+    for p in [context(true,false),context(true,true),context(false,true)] {
+        let selected=s[0].select(p);
+        assert!(selected.header.is_none());
+        assert!(selected.footer.is_none());
+    }
+    let normal=s[0].select(context(false,false));
+    assert!(normal.header.is_some());
+    assert!(normal.footer.is_some());
+}
+
+#[test]
+fn global_even_switch_and_title_page_are_independent() {
+    let body="<w:sectPr><w:headerReference w:type='default' r:id='h1'/><w:headerReference w:type='even' r:id='h2'/><w:titlePg w:val='0'/></w:sectPr>";
+    let mut d=read_docx_with_stories(&fixture(body,&rels(),&header(),H),Limits::default()).unwrap();
+    for settings in [None,Some(PageSettings::default()),Some(PageSettings { even_and_odd_headers:Some(false),..Default::default() })] {
+        d.header_footer.as_mut().unwrap().settings=settings;
+        let s=d.section_stories().unwrap();
+        assert_eq!(s[0].select(context(true,true)).variant,V::Default);
+    }
+    d.header_footer.as_mut().unwrap().settings=Some(PageSettings { even_and_odd_headers:Some(true),..Default::default() });
+    assert_eq!(d.section_stories().unwrap()[0].select(context(true,true)).variant,V::Even);
+}
+
+#[test]
+fn explicit_empty_story_replaces_inherited_content() {
+    let body="<w:p><w:pPr><w:sectPr><w:headerReference w:type='default' r:id='h1'/></w:sectPr></w:pPr></w:p><w:sectPr><w:headerReference w:type='default' r:id='h2'/></w:sectPr>";
+    let mut d=read_docx_with_stories(&fixture(body,&rels(),&header(),H),Limits::default()).unwrap();
+    let c=d.header_footer.as_mut().unwrap();
+    c.parts.insert("empty.xml".into(),parse_story(format!("<w:hdr xmlns:w='{W}'/>").as_bytes(),K::Header,Limits::default()).unwrap());
+    c.headers.insert("h2".into(),"empty.xml".into());
+    let s=d.section_stories().unwrap();
+    assert!(!s[0].select(context(false,false)).header.unwrap().story.blocks.is_empty());
+    let binding=s[1].select(context(false,false)).header.unwrap();
+    assert!(binding.story.blocks.is_empty());
+    assert_eq!(binding.source_section,1);
+}
+
+#[test]
+fn inconsistent_catalog_rejected_and_metadata_only_is_explicit() {
+    let bytes=fixture(BODY,&rels(),&header(),H);
+    let mut d=read_docx(&bytes,Limits::default()).unwrap();
+    assert_eq!(d.section_stories(),Err(Error::Invalid("header/footer stories not loaded")));
+    d.header_footer=Some(StoryCatalog::default());
+    assert_eq!(d.section_stories(),Err(Error::Invalid("unloaded header/footer reference")));
+    let mut d=read_docx_with_stories(&bytes,Limits::default()).unwrap();
+    d.header_footer.as_mut().unwrap().parts.remove("custom/h.xml");
+    assert_eq!(d.section_stories(),Err(Error::Invalid("missing loaded header/footer part")));
+}

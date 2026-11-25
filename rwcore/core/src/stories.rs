@@ -173,3 +173,109 @@ pub(crate) fn load(zip: &mut ZipArchive<Cursor<&[u8]>>, graph: &PackageGraph,
     }
     Ok(out)
 }
+
+
+use crate::section::HeaderFooterVariant;
+
+/// A resolved part with the zero-based source section that defined its reference.
+/// The original story is borrowed, not duplicated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoryBinding<'a> {
+    pub part_name: &'a str,
+    pub story: &'a Story,
+    pub source_section: usize,
+}
+
+/// Pagination supplies the physical page context. This engine deliberately
+/// does not infer parity from displayed page numbers or continuous breaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageContext {
+    pub first_in_section: bool,
+    pub even_page: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SectionStories<'a> {
+    pub headers: BTreeMap<HeaderFooterVariant, StoryBinding<'a>>,
+    pub footers: BTreeMap<HeaderFooterVariant, StoryBinding<'a>>,
+    pub title_page: bool,
+    pub even_and_odd: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedStories<'a> {
+    pub variant: HeaderFooterVariant,
+    pub header: Option<StoryBinding<'a>>,
+    pub footer: Option<StoryBinding<'a>>,
+}
+
+impl<'a> SectionStories<'a> {
+    /// First-page selection takes precedence over even-page selection.
+    /// Missing active variants are blank; no fallback to another variant.
+    pub fn select(&self, context: PageContext) -> SelectedStories<'a> {
+        let variant = if self.title_page && context.first_in_section {
+            HeaderFooterVariant::First
+        } else if self.even_and_odd && context.even_page {
+            HeaderFooterVariant::Even
+        } else {
+            HeaderFooterVariant::Default
+        };
+        SelectedStories {
+            variant,
+            header: self.headers.get(&variant).copied(),
+            footer: self.footers.get(&variant).copied(),
+        }
+    }
+}
+
+impl StoryCatalog {
+    fn binding(&self, kind: HeaderFooterKind, id: &str, section: usize)
+        -> Result<StoryBinding<'_>, Error>
+    {
+        let ids = match kind {
+            HeaderFooterKind::Header => &self.headers,
+            HeaderFooterKind::Footer => &self.footers,
+        };
+        let name = ids.get(id).ok_or(Error::Invalid("unloaded header/footer reference"))?;
+        let story = self.parts.get(name).ok_or(Error::Invalid("missing loaded header/footer part"))?;
+        if story.kind != kind { return Err(Error::Invalid("loaded header/footer kind")); }
+        Ok(StoryBinding { part_name: name, story, source_section: section })
+    }
+
+    /// Resolve same-kind, same-variant references in one forward pass.
+    /// All six slots inherit independently, even if a slot was inactive in
+    /// the preceding section. An explicit empty story replaces inherited text.
+    /// Missing titlePg is false, not inherited. The even/odd switch is global.
+    /// An inconsistent catalog fails explicitly, with no partial output.
+    pub fn section_stories<'a>(&'a self, sections: &[DocumentSection])
+        -> Result<Vec<SectionStories<'a>>, Error>
+    {
+        let mut effective = SectionStories {
+            even_and_odd: self.settings.as_ref()
+                .and_then(|settings| settings.even_and_odd_headers).unwrap_or(false),
+            ..Default::default()
+        };
+        let mut out = Vec::with_capacity(sections.len());
+        for (index, section) in sections.iter().enumerate() {
+            effective.title_page = section.properties.as_ref()
+                .and_then(|props| props.title_page).unwrap_or(false);
+            if let Some(props) = section.properties.as_ref() {
+                for (variant, id) in &props.headers {
+                    effective.headers.insert(*variant, self.binding(HeaderFooterKind::Header, id, index)?);
+                }
+                for (variant, id) in &props.footers {
+                    effective.footers.insert(*variant, self.binding(HeaderFooterKind::Footer, id, index)?);
+                }
+            }
+            out.push(effective.clone());
+        }
+        Ok(out)
+    }
+}
+
+impl crate::Document {
+    pub fn section_stories(&self) -> Result<Vec<SectionStories<'_>>, Error> {
+        self.header_footer.as_ref().ok_or(Error::Invalid("header/footer stories not loaded"))?
+            .section_stories(&self.sections)
+    }
+}
