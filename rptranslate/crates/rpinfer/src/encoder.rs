@@ -98,7 +98,13 @@ impl Encoder<'_> {
         source_keep: Option<&[bool]>,
         kernel: Kernel,
     ) -> Result<Tensor, Error> {
-        let x = input_embeddings(self.embeddings, ids, self.embedding_scale, 0, self.max_positions)?;
+        let x = input_embeddings(
+            self.embeddings,
+            ids,
+            self.embedding_scale,
+            0,
+            self.max_positions,
+        )?;
         encode_hidden(&x, self.layers, source_keep, kernel)
     }
 }
@@ -106,7 +112,8 @@ impl Encoder<'_> {
 /// Construct an explicit keep mask from IDs; callers may provide custom masks.
 pub fn padding_mask(ids: &[u32], pad_id: u32) -> Result<Vec<bool>, Error> {
     let mut mask = Vec::new();
-    mask.try_reserve_exact(ids.len()).map_err(|_| Error::Allocation)?;
+    mask.try_reserve_exact(ids.len())
+        .map_err(|_| Error::Allocation)?;
     mask.extend(ids.iter().map(|&id| id != pad_id));
     Ok(mask)
 }
@@ -131,54 +138,166 @@ mod tests {
     fn two_layer_numpy_reference_and_mask_isolation() {
         let x = t(&[3, 4], &[1., 2., 3., 4., 2., 0., 1., -1., 9., 8., 7., 6.]);
         let changed = t(&[3, 4], &[1., 2., 3., 4., 2., 0., 1., -1., -9., 3., 2., 1.]);
-        let q = t(&[4, 4], &[1., 0., 0., 0., 0., 2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5]);
-        let k = t(&[4, 4], &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]);
-        let v = t(&[4, 4], &[2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1.]);
-        let o = t(&[4, 4], &[1., 0., 1., 0., 0., 1., 0., 1., 1., 0., 0., 0., 0., 0., 0., 1.]);
+        let q = t(
+            &[4, 4],
+            &[
+                1., 0., 0., 0., 0., 2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5,
+            ],
+        );
+        let k = t(
+            &[4, 4],
+            &[
+                1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+            ],
+        );
+        let v = t(
+            &[4, 4],
+            &[
+                2., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1.,
+            ],
+        );
+        let o = t(
+            &[4, 4],
+            &[
+                1., 0., 1., 0., 0., 1., 0., 1., 1., 0., 0., 0., 0., 0., 0., 1.,
+            ],
+        );
         let w1 = t(&[3, 4], &[1., -1., 0., 0., 0., 1., 1., 0., 0., 0., -1., 1.]);
-        let w2 = t(&[4, 3], &[1., 0., 0.5, 0., -1., 0., 0.5, 1., 0., 0., 0., 1.]);
+        let w2 = t(
+            &[4, 3],
+            &[1., 0., 0.5, 0., -1., 0., 0.5, 1., 0., 0., 0., 1.],
+        );
         let b1 = t(&[3], &[0.2, -0.1, 0.3]);
         let b2 = t(&[4], &[0.1, 0., -0.2, 0.1]);
         let gain = t(&[4], &[1., 1.5, 0.5, 1.]);
         let bias = t(&[4], &[0., 0.1, 0., -0.1]);
-        let norm = Norm { weight: &gain, bias: &bias, epsilon: 1e-5 };
+        let norm = Norm {
+            weight: &gain,
+            bias: &bias,
+            epsilon: 1e-5,
+        };
         let make = || EncoderLayer {
             attention: MultiHead {
-                q: Linear { weight: &q, bias: None },
-                k: Linear { weight: &k, bias: None },
-                v: Linear { weight: &v, bias: None },
-                output: Linear { weight: &o, bias: None },
+                q: Linear {
+                    weight: &q,
+                    bias: None,
+                },
+                k: Linear {
+                    weight: &k,
+                    bias: None,
+                },
+                v: Linear {
+                    weight: &v,
+                    bias: None,
+                },
+                output: Linear {
+                    weight: &o,
+                    bias: None,
+                },
                 heads: 2,
             },
             attention_norm: norm,
             ffn: FeedForward {
-                first: Linear { weight: &w1, bias: Some(&b1) },
-                second: Linear { weight: &w2, bias: Some(&b2) },
+                first: Linear {
+                    weight: &w1,
+                    bias: Some(&b1),
+                },
+                second: Linear {
+                    weight: &w2,
+                    bias: Some(&b2),
+                },
                 activation: Activation::Relu,
             },
             final_norm: norm,
         };
         let layers = [make(), make()];
         let mask = [true, true, false];
-        for kernel in [Kernel::Scalar, Kernel::Blocked, Kernel::Auto, Kernel::Parallel(4)] {
+        for kernel in [
+            Kernel::Scalar,
+            Kernel::Blocked,
+            Kernel::Auto,
+            Kernel::Parallel(4),
+        ] {
             let a = layers[0].attention_stage(&x, Some(&mask), kernel).unwrap();
-            close(a.data(), &[-1.147_988_6, 1.584_579_5, -0.420_057_27, 0.898_383_44, 1.320_254_1, -0.906_716, 0.284_351_08, -1.317_812_2, 0.568_074_35, 2.088_259_7, -0.599_633_93, -0.794_313]);
+            close(
+                a.data(),
+                &[
+                    -1.147_988_6,
+                    1.584_579_5,
+                    -0.420_057_27,
+                    0.898_383_44,
+                    1.320_254_1,
+                    -0.906_716,
+                    0.284_351_08,
+                    -1.317_812_2,
+                    0.568_074_35,
+                    2.088_259_7,
+                    -0.599_633_93,
+                    -0.794_313,
+                ],
+            );
             let first = layers[0].forward(&x, Some(&mask), kernel).unwrap();
-            close(first.data(), &[-1.004_121_9, -0.342_411_1, -0.182_793_78, 1.564_650_2, 1.521_986_2, -1.126_990_7, 0.133_564_41, -1.071_121_2, 0.668_001_3, 1.044_177_4, 0.213_658_57, -1.82477]);
+            close(
+                first.data(),
+                &[
+                    -1.004_121_9,
+                    -0.342_411_1,
+                    -0.182_793_78,
+                    1.564_650_2,
+                    1.521_986_2,
+                    -1.126_990_7,
+                    0.133_564_41,
+                    -1.071_121_2,
+                    0.668_001_3,
+                    1.044_177_4,
+                    0.213_658_57,
+                    -1.82477,
+                ],
+            );
             let out = encode_hidden(&x, &layers, Some(&mask), kernel).unwrap();
-            close(out.data(), &[-0.535_994_95, -0.349_807_08, -0.430_704_65, 1.597_275_7, 1.475_076_1, -1.538_538_6, 0.168_342_28, -0.819_401_56, 1.376_005_8, -0.535_743_6, 0.191_146_69, -1.434_470_1]);
+            close(
+                out.data(),
+                &[
+                    -0.535_994_95,
+                    -0.349_807_08,
+                    -0.430_704_65,
+                    1.597_275_7,
+                    1.475_076_1,
+                    -1.538_538_6,
+                    0.168_342_28,
+                    -0.819_401_56,
+                    1.376_005_8,
+                    -0.535_743_6,
+                    0.191_146_69,
+                    -1.434_470_1,
+                ],
+            );
             let altered = encode_hidden(&changed, &layers, Some(&mask), kernel).unwrap();
             close(&out.data()[..8], &altered.data()[..8]);
         }
-        assert_eq!(encode_hidden(&x, &layers, Some(&[true]), Kernel::Auto), Err(Error::Shape));
-        assert_eq!(encode_hidden(&x, &[], None, Kernel::Auto), Err(Error::Shape));
-        let encoder = Encoder { embeddings: &x, embedding_scale: 1., max_positions: 4, layers: &layers };
+        assert_eq!(
+            encode_hidden(&x, &layers, Some(&[true]), Kernel::Auto),
+            Err(Error::Shape)
+        );
+        assert_eq!(
+            encode_hidden(&x, &[], None, Kernel::Auto),
+            Err(Error::Shape)
+        );
+        let encoder = Encoder {
+            embeddings: &x,
+            embedding_scale: 1.,
+            max_positions: 4,
+            layers: &layers,
+        };
         let ids = [0, 1, 2];
         let keep = padding_mask(&ids, 2).unwrap();
         assert_eq!(keep, mask);
         let hidden = input_embeddings(&x, &ids, 1., 0, 4).unwrap();
         let expected = encode_hidden(&hidden, &layers, Some(&keep), Kernel::Auto).unwrap();
-        assert_eq!(encoder.forward(&ids, Some(&keep), Kernel::Auto), Ok(expected));
+        assert_eq!(
+            encoder.forward(&ids, Some(&keep), Kernel::Auto),
+            Ok(expected)
+        );
         assert_eq!(encoder.forward(&[3], None, Kernel::Auto), Err(Error::Index));
         assert_eq!(encoder.forward(&[], None, Kernel::Auto), Err(Error::Shape));
     }
