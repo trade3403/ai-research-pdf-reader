@@ -1,6 +1,6 @@
-//! Bounded JP2 / JPEG 2000 codestream geometry inspection.
-//! This is NOT an entropy decoder and does not validate the tile payload.
-//! No external runtime dependencies; unsupported structures fail closed.
+//! Native bounded JP2 / JPEG 2000 inspection and scoped baseline pixel decoding.
+//! inspect() is geometry-only; decode_baseline() validates and reconstructs the supported subset.
+//! No external runtime decoder; see IMAGE_DECODER_SUPPORT.md for acceptance scope.
 use crate::{Error,Result,MAX_BYTES};
 pub mod codestream;
 pub mod geometry;
@@ -408,5 +408,49 @@ mod tests{
         assert_eq!(decode_baseline(&end).unwrap(),decode_baseline(&data).unwrap());
         assert!(decode_baseline(&data[..data.len()-1]).is_err());
         assert!(inspect_jp2_color(&data[h.codestream_offset..]).is_err());
+    }
+
+    // B11.2j frozen baseline release matrix. Reuse accepted independent
+    // codestream fixtures; these are NOT real research-paper JPX samples.
+    fn seal_fixtures()->Vec<(Vec<u8>,BaselineColor)>{
+        vec![(hex(GRAY),BaselineColor::Gray),(hex(RGB),BaselineColor::Srgb),
+            (wrap_jp2(&hex("ff4fff510029000000000005000000050000000000000000000000050000000500000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000100001ff938080ffd9"),17,&[]),BaselineColor::Gray),
+            (wrap_jp2(&hex("ff4fff51002f000000000005000000030000000000000000000000050000000300000000000000000003070101070101070101ff52000c00000001000000000000ff5c0005424000ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000560001ff93e7ed0efda0800650755682a4deb51fad11e62edd01d8be8fe7ed0efda0a005a7ecf01b757433609a96865e7f002b779b1fe7ed0efda0600ef58e3ef470c6917e13d6fbbc5f065fb3ffd9"),16,&[]),BaselineColor::Srgb)]
+    }
+    #[test]fn seal_jpx_raw_container_matrix(){
+        for (data,color) in seal_fixtures(){
+            let h=inspect(&data).unwrap();
+            let raw=&data[h.codestream_offset..h.codestream_offset+h.codestream_length];
+            let a=decode_baseline(&data).unwrap();
+            assert_eq!(a,decode_baseline(raw).unwrap());
+            assert_eq!((a.width,a.height,a.color),(h.width as usize,h.height as usize,color));
+            let n=if color==BaselineColor::Gray{1}else{3};
+            assert_eq!(a.pixels.len(),a.width*a.height*n);
+            assert_eq!(a,decode_baseline(&data).unwrap()); // deterministic repeat
+        }
+    }
+    #[test]fn seal_jpx_all_proper_prefixes_rejected(){
+        for (data,_) in seal_fixtures(){
+            let h=inspect(&data).unwrap();
+            let raw=&data[h.codestream_offset..h.codestream_offset+h.codestream_length];
+            for b in [data.as_slice(),raw]{
+                for end in 0..b.len(){
+                    assert!(decode_baseline(&b[..end]).is_err(),"accepted truncated stream: {end}/{}",b.len());
+                }
+            }
+        }
+    }
+    #[test]fn seal_jpx_unsupported_samples_rejected(){
+        for (data,_) in seal_fixtures(){
+            let h=inspect(&data).unwrap();
+            let raw=&data[h.codestream_offset..h.codestream_offset+h.codestream_length];
+            // SIZ first component: Ssiz, XRsiz, YRsiz.
+            for (offset,value) in [(42,0x87),(42,11),(42,15),(43,2),(44,2)]{
+                let mut b=raw.to_vec();b[offset]=value;
+                // The geometry may still be valid, but the pixel subset must fail.
+                assert!(inspect(&b).is_ok());
+                assert!(decode_baseline(&b).is_err(),"unsupported SIZ {offset}={value}");
+            }
+        }
     }
 }
