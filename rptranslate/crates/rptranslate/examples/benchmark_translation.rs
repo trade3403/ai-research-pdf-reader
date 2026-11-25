@@ -41,10 +41,10 @@ fn main() -> Result<(), String> {
         mode: GenerationMode::Cached,
     };
     // Rebuild the previous tokenizer path only as a timing/reference probe.
-    let source_spm = package::tokenizer_asset(Path::new(&path), "source.spm")
-        .map_err(|e| format!("{e:?}"))?;
-    let vocab = package::tokenizer_asset(Path::new(&path), "vocab.json")
-        .map_err(|e| format!("{e:?}"))?;
+    let source_spm =
+        package::tokenizer_asset(Path::new(&path), "source.spm").map_err(|e| format!("{e:?}"))?;
+    let vocab =
+        package::tokenizer_asset(Path::new(&path), "vocab.json").map_err(|e| format!("{e:?}"))?;
     let vocabulary = Vocabulary::parse(std::str::from_utf8(&vocab).map_err(|e| format!("{e:?}"))?)
         .map_err(|e| format!("{e:?}"))?;
     let mut rebuild_ms = 0.;

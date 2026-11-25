@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-25 D1.9l [#110 / 45654959744](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45654959744) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45654959744/job/139349025884) benchmark_translation.rs:41 两处 tokenizer_asset 语句换行；按 rustfmt 日志逐字修复，不改变常驻模型、分词器复用、性能测试或所有验收门槛。真实专项查询时仍运行，未取消。待新提交全量验收，不提前进入D1.11。
+
 2026-11-25 D1.9k 基线 7ea84ccf4be6e02c1a8706b7a2cea3265c72c88d / [#109 / 45652036320](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45652036320) 全量 success；133 workspace + 56 portable=189/189。真实映射97矩阵159辅助全部位级一致，普通564.402ms、映射566.768ms（未加速，不默认启用）；FP32/INT8加载1209.561/639.918ms，跨runner仅观察。用户授权D1.9l：既有OfflineTranslator已经持有模型及Marian词表，但每次session重新构建SPM。CharsMap改为Cow，保留原借用解析API，新增into_owned；NmtUnigram拥有型转换，无自引用或unsafe。OfflineTranslator加载一次编译分词器并持有，释放原SPM，TextSession只借用模型、词表、分词器，原session Result API不变。每次生成仍新建source-specific encoder/KV，禁止跨请求复用状态；不增加全局模型缓存、不开发后台服务。新增拥有型map释放源后回归；扩展两个真实benchmark解析器，FP32/INT8六组旧重建与新session的token精确对照、跨session A/B/A译文完全一致、非法空输入拒绝，分别测重建+编码与借用+编码耗时；旧参考临时词表与分词器使此次benchmark RSS与旧测量口径不同，不宣称模型常驻内存降低；session耗时提高输出精度。保留所有历史验收，待CI，不提前进入D1.11。D2独立。
 
 2026-11-25 D1.9k [#108 / 45650243619](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45650243619) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45650243619/job/139332476838) 四组差异：mixed_model.rs 两行、lib.rs 模块排序、quantized.rs 迭代器换行、sha256.rs 错误表达式。按 rustfmt 日志逐字修复，不改变算法、默认加载方式、内存安全约束及所有测试。真实专项查询时仍运行，未取消。待新提交全量验收，不提前进入D1.9l。
