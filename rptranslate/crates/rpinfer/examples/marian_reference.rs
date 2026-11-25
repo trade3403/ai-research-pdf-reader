@@ -5,6 +5,7 @@ use rpinfer::{
     encoder::{Encoder, EncoderLayer, Norm},
     layers::{Linear, MultiHead},
     matmul::Kernel,
+    search::MarianGeneration,
     seq2seq::{OutputHead, Seq2Seq},
     tensor::Tensor,
     transformer::{input_embeddings, Activation, FeedForward},
@@ -78,7 +79,7 @@ fn emit(name: &str, value: &Tensor) {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
-    assert_eq!(args.len(), 4);
+    assert!((4..=5).contains(&args.len()));
     let w = load(&args[1]);
     let case: usize = args[2].parse().unwrap();
     let kernel = match args[3].as_str() {
@@ -144,6 +145,40 @@ fn main() {
         },
     };
     let encoded = model.encode(source, Some(sm), kernel).unwrap();
+    if args.get(4).is_some_and(|arg| arg == "generate") {
+        for setting in 0..2 {
+            for width in [1, 2, 4] {
+                let profile = MarianGeneration {
+                    start: 16,
+                    eos: 0,
+                    pad: 16,
+                    num_beams: width,
+                    min_length: 2,
+                    max_length: 5 + setting,
+                    length_penalty: setting as f64,
+                    forced_eos: (setting == 0).then_some(0),
+                    suppress: &[16],
+                };
+                let c = profile.search_config(17).unwrap();
+                for (mode, results) in [
+                    ("full", encoded.generate(c).unwrap()),
+                    ("cached", encoded.generate_cached(c).unwrap()),
+                ] {
+                    for (rank, h) in results.iter().enumerate() {
+                        let tokens = h.tokens.iter().map(u32::to_string).collect::<Vec<_>>();
+                        println!(
+                            "{setting}|{width}|{mode}|{rank}|{}|{:.17}|{:.17}|{}",
+                            tokens.join(","),
+                            h.log_probability,
+                            h.score,
+                            u8::from(h.ended)
+                        );
+                    }
+                }
+            }
+        }
+        return;
+    }
     let mut state = input_embeddings(table, source, scale, 0, 16).unwrap();
     emit("enc.embedding", &state);
     for (i, layer) in enc.iter().enumerate() {

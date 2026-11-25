@@ -146,6 +146,41 @@ pub fn search(
     Ok(beams)
 }
 
+/// Supported Marian generation metadata subset. Total lengths include start.
+/// The custom beam policy is deliberately not HF BeamSearchScorer parity.
+pub struct MarianGeneration<'a> {
+    pub start: u32,
+    pub eos: u32,
+    pub pad: u32,
+    pub num_beams: usize,
+    pub min_length: usize,
+    pub max_length: usize,
+    pub length_penalty: f64,
+    pub forced_eos: Option<u32>,
+    pub suppress: &'a [u32],
+}
+
+impl<'a> MarianGeneration<'a> {
+    pub fn search_config(&self, vocab: usize) -> Result<SearchConfig<'a>, Error> {
+        if self.pad as usize >= vocab || self.forced_eos.is_some_and(|id| id != self.eos) {
+            return Err(Error::Shape);
+        }
+        let max_new = self.max_length.checked_sub(1).ok_or(Error::Shape)?;
+        let config = SearchConfig {
+            start: self.start,
+            eos: self.eos,
+            beam_width: self.num_beams,
+            min_new: self.min_length,
+            max_new,
+            length_penalty: self.length_penalty,
+            suppress: self.suppress,
+            force_eos_at_limit: self.forced_eos.is_some(),
+        };
+        validate(config, vocab)?;
+        Ok(config)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +209,29 @@ mod tests {
             [3, 2] => row(&[0.95, 0.02, 0.02, 0.01]),
             _ => row(&[0.9, 0.04, 0.05, 0.01]),
         }
+    }
+
+    #[test]
+    fn marian_total_length_mapping() {
+        let mut profile = MarianGeneration {
+            start: 3,
+            eos: 0,
+            pad: 3,
+            num_beams: 2,
+            min_length: 2,
+            max_length: 5,
+            length_penalty: 1.,
+            forced_eos: Some(0),
+            suppress: &[3],
+        };
+        let c = profile.search_config(4).unwrap();
+        assert_eq!((c.min_new, c.max_new, c.beam_width), (2, 4, 2));
+        assert!(c.force_eos_at_limit);
+        profile.forced_eos = Some(1);
+        assert!(matches!(profile.search_config(4), Err(Error::Shape)));
+        profile.forced_eos = None;
+        profile.max_length = 1;
+        assert!(matches!(profile.search_config(4), Err(Error::Limit)));
     }
 
     #[test]

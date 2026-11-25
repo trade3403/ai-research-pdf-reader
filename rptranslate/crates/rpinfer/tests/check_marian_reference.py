@@ -109,3 +109,85 @@ for case, (src, sm, tgt, tm) in enumerate(cases):
             elements += a.size
         assert np.argmax(actual["next_logits"]) == np.argmax(trace["next_logits"])
 print(f"MARIAN_REFERENCE PASS comparisons={total} elements={elements} max_abs={overall:.9g} max_rel_floor={relative:.9g}", flush=True)
+
+
+# Independent exhaustive per-depth candidate expansion. Unlike Rust partial
+# selection, enumerate every admissible continuation before global sorting.
+# Uses the independent torch model, not Rust logits.
+from functools import lru_cache
+from transformers import GenerationConfig
+
+generation_checks = hypotheses = hf_greedy_checks = 0
+max_score_error = 0.
+for case, (src, sm, _, _) in enumerate(cases):
+    src_t = torch.tensor([src])
+    sm_t = torch.tensor([sm])
+    with torch.inference_mode():
+        enc = model.model.encoder(input_ids=src_t, attention_mask=sm_t,
+                                  return_dict=True)
+
+    @lru_cache(maxsize=None)
+    def log_probs(prefix):
+        with torch.inference_mode():
+            result = model(encoder_outputs=enc, attention_mask=sm_t,
+                           decoder_input_ids=torch.tensor([prefix]),
+                           use_cache=False, return_dict=True)
+            return torch.log_softmax(result.logits[0, -1].double(), -1).tolist()
+
+    def reference(width, setting):
+        beam = [((16,), 0., 0., False)]
+        for step in range(1, 5 + setting):
+            candidates = []
+            for tokens, lp, score, ended in beam:
+                if ended:
+                    candidates.append((tokens, lp, score, ended))
+                    continue
+                for token, delta in enumerate(log_probs(tokens)):
+                    if token == 16 or (token == 0 and step < 2):
+                        continue
+                    if setting == 0 and step == 4 and token != 0:
+                        continue
+                    total_lp = lp + delta
+                    candidates.append((tokens + (token,), total_lp,
+                                       total_lp / step**setting, token == 0))
+            beam = sorted(candidates, key=lambda h: (-h[2], h[0]))[:width]
+            if all(h[3] for h in beam):
+                break
+        return beam
+
+    stdout = subprocess.run([str(exe), str(path), str(case), "auto", "generate"],
+                            check=True, text=True, capture_output=True).stdout
+    actual = {}
+    for line in stdout.splitlines():
+        setting, width, mode, rank, tokens, lp, score, ended = line.split("|")
+        key = (int(setting), int(width), mode)
+        actual.setdefault(key, []).append(
+            (int(rank), tuple(map(int, tokens.split(","))), float(lp),
+             float(score), bool(int(ended))))
+    assert set(actual) == {(s, w, m) for s in (0, 1) for w in (1, 2, 4)
+                           for m in ("full", "cached")}
+    for setting in (0, 1):
+        for width in (1, 2, 4):
+            expected = reference(width, setting)
+            for mode in ("full", "cached"):
+                rows = actual[(setting, width, mode)]
+                assert len(rows) == len(expected)
+                for rank, (a, b) in enumerate(zip(rows, expected)):
+                    assert a[0] == rank and a[1] == b[0] and a[4] == b[3], (case, setting, width, mode, a, b)
+                    np.testing.assert_allclose(a[2:4], b[1:3], atol=1e-5, rtol=1e-5)
+                    max_score_error = max(max_score_error, abs(a[2]-b[1]), abs(a[3]-b[2]))
+                    hypotheses += 1
+                generation_checks += 1
+            if width == 1 and setting == 0:
+                gc = GenerationConfig(
+                    decoder_start_token_id=16, pad_token_id=16, eos_token_id=0,
+                    forced_eos_token_id=0, min_length=2, max_length=5,
+                    num_beams=1, do_sample=False, suppress_tokens=[16], use_cache=False)
+                with torch.inference_mode():
+                    hf = tuple(model.generate(input_ids=src_t, attention_mask=sm_t,
+                                              generation_config=gc)[0].tolist())
+                assert hf == expected[0][0], (case, hf, expected)
+                hf_greedy_checks += 1
+    log_probs.cache_clear()
+print(f"GENERATION_REFERENCE PASS cases={generation_checks} hypotheses={hypotheses} "
+      f"hf_greedy={hf_greedy_checks} max_score_error={max_score_error:.9g}", flush=True)

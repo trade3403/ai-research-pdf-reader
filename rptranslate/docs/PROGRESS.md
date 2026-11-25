@@ -23,8 +23,8 @@
 | D1.6d | 已通过 | Encoder-Decoder 联合前向、共享词嵌入、词表 logits |
 | D1.6e | 已通过 | 逐层精度与框架参考对照 |
 | D1.7a | 已通过 | Greedy/Beam、稳定 log-softmax、EOS 与长度控制 |
-| D1.7b1 | 待验证 | self/cross KV cache、增量 logits 与 Beam 分支 |
-| D1.7b2 | 未开始 | 独立搜索参考与实际 generation 配置适配 |
+| D1.7b1 | 已通过 | self/cross KV cache、增量 logits 与 Beam 分支 |
+| D1.7b2 | 待验证 | 独立搜索参考与实际 generation 配置适配 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -108,10 +108,13 @@ D1 里程碑完成 7/14（按阶段数统计，不是工作量百分比）。
 新增自主 search.rs 和 Encoded::generate 入口：beam 1–16、生成1–512 token、词表<=200000、稳定 FP64 log-softmax、partial top-k、确定性 tie-break、EOS、最小/最大生成长度、可选末步强制 EOS、显式 suppress IDs、长度惩罚。采用每步统一保留完成与活动候选的有界策略，非 HF BeamSearchScorer 等价；强制 EOS 保留模型原概率。源 memory 复用，目标前缀重算。[修复提交 40d6083](https://github.com/trade3403/ai-research-pdf-reader/commit/40d6083170ea8065abc0a07ecf41efa161ab26f9)、[复测 45528221709](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45528221709) completed/success。D1.7a 固定概率和合成 Seq2Seq 入口通过；首轮 rustfmt 修正15组格式。完整 D1.7 尚未验收。
 
 ## 当前阶段 D1.7b1
-新增内部 Cache：每层 self K/V 追加单行、cross K/V 只投影一次并 Rc 共享、不可变父快照、显式目标 mask 与位置 offset、两代 beam 缓存及 256MiB KV payload 预算；新增 cached_logits、generate_cached，保留全 prefix 基准。测试缓存全序列/带 mask logits、1/2/4 beam token 与分数一致，扩展 PyTorch Marian 独立对照 cached_logits。CI 待验收；不宣称性能提升或 HF 搜索等价。
+新增内部 Cache：每层 self K/V 追加单行、cross K/V 只投影一次并 Rc 共享、不可变父快照、显式目标 mask 与位置 offset、两代 beam 缓存及 256MiB KV payload 预算；新增 cached_logits、generate_cached，保留全 prefix 基准。测试缓存全序列/带 mask logits、1/2/4 beam token 与分数一致，扩展 PyTorch Marian 独立对照 cached_logits。实际验收：[修复代码 08be738](https://github.com/trade3403/ai-research-pdf-reader/commit/08be738a82ef91a8b278fe84546ae0e5712de81e)，[复测 45528484279](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45528484279) completed/success；首轮9组 rustfmt 修正；基础 CPU CI 与独立 PyTorch/Marian 对照通过，240张量、4744元素，整体 max_abs=4.76837158e-7，cached_logits max_abs=1.78813934e-7，1/2/4 beam 缓存与完整前缀一致。未测速度及真实模型。
 
-## 下一阶段 D1.7b2
-独立搜索参考和真实 generation 配置差异，完整 D1.7 验收。
+## 当前阶段 D1.7b2
+新增 MarianGeneration 受限生成元数据映射（total max_length-1，min_length 对应 EOS 允许步，start/pad 独立、forced EOS 校验、显式 suppress）。独立 PyTorch 小模型全量候选参考对照 3组源输入×2设置×3 beam×2缓存路径；检查所有返回序列、EOS、累计 logp、长度归一分数，另直接 HF greedy generate 三组对照。独立 Runner 下载固定 OPUS-MT config.json/可选 generation_config.json，记录 SHA256、有效 generation 参数、支持字段映射与未支持 processor 检查；未下载权重。真实 HF beam scorer 不是等价目标，明确 early_stopping/完成池/强制 EOS 评分差异。CI 待验收，完整 D1.7 暂不增加计数。
+
+## 下一阶段 D1.8
+固定真实英中模型权重与元数据、内存设计、加载和离线翻译参考。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

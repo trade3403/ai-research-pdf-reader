@@ -108,7 +108,7 @@ jobs:
   marian-forward-reference:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.6e') || contains(github.event.head_commit.message, 'D1.7b1'))
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.6e') || contains(github.event.head_commit.message, 'D1.7b1') || contains(github.event.head_commit.message, 'D1.7b2'))
     defaults:
       run:
         working-directory: rptranslate
@@ -132,3 +132,8 @@ jobs:
         run: |
           cargo build --locked --offline --release -p rpinfer --example marian_reference
           "$RUNNER_TEMP/marian-ref/bin/python" crates/rpinfer/tests/check_marian_reference.py "$RUNNER_TEMP/marian-weights.txt" target/release/examples/marian_reference
+      - name: Probe pinned OPUS-MT generation metadata
+        if: contains(github.event.head_commit.message, 'D1.7b2')
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example marian_generation_config
+          "$RUNNER_TEMP/marian-ref/bin/python" crates/rpinfer/tests/probe_marian_generation.py target/release/examples/marian_generation_config
