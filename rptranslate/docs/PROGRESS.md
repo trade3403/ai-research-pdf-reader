@@ -13,7 +13,7 @@
 | D1.2b2b1 | 已通过 | 真实 SPM 端到端 ID 编解码对照 |
 | D1.2b2b2 | 已通过 | Marian JSON、网络词表 ID、特殊 token |
 | D1.3 | 已通过 | FP32 Tensor shape/stride、reshape、permute、广播与基本运算 |
-| D1.4a | 待验证 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
+| D1.4a | 已通过 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
 | D1.4b | 未开始 | AVX2 自动检测、向量化、标量回退、多线程 |
 | D1.5–D1.7 | 未开始 | Attention、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -69,7 +69,7 @@ D1 里程碑完成 4/14（按阶段数统计，不是工作量百分比）。
 新增 dense FP32 Tensor、shape/stride、索引、原地元数据 reshape、materialized permute、NumPy-style broadcast、加减乘除、标量与空张量、内存上限及非有限检查。NumPy 2.3.5 在研发环境生成参考数组，首轮 [45515473847](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515473847) 格式检查失败，按真实日志修正两处格式；[修复提交 243e36c](https://github.com/trade3403/ai-research-pdf-reader/commit/243e36cc6d858006cca96ee4a4423ce06a3e8011)，[Actions 45515567318](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515567318) completed/success，格式、Clippy、单元测试、Release、自检全部通过。真实 tokenizer 探测按条件跳过（本轮无 tokenizer 变更）；此前 D1.2 真实对照证据有效。[技术文档](D1.3_TENSOR.md)。
 
 ## 当前阶段 D1.4a
-新增 rank-2 FP32 MatMul、32×32 分块、标量基准、矩形尾块/空张量/异常测试及独立 f64 逐元素参考。新增有限 release CPU 基准（128/256 方阵，3 次中位数）。CI 待验证；尚未完成完整 D1.4，不增加阶段计数。[技术文档](D1.4_MATMUL.md)。
+新增 rank-2 FP32 MatMul、32×32 分块、标量基准、矩形尾块/空张量/异常测试及独立 f64 逐元素参考。新增有限 release CPU 基准（128/256 方阵，3 次中位数）。实际验收：[代码 9515ca5](https://github.com/trade3403/ai-research-pdf-reader/commit/9515ca57909aa9cc4ff64ca3dc8411a065a36af5)、[Actions 45515952092](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515952092) completed/success。4 项 MatMul 新测试及全部 workspace 35 项单元测试通过（3+11+19+2），格式、Clippy、Release、自检、矩阵基准通过。Runner Intel Xeon Platinum 8573C，4 vCPU，release 3 次中位数：128 方阵 scalar 1.620ms / blocked 0.328ms，4.944x；256 方阵 20.304ms / 2.724ms，7.453x。两路径结果完全相等（exact=true）；仅该次共享 Runner、该合成输入，不代表实际模型或本机性能。未实施显式 SIMD 或多线程，完整 D1.4 待验收。 不增加完整阶段计数。[技术文档](D1.4_MATMUL.md)。
 
 ## 下一阶段 D1.4b
 AVX2 运行时检测、向量化内核、非 AVX2 回退、多线程及真实数值/性能对照。
