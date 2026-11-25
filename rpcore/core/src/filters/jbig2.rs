@@ -4,6 +4,7 @@
 //! decoder; embedded references may require a separately supplied globals stream.
 pub mod qm;
 pub mod integer;
+pub mod bitmap;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
