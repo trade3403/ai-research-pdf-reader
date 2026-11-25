@@ -64,10 +64,7 @@ fn complete(source: &str, translated: &ParagraphTranslation) -> bool {
         }
         combined.push_str(&segment.text);
     }
-    source
-        .get(end..)
-        .is_some_and(|tail| tail.trim().is_empty())
-        && combined == translated.text
+    source.get(end..).is_some_and(|tail| tail.trim().is_empty()) && combined == translated.text
 }
 
 fn translate_with(
@@ -153,9 +150,18 @@ mod tests {
     #[test]
     fn preserves_order_and_explicit_rejection() {
         let blocks = [
-            Block { id: 3, source: "A." },
-            Block { id: 8, source: "B." },
-            Block { id: 9, source: "C." },
+            Block {
+                id: 3,
+                source: "A.",
+            },
+            Block {
+                id: 8,
+                source: "B.",
+            },
+            Block {
+                id: 9,
+                source: "C.",
+            },
         ];
         let result = translate_with(&blocks, |source| {
             if source == "B." {
@@ -176,24 +182,22 @@ mod tests {
 
     #[test]
     fn validates_all_inputs_before_inference() {
-        let blocks = [
-            Block { id: 1, source: "A" },
-            Block { id: 1, source: "B" },
-        ];
+        let blocks = [Block { id: 1, source: "A" }, Block { id: 1, source: "B" }];
         assert_eq!(
             translate_with(&blocks, |_| panic!("must not run")),
             Err(Error::InvalidOrder)
         );
         let long = "a".repeat(MAX_BLOCK_BYTES + 1);
-        let blocks = [Block { id: 1, source: &long }];
+        let blocks = [Block {
+            id: 1,
+            source: &long,
+        }];
         assert_eq!(
             translate_with(&blocks, |_| panic!("must not run")),
             Err(Error::InputLimit)
         );
         let large = "x".repeat(MAX_BLOCK_BYTES);
-        let blocks: Vec<_> = (0..33)
-            .map(|id| Block { id, source: &large })
-            .collect();
+        let blocks: Vec<_> = (0..33).map(|id| Block { id, source: &large }).collect();
         assert_eq!(
             translate_with(&blocks, |_| panic!("must not run")),
             Err(Error::InputLimit)
@@ -218,7 +222,10 @@ mod tests {
 
     #[test]
     fn invalid_success_never_becomes_document_success() {
-        let blocks = [Block { id: 42, source: "A." }];
+        let blocks = [Block {
+            id: 42,
+            source: "A.",
+        }];
         assert_eq!(
             translate_with(&blocks, |source| {
                 let mut result = accepted(source);

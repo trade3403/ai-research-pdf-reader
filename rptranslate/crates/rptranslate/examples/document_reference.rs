@@ -13,10 +13,7 @@ use rptranslate::{
 use std::{fs::File, io::Read, path::Path, time::Instant};
 
 fn hex(text: &str) -> String {
-    text.as_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    text.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn main() -> Result<(), String> {
