@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: 1ad6cd1909a7e79349747991bcf04f7631818710
-- CI #59: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45555498029
-- Verified: Ubuntu 292/292, Windows 292/292, macOS 292/292; total 876/876; zero failed/ignored; all release builds passed.
-- Current stage: C3.2 paragraph text index, directional selection and atomic cross-run replacement; 12 new synthetic regressions (304 per platform / 912 executions expected, PENDING CI).
-- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On success C3.3a bounded undo/redo transaction history; structural operations follow separately.
-- Scope: single existing body or nested-table paragraph, UTF-8/scalar/UTF-16 prefix counts, explicit shared-boundary run affinity, selected text, start-run replacement formatting, local anchor preservation or global ordered-anchor rejection. Existing run structure and images retained. No cross-paragraph/field editing, grapheme segmentation, history or serialization.
+- Last verified baseline: ddda4958732c114ddc9903221aec1c0fb1b71316
+- CI #60: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45560027804
+- Verified: Ubuntu 304/304, Windows 304/304, macOS 304/304; total 912/912; zero failed/ignored; all release builds passed.
+- Current stage: C3.3a bounded in-memory undo/redo, incremental run text and anchor snapshots; 12 new regressions (316 per platform / 948 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C3.3b structural transactions and validation (start with paragraph/run split and join constraints).
+- Scope: private document ownership, session-local revision guards, C3.1 staged edits and C3.2 selection plan reuse, before/after text plus both anchor offset arrays, atomic rejection, oldest undo eviction, redo invalidation on real new edits. Limits count retained text bytes/offsets/run changes/entries, not allocator overhead. No persistent journal, crash recovery, structural history, external mutable access, or DOCX serialization.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.

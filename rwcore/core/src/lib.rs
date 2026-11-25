@@ -94,3 +94,6 @@ pub use edit::{CellStep,RunPath,TextUnit,text_byte_offset,text_offset_from_byte,
 
 pub mod selection;
 pub use selection::{ParagraphPath,SelectionLimits,RunBoundary,RunPoint,BytePoint,Selection,ResolvedSelection,ParagraphIndex,SelectionEdit,replace_selection};
+
+pub mod history;
+pub use history::{HistoryLimits,HistoryUsage,HistoryReport,HistoryEditReport,DocumentEditor};

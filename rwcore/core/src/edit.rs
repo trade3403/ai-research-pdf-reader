@@ -41,7 +41,7 @@ impl RunPath{
         let Some(Block::Paragraph(p))=blocks.get(self.paragraph) else{return Err(Error::Invalid("edit paragraph path"));};
         p.runs.get(self.run).ok_or(Error::Invalid("edit run path"))
     }
-    fn get_mut<'a>(&self,doc:&'a mut Document)->Option<&'a mut Run>{
+    pub(crate) fn get_mut<'a>(&self,doc:&'a mut Document)->Option<&'a mut Run>{
         let mut blocks=&mut doc.blocks;
         for s in &self.cells{
             let Block::Table(t)=blocks.get_mut(s.block)? else{return None;};
@@ -124,6 +124,12 @@ fn edit_run(run:&mut Run,edit:&TextEdit,limits:EditLimits)->Result<(),Error>{
 /// Body and nested body tables only: stories/fields, structure, image deletion,
 /// undo history, concurrency versions and grapheme semantics are later work.
 pub fn apply_text_transaction(doc:&mut Document,edits:&[TextEdit],limits:EditLimits)->Result<EditReport,Error>{
+    let staged=stage_text_transaction(doc,edits,limits)?;
+    let touched_runs=staged.len();
+    commit_staged(doc,staged);
+    Ok(EditReport{operations:edits.len(),touched_runs})
+}
+pub(crate) fn stage_text_transaction(doc:&Document,edits:&[TextEdit],limits:EditLimits)->Result<BTreeMap<RunPath,Run>,Error>{
     if edits.len()>limits.max_operations{return Err(Error::Limit("edit operations"));}
     let mut input=0usize;
     let mut staged_bytes=0usize;
@@ -151,11 +157,11 @@ pub fn apply_text_transaction(doc:&mut Document,edits:&[TextEdit],limits:EditLim
         edit_run(r,e,limits)?;
         staged_bytes=total;
     }
-    let touched_runs=staged.len();
-    // All paths were resolved against the same unchanged tree; only run
-    // contents are replaced here, so the commit cannot invalidate a path.
+    Ok(staged)
+}
+pub(crate) fn commit_staged(doc:&mut Document,staged:BTreeMap<RunPath,Run>){
+    // All paths were resolved against the same unchanged tree.
     for (path,r) in staged{
         *path.get_mut(doc).expect("validated text-only path")=r;
     }
-    Ok(EditReport{operations:edits.len(),touched_runs})
 }

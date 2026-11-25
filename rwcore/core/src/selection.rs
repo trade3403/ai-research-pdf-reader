@@ -137,6 +137,10 @@ pub struct SelectionEdit{
 /// including zero-length and shared-boundary runs. Endpoints are explicit.
 /// All generated edits commit atomically through C3.1.
 pub fn replace_selection(doc:&mut Document,e:&SelectionEdit,limits:SelectionLimits)->Result<EditReport,Error>{
+    let edits=plan_selection(doc,e,limits)?;
+    apply_text_transaction(doc,&edits,limits.edit)
+}
+pub(crate) fn plan_selection(doc:&Document,e:&SelectionEdit,limits:SelectionLimits)->Result<Vec<TextEdit>,Error>{
     let input=e.expected.len().checked_add(e.replacement.len()).ok_or(Error::Limit("edit input bytes"))?;
     if input>limits.edit.max_input_bytes{return Err(Error::Limit("edit input bytes"));}
     let edits={
@@ -149,7 +153,7 @@ pub fn replace_selection(doc:&mut Document,e:&SelectionEdit,limits:SelectionLimi
         if !expected.is_empty(){return Err(Error::Invalid("stale selection text"));}
         let changed=e.expected!=e.replacement;
         index.validate_drawings(s,changed&&e.interior==InteriorAnchorPolicy::Reject)?;
-        if !changed{return Ok(EditReport{operations:0,touched_runs:0});}
+        if !changed{return Ok(Vec::new());}
         let final_bytes=(index.len(TextUnit::Utf8)-e.expected.len()).checked_add(e.replacement.len())
             .ok_or(Error::Limit("selection paragraph bytes"))?;
         if final_bytes>limits.max_paragraph_bytes{return Err(Error::Limit("selection paragraph bytes"));}
@@ -163,5 +167,5 @@ pub fn replace_selection(doc:&mut Document,e:&SelectionEdit,limits:SelectionLimi
         }
         ops
     };
-    apply_text_transaction(doc,&edits,limits.edit)
+    Ok(edits)
 }
