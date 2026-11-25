@@ -136,3 +136,6 @@ pub use font_text::{TextRenderLimits,TextRenderOptions,PlacedGlyph,RenderedText,
 
 pub mod font_compare;
 pub use font_compare::{BitmapComparison,compare_glyph_bitmaps};
+
+pub mod font_coverage;
+pub use font_coverage::{GlyphCoverage,parse_glyph_coverage};

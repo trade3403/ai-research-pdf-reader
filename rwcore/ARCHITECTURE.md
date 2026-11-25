@@ -72,3 +72,5 @@ C4.3h-2d2 pending CI: Abel Regular second-family fixture, independently extracte
 C4.3h-2e1 pending CI: independent JS raw SFNT decoder derives exact ordered 16.16 point and endpoint reference for four Aref Ruqaa transformed composite glyphs. Uniform and anisotropic scales, reflections and signed offsets; no runtime dependency.
 
 C4.3h-2e2a pending CI: four independent hand-calculated synthetic composite boundary regressions, general off-diagonal matrix with scaled offset and point attachment, nested half-LSB rounding, byte-index attachment after reflection. No runtime changes.
+
+C4.4a1 pending CI: font_coverage.rs bounded Coverage format 1 glyph list and format 2 ranges, strict ordering and contiguous index validation, binary search, exclusive glyph count and expansion bounds. No substitution execution.
