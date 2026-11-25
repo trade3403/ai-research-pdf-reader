@@ -154,7 +154,7 @@ jobs:
 
   real-model-conversion:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ contains(github.event.head_commit.message, 'D1.9h-paper') && 25 || 15 }}
     if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2') || contains(github.event.head_commit.message, 'D1.8c3') || contains(github.event.head_commit.message, 'D1.8c4') || contains(github.event.head_commit.message, 'D1.8c5') || contains(github.event.head_commit.message, 'D1.8c6') || contains(github.event.head_commit.message, 'D1.8c7') || contains(github.event.head_commit.message, 'D1.8d') || contains(github.event.head_commit.message, 'D1.8e') || contains(github.event.head_commit.message, 'D1.8f') || contains(github.event.head_commit.message, 'D1.10a'))
     defaults:
       run:
@@ -283,3 +283,16 @@ jobs:
           cargo build --locked --offline --release -p rptranslate --example benchmark_translation
           cargo build --locked --offline --release -p rptranslate
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_paired_translation.py "$RUNNER_TEMP/rpmodel-v1" "$RUNNER_TEMP/rpmodel-mixed" target/release/examples/benchmark_translation target/release/rptranslate
+      - name: Measure uploaded paper through the unchanged Rust engine
+        if: contains(github.event.head_commit.message, 'D1.9h-paper')
+        run: |
+          set -eu
+          paper="$RUNNER_TEMP/rp-paper"
+          mkdir -p "$paper"
+          curl --fail --location --max-time 90 --max-filesize 20000000 --output "$paper/source.pdf" "https://eartharxiv.org/repository/object/2772/download/7222/"
+          "$RUNNER_TEMP/rp-convert/bin/pip" install --disable-pip-version-check --only-binary=:all: PyMuPDF==1.26.7
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/benchmark_paper.py prepare "$paper/source.pdf" "$paper"
+          cargo build --locked --offline --release -p rptranslate --example benchmark_paper
+          /usr/bin/time -f %M -o "$paper/int8.rss" target/release/examples/benchmark_paper "$RUNNER_TEMP/rpmodel-mixed" int8 "$paper/full.tsv" > "$paper/int8.out"
+          /usr/bin/time -f %M -o "$paper/fp32.rss" target/release/examples/benchmark_paper "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.out"
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/benchmark_paper.py report "$paper"
