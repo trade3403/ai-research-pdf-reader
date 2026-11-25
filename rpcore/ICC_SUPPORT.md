@@ -1,5 +1,5 @@
 # RPCore ICC source-color core — frozen scope candidate
-Stage B10.5c5c3d4b5d4m. Baseline verified at commit 3d79f1027c4e1c5c48597f47f7a55c01f22f8019, CI #105 run 45560773547. Closure commit must pass all ten jobs before the B-line proceeds. This is a source-color subsystem milestone, not RPCore 1.0 or an ICC conformance certificate.
+Stage B10.5c5c3d4b5d4m. Closure verified at commit 7fe48de1000b21424b844784b285a411579ecb04, CI #107 run 45566224005 (10/10, mandatory external RGB native 1024/1024). Baseline verified at commit 3d79f1027c4e1c5c48597f47f7a55c01f22f8019, CI #105 run 45560773547. Closure commit passed all ten jobs before the B-line proceeds. This is a source-color subsystem milestone, not RPCore 1.0 or an ICC conformance certificate.
 
 ## Supported scope
 | Capability | Native path / limits |

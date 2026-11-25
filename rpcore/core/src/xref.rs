@@ -189,6 +189,14 @@ impl ObjectStream {
 
 impl<'a> Document<'a>{
     pub fn open(bytes:&'a [u8])->Result<Self>{
+        Self::index(bytes,false).map(|(doc,_)|doc)
+    }
+    /// Inspect unencrypted bootstrap metadata without exposing encrypted objects.
+    pub fn encryption_info(bytes:&'a [u8])->Result<Option<crate::security::EncryptionInfo>>{
+        let (doc,security)=Self::index(bytes,true)?;
+        security.inspect(&doc)
+    }
+    fn index(bytes:&'a [u8],inspect:bool)->Result<(Self,crate::security::TrailerSecurity)>{
         if bytes.len()>MAX_BYTES{return Err(Error::Limit("file size"));}
         if !bytes.starts_with(b"%PDF-"){return Err(Error::Invalid("PDF header"));}
         let start=bytes.windows(9).rposition(|w|w==b"startxref").ok_or(Error::Invalid("startxref"))?;
@@ -197,16 +205,17 @@ impl<'a> Document<'a>{
         let mut visited=BTreeSet::new();
         let mut entries=BTreeMap::new();
         let mut root=None;
+        let mut security=crate::security::TrailerSecurity::default();
         let mut total=0usize;
         for _ in 0..MAX_REVISIONS{
             if offset>=bytes.len() || !visited.insert(offset){return Err(Error::Invalid("xref offset or cycle"));}
             let (mut sec,is_classic)=section(bytes,offset)?;
-            reject_encryption(&sec.trailer)?;
+            if inspect{security.observe(&sec.trailer)?;}else{reject_encryption(&sec.trailer)?;}
             let prev=optional_offset(&sec.trailer,b"Prev",bytes.len())?;
             if let Some(supplement)=optional_offset(&sec.trailer,b"XRefStm",bytes.len())?{
                 if !is_classic || !visited.insert(supplement){return Err(Error::Invalid("hybrid xref cycle"));}
                 let extra=stream(bytes,supplement)?;
-                reject_encryption(&extra.trailer)?;
+                if inspect{security.observe(&extra.trailer)?;}else{reject_encryption(&extra.trailer)?;}
                 if extra.trailer.contains_key(b"XRefStm".as_slice()){return Err(Error::Invalid("nested hybrid xref"));}
                 // Hybrid supplementary entries override the same revision's table.
                 // Prev in the supplementary stream is not followed; the table owns the chain.
@@ -224,7 +233,7 @@ impl<'a> Document<'a>{
             // Index by object number, not generation. Free entries are tombstones.
             for (id,e) in sec.entries{entries.entry(id).or_insert(e);}
             if let Some(p)=prev{offset=p;}else{
-                return Ok(Self{bytes,entries,root:root.ok_or(Error::Invalid("missing Root"))?,object_stream_cache:Mutex::new(None)});
+                return Ok((Self{bytes,entries,root:root.ok_or(Error::Invalid("missing Root"))?,object_stream_cache:Mutex::new(None)},security));
             }
         }
         Err(Error::Limit("xref revisions"))
