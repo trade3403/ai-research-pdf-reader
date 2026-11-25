@@ -74,6 +74,7 @@ def check(mode, expected):
         accepted[key] = text
         accepted_words += words
     retries = {}
+    numeric = {}
     attempts = collections.defaultdict(list)
     categories = {
         "Generation", "Invalid", "NumericMismatch", "PercentageMismatch",
@@ -88,47 +89,72 @@ def check(mode, expected):
             assert mode == "int8" and key not in retries
             assert recovered in ("true", "false")
             retries[key] = recovered == "true"
-            assert (key in accepted) == retries[key]
+            assert key in accepted or key in rejected
+        elif fields[0] == "NUMERIC_RETRY":
+            _, key, recovered = fields
+            key = int(key)
+            assert mode == "int8" and key not in numeric
+            assert recovered in ("true", "false")
+            numeric[key] = recovered == "true"
+            assert (key in accepted) == numeric[key]
             assert key in accepted or key in rejected
         else:
             label, key, phase, strategy, category = fields
             key = int(key)
-            assert label == "ATTEMPT" and phase in ("initial", "final")
+            assert label == "ATTEMPT" and phase in ("initial", "final", "pre_numeric", "numeric")
             assert category in categories
             attempts[key, phase].append((strategy, category))
-    assert len(retries) <= 64
+    assert len(retries) <= 64 and len(numeric) <= 32
     for (key, phase), rows in attempts.items():
-        assert [strategy for strategy, _ in rows] == ["Whole", "Constrained", "ProtectedGaps"]
+        expected_strategies = ["ProtectedGaps"] if phase == "numeric" else ["Whole", "Constrained", "ProtectedGaps"]
+        assert [strategy for strategy, _ in rows] == expected_strategies
         if phase == "initial":
             assert key in retries and any(category != "Generation" for _, category in rows)
+        elif phase == "pre_numeric":
+            assert numeric.get(key) is True
+        elif phase == "numeric":
+            assert numeric.get(key) is False
         else:
             assert key in rejected and rejected[key].startswith("Rejected ")
     for key in retries:
         assert (key, "initial") in attempts
+        assert retries[key] == (key in accepted and not numeric.get(key, False))
+    for key, restored in numeric.items():
+        phase = "pre_numeric" if restored else "final"
+        assert any(category in ("NumericMismatch", "PercentageMismatch")
+                   for _, category in attempts[key, phase])
     for key, reason in rejected.items():
         if reason.startswith("Rejected "):
             assert (key, "final") in attempts
     recovered = sum(retries.values())
-    baseline_accepted = len(accepted) - recovered
+    numeric_recovered = sum(numeric.values())
+    previous_accepted = len(accepted) - numeric_recovered
+    baseline_accepted = previous_accepted - recovered
     baseline_rejected = len(expected) - baseline_accepted
     if mode == "int8":
-        assert baseline_accepted >= 234
+        assert baseline_accepted >= 234 and previous_accepted >= 240
     else:
-        assert not retries
+        assert not retries and not numeric
+    print(f"DOCUMENT_NUMERIC_RECOVERY PASS precision={mode} previous_accepted={previous_accepted} "
+          f"retried={len(numeric)} recovered={numeric_recovered} "
+          f"final_accepted={len(accepted)} final_rejected={len(rejected)}", flush=True)
     initial = collections.Counter()
     final = collections.Counter()
     for (key, phase), rows in attempts.items():
         for strategy, category in rows:
-            if phase == "initial" or key not in retries:
+            if phase == "initial" or (key not in retries and phase in ("final", "pre_numeric")):
                 initial[strategy + ":" + category] += 1
-            if phase == "final":
+            if phase in ("final", "pre_numeric"):
                 final[strategy + ":" + category] += 1
     print(f"DOCUMENT_RECOVERY PASS precision={mode} baseline_accepted={baseline_accepted} "
           f"baseline_rejected={baseline_rejected} retried={len(retries)} "
-          f"recovered={recovered} final_accepted={len(accepted)} final_rejected={len(rejected)}",
+          f"recovered={recovered} final_accepted={previous_accepted} final_rejected={len(expected)-previous_accepted}",
           flush=True)
     print(f"DOCUMENT_ATTEMPTS precision={mode} initial={dict(initial)} final={dict(final)}",
           flush=True)
+    numeric_failures = collections.Counter(category for (_, phase), rows in attempts.items()
+                                           if phase == "numeric" for _, category in rows)
+    print(f"DOCUMENT_NUMERIC_ATTEMPTS precision={mode} failures={dict(numeric_failures)}", flush=True)
     assert len(accepted) + len(rejected) == len(expected)
     assert accepted, "no accepted blocks; inspect translation quality"
     rss = int((folder / (mode + ".document.rss")).read_text().strip())

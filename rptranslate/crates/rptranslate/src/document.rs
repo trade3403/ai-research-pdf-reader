@@ -223,6 +223,113 @@ pub fn translate_with_retry(
     })
 }
 
+pub const MAX_NUMERIC_RETRIES: usize = 32;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct NumericRetryRecord {
+    pub id: u32,
+    /// Present when a new accepted translation replaced the prior rejection.
+    pub previous: Option<paragraph::Error>,
+    /// Present on failed numeric recovery; the prior rejection stays intact.
+    pub failure: Option<paragraph::Error>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct NumericRecoveryReport {
+    pub previous: RecoveryReport,
+    pub numeric: Vec<NumericRetryRecord>,
+}
+
+fn recover_numeric_with(
+    blocks: &[Block<'_>],
+    mut previous: RecoveryReport,
+    budget: usize,
+    mut run: impl FnMut(&str) -> Result<ParagraphTranslation, paragraph::Error>,
+) -> Result<NumericRecoveryReport, Error> {
+    let mut output: usize = previous
+        .document
+        .blocks
+        .iter()
+        .filter_map(|b| b.outcome.as_ref().ok())
+        .map(|result| result.text.len())
+        .sum();
+    let mut numeric = Vec::new();
+    for (block, result) in blocks.iter().zip(&mut previous.document.blocks) {
+        if numeric.len() >= budget.min(MAX_NUMERIC_RETRIES) {
+            break;
+        }
+        let eligible = matches!(
+            &result.outcome,
+            Err(paragraph::Error::Rejected { attempts, .. })
+                if attempts.iter().any(|a| matches!(
+                    a.failure,
+                    paragraph::Failure::Quality(
+                        paragraph::QualityIssue::NumericMismatch
+                        | paragraph::QualityIssue::PercentageMismatch
+                    )
+                ))
+        );
+        if !eligible {
+            continue;
+        }
+        match run(block.source) {
+            Ok(translated) => {
+                if !complete(block.source, &translated) {
+                    return Err(Error::InvalidCoverage(block.id));
+                }
+                output += translated.text.len();
+                if output > MAX_OUTPUT_BYTES {
+                    return Err(Error::OutputLimit);
+                }
+                let old = std::mem::replace(&mut result.outcome, Ok(translated))
+                    .expect_err("only rejected outcomes are retried");
+                numeric.push(NumericRetryRecord {
+                    id: block.id,
+                    previous: Some(old),
+                    failure: None,
+                });
+            }
+            Err(error) => numeric.push(NumericRetryRecord {
+                id: block.id,
+                previous: None,
+                failure: Some(error),
+            }),
+        }
+    }
+    Ok(NumericRecoveryReport { previous, numeric })
+}
+
+/// Opt-in numeric recovery after the unchanged initial and beam retry passes.
+/// Only remaining numeric/percentage rejections are eligible. Existing
+/// accepted blocks are untouched, and all original audits still apply.
+pub fn translate_with_numeric_retry(
+    session: &TextSession<'_>,
+    blocks: &[Block<'_>],
+    engine: &ContextEngine,
+    explicit: Option<Domain>,
+    options: GenerationOptions,
+    kernel: Kernel,
+) -> Result<NumericRecoveryReport, Error> {
+    let previous = translate_with_retry(session, blocks, engine, explicit, options, kernel)?;
+    let budget = if options.beam_width == 1 {
+        MAX_NUMERIC_RETRIES
+    } else {
+        0
+    };
+    recover_numeric_with(blocks, previous, budget, |source| {
+        session.translate_numeric_paragraph(
+            source,
+            engine,
+            explicit,
+            GenerationOptions {
+                beam_width: 2,
+                ..options
+            },
+            kernel,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +488,36 @@ mod tests {
             }),
             Err(Error::InvalidCoverage(1))
         );
+    }
+
+    #[test]
+    fn numeric_recovery_preserves_success_and_failed_prior_diagnosis() {
+        let blocks = [
+            Block { id: 1, source: "A" },
+            Block { id: 2, source: "B" },
+            Block { id: 3, source: "C" },
+            Block { id: 4, source: "D" },
+        ];
+        let first = translate_with(&blocks, |source| match source {
+            "A" => Ok(accepted(source)),
+            "B" | "C" => Err(rejection(true)),
+            _ => Err(rejection(false)),
+        })
+        .unwrap();
+        let previous = recover_with(&blocks, first, 0, |_| panic!("no retry")).unwrap();
+        let result = recover_numeric_with(&blocks, previous, 32, |source| match source {
+            "B" => Ok(accepted(source)),
+            "C" => Err(rejection(false)),
+            _ => panic!("ineligible numeric retry"),
+        })
+        .unwrap();
+        assert_eq!(result.numeric.len(), 2);
+        assert_eq!(result.numeric[0].previous, Some(rejection(true)));
+        assert_eq!(result.numeric[1].failure, Some(rejection(false)));
+        assert_eq!(result.previous.document.blocks[0].outcome, Ok(accepted("A")));
+        assert_eq!(result.previous.document.blocks[1].outcome, Ok(accepted("B")));
+        assert_eq!(result.previous.document.blocks[2].outcome, Err(rejection(true)));
+        assert_eq!(result.previous.document.blocks[3].outcome, Err(rejection(false)));
     }
 
     #[test]

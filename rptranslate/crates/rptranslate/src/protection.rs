@@ -58,6 +58,10 @@ pub struct Plan {
     spans: Vec<Span>,
 }
 
+fn identifier_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -274,6 +278,47 @@ impl Plan {
         Self::prepare_matched(source, |at| glossary.match_at(source, at))
     }
 
+    /// Preserve previously unrecognized ASCII identifiers containing digits.
+    /// Existing formulas, quantities and glossary spans always win.
+    pub fn prepare_indexed_numeric(source: &str, glossary: &Glossary) -> Result<Self, Error> {
+        let mut plan = Self::prepare_indexed(source, glossary)?;
+        let mut extra = Vec::new();
+        let mut start = 0;
+        for (end, next) in plan
+            .spans
+            .iter()
+            .map(|span| (span.range.start, span.range.end))
+            .chain([(source.len(), source.len())])
+        {
+            let bytes = source.as_bytes();
+            let mut at = start;
+            while at < end {
+                if !identifier_byte(bytes[at]) {
+                    at += 1;
+                    continue;
+                }
+                let left = at;
+                while at < end && identifier_byte(bytes[at]) {
+                    at += 1;
+                }
+                if bytes[left..at].iter().any(u8::is_ascii_digit)
+                    && (left == 0 || !identifier_byte(bytes[left - 1]))
+                    && bytes.get(at).is_none_or(|&b| !identifier_byte(b))
+                {
+                    if plan.spans.len() + extra.len() >= MAX_SPANS {
+                        return Err(Error::Limit);
+                    }
+                    push(&mut extra, source, left, at, Kind::Number, None)?;
+                }
+            }
+            // The next gap begins after the existing protected span.
+            start = next;
+        }
+        plan.spans.extend(extra);
+        plan.spans.sort_by_key(|span| span.range.start);
+        Ok(plan)
+    }
+
     fn prepare_matched<'a>(
         source: &str,
         mut term_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
@@ -441,6 +486,22 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_extension_preserves_identifiers_and_existing_literals() {
+        let g = Glossary::builtin(crate::glossary::Domain::Geotechnical).unwrap();
+        let source = "2D and Vs30, 0.1 g, H2O, $x=2$, maximum strain.";
+        let normal = Plan::prepare_indexed(source, &g).unwrap();
+        let extended = Plan::prepare_indexed_numeric(source, &g).unwrap();
+        assert!(normal.spans().iter().all(|s| extended.spans().contains(s)));
+        assert!(extended.spans().iter().any(|s| s.original == "2D"));
+        assert!(extended.spans().iter().any(|s| s.original == "Vs30"));
+        assert!(extended.gaps().iter().all(|s| !s.bytes().any(|b| b.is_ascii_digit())));
+        let result = extended.assemble(&extended.gaps()).unwrap();
+        assert!(result.contains("2D") && result.contains("Vs30"));
+        assert!(result.contains("0.1 g") && result.contains("$x=2$"));
+        assert!(result.contains("最大应变"));
+    }
 
     fn term(source: &str, target: &str) -> Term {
         Term {

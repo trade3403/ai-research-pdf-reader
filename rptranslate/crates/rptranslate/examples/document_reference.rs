@@ -73,8 +73,8 @@ fn main() -> Result<(), String> {
         max_new: 128,
         mode: GenerationMode::Cached,
     };
-    let (report, retries) = if retry {
-        let report = document::translate_with_retry(
+    let (report, retries, numeric) = if retry {
+        let report = document::translate_with_numeric_retry(
             &session,
             &blocks,
             &engine,
@@ -83,7 +83,7 @@ fn main() -> Result<(), String> {
             Kernel::Auto,
         )
         .map_err(|e| format!("{e:?}"))?;
-        (report.document, report.retries)
+        (report.previous.document, report.previous.retries, report.numeric)
     } else {
         let report = document::translate(
             &session,
@@ -94,7 +94,7 @@ fn main() -> Result<(), String> {
             Kernel::Auto,
         )
         .map_err(|e| format!("{e:?}"))?;
-        (report, Vec::new())
+        (report, Vec::new(), Vec::new())
     };
     let seconds = start.elapsed().as_secs_f64();
     println!("DOCUMENT\t{precision}\t{load_ms:.6}\t{seconds:.9}");
@@ -128,6 +128,15 @@ fn main() -> Result<(), String> {
     for retry in retries {
         println!("RETRY\t{}\t{}", retry.id, retry.recovered);
         diagnostics(retry.id, "initial", &retry.initial);
+    }
+    for record in numeric {
+        println!("NUMERIC_RETRY\t{}\t{}", record.id, record.previous.is_some());
+        if let Some(error) = record.previous {
+            diagnostics(record.id, "pre_numeric", &error);
+        }
+        if let Some(error) = record.failure {
+            diagnostics(record.id, "numeric", &error);
+        }
     }
     Ok(())
 }

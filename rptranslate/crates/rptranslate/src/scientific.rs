@@ -49,6 +49,16 @@ pub(crate) fn translate_indexed_with(
     execute(plan, translate)
 }
 
+pub(crate) fn translate_numeric_indexed_with(
+    source: &str,
+    glossary: &Glossary,
+    translate: impl FnMut(&str) -> Result<Translation, OfflineError>,
+) -> Result<ScientificTranslation, Error> {
+    validate_source(source)?;
+    let plan = Plan::prepare_indexed_numeric(source, glossary).map_err(Error::Plan)?;
+    execute(plan, translate)
+}
+
 fn validate_source(source: &str) -> Result<(), Error> {
     if source.trim().is_empty() {
         return Err(Error::Input(OfflineError::Empty));

@@ -298,6 +298,11 @@ fn repeated_clause(text: &str) -> bool {
     false
 }
 
+/// Exact lexical numeric check for candidate selection, including percent binding.
+pub(crate) fn numeric_strings_match(source: &str, output: &str) -> bool {
+    numbers(source) == numbers(output) && percentages(source) == percentages(output)
+}
+
 /// Narrow source-aware checks for spurious phrases observed on the paper.
 fn unexpected_boilerplate(source: &str, output: &str) -> Option<&'static str> {
     let lower = source.to_ascii_lowercase();
@@ -399,14 +404,24 @@ struct Selection {
 fn select(
     source: &str,
     plan: &Plan,
+    generate: impl FnMut(Strategy) -> Result<String, String>,
+) -> Result<Selection, Vec<Attempt>> {
+    select_strategies(
+        source,
+        plan,
+        &[Strategy::Whole, Strategy::Constrained, Strategy::ProtectedGaps],
+        generate,
+    )
+}
+
+fn select_strategies(
+    source: &str,
+    plan: &Plan,
+    strategies: &[Strategy],
     mut generate: impl FnMut(Strategy) -> Result<String, String>,
 ) -> Result<Selection, Vec<Attempt>> {
     let mut rejected = Vec::new();
-    for strategy in [
-        Strategy::Whole,
-        Strategy::Constrained,
-        Strategy::ProtectedGaps,
-    ] {
+    for &strategy in strategies {
         let failure = match generate(strategy) {
             Ok(text) => match audit(source, plan, &text) {
                 Ok(()) => {
@@ -430,6 +445,29 @@ pub(crate) fn translate_with(
     engine: &ContextEngine,
     explicit: Option<Domain>,
     fits: impl FnMut(&str) -> Result<bool, offline::Error>,
+    generate: impl FnMut(&str, &Glossary, Strategy) -> Result<String, String>,
+) -> Result<ParagraphTranslation, Error> {
+    translate_impl(source, engine, explicit, fits, false, generate)
+}
+
+pub(crate) fn translate_numeric_with(
+    source: &str,
+    engine: &ContextEngine,
+    explicit: Option<Domain>,
+    fits: impl FnMut(&str) -> Result<bool, offline::Error>,
+    mut generate: impl FnMut(&str, &Glossary) -> Result<String, String>,
+) -> Result<ParagraphTranslation, Error> {
+    translate_impl(source, engine, explicit, fits, true, |text, glossary, _| {
+        generate(text, glossary)
+    })
+}
+
+fn translate_impl(
+    source: &str,
+    engine: &ContextEngine,
+    explicit: Option<Domain>,
+    fits: impl FnMut(&str) -> Result<bool, offline::Error>,
+    numeric: bool,
     mut generate: impl FnMut(&str, &Glossary, Strategy) -> Result<String, String>,
 ) -> Result<ParagraphTranslation, Error> {
     if source.trim().is_empty() {
@@ -454,9 +492,30 @@ pub(crate) fn translate_with(
             (d.domain, Some(d.basis))
         };
         let glossary = engine.glossary(domain);
-        let plan = Plan::prepare_indexed(input, glossary).map_err(Error::Plan)?;
-        let result = select(input, &plan, |strategy| generate(input, glossary, strategy))
-            .map_err(|attempts| Error::Rejected { index, attempts })?;
+        let plan = if numeric {
+            Plan::prepare_indexed_numeric(input, glossary)
+        } else {
+            Plan::prepare_indexed(input, glossary)
+        }
+        .map_err(Error::Plan)?;
+        let result = if numeric {
+            select_strategies(input, &plan, &[Strategy::ProtectedGaps], |strategy| {
+                generate(input, glossary, strategy)
+            })
+        } else {
+            select(input, &plan, |strategy| generate(input, glossary, strategy))
+        }
+        .map_err(|attempts| Error::Rejected { index, attempts })?;
+        if numeric {
+            let original = Plan::prepare_indexed(input, glossary).map_err(Error::Plan)?;
+            audit(input, &original, &result.text).map_err(|issue| Error::Rejected {
+                index,
+                attempts: vec![Attempt {
+                    strategy: Strategy::ProtectedGaps,
+                    failure: Failure::Quality(issue),
+                }],
+            })?;
+        }
         if result.text.len() + 1 > MAX_OUTPUT.saturating_sub(text.len()) {
             return Err(Error::Limit);
         }
@@ -480,6 +539,27 @@ pub(crate) fn translate_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_retry_rejects_extra_digits_and_missing_identifiers() {
+        let engine = ContextEngine::builtin().unwrap();
+        let source = "2D results at 0.1 g.";
+        let run = |output: &str| {
+            translate_numeric_with(
+                source,
+                &engine,
+                Some(Domain::Geotechnical),
+                |_| Ok(true),
+                |_, _| Ok(output.to_owned()),
+            )
+        };
+        assert!(run("2D 结果为 0.1 g。").is_ok());
+        assert!(run("2D 结果为 0.1 g 和 0.1 g。").is_err());
+        assert!(run("2 结果为 0.1 g。").is_err());
+        assert!(!numeric_strings_match("plain", "结果 2"));
+        assert!(!numeric_strings_match("5%", "5"));
+        assert!(numeric_strings_match("1 and 2", "2 和 1"));
+    }
 
     #[test]
     fn sentence_boundaries_preserve_literals_and_abbreviations() {

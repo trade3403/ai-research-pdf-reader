@@ -405,6 +405,70 @@ impl TextSession<'_> {
         )
     }
 
+    /// Numeric recovery only: preserve extended literals and use a
+    /// number-consistent candidate for each remaining gap.
+    pub(crate) fn translate_numeric_paragraph(
+        &self,
+        text: &str,
+        engine: &ContextEngine,
+        explicit: Option<Domain>,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<ParagraphTranslation, paragraph::Error> {
+        paragraph::translate_numeric_with(
+            text,
+            engine,
+            explicit,
+            |source| match self.encode(source) {
+                Ok(ids) => Ok(ids.len() <= MAX_SOURCE_TOKENS),
+                Err(Error::SourceTooLong) => Ok(false),
+                Err(error) => Err(error),
+            },
+            |source, glossary| {
+                self.validate_scientific(source, options)
+                    .map_err(|e| format!("{e:?}"))?;
+                scientific::translate_numeric_indexed_with(source, glossary, |gap| {
+                    self.translate_numeric_candidate(gap, options, kernel)
+                })
+                .map(|result| result.text)
+                .map_err(|e| format!("{e:?}"))
+            },
+        )
+    }
+
+    fn translate_numeric_candidate(
+        &self,
+        text: &str,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<Translation, Error> {
+        let source_tokens = self.encode(text)?;
+        for candidate in self
+            .model
+            .generate(&source_tokens, options, kernel)
+            .map_err(Error::Inference)?
+        {
+            if !candidate.ended || candidate.tokens.len() - 1 == options.max_new {
+                continue;
+            }
+            let output = self
+                .vocabulary
+                .decode_skipping_special(&candidate.tokens)
+                .map_err(Error::Vocabulary)?;
+            if output.trim().is_empty() || !paragraph::numeric_strings_match(text, &output) {
+                continue;
+            }
+            return Ok(Translation {
+                text: output,
+                source_tokens,
+                target_tokens: candidate.tokens,
+                score: candidate.score,
+                reached_limit: false,
+            });
+        }
+        Err(Error::NoTranslation)
+    }
+
     fn validate_scientific(
         &self,
         text: &str,
