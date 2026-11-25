@@ -287,3 +287,6 @@ D1.10f run [45582711679](https://github.com/trade3403/ai-research-pdf-reader/act
 
 ## D1.10g（首批，待验收）
 - D1.10f 基线 HEAD 7f1fdb282bbdc947dc4a5d953768efaed429959d：用户提供 GitHub Actions #97 截图，工作流绿色成功，耗时30m10s；当前接口仅支持 PR 工作流列表，未获得 #97 Run ID、最新任务详细日志或测试计数，不虚报。此前 #96 真实专项 [139096491848](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45582711679/job/139096491848) 实际通过，FP32/INT8各2固定段落4片段、1数值审计、1预算负例；论文8样本成功7拒绝1，Whole1/Constrained1/ProtectedGaps5，仅词面。已观察百分号脱离数值和重复后缀；用户持续授权全量绿灯后进入D1.10g。以#97截图为阶段绿灯依据，本提交D1.10g首批实现百分号邻接数值多重集合及连续长中文后缀重复检测，接入现有候选拒绝/回退，新增2组Rust回归；不自动删除或改写译文。旧默认不变，保留所有CI门槛。仅启发式，可能误拒绝合法重复或中文百分数，不是语义质量保证。未在本地编译（无Rust工具链），待新CI实际验收；不启动下一阶段。
+
+## D 线路 CI 状态回传（待实测）
+D 线路 CI 可发现性修复（D1.10g 验收中）：当前 GitHub 连接器按 commit 列工作流仅返回 PR 触发，push CI Run ID 无法自动取得。新增仅限 feature/rptranslate push 的 ci-status-start/ci-status-final 两个免费 CPU 状态任务，使用 job 级 statuses:write 和内置 GITHUB_TOKEN，将 pending/最终状态及真实 Actions URL 写入 rptranslate/ci commit status。最终任务等待原四个验收任务和初始回传任务，必需任务跳过/失败/取消不标绿；可选任务按现有触发条件判断。原验收命令、权限及触发规则不变，无第三方服务/定时任务。D1.10g 源码基线 af64f5e；此次只改 CI 与文档，保留所有阶段触发标记以完整复验。回传是否成功须由新 CI 实际证明，若整个工作流未启动或被强制取消，可能无最终状态。
