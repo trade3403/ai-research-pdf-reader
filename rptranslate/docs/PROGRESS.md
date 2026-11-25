@@ -15,7 +15,9 @@
 | D1.3 | 已通过 | FP32 Tensor shape/stride、reshape、permute、广播与基本运算 |
 | D1.4a | 已通过 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
 | D1.4b | 已通过 | AVX2 自动检测、向量化、标量回退、多线程 |
-| D1.5–D1.7 | 未开始 | Attention、Transformer 和解码 |
+| D1.5a | 待验证 | 稳定 Softmax、单头缩放点积 Attention、组合 mask |
+| D1.5b | 未开始 | 多头注意力、LayerNorm、QKV 投影 |
+| D1.6–D1.7 | 未开始 | Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -74,8 +76,11 @@ D1 里程碑完成 5/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.4b
 新增 x86_64 AVX2 运行时派发、8 lane FP32 内核及尾部、portable-only 编译回退、按输出行分配的有界 scoped threads（1–16），小任务自动串行。保留标量/分块和 FP64 参考；增加线程数/尾块测试，CI 追加强制 portable-only 测试及 128/256/512 方阵四路径实际性能记录。实际验收：[代码 5bd2c31](https://github.com/trade3403/ai-research-pdf-reader/commit/5bd2c315e418fc82f99e672b37dca70719f54630)、[Actions 45516342377](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45516342377) completed/success。workspace 36/36 测试（3+12+19+2），强制 portable-only 12/12；格式、Clippy、Release、自检、基准均成功。AMD EPYC 9V45，4 vCPU，avx2_available=true。128 方阵 scalar/blocked/auto/parallel4 = 0.724/0.233/0.190/0.158 ms；256 = 12.447/1.811/1.214/0.628 ms；512 = 203.857/15.442/10.731/6.125 ms；三种尺寸四路径 exact=true。512 方阵 parallel4 比标量约33.28x，比同轮 blocked 约2.52x。仅共享 Runner 单次合成基准，未测试用户机器、真实翻译或物理无 AVX2 CPU；编译强制回退通过。D1.4 当前阶段门槛通过；后续按真实模型需要补 batched matmul、线程池和更大张量。
 
-## 下一阶段 D1.5
-Attention、mask、稳定 softmax 与归一化，先逐算子数值参考测试。
+## 当前阶段 D1.5a
+新增最后轴稳定 Softmax、预投影 Q/K/V 的 rank-2 缩放点积 Attention、padding/pair/causal mask 组合、增量 causal offset、全遮罩零输出；复用 D1.4 四路径 MatMul，独立 NumPy 2.3.5 FP64 参考。CI 待验收，完整 D1.5 尚未通过。[技术文档](D1.5_ATTENTION.md)。
+
+## 下一阶段 D1.5b
+多头注意力、QKV 投影、LayerNorm 及逐算子数值对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
