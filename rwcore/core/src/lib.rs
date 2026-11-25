@@ -133,3 +133,6 @@ pub use font_render::{RenderFontLimits,GlyphRenderLimits,GlyphRenderOptions,Rend
 
 pub mod font_text;
 pub use font_text::{TextRenderLimits,TextRenderOptions,PlacedGlyph,RenderedText,render_nominal_text};
+
+pub mod font_compare;
+pub use font_compare::{BitmapComparison,compare_glyph_bitmaps};

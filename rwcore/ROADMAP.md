@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #73, not full Word compatibility.
+Status below is baseline at CI #74, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -32,8 +32,9 @@ Status below is baseline at CI #73, not full Word compatibility.
 | C4.3d | Adaptive quadratic flattening and contour geometry | Verified |
 | C4.3e | Winding fill and bounded grayscale glyph rasterization | Verified |
 | C4.3f | Integrated TrueType glyph bitmap and automatic device geometry | Verified |
-| C4.3g | Nominal text-run bitmap placement and cumulative advances | Source implemented; CI pending |
-| C4.3h | Licensed real-font corpus and independent reference validation | Planned |
+| C4.3g | Nominal text-run bitmap placement and cumulative advances | Verified |
+| C4.3h-1 | Bounded absolute-coordinate grayscale comparison | Source implemented; CI pending |
+| C4.3h-2 | Licensed real-font corpus and independent reference validation | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
