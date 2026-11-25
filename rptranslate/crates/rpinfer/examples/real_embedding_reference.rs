@@ -1,5 +1,5 @@
 //! Binary test-only probe: real shared table, stored positions and tied logits.
-
+use rpmodel::package;
 use rpinfer::{
     marian_weights::{MarianEmbeddings, Side},
     tensor::{Error, Tensor},

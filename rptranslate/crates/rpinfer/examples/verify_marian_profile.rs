@@ -1,5 +1,5 @@
 //! Verify real package metadata and bind the autonomous search configuration.
-
+use rpmodel::package;
 use rpinfer::search::MarianGeneration;
 use std::path::Path;
 

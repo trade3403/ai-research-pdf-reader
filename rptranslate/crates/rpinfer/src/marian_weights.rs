@@ -17,7 +17,7 @@ pub enum Side {
     Decoder,
 }
 
-fn read_dense<R: Read + Seek>(
+pub(crate) fn read_dense<R: Read + Seek>(
     reader: &mut SafeTensorReader<R>,
     name: &str,
     shape: &[usize],
