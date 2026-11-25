@@ -85,3 +85,6 @@ pub use drawing_layout::{EmuSpan, EmuRect, InsideEdge, AnchorLayoutContext, Floa
 
 pub mod picture_geometry;
 pub use picture_geometry::{parse_picture_geometry, PictureCrop, PictureTransform, PictureGeometry, PictureMapping, GeometryPoint, GeometryBounds};
+
+pub mod drawing_integration;
+pub use drawing_integration::{PictureGeometryState, RunDrawingKind, RunDrawingAt, PictureKindRef, PictureAtRef, PictureOccurrence, DocumentWithMedia, read_docx_with_media};

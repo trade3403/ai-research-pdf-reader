@@ -233,8 +233,8 @@ fn read_docx_impl(bytes: &[u8], limits: Limits, load_stories: bool) -> Result<Do
                 } else if named(item, ns, "br") && matches!(item.attribute((ns, "type")), None | Some("textWrapping")) {
                     run.text.push('\n');
                 } else if named(item, ns, "drawing") {
-                    if let Err(e)=crate::drawing_inline::append_run_picture(&mut run,item){
-                        warn(&mut document, format!("Unsupported or invalid inline drawing: {e}"));
+                    if let Err(e)=crate::drawing_integration::append_run_drawing(&mut run,item){
+                        warn(&mut document, format!("Unsupported or invalid picture drawing: {e}"));
                     }
                 } else {
                     warn(&mut document, format!("Unsupported run element: {}", item.tag_name().name()));

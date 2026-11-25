@@ -98,11 +98,6 @@ fn parse_drawing_node(root:Node<'_, '_>)->Result<InlinePicture,Error>{
     }
     parse_inline_picture_node(one(root,wp,"inline")?)
 }
-pub(crate) fn append_run_picture(run:&mut crate::Run,node:Node<'_, '_>)->Result<(),Error>{
-    let picture=parse_drawing_node(node)?;
-    run.pictures.push(crate::InlinePictureAt{text_offset:run.text.len(),picture});
-    Ok(())
-}
 pub(crate) fn parse_inline_picture_node(inline:Node<'_, '_>)->Result<InlinePicture,Error>{
     let (wp,a,pic,r)=if named(inline,WP,"inline"){(WP,A,PIC,R)}
         else if named(inline,WPS,"inline"){(WPS,AS,PICS,RS)}

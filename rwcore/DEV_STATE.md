@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: 5f1785db549ff47f0a966d549a45df1692eca63c
-- CI #56: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45542423200
-- Verified: Ubuntu 260/260, Windows 260/260, macOS 260/260; total 780/780; zero failed/ignored; all release builds passed.
-- Current stage: C2.4e standalone picture crop and reversible geometry mapping; 12 new regressions (272 per platform / 816 executions expected, PENDING CI).
-- Next: verify actual HEAD and three platform logs, repair evidenced failures. On pass C2.4f media/document integration acceptance (including wiring floating and geometry metadata to supported document nodes).
-- Scope: standalone pic:pic metadata, nonnegative integer srcRect, explicit xfrm off/ext, flip before clockwise rotation about center, inverse mapping, outward pixel window and floating-point corner bounds. No pixel decode/render, group transforms, shape/anchor reconciliation or full document integration.
+- Last verified baseline: 7bfbb839ded46b4bdd1346f4d73e1707d9d37a7c
+- CI #57: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45543111414
+- Verified: Ubuntu 272/272, Windows 272/272, macOS 272/272; total 816/816; zero failed/ignored; all release builds passed.
+- Current stage: C2.4f document/media/drawing integration; 8 new synthetic regressions (280 per platform / 840 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs, repair evidenced failures only. On pass advance C3.1 native document tree editing transactions and anchor-safe operations.
+- Scope: shared body/table/story drawing parser, source-order mixed picture index, scoped resource binding and header dimensions, explicit geometry state, restricted frame reconciliation and floating layout bridge. No pixel decode/paint, real DOCX corpus, complete line breaking, collision or pagination. Existing inline view retained; new public Run field requires downstream struct literal migration if not using defaults.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.

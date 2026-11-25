@@ -34,6 +34,8 @@ pub struct Run {
     pub properties: crate::opc::DirectRunProperties,
     /// Ordered image anchors at UTF-8 byte boundaries in text.
     pub pictures: Vec<InlinePictureAt>,
+    /// Source-order index of inline and floating drawings. Inline entries reference pictures.
+    pub drawing_order: Vec<crate::RunDrawingAt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

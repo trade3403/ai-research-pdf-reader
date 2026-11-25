@@ -155,7 +155,10 @@ fn percent(n:Node<'_, '_>,key:&str)->Result<u32,Error>{
 /// Tiled fills, stretch fillRect, group transforms and negative crop are not supported.
 pub fn parse_picture_geometry(bytes:&[u8],limits:Limits)->Result<PictureGeometry,Error>{
     if bytes.len()>limits.max_part_bytes{return Err(Error::Limit("part bytes"));}
-    let doc=xml(bytes,limits)?;let root=doc.root_element();
+    let doc=xml(bytes,limits)?;
+    parse_picture_geometry_node(doc.root_element())
+}
+pub(crate) fn parse_picture_geometry_node(root:Node<'_, '_>)->Result<PictureGeometry,Error>{
     let (pic,a)=if named(root,PIC,"pic"){(PIC,A)}else if named(root,PICS,"pic"){(PICS,AS)}
         else{return Err(Error::Unsupported("picture geometry root"));};
     let fill=required(root,pic,"blipFill")?;

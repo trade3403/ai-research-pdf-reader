@@ -96,8 +96,8 @@ pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Resu
                     } else if named(item, ns, "br") && matches!(item.attribute((ns, "type")), None | Some("textWrapping")) {
                         run.text.push('\n');
                     } else if named(item, ns, "drawing") {
-                        if let Err(e)=crate::drawing_inline::append_run_picture(&mut run,item){
-                            out.diagnostics.push(format!("Unsupported or invalid inline drawing: {e}"));
+                        if let Err(e)=crate::drawing_integration::append_run_drawing(&mut run,item){
+                            out.diagnostics.push(format!("Unsupported or invalid picture drawing: {e}"));
                         }
                     } else {
                         out.diagnostics.push(format!("Unsupported story run element: {}", item.tag_name().name()));

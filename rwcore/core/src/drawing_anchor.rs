@@ -134,6 +134,9 @@ pub fn parse_floating_picture(bytes:&[u8],limits:Limits)->Result<FloatingPicture
         }
         one(root,ns,"anchor")?
     }else{root};
+    parse_floating_picture_node(anchor)
+}
+pub(crate) fn parse_floating_picture_node(anchor:Node<'_, '_>)->Result<FloatingPicture,Error>{
     let ns=if named(anchor,WP,"anchor"){WP}else if named(anchor,WPS,"anchor"){WPS}
         else{return Err(Error::Unsupported("floating picture root"));};
     let simple=one(anchor,ns,"simplePos")?;
