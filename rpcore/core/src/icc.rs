@@ -226,9 +226,23 @@ impl<'a> CmykLut<'a>{
         }
         Ok(std::array::from_fn(|i|self.table(self.output,i,self.output_entries,out[i])))
     }
-    /// Legacy 16-bit XYZ PCS encoding (u1.15). Lab and 8-bit XYZ conversion
-    /// are deliberately left unsupported until their PCS paths are validated.
+    /// Decode physical CIELAB using the legacy tag encoding, including mft2
+    /// in v4 profiles. Do not substitute the newer full-range v4 Lab encoding.
+    pub fn to_lab_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if self.pcs!=*b"Lab "{return Err(Error::Unsupported("ICC LUT Lab PCS"));}
+        let v=self.evaluate_encoded(cmyk)?;
+        let scale=if self.word==1{255.}else{65535./256.};
+        Ok([v[0]*scale*100./255.,v[1]*scale-128.,v[2]*scale-128.])
+    }
+    /// Return physical D50 XYZ, without display gamut clipping.
+    /// Legacy 8-bit XYZ remains unsupported.
     pub fn to_xyz_d50(&self,cmyk:[f64;4])->Result<[f64;3]>{
+        if self.pcs==*b"Lab "{
+            let [l,a,b]=self.to_lab_d50(cmyk)?;
+            let fy=(l+16.)/116.;
+            let inv=|t:f64|if t>6./29.{t*t*t}else{3.*(6_f64/29.).powi(2)*(t-4./29.)};
+            return Ok([0.9642*inv(fy+a/500.),inv(fy),0.8249*inv(fy-b/200.)]);
+        }
         if self.pcs!=*b"XYZ "||self.word!=2{return Err(Error::Unsupported("ICC LUT XYZ PCS encoding"));}
         Ok(self.evaluate_encoded(cmyk)?.map(|v|v*65535./32768.))
     }
@@ -357,6 +371,30 @@ mod tests{
         assert!(Profile::parse(&x).unwrap().cmyk_a2b0().is_err());
         let mut x=b.clone();x[20..24].copy_from_slice(b"Lab ");
         let p=Profile::parse(&x).unwrap();let l=p.cmyk_a2b0().unwrap();
-        assert!(l.evaluate_encoded([0.;4]).is_ok());assert!(l.to_xyz_d50([0.;4]).is_err());
+        assert!(l.evaluate_encoded([0.;4]).is_ok());assert!(l.to_xyz_d50([0.;4]).is_ok());
+    }
+    #[test]fn legacy_lab_decode_both_versions(){
+        for word in [1,2]{for version in [2,4]{
+            let mut b=lut_profile(word);b[8]=version;b[20..24].copy_from_slice(b"Lab ");
+            // Constant output tables: nominal white L=100, a=b=0.
+            let (start,n)={
+                let p=Profile::parse(&b).unwrap();let l=p.cmyk_a2b0().unwrap();(144+l.output,l.output_entries)
+            };
+            for ch in 0..3{for i in 0..n{
+                let p=start+word*(ch*n+i);
+                if word==1{b[p]=if ch==0{255}else{128};}
+                else{b[p..p+2].copy_from_slice(&(if ch==0{65280_u16}else{32768}).to_be_bytes());}
+            }}
+            let p=Profile::parse(&b).unwrap();let l=p.cmyk_a2b0().unwrap();
+            let x=[0.25,0.5,0.75,1.];
+            let lab=l.to_lab_d50(x).unwrap();
+            for (a,e) in lab.into_iter().zip([100.,0.,0.]){assert!((a-e).abs()<1e-10);}
+            for (a,e) in l.to_xyz_d50(x).unwrap().into_iter().zip([0.9642,1.,0.8249]){assert!((a-e).abs()<1e-10);}
+            // Low-L linear branch: L=0 with neutral chroma.
+            for i in 0..word*n{b[start+i]=0;}
+            let p=Profile::parse(&b).unwrap();let l=p.cmyk_a2b0().unwrap();
+            assert!(l.to_xyz_d50(x).unwrap().iter().all(|v|v.abs()<1e-10));
+        }}
+        let b=lut_profile(2);assert!(Profile::parse(&b).unwrap().cmyk_a2b0().unwrap().to_lab_d50([0.;4]).is_err());
     }
 }

@@ -206,3 +206,26 @@ jobs:
         run: |
           if [ -f rpcore/target/chart-report/report.md ]; then cat rpcore/target/chart-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/chart-report/colors/report.md ]; then cat rpcore/target/chart-report/colors/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  icc-reference:
+    # Little CMS is a CI-only oracle, never linked or packaged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2
+      - run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --example icc_probe
+      - run: |
+          mkdir -p rpcore/target/icc-report
+          dpkg-query -W liblcms2-2 > rpcore/target/icc-report/reference-version.txt
+          python3 rpcore/corpus/icc_reference.py --probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-icc-reference
+          path: rpcore/target/icc-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/icc-report/report.md ]; then cat rpcore/target/icc-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
