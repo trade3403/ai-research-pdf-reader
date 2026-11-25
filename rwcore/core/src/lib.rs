@@ -175,3 +175,6 @@ pub use font_chain_context_subst::{CoverageChainContextSubstitution,parse_covera
 
 pub mod font_extension_subst;
 pub use font_extension_subst::{ExtensionSubstitution,ExtensionTarget,ExtensionLimits,parse_extension_substitution,resolve_extension_lookup,parse_extension_target,parse_extension_target_substitution};
+
+pub mod font_reverse_subst;
+pub use font_reverse_subst::{ReverseSubstLimits,ReverseSubstitution,parse_reverse_substitution};

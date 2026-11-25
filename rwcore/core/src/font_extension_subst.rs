@@ -15,7 +15,7 @@ impl<'a> ExtensionSubstitution<'a>{
 }
 /// The offset is relative to the beginning of this wrapper, not the GSUB
 /// table. The returned target is a borrowed suffix, not a certified extent.
-/// Type 8 is a valid target type but has no target parser in this batch.
+/// Type 8 is a valid target type and is parsed by the reverse substitution core.
 pub fn parse_extension_substitution(b:&[u8],max_bytes:usize)->Result<ExtensionSubstitution<'_>,Error>{
     if b.len()>max_bytes{return Err(Error::Limit("extension bytes"));}
     let h=b.get(..8).ok_or(Error::Invalid("extension header"))?;
@@ -55,9 +55,10 @@ pub struct ExtensionLimits{
     pub alternate:AlternateSubstLimits,
     pub ligature:LigatureLimits,
     pub context:ContextLimits,
+    pub reverse:ReverseSubstLimits,
 }
 impl Default for ExtensionLimits{
-    fn default()->Self{Self{max_bytes:32*1024*1024,single:Default::default(),multiple:Default::default(),alternate:Default::default(),ligature:Default::default(),context:Default::default()}}
+    fn default()->Self{Self{max_bytes:32*1024*1024,single:Default::default(),multiple:Default::default(),alternate:Default::default(),ligature:Default::default(),context:Default::default(),reverse:Default::default()}}
 }
 /// Owned, parsed direct target. Context variants only match and return
 /// actions, as in their standalone APIs.
@@ -73,6 +74,7 @@ pub enum ExtensionTarget{
     Chain(ChainContextSubstitution),
     ClassChain(ClassChainContextSubstitution),
     CoverageChain(CoverageChainContextSubstitution),
+    Reverse(ReverseSubstitution),
 }
 impl ExtensionTarget{
     pub fn kind(&self)->u16{
@@ -80,6 +82,7 @@ impl ExtensionTarget{
             Self::Single(_)=>1,Self::Multiple(_)=>2,Self::Alternate(_)=>3,Self::Ligature(_)=>4,
             Self::Context(_)|Self::ClassContext(_)|Self::CoverageContext(_)=>5,
             Self::Chain(_)|Self::ClassChain(_)|Self::CoverageChain(_)=>6,
+            Self::Reverse(_)=>8,
         }
     }
 }
@@ -108,6 +111,7 @@ pub fn parse_extension_target(ext:ExtensionSubstitution<'_>,glyph_count:u32,look
             3=>CoverageChain(parse_coverage_chain_context_substitution(b,glyph_count,lookup_count,l.context)?),
             _=>return Err(Error::Unsupported("extension chain format")),
         },
+        8=>Reverse(parse_reverse_substitution(b,glyph_count,l.reverse)?),
         _=>return Err(Error::Unsupported("extension target parser")),
     })
 }

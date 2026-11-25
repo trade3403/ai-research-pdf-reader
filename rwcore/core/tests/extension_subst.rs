@@ -63,10 +63,10 @@ const LIG:&[u16]=&[1,8,1,14,1,1,10,1,4,12,2,11];
         assert!(parse_extension_substitution(&b,100).is_err());
     }
 }
-#[test]fn type8_is_valid_metadata_but_unsupported_target(){
+#[test]fn type8_is_valid_metadata_but_truncated_target_rejected(){
     let b=wrap(8,8,&[1,0]);let e=parse_extension_substitution(&b,100).unwrap();
     assert_eq!(e.kind(),8);
-    assert!(matches!(parse_extension_target(e,32,5,Default::default()),Err(Error::Unsupported(_))));
+    assert!(matches!(parse_extension_target(e,32,5,Default::default()),Err(Error::Invalid(_))));
 }
 #[test]fn independent_limits(){
     let b=wrap(1,8,SINGLE);
