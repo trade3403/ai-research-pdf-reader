@@ -29,6 +29,7 @@ pub enum Strategy {
 pub enum QualityIssue {
     Invalid,
     NumericMismatch,
+    PercentageMismatch,
     MissingSurface(String),
     ExtraSurface(String),
     Conflict(String),
@@ -227,12 +228,50 @@ fn numbers(text: &str) -> BTreeMap<&str, usize> {
     out
 }
 
+/// Count numeric strings immediately preceding percent signs. Only horizontal
+/// spaces are ignored; detached signs remain separate, auditable entries.
+fn percentages(text: &str) -> BTreeMap<Option<&str>, usize> {
+    let mut out = BTreeMap::new();
+    for (at, c) in text.char_indices() {
+        if !matches!(c, '%' | '％') {
+            continue;
+        }
+        let before = text[..at].trim_end_matches([' ', '\t', '\u{a0}', '\u{202f}']);
+        let bytes = before.as_bytes();
+        let mut start = bytes.len();
+        while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+            start -= 1;
+        }
+        let value = &before[start..];
+        let bound = value.as_bytes().last().is_some_and(u8::is_ascii_digit);
+        *out.entry(bound.then_some(value)).or_insert(0) += 1;
+    }
+    out
+}
+
+/// Detect a narrow observed echo pattern: a consecutive clause repeats a
+/// long suffix, optionally preceded by an ASCII label such as "2D".
+/// This is deliberately lexical and may reject legitimate rhetorical echoes.
+fn repeated_suffix(previous: &str, current: &str) -> bool {
+    let suffix = current.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
+    suffix.chars().count() >= 7
+        && suffix.chars().any(|c| !c.is_ascii())
+        && previous.ends_with(suffix)
+}
+
 fn repeated_clause(text: &str) -> bool {
     let mut seen = BTreeSet::new();
+    let mut previous = String::new();
     for clause in text.split(['。', '！', '？', '；', ';', '!', '?', '.']) {
         let normalized: String = clause.chars().filter(|c| !c.is_whitespace()).collect();
-        if normalized.chars().count() >= 6 && !seen.insert(normalized) {
+        if repeated_suffix(&previous, &normalized) {
             return true;
+        }
+        if normalized.chars().count() >= 6 && !seen.insert(normalized.clone()) {
+            return true;
+        }
+        if !normalized.is_empty() {
+            previous = normalized;
         }
     }
     false
@@ -247,6 +286,9 @@ pub fn audit(source: &str, plan: &Plan, output: &str) -> Result<(), QualityIssue
     }
     if numbers(source) != numbers(output) {
         return Err(QualityIssue::NumericMismatch);
+    }
+    if percentages(source) != percentages(output) {
+        return Err(QualityIssue::PercentageMismatch);
     }
     let mut expected = BTreeMap::new();
     for span in plan.spans() {
@@ -465,6 +507,29 @@ mod tests {
             ),
             Err(QualityIssue::RepeatedClause)
         );
+    }
+
+    #[test]
+    fn percentage_binding_and_detached_signs() {
+        assert_eq!(percentages("50% and 2.5 %"), percentages("2.5％及50 %"));
+        assert_ne!(percentages("50% and 2.5"), percentages("50及2.5%"));
+        assert_ne!(percentages("50%"), percentages("50 后减少%"));
+        assert_ne!(percentages("50%"), percentages("50% %"));
+        let source = "The reduction is 50%.";
+        let plan = Plan::prepare(source, &[]).unwrap();
+        assert_eq!(audit(source, &plan, "减少50%。"), Ok(()));
+        assert_eq!(
+            audit(source, &plan, "达到50，减少%。"),
+            Err(QualityIssue::PercentageMismatch)
+        );
+    }
+
+    #[test]
+    fn repeated_suffix_regression() {
+        assert!(repeated_clause("显示我们二维区域中层的几何。2D区域中层的几何。"));
+        assert!(repeated_clause("结果表明研究区的地震波传播。研究区的地震波传播。"));
+        assert!(!repeated_clause("研究区的地震波传播。研究区的地震波衰减。"));
+        assert!(!repeated_clause("结果稳定。仍然稳定。"));
     }
 
     #[test]
