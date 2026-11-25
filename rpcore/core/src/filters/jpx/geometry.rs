@@ -1,4 +1,4 @@
-//! Bounded JPEG 2000 Part 1 tile-component geometry and LRCP/RLCP
+//! Bounded JPEG 2000 Part 1 tile-component geometry and packet order.
 //! packet order. Coordinates are half-open in the relevant sample grid.
 //! Packet headers and entropy payloads are not decoded.
 use super::codestream::{inspect_codestream,Codestream,CodingStyle,Progression};
@@ -120,9 +120,12 @@ fn tile_bounds(c:&Codestream,tile:u16)->Result<Rect>{
     }))
 }
 fn plan(c:&Codestream,tile:u16)->Result<TilePlan>{
-    // Spatial progression orders need a reference-grid traversal across
-    // differently sampled components; never substitute a local sort.
-    if !matches!(c.coding.progression,Progression::Lrcp|Progression::Rlcp){return Err(Error::Unsupported("JPX spatial packet progression"));}
+    // Reference-grid traversal is implemented for dyadic component sampling.
+    // Keep other sampling ratios fail-closed until independently verified.
+    let spatial=matches!(c.coding.progression,Progression::Rpcl|Progression::Pcrl|Progression::Cprl);
+    if spatial&&c.geometry.components.iter().any(|g|!g.x_sampling.is_power_of_two()||!g.y_sampling.is_power_of_two()){
+        return Err(Error::Unsupported("JPX non-dyadic spatial sampling"));
+    }
     let bounds=tile_bounds(c,tile)?;
     let mut left=MAX_NODES;let mut total=0;
     let mut components=Vec::new();let mut max_res=0;let mut per_layer=0usize;
@@ -150,7 +153,7 @@ fn plan(c:&Codestream,tile:u16)->Result<TilePlan>{
     }}
     if c.coding.progression==Progression::Lrcp{
         for l in 0..c.coding.layers{for p in &positions{packets.push(Packet{layer:l,..*p});}}
-    }else{
+    }else if c.coding.progression==Progression::Rlcp{
         let mut start=0;
         while start<positions.len(){
             let mut end=start+1;
@@ -158,6 +161,31 @@ fn plan(c:&Codestream,tile:u16)->Result<TilePlan>{
             for l in 0..c.coding.layers{for p in &positions[start..end]{packets.push(Packet{layer:l,..*p});}}
             start=end;
         }
+    }else{
+        // Each precinct is visited at its reference-grid origin, except the
+        // first clipped precinct along an axis, which is visited at tile origin.
+        // Sorting only actual precinct events avoids scanning a sparse grid.
+        let mut events=Vec::with_capacity(positions.len());
+        for p in positions{
+            let ci=usize::from(p.component);let r=usize::from(p.resolution);
+            let res=&components[ci].resolutions[r];let s=&c.component_coding[ci];
+            let g=&c.geometry.components[ci];let (ex,ey)=s.precincts[r];
+            let (px,py)=(1i64<<ex,1i64<<ey);
+            let d=1i64<<(usize::from(s.levels)-r);
+            let x=res.bounds.x0.div_euclid(px)+ (p.precinct%res.precinct_columns) as i64;
+            let y=res.bounds.y0.div_euclid(py)+ (p.precinct/res.precinct_columns) as i64;
+            let x=if x*px<res.bounds.x0{bounds.x0}else{x*px*d*i64::from(g.x_sampling)};
+            let y=if y*py<res.bounds.y0{bounds.y0}else{y*py*d*i64::from(g.y_sampling)};
+            let key=match c.coding.progression{
+                Progression::Rpcl=>(i64::from(p.resolution),y,x,i64::from(p.component)),
+                Progression::Pcrl=>(y,x,i64::from(p.component),i64::from(p.resolution)),
+                Progression::Cprl=>(i64::from(p.component),y,x,i64::from(p.resolution)),
+                _=>return Err(Error::Invalid("JPX spatial progression")),
+            };
+            events.push((key,p));
+        }
+        events.sort_unstable_by_key(|(key,_)|*key);
+        for (_,p) in events{for l in 0..c.coding.layers{packets.push(Packet{layer:l,..p});}}
     }
     Ok(TilePlan{tile,bounds,components,packets,codeblock_count:total})
 }
@@ -210,7 +238,7 @@ mod tests{
         assert!(a.windows(2).all(|w|key(&w[0])<key(&w[1])));
         assert_eq!((a[5].layer,a[5].resolution,a[5].component),(1,0,2));
         assert_eq!((a[6].layer,a[6].resolution,a[6].component),(0,1,0));
-        for order in [Progression::Rpcl,Progression::Pcrl,Progression::Cprl]{c.coding.progression=order;assert!(plan(&c,0).is_err());}
+        for order in [Progression::Rpcl,Progression::Pcrl,Progression::Cprl]{c.coding.progression=order;assert_eq!(plan(&c,0).unwrap().packets.len(),12);}
     }
     fn style(levels:u8,precinct:(u8,u8))->CodingStyle{CodingStyle{levels,codeblock_width:4,codeblock_height:4,codeblock_style:0,wavelet:Wavelet::Reversible53,precincts:vec![precinct;usize::from(levels)+1]}}
     #[test]fn nonzero_origin_precinct_and_block_coverage(){
@@ -244,6 +272,60 @@ mod tests{
         assert_eq!(p.components[1].resolutions.len(),1);
         assert_eq!(p.components[1].resolutions[0].precinct_columns,2);
         assert!(!p.packets.iter().any(|p|p.component==1&&p.resolution==1));
+    }
+    #[test]fn spatial_against_reference_grid_scan(){
+        // Small independent point-by-point traversal using divisibility
+        // and first-clipped-precinct rules, not event sorting.
+        let mut c=inspect_codestream(&hex(RGB)).unwrap();
+        c.geometry.x_origin=3;c.geometry.y_origin=5;c.geometry.width=9;c.geometry.height=4;
+        c.geometry.components[1].x_sampling=2;c.geometry.components[1].y_sampling=2;
+        c.component_coding[0]=style(1,(2,2));
+        c.component_coding[1]=style(0,(1,1));
+        c.component_coding[2]=style(1,(1,2));
+        c.coding.layers=2;
+        for order in [Progression::Rpcl,Progression::Pcrl,Progression::Cprl]{
+            c.coding.progression=order;
+            let p=plan(&c,0).unwrap();
+            let mut want=Vec::new();
+            let mut emit=|r:usize,ci:usize,x:i64,y:i64|{
+                let Some(res)=p.components[ci].resolutions.get(r) else{return;};
+                if res.precincts.is_empty(){return;}
+                let s=&c.component_coding[ci];let g=&c.geometry.components[ci];
+                let (ex,ey)=s.precincts[r];let d=1i64<<(usize::from(s.levels)-r);
+                let (dx,dy)=(d*i64::from(g.x_sampling),d*i64::from(g.y_sampling));
+                let (px,py)=(1i64<<ex,1i64<<ey);
+                if !(x%(px*dx)==0||x==p.bounds.x0&&res.bounds.x0%px!=0){return;}
+                if !(y%(py*dy)==0||y==p.bounds.y0&&res.bounds.y0%py!=0){return;}
+                let i=ceil(x,dx).div_euclid(px)-res.bounds.x0.div_euclid(px);
+                let j=ceil(y,dy).div_euclid(py)-res.bounds.y0.div_euclid(py);
+                if i<0||j<0||i>=res.precinct_columns as i64||j>=res.precinct_rows as i64{return;}
+                let precinct=j as usize*res.precinct_columns+i as usize;
+                for layer in 0..c.coding.layers{want.push(Packet{layer,resolution:r as u8,component:ci as u8,precinct});}
+            };
+            let b=p.bounds;
+            match order{
+                Progression::Rpcl=>for r in 0..2{for y in b.y0..b.y1{for x in b.x0..b.x1{for ci in 0..3{emit(r,ci,x,y);}}}},
+                Progression::Pcrl=>for y in b.y0..b.y1{for x in b.x0..b.x1{for ci in 0..3{for r in 0..2{emit(r,ci,x,y);}}}},
+                Progression::Cprl=>for ci in 0..3{for y in b.y0..b.y1{for x in b.x0..b.x1{for r in 0..2{emit(r,ci,x,y);}}}},
+                _=>unreachable!(),
+            }
+            assert_eq!(p.packets,want);
+            let unique:std::collections::BTreeSet<_>=p.packets.iter().map(|q|(q.layer,q.resolution,q.component,q.precinct)).collect();
+            assert_eq!(unique.len(),p.packets.len());
+        }
+        c.geometry.components[1].x_sampling=3;
+        assert!(matches!(plan(&c,0),Err(Error::Unsupported("JPX non-dyadic spatial sampling"))));
+    }
+    #[test]fn spatial_origin_aligned_after_subsampling(){
+        // First component sample can be aligned although tile origin is odd.
+        let mut c=inspect_codestream(&hex(RGB)).unwrap();
+        c.geometry.x_origin=7;c.geometry.y_origin=1;c.geometry.width=5;c.geometry.height=8;
+        c.geometry.components[1].x_sampling=2;c.component_coding[1]=style(0,(2,2));
+        c.component_coding[0]=style(0,(0,2));c.component_coding[2]=style(0,(2,2));
+        c.coding.progression=Progression::Pcrl;
+        let p=plan(&c,0).unwrap();
+        assert_eq!((p.packets[0].component,p.packets[1].component),(0,2));
+        assert_eq!((p.packets[2].component,p.packets[3].component),(0,1));
     }
     #[test]fn bounds_before_allocating(){
         let mut c=inspect_codestream(&hex(GRAY)).unwrap();

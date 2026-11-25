@@ -4,6 +4,7 @@
 use crate::{Error,Result,MAX_BYTES};
 pub mod codestream;
 pub mod geometry;
+pub mod packet_bits;
 
 const SIGNATURE:&[u8]=b"\x00\x00\x00\x0cjP  \x0d\x0a\x87\x0a";
 const MAX_BOXES:usize=4096;
