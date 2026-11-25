@@ -99,6 +99,87 @@ def absolute_print_gate(a,lib,work,data,meta,name):
     result['pass']=len(errors)==512 and result['pages']==16 and result['max']<=GATE_MAX and result['mean']<=GATE_MEAN and result['p95']<=GATE_P95 and all(r['parity']<=1 and r['alpha']<=1 and r['uniform'] for r in result['rows'])
     return result
 
+def display_profile_gate(a,lib,work,directory):
+    """Unmodified installed RGB profiles; native accuracy and explicit alternates.
+    Standard working-space profiles, not measured monitor calibration.
+    """
+    import os
+    import subprocess
+    from PIL import Image
+    from icc_render_benchmark import RGB_DOUBLE,RGB8
+    samples=[(0,0,0),(255,255,255),(255,0,0),(0,255,0),(0,0,255),(128,128,128),(2,64,197),(17,127,239)]
+    samples=list(dict.fromkeys(samples+list(itertools.product((17,113,239),repeat=3))))
+    rng=random.Random(3403)
+    while len(samples)<64:
+        x=tuple(rng.randrange(256) for _ in range(3))
+        if x not in samples:samples.append(x)
+    def oracle(data,rows,intent):
+        buf=C.create_string_buffer(data);src=lib.cmsOpenProfileFromMem(buf,len(data));dst=lib.cmsCreate_sRGBProfile();t=None
+        try:
+            if not src or not dst:raise ValueError('RGB reference open')
+            t=lib.cmsCreateTransform(src,RGB_DOUBLE,dst,RGB8,intent,0)
+            if not t:raise ValueError('RGB reference transform')
+            result=[]
+            for row in rows:
+                out=(C.c_uint8*3)()
+                lib.cmsDoTransform(t,(C.c_double*3)(*row['source']),out,1)
+                result.append(list(out))
+            return result
+        finally:
+            if t:lib.cmsDeleteTransform(t)
+            if src:lib.cmsCloseProfile(src)
+            if dst:lib.cmsCloseProfile(dst)
+    report=[]
+    for name in ('sRGB.icc','AdobeRGB1998.icc'):
+        entry={'file':name,'status':'error','rows':[],'decisions':[]}
+        report.append(entry)
+        try:
+            path=directory/name
+            if not 132<=path.stat().st_size<=16*1024*1024:raise ValueError('RGB profile size')
+            data=path.read_bytes()
+            if S.unpack_from('>I',data)[0]!=len(data) or data[36:40]!=b'acsp' or data[16:20]!=b'RGB ':raise ValueError('RGB header')
+            count=S.unpack_from('>I',data,128)[0]
+            if count>1024 or 132+12*count>len(data):raise ValueError('RGB directory')
+            tags={}
+            for i in range(count):
+                tag,off,n=S.unpack_from('>4sII',data,132+12*i)
+                if off<132+12*count or n<8 or off+n>len(data):raise ValueError('RGB tag bounds')
+                tags[tag.decode('ascii','replace')]=data[off:off+4].decode('ascii','replace')
+            entry.update(sha256=hashlib.sha256(data).hexdigest(),version=data[8],profile_class=data[12:16].decode('ascii'),pcs=data[20:24].decode('ascii'),tag_types=tags)
+            for intent,ri in ((1,'RelativeColorimetric'),(3,'AbsoluteColorimetric')):
+                for bits in (8,16):
+                    raw=samples if bits==8 else [tuple(v*257+(1 if 0<v<255 else 0) for v in x) for x in samples]
+                    for offset in (0,32):
+                        pdf=work/'display.pdf'
+                        size,rows=make_pdf(pdf,data,3,raw[offset:offset+32],bits,intent=ri)
+                        expected=oracle(data,rows,intent)
+                        for dpi in (72,144):
+                            label=f'{name}-{intent}-{bits}-{offset}-{dpi}'
+                            png=work/(label+'.png')
+                            q=subprocess.run([str(a.probe.resolve()),str(pdf),'render','1',str(png)],env=dict(os.environ,RPCORE_RENDER_DPI=str(dpi),RPCORE_ICC_ADAPTATION='1'),capture_output=True,text=True,timeout=30)
+                            fields=dict(line.split('=',1) for line in q.stdout.splitlines() if '=' in line)
+                            diag=[v for k,v in fields.items() if k.startswith('icc_diag_')]
+                            if q.returncode or fields.get('status')!='ok' or len(diag)!=2 or not png.exists():raise ValueError('RGB render or diagnostic missing')
+                            native=all(';rgb_matrix;' in d for d in diag)
+                            alternate=all(';alternate;' in d and d.rsplit(';',1)[-1] for d in diag)
+                            if not (native or alternate):raise ValueError('RGB inconsistent native/alternate decisions')
+                            entry['decisions'].append({'case':label,'native':native,'diagnostics':diag})
+                            with Image.open(png) as image:im=image.convert('RGB')
+                            if im.size!=tuple(v*dpi//72 for v in size):raise ValueError('RGB raster size')
+                            for row,ex in zip(rows,expected):
+                                nv,ns=zip(*(measure(im,tuple(v*dpi//72 for v in b)) for b in row['boxes']))
+                                delta=max(error(v,ex) for v in nv[:3])
+                                parity=max(error(nv[0],v) for v in nv[:3])
+                                alpha=error(nv[3],[round((v*128+255*127)/255) for v in nv[2]])
+                                entry['rows'].append({'case':label,'native':native,'raw':row['raw'],'error':delta,'parity':parity,'alpha':alpha,'pass':parity<=1 and alpha<=1 and max(ns)==0 and (not native or delta<=3)})
+            if len(entry['rows'])!=512 or len(entry['decisions'])!=16 or not all(r['pass'] for r in entry['rows']):
+                entry['status']='accuracy_failed'
+            elif all(r['native'] for r in entry['rows']):entry['status']='native_pass'
+            else:entry['status']='explicit_alternate'
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as e:
+            entry['reason']=str(e)[:300]
+    return report
+
 def main():
     p=argparse.ArgumentParser()
     for k in ('probe','reference','out','swop','fogra'):
@@ -157,6 +238,7 @@ def main():
                 entry['status']='compared' if entry['absolute']['pass'] and all(r['pass'] for r in entry['rows']) and metrics['max']<=GATE_MAX and metrics['mean_max_channel']<=GATE_MEAN and metrics['p95_max_channel']<=GATE_P95 else 'accuracy_failed'
             except (OSError,ValueError,RuntimeError) as e:
                 entry['reason']=str(e)[:300]
+        report['display_profiles']=display_profile_gate(a,lib,work,a.fogra.parent)
     (a.out/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
     lines=['# Installed CMYK print profile compatibility','','| Profile | A2B0 / A2B1 | Path | Status | Samples | Max LCMS error | Mean max channel | P95 |','|---|---|---|---|---:|---:|---:|---:|']
     for e in report['profiles']:
@@ -167,9 +249,14 @@ def main():
         for d in e.get('diagnostics',[]):lines.append(f"\n- {e['id']}: {d}")
         if e.get('reason'):lines.append(f"\n- {e['id']}: {e['reason']}")
     lines+=['',f"Native A2B1 mandatory. LCMS RGB8 max <= {GATE_MAX}, mean maximum channel <= {GATE_MEAN}, p95 <= {GATE_P95}; image/stroke parity <=1, alpha <=1 and uniform patches. Poppler diagnostic only. No ICC/PDF/images exported."]
+    lines+=['','## Installed RGB working-space profiles (not measured monitors)']
+    for e in report['display_profiles']:
+        native=[r for r in e['rows'] if r['native']]
+        lines.append(f"- {e['file']}: {e['status']}; {len(e['rows'])}/512 observations; native {len(native)}; max native RGB8 error {max((r['error'] for r in native),default='—')}; ICC v{e.get('version','?')}; SHA256 {e.get('sha256','—')}")
+        if e.get('reason'):lines.append(f"  Reason: {e['reason']}")
     md='\n'.join(lines)+'\n'
     (a.out/'report.md').write_text(md);print(md)
-    return int(any(e['status']!='compared' or len(e['rows'])!=len(DENSE)*4 or len(e.get('renders',[]))!=16 for e in report['profiles']))
+    return int(len(report['display_profiles'])!=2 or not any(e['status']=='native_pass' for e in report['display_profiles']) or any(e['status'] not in ('native_pass','explicit_alternate') for e in report['display_profiles']) or any(e['status']!='compared' or len(e['rows'])!=len(DENSE)*4 or len(e.get('renders',[]))!=16 for e in report['profiles']))
 
 if __name__=='__main__':
     raise SystemExit(main())

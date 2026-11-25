@@ -249,3 +249,6 @@ chmod +x rpcore/ci/ios-simulator-runner.sh
 export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="$PWD/rpcore/ci/ios-simulator-runner.sh"
 cargo test --manifest-path rpcore/Cargo.toml --locked --target aarch64-apple-ios-sim --lib --tests
 ```
+
+## B10.5c5c3d4b5d4l — installed RGB profile closure gate
+Verified CI #103 (45560029926), 10/10, partial Gray and missing CHAD 160/160 each, zero RGB8 error; non-Bradford diagnostics 2/2. Add unmodified colord-data sRGB.icc and AdobeRGB1998.icc (Ubuntu package file list https://packages.ubuntu.com/noble/all/colord-data/filelist), installed next to FOGRA40. Two intents, 64 samples, 8/16 bit, 72/144 DPI: 512 observations/profile. Record SHA256, actual version/class/PCS/tag types, native/alternate decisions and numeric errors. Require all observations and parity/alpha/uniformity, native RGB8 error <=3, at least one fully native profile; explicitly diagnosed alternates never count as native accuracy. No profile or PDF/image exports; no runtime dependencies. These are standard working-space profiles, NOT measured device calibration. CI pending. Next finalize ICC support matrix and freeze color scope; then prioritize remaining PDF reading compatibility and text/selection/performance gates.
