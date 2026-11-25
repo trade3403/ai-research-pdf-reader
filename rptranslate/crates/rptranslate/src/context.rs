@@ -184,7 +184,10 @@ mod tests {
         let e = ContextEngine::builtin().unwrap();
         let doc = DocumentContext::from_text("Soil shear during an earthquake.").unwrap();
         let geo = e.decide("Soil shear strain increased.", None).unwrap();
-        assert_eq!((geo.domain, geo.basis), (Domain::Geotechnical, Basis::Local));
+        assert_eq!(
+            (geo.domain, geo.basis),
+            (Domain::Geotechnical, Basis::Local)
+        );
         let bio = e
             .decide("Bacterial cells contain this strain.", Some(&doc))
             .unwrap();

@@ -26,8 +26,8 @@ fn main() -> Result<(), String> {
     let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
     let geo = DocumentContext::from_text("Seismic waves in a soil basin.")
         .map_err(|e| format!("{e:?}"))?;
-    let bio = DocumentContext::from_text("Bacterial cells and genes.")
-        .map_err(|e| format!("{e:?}"))?;
+    let bio =
+        DocumentContext::from_text("Bacterial cells and genes.").map_err(|e| format!("{e:?}"))?;
     let options = GenerationOptions {
         beam_width: 1,
         max_new: 256,

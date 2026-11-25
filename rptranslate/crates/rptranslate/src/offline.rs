@@ -267,12 +267,8 @@ impl TextSession<'_> {
         let decision = engine
             .decide(text, document)
             .map_err(scientific::Error::Plan)?;
-        let result = self.translate_glossary(
-            text,
-            engine.glossary(decision.domain),
-            options,
-            kernel,
-        )?;
+        let result =
+            self.translate_glossary(text, engine.glossary(decision.domain), options, kernel)?;
         Ok((decision, result))
     }
 
