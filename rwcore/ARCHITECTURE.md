@@ -90,3 +90,5 @@ C4.4a4b pending CI: independently extracted direct Type 2 reference from Aref Ru
 C4.4a5a pending CI: AlternateSubst format 1 coverage-indexed nonempty ordered candidate sets, explicit zero-based selection, validated output IDs, cumulative candidate budget including shared offsets, atomic in-place replacement. No feature-value selection policy or lookup scheduling.
 
 C4.4a5b pending CI: original OFL Alegreya Sans Regular fixture; independently decoded direct GSUB Type 3 mapping, candidate-order and atomic explicit selection across all referenced glyphs. No scheduling or shaping execution.
+
+C4.4a6a pending CI: LigatureSubst format 1 coverage-indexed ordered sets, nested relative offsets, bounded rule/component budgets, first matching contiguous rule in font order, atomic contraction. No GDEF filtering or cluster merging.

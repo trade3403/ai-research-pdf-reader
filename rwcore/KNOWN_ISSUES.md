@@ -82,3 +82,5 @@
 - C4.4a5a standalone alternate substitution; candidate order preserved, zero-length sets rejected, no real type 3 acceptance yet, no GDEF, feature-value policy, cluster propagation or lookup scheduling; overlapping payload validation not comprehensive.
 
 - C4.4a5b: real direct Type 3 reference uses one font family; no extension lookup, feature policy, GDEF filtering, cluster propagation or full shaping. New font not independently verified for rendering.
+
+- C4.4a6a standalone contiguous ligature substitution requires >=2 input components; no real type 4 acceptance yet, no noncontiguous GDEF matching, cluster merging or lookup scheduling; overlapping payload validation not comprehensive.

@@ -153,3 +153,6 @@ pub use font_multiple_subst::{MultipleSubstLimits,MultipleSubstitution,parse_mul
 
 pub mod font_alternate_subst;
 pub use font_alternate_subst::{AlternateSubstLimits,AlternateSubstitution,parse_alternate_substitution};
+
+pub mod font_ligature_subst;
+pub use font_ligature_subst::{LigatureLimits,LigatureRule,LigatureMatch,LigatureSubstitution,parse_ligature_substitution};
