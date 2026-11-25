@@ -18,11 +18,31 @@ pub const TENSOR_COUNT: usize = 256;
 const MAX_MANIFEST: u64 = 64 * 1024;
 const MAX_WEIGHTS: u64 = PAYLOAD_BYTES + 8 * 1024 * 1024 + 8;
 const PINNED_FILES: [(&str, u64, &str); 5] = [
-    ("config.json", 1403, "bcae8ed74fed77fb51c58462b62397fee6b1a1a34aece79183a0dd02ad329e71"),
-    ("generation_config.json", 293, "524dc91570823feb51fbd33a35e5aee3050a4441bdf65e66f6f5e945e5838e40"),
-    ("source.spm", 806435, "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8"),
-    ("target.spm", 804600, "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052"),
-    ("vocab.json", 1617791, "f1832ca38f7aa158b9a944ff583e4901e6b37d9d4ad9241f03838e636e9cfb03"),
+    (
+        "config.json",
+        1403,
+        "bcae8ed74fed77fb51c58462b62397fee6b1a1a34aece79183a0dd02ad329e71",
+    ),
+    (
+        "generation_config.json",
+        293,
+        "524dc91570823feb51fbd33a35e5aee3050a4441bdf65e66f6f5e945e5838e40",
+    ),
+    (
+        "source.spm",
+        806435,
+        "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8",
+    ),
+    (
+        "target.spm",
+        804600,
+        "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052",
+    ),
+    (
+        "vocab.json",
+        1617791,
+        "f1832ca38f7aa158b9a944ff583e4901e6b37d9d4ad9241f03838e636e9cfb03",
+    ),
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,7 +71,10 @@ enum Field {
 }
 
 fn valid_hash(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn file_info(p: &mut Parser<'_>) -> Result<FileInfo, safetensors::Error> {
@@ -77,28 +100,38 @@ fn manifest(input: &str) -> Result<BTreeMap<String, FileInfo>, Error> {
         return Err(Error::Limit);
     }
     let mut p = Parser { rest: input };
-    let mut fields = p.object(11, |p, key| match key {
-        "format" | "source" | "revision" | "license" | "checkpoint_sha256" | "dtype" =>
-            Ok(Field::Text(p.string()?)),
-        "version" | "tensor_count" | "payload_bytes" => Ok(Field::Number(p.number()?)),
-        "aliases" => Ok(Field::Aliases(p.object(2, |p, _| p.string())?)),
-        "files" => Ok(Field::Files(p.object(6, |p, _| file_info(p))?)),
-        _ => Err(safetensors::Error::Header),
-    }).map_err(|_| Error::Manifest)?;
+    let mut fields = p
+        .object(11, |p, key| match key {
+            "format" | "source" | "revision" | "license" | "checkpoint_sha256" | "dtype" => {
+                Ok(Field::Text(p.string()?))
+            }
+            "version" | "tensor_count" | "payload_bytes" => Ok(Field::Number(p.number()?)),
+            "aliases" => Ok(Field::Aliases(p.object(2, |p, _| p.string())?)),
+            "files" => Ok(Field::Files(p.object(6, |p, _| file_info(p))?)),
+            _ => Err(safetensors::Error::Header),
+        })
+        .map_err(|_| Error::Manifest)?;
     p.ws();
     if !p.rest.is_empty() {
         return Err(Error::Manifest);
     }
     for (key, value) in [
-        ("format", "RPModel"), ("source", "Helsinki-NLP/opus-mt-en-zh"),
-        ("revision", REVISION), ("license", "Apache-2.0"),
-        ("checkpoint_sha256", SOURCE_SHA256), ("dtype", "F32"),
+        ("format", "RPModel"),
+        ("source", "Helsinki-NLP/opus-mt-en-zh"),
+        ("revision", REVISION),
+        ("license", "Apache-2.0"),
+        ("checkpoint_sha256", SOURCE_SHA256),
+        ("dtype", "F32"),
     ] {
         if fields.remove(key) != Some(Field::Text(value.into())) {
             return Err(Error::Profile);
         }
     }
-    for (key, value) in [("version", 1), ("tensor_count", TENSOR_COUNT as u64), ("payload_bytes", PAYLOAD_BYTES)] {
+    for (key, value) in [
+        ("version", 1),
+        ("tensor_count", TENSOR_COUNT as u64),
+        ("payload_bytes", PAYLOAD_BYTES),
+    ] {
         if fields.remove(key) != Some(Field::Number(value)) {
             return Err(Error::Profile);
         }
@@ -106,10 +139,18 @@ fn manifest(input: &str) -> Result<BTreeMap<String, FileInfo>, Error> {
     let Some(Field::Aliases(aliases)) = fields.remove("aliases") else {
         return Err(Error::Manifest);
     };
-    if aliases != BTreeMap::from([
-        ("model.encoder.embed_tokens.weight".into(), "model.shared.weight".into()),
-        ("model.decoder.embed_tokens.weight".into(), "model.shared.weight".into()),
-    ]) {
+    if aliases
+        != BTreeMap::from([
+            (
+                "model.encoder.embed_tokens.weight".into(),
+                "model.shared.weight".into(),
+            ),
+            (
+                "model.decoder.embed_tokens.weight".into(),
+                "model.shared.weight".into(),
+            ),
+        ])
+    {
         return Err(Error::Profile);
     }
     let Some(Field::Files(files)) = fields.remove("files") else {
@@ -119,7 +160,12 @@ fn manifest(input: &str) -> Result<BTreeMap<String, FileInfo>, Error> {
         return Err(Error::Manifest);
     }
     for (name, bytes, sha256) in PINNED_FILES {
-        if files.get(name) != Some(&FileInfo { bytes, sha256: sha256.into() }) {
+        if files.get(name)
+            != Some(&FileInfo {
+                bytes,
+                sha256: sha256.into(),
+            })
+        {
             return Err(Error::Integrity);
         }
     }
@@ -134,7 +180,9 @@ fn manifest(input: &str) -> Result<BTreeMap<String, FileInfo>, Error> {
 /// in the later inference adapter; no separate lm_head is in the source file.
 pub fn canonical_name(name: &str) -> &str {
     match name {
-        "model.encoder.embed_tokens.weight" | "model.decoder.embed_tokens.weight" => "model.shared.weight",
+        "model.encoder.embed_tokens.weight" | "model.decoder.embed_tokens.weight" => {
+            "model.shared.weight"
+        }
         _ => name,
     }
 }
@@ -149,7 +197,11 @@ pub fn expected_shapes() -> BTreeMap<String, Vec<u64>> {
         out.insert(format!("{prefix}embed_positions.weight"), vec![512, 512]);
         for i in 0..6 {
             let layer = format!("{prefix}layers.{i}.");
-            let attention: &[&str] = if side == "encoder" { &["self_attn"] } else { &["self_attn", "encoder_attn"] };
+            let attention: &[&str] = if side == "encoder" {
+                &["self_attn"]
+            } else {
+                &["self_attn", "encoder_attn"]
+            };
             for attn in attention {
                 for projection in ["q_proj", "k_proj", "v_proj", "out_proj"] {
                     out.insert(format!("{layer}{attn}.{projection}.weight"), vec![512, 512]);
@@ -160,9 +212,12 @@ pub fn expected_shapes() -> BTreeMap<String, Vec<u64>> {
                 }
             }
             for (name, shape) in [
-                ("fc1.weight", vec![2048, 512]), ("fc1.bias", vec![2048]),
-                ("fc2.weight", vec![512, 2048]), ("fc2.bias", vec![512]),
-                ("final_layer_norm.weight", vec![512]), ("final_layer_norm.bias", vec![512]),
+                ("fc1.weight", vec![2048, 512]),
+                ("fc1.bias", vec![2048]),
+                ("fc2.weight", vec![512, 2048]),
+                ("fc2.bias", vec![512]),
+                ("final_layer_norm.weight", vec![512]),
+                ("final_layer_norm.bias", vec![512]),
             ] {
                 out.insert(format!("{layer}{name}"), shape);
             }
@@ -179,8 +234,10 @@ fn validate_index<R: Read + Seek>(reader: &SafeTensorReader<R>) -> Result<(), Er
         return Err(Error::Index);
     }
     for (key, value) in [
-        ("format", "pt"), ("rpmodel_format", "1"),
-        ("source_revision", REVISION), ("source_sha256", SOURCE_SHA256),
+        ("format", "pt"),
+        ("rpmodel_format", "1"),
+        ("source_revision", REVISION),
+        ("source_sha256", SOURCE_SHA256),
     ] {
         if metadata.get(key).map(String::as_str) != Some(value) {
             return Err(Error::Index);
@@ -197,7 +254,11 @@ fn validate_index<R: Read + Seek>(reader: &SafeTensorReader<R>) -> Result<(), Er
 
 fn regular_file(root: &Path, name: &str) -> Result<File, Error> {
     let path = root.join(name);
-    if !fs::symlink_metadata(&path).map_err(|_| Error::Io)?.file_type().is_file() {
+    if !fs::symlink_metadata(&path)
+        .map_err(|_| Error::Io)?
+        .file_type()
+        .is_file()
+    {
         return Err(Error::Io);
     }
     File::open(path).map_err(|_| Error::Io)
@@ -210,7 +271,9 @@ fn regular_file(root: &Path, name: &str) -> Result<File, Error> {
 pub fn open(root: &Path) -> Result<SafeTensorReader<File>, Error> {
     let mut input = String::new();
     regular_file(root, "manifest.json")?
-        .take(MAX_MANIFEST + 1).read_to_string(&mut input).map_err(|_| Error::Manifest)?;
+        .take(MAX_MANIFEST + 1)
+        .read_to_string(&mut input)
+        .map_err(|_| Error::Manifest)?;
     let files = manifest(&input)?;
     let mut weights = None;
     for (name, info) in files {
@@ -237,11 +300,19 @@ mod tests {
     use super::*;
 
     fn fixture() -> String {
-        let mut files = PINNED_FILES.iter().map(|(name, bytes, sha)| {
-            format!(r#""{name}":{{"bytes":{bytes},"sha256":"{sha}"}}"#)
-        }).collect::<Vec<_>>();
-        files.push(format!(r#""weights.safetensors":{{"bytes":{},"sha256":"{}"}}"#, PAYLOAD_BYTES + 1024, "a".repeat(64)));
-        format!(r#"{{"format":"RPModel","version":1,"source":"Helsinki-NLP/opus-mt-en-zh","revision":"{REVISION}","license":"Apache-2.0","checkpoint_sha256":"{SOURCE_SHA256}","dtype":"F32","tensor_count":256,"payload_bytes":{PAYLOAD_BYTES},"aliases":{{"model.encoder.embed_tokens.weight":"model.shared.weight","model.decoder.embed_tokens.weight":"model.shared.weight"}},"files":{{{}}}}}"#, files.join(","))
+        let mut files = PINNED_FILES
+            .iter()
+            .map(|(name, bytes, sha)| format!(r#""{name}":{{"bytes":{bytes},"sha256":"{sha}"}}"#))
+            .collect::<Vec<_>>();
+        files.push(format!(
+            r#""weights.safetensors":{{"bytes":{},"sha256":"{}"}}"#,
+            PAYLOAD_BYTES + 1024,
+            "a".repeat(64)
+        ));
+        format!(
+            r#"{{"format":"RPModel","version":1,"source":"Helsinki-NLP/opus-mt-en-zh","revision":"{REVISION}","license":"Apache-2.0","checkpoint_sha256":"{SOURCE_SHA256}","dtype":"F32","tensor_count":256,"payload_bytes":{PAYLOAD_BYTES},"aliases":{{"model.encoder.embed_tokens.weight":"model.shared.weight","model.decoder.embed_tokens.weight":"model.shared.weight"}},"files":{{{}}}}}"#,
+            files.join(",")
+        )
     }
 
     #[test]
@@ -265,9 +336,21 @@ mod tests {
     fn exact_canonical_shape_inventory() {
         let shapes = expected_shapes();
         assert_eq!(shapes.len(), TENSOR_COUNT);
-        assert_eq!(shapes.values().map(|s| s.iter().product::<u64>() * 4).sum::<u64>(), PAYLOAD_BYTES);
-        assert_eq!(canonical_name("model.decoder.embed_tokens.weight"), "model.shared.weight");
-        assert_eq!(shapes[canonical_name("model.encoder.embed_tokens.weight")], [65001, 512]);
+        assert_eq!(
+            shapes
+                .values()
+                .map(|s| s.iter().product::<u64>() * 4)
+                .sum::<u64>(),
+            PAYLOAD_BYTES
+        );
+        assert_eq!(
+            canonical_name("model.decoder.embed_tokens.weight"),
+            "model.shared.weight"
+        );
+        assert_eq!(
+            shapes[canonical_name("model.encoder.embed_tokens.weight")],
+            [65001, 512]
+        );
         assert!(!shapes.contains_key("model.encoder.embed_tokens.weight"));
     }
 }

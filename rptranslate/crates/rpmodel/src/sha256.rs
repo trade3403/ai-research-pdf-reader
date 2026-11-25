@@ -22,13 +22,20 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
         let b = w[i - 2];
         let s0 = a.rotate_right(7) ^ a.rotate_right(18) ^ (a >> 3);
         let s1 = b.rotate_right(17) ^ b.rotate_right(19) ^ (b >> 10);
-        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
     }
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
     for (&k, &word) in K.iter().zip(&w) {
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
         let ch = (e & f) ^ (!e & g);
-        let t1 = h.wrapping_add(s1).wrapping_add(ch).wrapping_add(k).wrapping_add(word);
+        let t1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(k)
+            .wrapping_add(word);
         let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
         let maj = (a & b) ^ (a & c) ^ (b & c);
         let t2 = s0.wrapping_add(maj);
@@ -51,8 +58,8 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
 pub fn digest_reader(reader: impl Read, limit: u64) -> io::Result<(u64, String)> {
     let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut state = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
     let mut total = 0_u64;
     loop {
@@ -63,9 +70,12 @@ pub fn digest_reader(reader: impl Read, limit: u64) -> io::Result<(u64, String)>
                 Ok(0) => break,
                 Ok(n) => {
                     used += n;
-                    total = total.checked_add(n as u64)
+                    total = total
+                        .checked_add(n as u64)
                         .filter(|&v| v <= limit && v <= u64::MAX / 8)
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "hash size limit"))?;
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "hash size limit")
+                        })?;
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
@@ -94,14 +104,29 @@ mod tests {
     #[test]
     fn known_sha256_vectors_and_limits() {
         for (input, expected) in [
-            ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-            ("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
-            ("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"),
+            (
+                "",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "abc",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
         ] {
-            assert_eq!(digest_reader(input.as_bytes(), input.len() as u64).unwrap(), (input.len() as u64, expected.into()));
+            assert_eq!(
+                digest_reader(input.as_bytes(), input.len() as u64).unwrap(),
+                (input.len() as u64, expected.into())
+            );
         }
         let data = vec![b'a'; 1_000_000];
-        assert_eq!(digest_reader(data.as_slice(), 1_000_000).unwrap().1, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+        assert_eq!(
+            digest_reader(data.as_slice(), 1_000_000).unwrap().1,
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
         assert!(digest_reader(b"abc".as_slice(), 2).is_err());
     }
 }
