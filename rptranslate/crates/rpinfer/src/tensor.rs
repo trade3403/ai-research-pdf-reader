@@ -21,7 +21,7 @@ pub struct Tensor {
     data: Vec<f32>,
 }
 
-fn layout(shape: &[usize]) -> Result<(Vec<usize>, usize), Error> {
+pub(crate) fn layout(shape: &[usize]) -> Result<(Vec<usize>, usize), Error> {
     if shape.len() > MAX_RANK || shape.iter().any(|&d| d > MAX_ELEMENTS) {
         return Err(Error::Limit);
     }
@@ -37,7 +37,7 @@ fn layout(shape: &[usize]) -> Result<(Vec<usize>, usize), Error> {
     Ok((strides, size))
 }
 
-fn buffer(size: usize) -> Result<Vec<f32>, Error> {
+pub(crate) fn buffer(size: usize) -> Result<Vec<f32>, Error> {
     let mut data = Vec::new();
     data.try_reserve_exact(size)
         .map_err(|_| Error::Allocation)?;

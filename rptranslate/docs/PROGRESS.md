@@ -13,7 +13,9 @@
 | D1.2b2b1 | 已通过 | 真实 SPM 端到端 ID 编解码对照 |
 | D1.2b2b2 | 已通过 | Marian JSON、网络词表 ID、特殊 token |
 | D1.3 | 已通过 | FP32 Tensor shape/stride、reshape、permute、广播与基本运算 |
-| D1.4–D1.7 | 未开始 | 矩阵、SIMD、Transformer 和解码 |
+| D1.4a | 待验证 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
+| D1.4b | 未开始 | AVX2 自动检测、向量化、标量回退、多线程 |
+| D1.5–D1.7 | 未开始 | Attention、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -66,8 +68,11 @@ D1 里程碑完成 4/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.3
 新增 dense FP32 Tensor、shape/stride、索引、原地元数据 reshape、materialized permute、NumPy-style broadcast、加减乘除、标量与空张量、内存上限及非有限检查。NumPy 2.3.5 在研发环境生成参考数组，首轮 [45515473847](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515473847) 格式检查失败，按真实日志修正两处格式；[修复提交 243e36c](https://github.com/trade3403/ai-research-pdf-reader/commit/243e36cc6d858006cca96ee4a4423ce06a3e8011)，[Actions 45515567318](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515567318) completed/success，格式、Clippy、单元测试、Release、自检全部通过。真实 tokenizer 探测按条件跳过（本轮无 tokenizer 变更）；此前 D1.2 真实对照证据有效。[技术文档](D1.3_TENSOR.md)。
 
-## 下一阶段 D1.4
-标量矩阵乘法、分块/AVX2 优化及数值对照，保持 CPU 回退。
+## 当前阶段 D1.4a
+新增 rank-2 FP32 MatMul、32×32 分块、标量基准、矩形尾块/空张量/异常测试及独立 f64 逐元素参考。新增有限 release CPU 基准（128/256 方阵，3 次中位数）。CI 待验证；尚未完成完整 D1.4，不增加阶段计数。[技术文档](D1.4_MATMUL.md)。
+
+## 下一阶段 D1.4b
+AVX2 运行时检测、向量化内核、非 AVX2 回退、多线程及真实数值/性能对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

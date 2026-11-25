@@ -1,4 +1,5 @@
 //! Scalar numeric primitives and dense FP32 tensor core.
+pub mod matmul;
 pub mod tensor;
 
 #[derive(Debug, PartialEq, Eq)]

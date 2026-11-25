@@ -40,6 +40,12 @@ jobs:
       - name: Smoke test
         run: ./target/release/rptranslate self-check
 
+      - name: Matrix release benchmark
+        if: contains(github.event.head_commit.message, 'D1.4a')
+        run: |
+          lscpu | grep -E 'Model name:|^CPU\(s\):' || true
+          cargo run --locked --offline --release -p rpinfer --example matmul_bench
+
   model-tokenizer-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
