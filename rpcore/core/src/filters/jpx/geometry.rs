@@ -1,5 +1,5 @@
 //! Bounded JPEG 2000 Part 1 tile-component geometry and packet order.
-//! packet order. Coordinates are half-open in the relevant sample grid.
+//! Coordinates are half-open in the relevant sample grid.
 //! Packet headers and entropy payloads are not decoded.
 use super::codestream::{inspect_codestream,Codestream,CodingStyle,Progression};
 use crate::{Error,Result};
@@ -119,7 +119,7 @@ fn tile_bounds(c:&Codestream,tile:u16)->Result<Rect>{
         x1:i64::from(h.x_origin)+i64::from(h.width),y1:i64::from(h.y_origin)+i64::from(h.height),
     }))
 }
-fn plan(c:&Codestream,tile:u16)->Result<TilePlan>{
+pub(super) fn plan(c:&Codestream,tile:u16)->Result<TilePlan>{
     // Reference-grid traversal is implemented for dyadic component sampling.
     // Keep other sampling ratios fail-closed until independently verified.
     let spatial=matches!(c.coding.progression,Progression::Rpcl|Progression::Pcrl|Progression::Cprl);
