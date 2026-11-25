@@ -21,7 +21,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         }
         // Warm up once, then three measured passes over identical input.
         // Hash the output to prevent dead-code elimination and check repeatability.
-        let evaluate=||->rpcore::Result<u64>{
+        let evaluate=||->std::result::Result<u64,rpcore::Error>{
             let mut hash=0xcbf29ce484222325u64;
             for x in &samples{
                 for v in black_box(l.to_xyz_d50(black_box(*x))?){
