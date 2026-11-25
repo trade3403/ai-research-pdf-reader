@@ -79,3 +79,6 @@ pub use drawing_inline::{parse_inline_picture, emu_to_twips, PictureExtent, Pict
 
 pub mod drawing_anchor;
 pub use drawing_anchor::{parse_floating_picture, FloatingPicture, AnchorDistances, RelativeFrom, AnchorAlignment, PositionValue, AnchorPosition, AnchorWrap, WrapSide};
+
+pub mod drawing_layout;
+pub use drawing_layout::{EmuSpan, EmuRect, InsideEdge, AnchorLayoutContext, FloatingPlacement, ContourPolicy, LineWrap, place_floating_picture, wrap_floating_line};
