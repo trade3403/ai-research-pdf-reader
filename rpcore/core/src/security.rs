@@ -4,6 +4,9 @@
 mod legacy;
 mod auth;
 mod object_crypto;
+// Private primitives pending authenticated R4 integration.
+#[allow(dead_code)]
+mod aes;
 pub(crate) use object_crypto::ObjectCrypto;
 pub use auth::PasswordStatus;
 use crate::{Document,Error,Object,Result,xref::Entry};
