@@ -355,6 +355,25 @@ jobs:
           timeout 240 /usr/bin/time -f %M -o "$paper/fp32.document.rss" target/release/examples/document_reference "$RUNNER_TEMP/rpmodel-v1" fp32 "$paper/sample.tsv" > "$paper/fp32.document"
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_document_paper.py "$paper"
 
+      - name: Verify deployed model-check CLI on Linux
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        run: |
+          set -eu
+          cargo build --locked --offline --release -p rptranslate
+          target/release/rptranslate model-check fp32 "$RUNNER_TEMP/rpmodel-v1" | grep -F 'MODEL_CHECK PASS precision=fp32 payload_bytes=312033188'
+          target/release/rptranslate model-check int8 "$RUNNER_TEMP/rpmodel-mixed" | grep -F 'MODEL_CHECK PASS precision=int8 payload_bytes=84903620'
+          if target/release/rptranslate model-check unknown "$RUNNER_TEMP/rpmodel-v1"; then exit 1; fi
+          if target/release/rptranslate model-check fp32 "$RUNNER_TEMP/rpmodel-mixed"; then exit 1; fi
+      - name: Transfer verified FP32 fixture to Windows
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        uses: actions/upload-artifact@v4
+        with:
+          name: rptranslate-windows-fp32-fixture
+          path: ${{ runner.temp }}/rpmodel-v1/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
       - name: Transfer verified mixed model fixture to Windows
         if: contains(github.event.head_commit.message, 'D1.13')
         uses: actions/upload-artifact@v4
@@ -424,6 +443,11 @@ jobs:
         with:
           name: rptranslate-windows-mixed-fixture
           path: ${{ runner.temp }}/rpmodel-mixed
+      - uses: actions/download-artifact@v4
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        with:
+          name: rptranslate-windows-fp32-fixture
+          path: ${{ runner.temp }}/rpmodel-v1
       - name: Build native automatic and portable Rust executables
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -469,3 +493,6 @@ jobs:
           $b = (& $scalar translate-paragraph-int8 $root geotechnical $text 1 128) -join "`n"
           if ($a -cne $b -or -not $a.Contains('最大应变')) { throw 'Windows translation mismatch' }
           Write-Output 'WINDOWS_TRANSLATION PASS precision=int8 auto_portable_equal=true glossary=true local_model=true'
+      - name: Verify native FP32 and INT8 deployment under outbound firewall block
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        run: ./tools/check_windows_deployment.ps1

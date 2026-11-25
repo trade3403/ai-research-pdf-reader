@@ -96,6 +96,27 @@ fn run_glossary(
 
 fn run(args: &[String]) -> Result<(), String> {
     match args {
+        [command, precision, root] if command == "model-check" => {
+            let translator = match precision.as_str() {
+                "fp32" => OfflineTranslator::load(Path::new(root), MODEL_PAYLOAD_BYTES),
+                "int8" => OfflineTranslator::load_mixed(Path::new(root), PAYLOAD_BYTES),
+                _ => return Err("unknown precision".into()),
+            }
+            .map_err(|e| format!("{e:?}"))?;
+            let session = translator.session().map_err(|e| format!("{e:?}"))?;
+            let tokens = session
+                .encode("We measured maximum strain.")
+                .map_err(|e| format!("{e:?}"))?;
+            if tokens.is_empty() {
+                return Err("empty tokenizer probe".into());
+            }
+            println!(
+                "MODEL_CHECK PASS precision={precision} payload_bytes={} tokens={} avx2={}",
+                translator.payload_bytes(),
+                tokens.len(),
+                rpinfer::matmul::avx2_available()
+            );
+        }
         [command] if command == "self-check" => {
             let bytes = rptranslate::self_check()?;
             println!("D1.0 PASS: synthetic corpus, scalar dot, model budget = {bytes} bytes");
@@ -152,7 +173,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-constrained[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-paragraph[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
+                "Usage: rptranslate self-check | model-check fp32|int8 MODEL_DIR | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-constrained[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-paragraph[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
                     .into(),
             )
         }
