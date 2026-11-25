@@ -274,3 +274,151 @@ mod tests{
         for n in [51,54,66,80,119,130,133,376,378]{assert!(inspect_codestream(&b[..n]).is_err(),"prefix {n}");}
     }
 }
+
+
+/// T.800 Annex E scalar reconstruction primitives. Not yet integrated into
+/// Tier-1 decoding or the irreversible pixel pipeline.
+pub mod inverse_quantization {
+    use super::{Quantization,QuantMode,Step,Wavelet};
+    use crate::{Error,Result};
+    use crate::filters::jpx::geometry::Band;
+
+    /// Resolution zero is LL; subsequent resolutions contain HL,LH,HH.
+    /// Inherited explicit tables may have extra entries for COC fewer levels.
+    pub fn effective_step(q:&Quantization,levels:u8,r:u8,b:Band)->Result<Step>{
+        if levels>32||r>levels||q.guard_bits>7||q.steps.len()>97{
+            return Err(Error::Invalid("JPX quantization geometry"));
+        }
+        let i=match (r,b){
+            (0,Band::Ll)=>0,
+            (0,_)|(_,Band::Ll)=>return Err(Error::Invalid("JPX quantization band")),
+            (r,b)=>3*(usize::from(r)-1)+match b{Band::Hl=>1,Band::Lh=>2,Band::Hh=>3,Band::Ll=>0},
+        };
+        if q.steps.iter().any(|s|s.exponent>31||s.mantissa>2047||q.mode==QuantMode::None&&s.mantissa!=0){
+            return Err(Error::Invalid("JPX quantization step"));
+        }
+        if q.mode==QuantMode::ScalarDerived{
+            if q.steps.len()!=1{return Err(Error::Invalid("JPX derived step count"));}
+            let mut s=q.steps[0];
+            // Annex E-5. Negative derived exponents are outside this subset.
+            s.exponent=s.exponent.checked_sub(r.saturating_sub(1))
+                .ok_or(Error::Unsupported("JPX negative derived exponent"))?;
+            Ok(s)
+        }else{
+            if q.steps.len()<1+3*usize::from(levels){return Err(Error::Invalid("JPX explicit step count"));}
+            Ok(q.steps[i])
+        }
+    }
+
+    /// E-3/E-4, Part 1 gains 1,2,2,4. Reversible step is one.
+    /// This does not certify coupling with the 9/7 synthesis or MCT.
+    pub fn step_size(q:&Quantization,w:Wavelet,precision:u8,levels:u8,r:u8,b:Band)->Result<f64>{
+        if !(1..=38).contains(&precision){return Err(Error::Invalid("JPX quantization precision"));}
+        let s=effective_step(q,levels,r,b)?;
+        match (w,q.mode){
+            (Wavelet::Reversible53,QuantMode::None)=>Ok(1.0),
+            (Wavelet::Irreversible97,QuantMode::ScalarDerived|QuantMode::ScalarExpounded)=>{
+                let gain=match b{Band::Ll=>0,Band::Hl|Band::Lh=>1,Band::Hh=>2};
+                Ok(2f64.powi(i32::from(precision)+gain-i32::from(s.exponent))*
+                    (1.0+f64::from(s.mantissa)/2048.0))
+            }
+            _=>Err(Error::Unsupported("JPX quantization mode/wavelet")),
+        }
+    }
+
+    /// E-2 minus leading zero bitplanes, bounded to the existing Tier-1 i32 range.
+    pub fn highest_bitplane(q:&Quantization,levels:u8,r:u8,b:Band,zero:u8)->Result<u8>{
+        let s=effective_step(q,levels,r,b)?;
+        let p=i32::from(q.guard_bits)+i32::from(s.exponent)-2-i32::from(zero);
+        if !(0..=30).contains(&p){return Err(Error::Invalid("JPX quantization bitplane"));}
+        Ok(p as u8)
+    }
+
+    /// E-6/E-7/E-8: fixed midpoint r=1/2. Value is a signed, zero-filled
+    /// integer; missing is the per-coefficient number of unknown low bits,
+    /// NOT a quality-layer count. Zero coefficients remain zero.
+    pub fn reconstruct(value:i32,missing:u8,delta:f64,w:Wavelet)->Result<f64>{
+        if missing>30||!delta.is_finite()||delta<=0.0||
+            w==Wavelet::Reversible53&&delta!=1.0{
+            return Err(Error::Invalid("JPX reconstruction parameters"));
+        }
+        let unit=1i64<<missing;
+        if i64::from(value)%unit!=0{return Err(Error::Invalid("JPX reconstruction unknown bits"));}
+        if value==0{return Ok(0.0);}
+        if w==Wavelet::Reversible53&&missing==0{return Ok(f64::from(value));}
+        let v=(f64::from(value)+0.5*unit as f64*f64::from(value.signum()))*delta;
+        if !v.is_finite(){return Err(Error::Limit("JPX reconstruction overflow"));}
+        Ok(if w==Wavelet::Reversible53{v.floor()}else{v})
+    }
+
+    #[cfg(test)]
+    mod tests{
+        use super::*;
+        fn q(mode:QuantMode,e:u8,m:u16,n:usize)->Quantization{
+            Quantization{mode,guard_bits:2,steps:vec![Step{exponent:e,mantissa:m};n]}
+        }
+        #[test]fn quant_reference(){
+            // Exact rational reference generated using independent integer arithmetic.
+            for (p,e,m,g,v,n,d,out) in [(8,9,36,0,1,0,5.08789062500000000e-1,7.63183593750000000e-1),
+                (8,10,2003,1,-3,0,9.89013671875000000e-1,-3.46154785156250000e+0),
+                (8,10,2003,1,12,2,9.89013671875000000e-1,1.38461914062500000e+1),
+                (8,10,1890,2,-16,3,1.92285156250000000e+0,-3.84570312500000000e+1),
+                (16,17,1024,0,0,0,7.50000000000000000e-1,0.00000000000000000e+0),
+                (1,31,2047,2,1,0,7.44876160752028227e-9,1.11731424112804234e-8),
+                (38,0,2047,2,-2147483648,0,2.19848638464000000e+12,-4.72121356246428156e+21),
+                (12,13,511,1,64,6,1.24951171875000000e+0,1.19953125000000000e+2)]{
+                let b=match g{0=>Band::Ll,1=>Band::Hl,_=>Band::Hh};
+                let r=if g==0{0}else{1};
+                let q=q(QuantMode::ScalarExpounded,e,m,4);
+                assert_eq!(step_size(&q,Wavelet::Irreversible97,p,1,r,b).unwrap(),d);
+                let actual=reconstruct(v,n,d,Wavelet::Irreversible97).unwrap();
+                assert!((actual-out).abs()<=1e-14*(1.0+out.abs()));
+            }
+        }
+        #[test]fn quant_derived_and_index(){
+            let a=q(QuantMode::ScalarDerived,9,36,1);
+            for r in 1..=4{for b in [Band::Hl,Band::Lh,Band::Hh]{
+                assert_eq!(effective_step(&a,4,r,b).unwrap(),Step{exponent:10-r,mantissa:36});
+            }}
+            assert_eq!(effective_step(&a,4,0,Band::Ll).unwrap(),a.steps[0]);
+            let mut a=q(QuantMode::ScalarExpounded,8,0,7);
+            a.steps[2].mantissa=77;a.steps[6].mantissa=99;
+            assert_eq!(effective_step(&a,2,1,Band::Lh).unwrap().mantissa,77);
+            assert_eq!(effective_step(&a,2,2,Band::Hh).unwrap().mantissa,99);
+        }
+        #[test]fn quant_reversible(){
+            let a=q(QuantMode::None,8,0,1);
+            assert_eq!(step_size(&a,Wavelet::Reversible53,8,0,0,Band::Ll).unwrap(),1.);
+            for v in [i32::MIN,-13,0,17,i32::MAX]{
+                assert_eq!(reconstruct(v,0,1.,Wavelet::Reversible53).unwrap(),f64::from(v));
+            }
+            assert_eq!(reconstruct(-8,2,1.,Wavelet::Reversible53).unwrap(),-10.);
+            assert_eq!(reconstruct(8,2,1.,Wavelet::Reversible53).unwrap(),10.);
+            assert_eq!(reconstruct(0,30,2.,Wavelet::Irreversible97).unwrap(),0.);
+            assert_eq!(highest_bitplane(&a,0,0,Band::Ll,3).unwrap(),5);
+        }
+        #[test]fn quant_real_qcd_payload(){
+            // QCD from the existing independently encoded irreversible RGB fixture.
+            let a=super::super::quant(&[0x42,0x48,0x24,0x57,0xd3,0x57,0xd3,0x57,0x62]).unwrap();
+            for (r,b,d) in [(0,Band::Ll,0.5087890625),(1,Band::Hl,0.989013671875),(1,Band::Lh,0.989013671875),(1,Band::Hh,1.9228515625)]{
+                assert_eq!(step_size(&a,Wavelet::Irreversible97,8,1,r,b).unwrap(),d);
+            }
+        }
+        #[test]fn quant_rejects_invalid(){
+            let a=q(QuantMode::ScalarDerived,1,0,1);
+            assert!(effective_step(&a,3,3,Band::Hl).is_err());
+            assert!(effective_step(&a,1,0,Band::Hl).is_err());
+            assert!(effective_step(&a,1,1,Band::Ll).is_err());
+            assert!(effective_step(&a,33,0,Band::Ll).is_err());
+            assert!(highest_bitplane(&a,0,0,Band::Ll,63).is_err());
+            assert!(step_size(&a,Wavelet::Reversible53,8,0,0,Band::Ll).is_err());
+            assert!(step_size(&a,Wavelet::Irreversible97,0,0,0,Band::Ll).is_err());
+            assert!(effective_step(&q(QuantMode::ScalarExpounded,32,2048,1),0,0,Band::Ll).is_err());
+            assert!(reconstruct(3,1,1.,Wavelet::Irreversible97).is_err());
+            assert!(reconstruct(1,31,1.,Wavelet::Irreversible97).is_err());
+            for d in [0.,-1.,f64::NAN,f64::INFINITY,f64::MAX]{
+                assert!(reconstruct(2,0,d,Wavelet::Irreversible97).is_err());
+            }
+        }
+    }
+}
