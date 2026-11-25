@@ -1,26 +1,39 @@
 //! Scoped native reversible JPEG 2000 grayscale pixel reconstruction.
-//! Multiple tiles, one layer, unsigned 8-bit, no MCT, baseline MQ style.
+//! Multiple tiles and quality layers, unsigned 8-bit, no MCT, baseline MQ style.
 //! This does not activate the PDF JPXDecode rendering path.
 use super::{Container,codestream::{inspect_codestream,Codestream,QuantMode,Wavelet},geometry::{self,Band,Rect},packet,ebcot,wavelet53::{self,Detail53}};
 use crate::{Error,Result};
+use std::collections::BTreeMap;
 
 const MAX_PIXELS:usize=4_194_304;
 const MAX_WORK:usize=MAX_PIXELS*128;
 #[derive(Debug,PartialEq,Eq)]
 pub struct GrayImage{pub width:usize,pub height:usize,pub pixels:Vec<u8>}
 struct Plane{bounds:Rect,values:Vec<i32>}
+struct Segment{band:Band,zero:u8,passes:u16,bytes:Vec<u8>}
 fn band_index(b:Band)->usize{match b{Band::Ll=>0,Band::Hl=>1,Band::Lh=>2,Band::Hh=>3}}
 
 /// Reconstruct baseline grayscale raw codestreams. Quantization is
 /// reversible (unit steps). Missing contributions represent zero blocks.
-/// A single quality layer is not proof of lossless encoding; this API
+/// Even all quality layers are not proof of lossless encoding; this API
 /// returns the represented samples, including zero-filled omitted bits.
 pub fn decode_gray53(data:&[u8])->Result<GrayImage>{
+    decode_layers(data,None)
+}
+/// Decode the first `layers` quality layers, validating packet structure for
+/// the full stream. Omitted coding passes are zero-filled, not interpolated.
+pub fn decode_gray53_layers(data:&[u8],layers:u16)->Result<GrayImage>{
+    decode_layers(data,Some(layers))
+}
+fn decode_layers(data:&[u8],requested:Option<u16>)->Result<GrayImage>{
     let c=inspect_codestream(data)?;
     let h=&c.geometry;
+    let layers=requested.unwrap_or(c.coding.layers);
+    if layers==0||layers>c.coding.layers{return Err(Error::Invalid("JPX gray53 quality layers"));}
+    if c.coding.layers>256{return Err(Error::Unsupported("JPX gray53 layer limit"));}
     if h.container!=Container::RawCodestream||h.components.len()!=1||
-        c.coding.layers!=1||c.coding.mct{
-        return Err(Error::Unsupported("JPX gray53 container/components/layers"));
+        c.coding.mct{
+        return Err(Error::Unsupported("JPX gray53 container/components/MCT"));
     }
     let g=&h.components[0];let s=&c.component_coding[0];let q=&c.component_quantization[0];
     if g.precision!=8||g.signed||g.x_sampling!=1||g.y_sampling!=1||
@@ -50,7 +63,7 @@ pub fn decode_gray53(data:&[u8])->Result<GrayImage>{
         let n=tw.checked_mul(th).ok_or(Error::Limit("JPX gray53 tile area"))?;
         covered=covered.checked_add(n).ok_or(Error::Limit("JPX gray53 coverage"))?;
         if n==0||covered>area{return Err(Error::Invalid("JPX gray53 tile coverage"));}
-        let samples=decode_tile(data,&c,&plan,&mut work)?;
+        let samples=decode_tile(data,&c,&plan,&mut work,layers)?;
         let ox=(b.x0-i64::from(h.x_origin))as usize;
         let oy=(b.y0-i64::from(h.y_origin))as usize;
         for y in 0..th{
@@ -61,7 +74,7 @@ pub fn decode_gray53(data:&[u8])->Result<GrayImage>{
     Ok(GrayImage{width:w,height:ht,pixels})
 }
 
-fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize)->Result<Vec<i32>>{
+fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize,layers:u16)->Result<Vec<i32>>{
     let t=&plan.components[0];let q=&c.component_quantization[0];
     let (w,ht)=(t.bounds.width()as usize,t.bounds.height()as usize);
     let area=w.checked_mul(ht).ok_or(Error::Limit("JPX gray53 tile area"))?;
@@ -79,23 +92,36 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize
     }
     if total!=area{return Err(Error::Invalid("JPX gray53 band partition"));}
     let packets=packet::inspect_planned_packets(data,c,plan)?;
+    // Default coding style has one continuous MQ segment per codeblock
+    // (<=109 passes). Layer boundaries do not reset arithmetic or context state.
+    let mut segments:BTreeMap<(usize,usize,usize,usize),Segment>=BTreeMap::new();
     for p in &packets.packets{
-        let ri=usize::from(p.packet.resolution);
-        let precinct=&t.resolutions[ri].precincts[p.packet.precinct];
+        if p.packet.layer>=layers{continue;}
         for e in &p.contributions{
-            if e.first_pass!=0{return Err(Error::Invalid("JPX gray53 noninitial contribution"));}
-            let band=precinct.bands.iter().find(|b|b.band==e.band).ok_or(Error::Invalid("JPX gray53 band"))?;
-            let block=*band.blocks.get(e.block).ok_or(Error::Invalid("JPX gray53 block"))?;
-            let bi=band_index(e.band);
+            let key=(usize::from(p.packet.resolution),p.packet.precinct,band_index(e.band),e.block);
+            let seg=segments.entry(key).or_insert_with(||Segment{band:e.band,zero:e.zero_bit_planes,passes:0,bytes:Vec::new()});
+            if seg.passes!=e.first_pass||seg.zero!=e.zero_bit_planes||seg.band!=e.band{
+                return Err(Error::Invalid("JPX gray53 contribution sequence"));
+            }
+            seg.passes=seg.passes.checked_add(e.passes).ok_or(Error::Limit("JPX gray53 passes"))?;
+            if seg.passes>109{return Err(Error::Unsupported("JPX gray53 multiple segments"));}
+            seg.bytes.extend_from_slice(&data[e.data.clone()]);
+        }
+    }
+    for ((ri,pi,_,block_index),seg) in segments{
+            let precinct=&t.resolutions[ri].precincts[pi];
+            let band=precinct.bands.iter().find(|b|b.band==seg.band).ok_or(Error::Invalid("JPX gray53 band"))?;
+            let block=*band.blocks.get(block_index).ok_or(Error::Invalid("JPX gray53 block"))?;
+            let bi=band_index(seg.band);
             let qi=if ri==0{0}else{3*(ri-1)+bi};
             let step=q.steps.get(qi).ok_or(Error::Invalid("JPX gray53 quantization step"))?;
-            let plane=i32::from(q.guard_bits)+i32::from(step.exponent)-2-i32::from(e.zero_bit_planes);
+            let plane=i32::from(q.guard_bits)+i32::from(step.exponent)-2-i32::from(seg.zero);
             if !(0..=30).contains(&plane){return Err(Error::Invalid("JPX gray53 highest bitplane"));}
             let (bw,bh)=(block.width() as usize,block.height() as usize);
-            let charge=bw.checked_mul(bh).and_then(|n|n.checked_mul(usize::from(e.passes))).ok_or(Error::Limit("JPX gray53 work"))?;
+            let charge=bw.checked_mul(bh).and_then(|n|n.checked_mul(usize::from(seg.passes))).ok_or(Error::Limit("JPX gray53 work"))?;
             *work=work.checked_add(charge).ok_or(Error::Limit("JPX gray53 work"))?;
             if *work>MAX_WORK{return Err(Error::Limit("JPX gray53 work"));}
-            let coeff=ebcot::decode_codeblock(&data[e.data.clone()],bw,bh,e.band,plane as u8,e.passes,0)?.signed_coefficients();
+            let coeff=ebcot::decode_codeblock(&seg.bytes,bw,bh,seg.band,plane as u8,seg.passes,0)?.signed_coefficients();
             let target=&mut planes[ri][if ri==0{0}else{bi-1}];
             let b=target.bounds;
             if block.x0<b.x0||block.y0<b.y0||block.x1>b.x1||block.y1>b.y1{
@@ -107,7 +133,6 @@ fn decode_tile(data:&[u8],c:&Codestream,plan:&geometry::TilePlan,work:&mut usize
                 let start=(oy+y)*stride+ox;
                 target.values[start..start+bw].copy_from_slice(&coeff[y*bw..(y+1)*bw]);
             }
-        }
     }
     let details:Vec<_>=planes.iter().skip(1).map(|r|Detail53{hl:&r[0].values,lh:&r[1].values,hh:&r[2].values}).collect();
     wavelet53::inverse53_levels(w,ht,t.bounds.x0 as u32,t.bounds.y0 as u32,&planes[0][0].values,&details)
@@ -167,5 +192,42 @@ mod tests{
         let last=c.tile_parts.last().unwrap().span.clone();
         a.drain(last);
         assert!(decode_gray53(&a).is_err());
+    }
+
+    // Pillow/OpenJPEG 2.5.4: reversible, 4x4 codeblocks, quality_mode=rates,
+    // layers [8,1], [16,4,1], [8,1]; locally verified full roundtrip.
+    const LAYERS_TWO:&str="ff4fff510029000000000010000000100000000000000000000000100000001000000000000000000001070101ff52000c00000002000100000001ff5c00074040484850ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000001190001ff9380b3c3e4f0e00c95a7097833b10ac5610e0564fe40623008e7ed12fda25fb447f68880107413c0cfd858fbb88a26f9203343366a9f12917bec1f1551fe6f7ea896e2f88a32095f0ae43c39ec1d725fe2255f58140c182dc70a88dff2a3a15f9df168fb69ab0866f37fe5f6867f00fbed0bfe023f6847de15f6847f00ecbf008bf009bf00afe6140eca8c3e1ea52a6011abada724a87bf27d7d691076f8f0a606eead096b18d696b429bc14628e22e3379b3e65253e1a1298a229c753bd7fbd0edae9cf8c5a4f42a64830009dfb5c40bfa25041fc62dea96f1a3a91db25e1cee3ced413ddde0c188a21e63434bedf09706b82743cec165d118576e42faee5f8172f21a6c8742ade9fd3ec7fffd9";
+    #[test]fn gray53_layers_two(){
+        let a=decode_gray53(&hex(LAYERS_TWO)).unwrap();
+        assert_eq!((a.width,a.height),(16,16));
+        assert_eq!(a.pixels,(0..256).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    const LAYERS_THREE:&str="ff4fff5100290000000000110000000d0000000000000000000000110000000d00000000000000000001070101ff52000c00000003000100000001ff5c00074040484850ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000001070001ff9380b9e3f1fc5c4c401428ab09409e5c13a115684241d5140b08f2312b085180e32885e0510005603632a78d47ff32f3fb447f688ffb416fa832fa82ff34140c1aa6f9227eee372890a68137ce89c26f03b7473c4c670852642432675ef63b477f01025fb6a402b096425c2b667de74c637f0b70446e3c478d68af4f4d0b2a19c04ffd80ff5a19fb427f684fda0df7037d403f701fdc07fc00b1fc01ff402bf802ff0030b0f239c8b1b1d1000ab274de1d5f94e468304f02fa6e1a920191654509c16d7c8d06a871df3c80461d549fbf96edcc3e67bf23d1243105870c2f00022701ef9ba502b171899f0e35a574f70ef133095f0c1c11dd977fffd9";
+    #[test]fn gray53_layers_three(){
+        let a=decode_gray53(&hex(LAYERS_THREE)).unwrap();
+        assert_eq!((a.width,a.height),(17,13));
+        assert_eq!(a.pixels,(0..221).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    const LAYERS_TILED:&str="ff4fff51002900000000000d0000000b0000000000000000000000070000000600000000000000000001070101ff52000c00000002000000000001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000004e0001ff93e7e027e1be17861054ee7c79dddf52d41811c49f8b790d3f98d52508e0ecfce27e80ff202fd60859af419d07af18973fd52509b99a6057b9bd46713fa4bfa272ff90000a0001000000500001ff93f3f804f87f84f0bc20105685dd1135ac244c9b7d148b0372b9505c0bedfce0be815f581cf9c1fd409f5808f54f326169a4d5b7b8b1f0a7e59cc704017fec29a2716aff90000a0002000000470001ff93ebe016e13f106be0140c208ee1ea0174ea150c374039669f0f9631728afce17ea03fa03fce1088342b617f680bf906542e461bfec2538c99bfff90000a00030000004b0001ff93f3705e13f058be1bf18308d41185b0c309b2088e0be847e357c2037c66fce07ea05fa807ec02fa047c80404f26b39fd13def12b2752d5eaec97b092f3fffd9";
+    #[test]fn gray53_layers_tiled(){
+        let a=decode_gray53(&hex(LAYERS_TILED)).unwrap();
+        assert_eq!((a.width,a.height),(13,11));
+        assert_eq!(a.pixels,(0..143).map(|i|((i*37+23)%256)as u8).collect::<Vec<_>>());
+    }
+    #[test]fn gray53_layers_split_and_prefix(){
+        let b=hex(LAYERS_THREE);
+        let p=packet::inspect_packets(&b,0).unwrap();
+        assert!(p.packets.iter().flat_map(|p|&p.contributions).any(|e|e.first_pass>0));
+        let full=decode_gray53(&b).unwrap();
+        assert_eq!(decode_gray53_layers(&b,3).unwrap(),full);
+        let preview=decode_gray53_layers(&b,1).unwrap();
+        assert_eq!((preview.width,preview.height),(full.width,full.height));
+        assert_ne!(preview.pixels,full.pixels);
+    }
+    #[test]fn gray53_layers_invalid_limits(){
+        let b=hex(LAYERS_TWO);
+        assert!(decode_gray53_layers(&b,0).is_err());
+        assert!(decode_gray53_layers(&b,3).is_err());
+        assert!(decode_gray53_layers(&b[..b.len()-1],1).is_err());
     }
 }
