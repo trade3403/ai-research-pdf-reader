@@ -106,3 +106,6 @@ pub use font::{FontTag,FontFlavor,FontContainerKind,FontLimits,FontTableRecord,F
 
 pub mod font_metrics;
 pub use font_metrics::{FontBounds,FontHead,TrueTypeMaxima,FontMaxp,HorizontalHeader,GlyphHorizontalMetric,FontMetricLimits,FontMetrics,FontScale,parse_font_metrics};
+
+pub mod font_cmap;
+pub use font_cmap::{CmapFormat,CmapSource,CmapLimits,UnicodeCmap,parse_unicode_cmap};

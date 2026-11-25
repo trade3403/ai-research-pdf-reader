@@ -88,7 +88,7 @@ fn parse_head(b:&[u8],flavor:FontFlavor)->Result<FontHead,Error>{
     Ok(FontHead{revision_raw:i32::from_be_bytes(bytes_at(b,4)?),flags:u16_at(b,16)?,
         units_per_em,bounds,mac_style:u16_at(b,44)?,lowest_rec_ppem:u16_at(b,46)?,loca_format})
 }
-fn parse_maxp(b:&[u8],flavor:FontFlavor,limits:FontMetricLimits)->Result<FontMaxp,Error>{
+pub(crate) fn parse_maxp(b:&[u8],flavor:FontFlavor,limits:FontMetricLimits)->Result<FontMaxp,Error>{
     let version=u32_at(b,0)?;
     let glyph_count=u16_at(b,4)?;
     if glyph_count==0{return Err(Error::Invalid("font zero glyphs"));}

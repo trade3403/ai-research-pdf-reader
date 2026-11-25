@@ -16,6 +16,7 @@ Earlier runs and their revision-specific acceptance records are retained in READ
 | [#62](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45567776959) | 5dbe493b11d78780cf09c05288ffe884dfe9a855 | 328/328 | 328/328 | 328/328 | All passed |
 | [#63](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949) | ebaddc59e4aabc93e41dd4646be6aba5957f06ae | 340/340 | 340/340 | 340/340 | All passed |
 | [#64](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570061454) | f0485362c0a67de8c586a6b6f3ad42634e604020 | 354/354 | 354/354 | 354/354 | All passed |
+| [#65](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570569717) | 3c55953c02ffadb29632d0e7a9e2fec729723aa2 | 368/368 | 368/368 | 368/368 | All passed |
 
 #53 exact SHA present in all job logs; 0 failed, 0 ignored, 714 executions passed.
 Artifacts metadata verified, unexpired at check:
@@ -47,3 +48,5 @@ Lock artifacts (metadata, not installer): [macOS](https://github.com/trade3403/a
 #63 completed: exact revision present in all three job logs; 340 passed per platform, zero failed/ignored, locked release profiles finished. Lock artifact metadata verified: [Windows](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949/artifacts/15001535934), [macOS](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949/artifacts/15001360670), [Ubuntu](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45568272949/artifacts/15001680064). Not installable binaries; extracted lock equality unverified.
 
 #64 completed: exact revision present in all three job logs; 354 passed per platform, zero failed/ignored, locked release profiles finished. Lock artifact metadata verified: [Windows](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570061454/artifacts/15001094429), [macOS](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570061454/artifacts/15001587923), [Ubuntu](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570061454/artifacts/15000759441). Not installable binaries; extracted lock equality unverified.
+
+#65 completed: exact revision present in all three job logs; 368 passed per platform, zero failed/ignored, locked release profiles finished. Lock artifact metadata verified: [macOS](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570569717/artifacts/15002195895), [Ubuntu](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570569717/artifacts/15001643141), [Windows](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45570569717/artifacts/15001178901). Not installable binaries; extracted lock equality unverified.
