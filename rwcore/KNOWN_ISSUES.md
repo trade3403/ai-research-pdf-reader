@@ -135,3 +135,5 @@
 - C4.4c3b: raw metadata and work charge independently checked; typed payload equality shares standalone production parsers, not an external semantic oracle. Full compilation CI pending; no native Type 8 in fixtures. Nested dependency closure, cycle protection and actual filtered lookup execution remain outstanding, as do complete shaping and Word fidelity.
 
 - C4.4c4a: direct reference inventory is conservative (includes unmatchable rules); not a proof of runtime reachability. Caller supplies full LookupList count; no font identity proof or closure/cycle rejection. Real raw action census and runtime guards remain outstanding. No actual substitution, complete shaping or Word fidelity claim.
+
+- C4.4c4b: reference covers stored actions, not dynamic reachability. No self references observed in selected fixtures, not a proof that mutual cycles are absent. Closure, static cycle diagnostics and runtime execution guards remain separate. No actual substitution or full shaping acceptance.

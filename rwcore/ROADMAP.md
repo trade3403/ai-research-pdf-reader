@@ -76,8 +76,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4c2 | Real Script/LangSys/feature base plan reference | Verified |
 | C4.4c3a | Bounded GSUB lookup target compilation | Verified |
 | C4.4c3b | Real-font lookup compilation reference | Verified |
-| C4.4c4a | Bounded nested GSUB lookup dependency discovery | Source implemented; CI pending |
-| C4.4c4b | Real raw contextual dependency reference | Planned |
+| C4.4c4a | Bounded nested GSUB lookup dependency discovery | Verified |
+| C4.4c4b | Real raw contextual dependency reference | Source implemented; CI pending |
+| C4.4c4c | Bounded static dependency closure and cycle diagnostics | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

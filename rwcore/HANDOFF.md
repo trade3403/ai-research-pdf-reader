@@ -91,3 +91,6 @@ C4.4c3b source pending CI; parent CI #116 verified 790 tests per platform. Read 
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4c4a source pending CI; parent CI #117 verified 797 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Direct dependency inventory retains cycles and does not execute or resolve closure.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4c4b source pending CI; parent CI #118 verified 807 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Static reference inventory is not execution or cycle analysis.
