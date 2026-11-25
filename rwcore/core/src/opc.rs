@@ -92,6 +92,16 @@ pub(crate) fn open_archive(bytes: &[u8], limits: Limits) -> Result<ZipArchive<Cu
 
 /// No file extraction, network access, macro execution or writes.
 pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
+    read_docx_impl(bytes, limits, false)
+}
+
+/// Opt-in strict loading of referenced header/footer stories and page settings.
+/// Ordinary read_docx remains a metadata-only reader for these resources.
+pub fn read_docx_with_stories(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
+    read_docx_impl(bytes, limits, true)
+}
+
+fn read_docx_impl(bytes: &[u8], limits: Limits, load_stories: bool) -> Result<Document, Error> {
     let mut zip = open_archive(bytes, limits)?;
     let graph = crate::package::graph(&mut zip, limits)?;
     let main_bytes = part(&mut zip, &graph.main_part, limits)?;
@@ -238,6 +248,9 @@ pub fn read_docx(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
             properties: None,
             end: SectionEnd::Implicit,
         });
+    }
+    if load_stories {
+        document.header_footer = Some(crate::stories::load(&mut zip, &graph, &document.sections, limits)?);
     }
     Ok(document)
 }

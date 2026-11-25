@@ -9,6 +9,8 @@ pub struct Document {
     pub numbering: Option<crate::numbering::NumberingCatalog>,
     /// Ordered top-level content ranges; section properties terminate their own range.
     pub sections: Vec<crate::section::DocumentSection>,
+    /// Loaded only by read_docx_with_stories.
+    pub header_footer: Option<crate::stories::StoryCatalog>,
     pub diagnostics: Vec<Diagnostic>,
 }
 

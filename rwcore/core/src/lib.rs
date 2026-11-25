@@ -23,3 +23,7 @@ pub use section::{parse_section, SectionProperties, DocumentSection, SectionEnd}
 
 pub mod geometry;
 pub use geometry::{compute_page_geometry, PageGeometry, Rect, GutterSide};
+
+pub mod stories;
+pub use opc::read_docx_with_stories;
+pub use stories::{Story, StoryCatalog, parse_story, parse_page_settings, PageSettings};
