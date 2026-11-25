@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D1.11c [#116 / 45684415371](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45684415371) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45684415371/job/139453098073) 五组差异：document_reference.rs:83/130、document.rs:514、paragraph.rs:409、protection.rs:496。逐字按rustfmt日志修复，仅格式，不改变算法、预算、审计或测试。真实专项查询时仍运行（科学保护翻译测试），尚未取得第三轮数值恢复结果；未主动取消。待修复版全量验收，不提前进入D1.11d。
+
 2026-11-26 D1.11b 基线 994c450583adad81bdde84ae7bacb704330ff8ec / [#115 / 45675613889](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45675613889) 全量 success；140 workspace +56 portable=196/196。INT8 269块首轮234接受、35拒绝，beam2恢复6，最终240/269（89.2%）通过词面审计、29拒绝，5159/6036词、240数字串、249内部段，399.340808s、122372KiB RSS。最终87次候选失败中数值不一致51、保护内容缺失14、生成10、无关内容6、重复4、百分比2；FP32 8样本4接受4拒绝。#114 相同覆盖。用户授权D1.11c：显式opt-in第三轮，原D1.11b首轮及beam2恢复结果均不重算，仅最终含NumericMismatch/PercentageMismatch的拒译块最多32块一次数值保护候选；扩展原Plan在未保护gap内绑定含数字的完整ASCII字母数字下划线标识符（如2D/Vs30），已有公式/数值/单位/术语优先，原span预算及UTF8偏移不改；gap beam2按数字字符串及百分比多重集筛选已结束且未截断候选，不删除、补写或猜测数字；恢复后同时经过扩展Plan和原Plan审计、文档覆盖及输出预算。失败保留原拒译及新增诊断，成功保留旧拒译证据。新增3 Rust测试（标识符保护、拒绝数字缺失重复、第三轮恢复保留旧结果）；真实INT8完整269块启用第三轮，FP32 8样本保持原路径，Python核验初轮>=234、第二轮>=240、第三轮恢复数与诊断一致，原独立数值/范围/拼接检查不变。仍用原CI限时和免费CPU，不保证覆盖提升或语义准确率；额外gap切分可能降低语境质量，尚无独立参考译文，不可作为发布合格依据。未本地编译，待CI。D2独立。
 
 2026-11-26 D1.11b [#114 / 45672855813](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45672855813) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45672855813/job/139412487094) document.rs:204 max_retries if/else 需换行。按 rustfmt 日志逐字修复，不改变算法、重试上限、覆盖审计或历史测试。真实专项查询时仍运行（整句术语约束测试），未取消，未取得恢复率结果；待新提交全量验收，不提前启动D1.11c。

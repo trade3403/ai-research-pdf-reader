@@ -496,7 +496,10 @@ mod tests {
         assert!(normal.spans().iter().all(|s| extended.spans().contains(s)));
         assert!(extended.spans().iter().any(|s| s.original == "2D"));
         assert!(extended.spans().iter().any(|s| s.original == "Vs30"));
-        assert!(extended.gaps().iter().all(|s| !s.bytes().any(|b| b.is_ascii_digit())));
+        assert!(extended
+            .gaps()
+            .iter()
+            .all(|s| !s.bytes().any(|b| b.is_ascii_digit())));
         let result = extended.assemble(&extended.gaps()).unwrap();
         assert!(result.contains("2D") && result.contains("Vs30"));
         assert!(result.contains("0.1 g") && result.contains("$x=2$"));

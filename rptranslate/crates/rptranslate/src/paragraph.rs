@@ -409,7 +409,11 @@ fn select(
     select_strategies(
         source,
         plan,
-        &[Strategy::Whole, Strategy::Constrained, Strategy::ProtectedGaps],
+        &[
+            Strategy::Whole,
+            Strategy::Constrained,
+            Strategy::ProtectedGaps,
+        ],
         generate,
     )
 }

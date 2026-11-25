@@ -514,10 +514,22 @@ mod tests {
         assert_eq!(result.numeric.len(), 2);
         assert_eq!(result.numeric[0].previous, Some(rejection(true)));
         assert_eq!(result.numeric[1].failure, Some(rejection(false)));
-        assert_eq!(result.previous.document.blocks[0].outcome, Ok(accepted("A")));
-        assert_eq!(result.previous.document.blocks[1].outcome, Ok(accepted("B")));
-        assert_eq!(result.previous.document.blocks[2].outcome, Err(rejection(true)));
-        assert_eq!(result.previous.document.blocks[3].outcome, Err(rejection(false)));
+        assert_eq!(
+            result.previous.document.blocks[0].outcome,
+            Ok(accepted("A"))
+        );
+        assert_eq!(
+            result.previous.document.blocks[1].outcome,
+            Ok(accepted("B"))
+        );
+        assert_eq!(
+            result.previous.document.blocks[2].outcome,
+            Err(rejection(true))
+        );
+        assert_eq!(
+            result.previous.document.blocks[3].outcome,
+            Err(rejection(false))
+        );
     }
 
     #[test]

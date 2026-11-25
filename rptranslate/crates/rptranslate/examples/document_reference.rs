@@ -83,7 +83,11 @@ fn main() -> Result<(), String> {
             Kernel::Auto,
         )
         .map_err(|e| format!("{e:?}"))?;
-        (report.previous.document, report.previous.retries, report.numeric)
+        (
+            report.previous.document,
+            report.previous.retries,
+            report.numeric,
+        )
     } else {
         let report = document::translate(
             &session,
@@ -130,7 +134,11 @@ fn main() -> Result<(), String> {
         diagnostics(retry.id, "initial", &retry.initial);
     }
     for record in numeric {
-        println!("NUMERIC_RETRY\t{}\t{}", record.id, record.previous.is_some());
+        println!(
+            "NUMERIC_RETRY\t{}\t{}",
+            record.id,
+            record.previous.is_some()
+        );
         if let Some(error) = record.previous {
             diagnostics(record.id, "pre_numeric", &error);
         }
