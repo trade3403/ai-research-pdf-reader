@@ -18,7 +18,7 @@
 | D1.5a | 已通过 | 稳定 Softmax、单头缩放点积 Attention、组合 mask |
 | D1.5b | 已通过 | 多头注意力、LayerNorm、QKV 投影 |
 | D1.6a | 已通过 | Embedding、Marian 位置编码、激活与 FFN |
-| D1.6b | 待验证 | post-norm Encoder 单层、多层与源 mask |
+| D1.6b | 已通过 | post-norm Encoder 单层、多层与源 mask |
 | D1.6c–D1.6e | 未开始 | Decoder、联合推理与逐层对照 |
 | D1.7 | 未开始 | Beam Search |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -89,7 +89,7 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 新增自主 embedding lookup、显式 scale、Marian grouped sin/cos 位置编码（含奇数宽度、offset、上限）、ReLU/GELU tanh/SiLU、两层 FFN。独立 NumPy 2.3.5 生成位置与 FFN 参考数组；实际验收：首轮 [45517949056](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517949056) rustfmt 失败，按日志修正两组格式；[修复提交 68b3ae7](https://github.com/trade3403/ai-research-pdf-reader/commit/68b3ae78f04b2e2db76a1eb836d1a0ae2a744ed8)，[复测 45518013150](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518013150) completed/success。新增四项测试、格式、Clippy、workspace 单元测试、Release、自检、强制 portable-only 全部通过。D1.6a 已通过；D1.6b 待研发，完整 D1.6 尚未验收，不增加整阶段计数。未加载真实模型或测试推理性能。[技术文档](D1.6_TRANSFORMER.md)。
 
 ## 当前阶段 D1.6b
-新增 EncoderLayer、Norm、1–64 层顺序执行、token embedding 入口、显式源 padding keep mask。实际 NumPy 2.3.5 FP64 合成参考对照首层 attention/post-norm、首层及双层输出，验证改变被 mask 的 token 不影响有效位置。CI 待验收。
+新增 EncoderLayer、Norm、1–64 层顺序执行、token embedding 入口、显式源 padding keep mask。实际 NumPy 2.3.5 FP64 合成参考对照首层 attention/post-norm、首层及双层输出，验证改变被 mask 的 token 不影响有效位置。实际验收：首轮 [45518807677](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518807677) rustfmt 失败，修正13组格式；第二轮 [45518859608](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518859608) Clippy 指出 FP32 参考常量 excessive_precision，按 FP32 表示修正，不改变测试容差；[最终代码 513bfa1](https://github.com/trade3403/ai-research-pdf-reader/commit/513bfa15639d3a1b96cb8f35b49c3204c3eb38ef)，[复测 45518927770](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518927770) completed/success。两层 Encoder 参考对照、mask 隔离、embedding 入口和边界测试通过，workspace 格式、Clippy、测试、Release、自检与 portable-only 通过。未加载真实模型、未测推理性能，D1.6b 通过，D1.6 整体尚未验收。
 
 ## 下一阶段 D1.6c
 Decoder 自注意力（causal）、encoder cross attention、FFN、残差归一化及逐层对照。
