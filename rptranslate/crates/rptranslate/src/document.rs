@@ -330,6 +330,182 @@ pub fn translate_with_numeric_retry(
     })
 }
 
+/// Structural and lexical evidence only; never a semantic quality score.
+#[derive(Debug, PartialEq, Eq)]
+pub struct QualitySummary {
+    pub blocks: usize,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub source_words: usize,
+    pub accepted_words: usize,
+    pub source_numbers: usize,
+    pub accepted_numbers: usize,
+    pub segments: usize,
+    pub beam_recovered: usize,
+    pub numeric_recovered: usize,
+    pub first_pass_accepted: usize,
+}
+
+impl QualitySummary {
+    /// Human review is mandatory even when all blocks pass lexical audit.
+    pub fn needs_semantic_review(&self) -> bool {
+        true
+    }
+
+    pub fn has_rejections(&self) -> bool {
+        self.rejected != 0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum QualityError {
+    Input,
+    Mapping,
+    Provenance(u32),
+    Coverage(u32),
+    Lexical(u32, paragraph::QualityIssue),
+    Plan(u32, crate::protection::Error),
+}
+
+fn eligible(error: &paragraph::Error, numeric: bool) -> bool {
+    matches!(
+        error,
+        paragraph::Error::Rejected { attempts, .. }
+            if attempts.iter().any(|a| match &a.failure {
+                paragraph::Failure::Quality(issue) => {
+                    !numeric || matches!(
+                        issue,
+                        paragraph::QualityIssue::NumericMismatch
+                            | paragraph::QualityIssue::PercentageMismatch
+                    )
+                }
+                paragraph::Failure::Generation(_) => false,
+            })
+    )
+}
+
+/// Verify the source mapping, every accepted segment and recovery provenance
+/// without any inference. This is a lexical report, not a release approval.
+/// The caller must supply the original blocks and the same glossary engine.
+pub fn assess(
+    blocks: &[Block<'_>],
+    report: &NumericRecoveryReport,
+    engine: &ContextEngine,
+) -> Result<QualitySummary, QualityError> {
+    let results = &report.previous.document.blocks;
+    if blocks.is_empty() || blocks.len() > MAX_BLOCKS {
+        return Err(QualityError::Input);
+    }
+    if results.len() != blocks.len()
+        || blocks.windows(2).any(|w| w[0].id >= w[1].id)
+        || blocks.iter().zip(results).any(|(b, r)| b.id != r.id)
+    {
+        return Err(QualityError::Mapping);
+    }
+    let retries = &report.previous.retries;
+    let numeric = &report.numeric;
+    if retries.len() > MAX_RETRIES
+        || numeric.len() > MAX_NUMERIC_RETRIES
+        || retries.windows(2).any(|w| w[0].id >= w[1].id)
+        || numeric.windows(2).any(|w| w[0].id >= w[1].id)
+    {
+        return Err(QualityError::Mapping);
+    }
+    let mut summary = QualitySummary {
+        blocks: blocks.len(),
+        accepted: 0,
+        rejected: 0,
+        source_words: 0,
+        accepted_words: 0,
+        source_numbers: 0,
+        accepted_numbers: 0,
+        segments: 0,
+        beam_recovered: 0,
+        numeric_recovered: 0,
+        first_pass_accepted: 0,
+    };
+    let mut input = 0;
+    let mut output = 0;
+    for (block, result) in blocks.iter().zip(results) {
+        input += block.source.len();
+        if input > MAX_INPUT_BYTES
+            || block.source.len() > MAX_BLOCK_BYTES
+            || block.source.trim().is_empty()
+        {
+            return Err(QualityError::Input);
+        }
+        let words = block.source.split_whitespace().count();
+        let numbers = paragraph::numeric_string_count(block.source);
+        summary.source_words += words;
+        summary.source_numbers += numbers;
+        let beam = retries
+            .binary_search_by_key(&block.id, |r| r.id)
+            .ok()
+            .map(|i| &retries[i]);
+        let num = numeric
+            .binary_search_by_key(&block.id, |r| r.id)
+            .ok()
+            .map(|i| &numeric[i]);
+        let accepted = result.outcome.is_ok();
+        if let Some(record) = beam {
+            if !eligible(&record.initial, false)
+                || (record.recovered && (!accepted || num.is_some()))
+                || (!record.recovered && accepted && num.is_none())
+            {
+                return Err(QualityError::Provenance(block.id));
+            }
+            summary.beam_recovered += usize::from(record.recovered);
+        }
+        if let Some(record) = num {
+            match (&record.previous, &record.failure, &result.outcome) {
+                (Some(old), None, Ok(_)) if eligible(old, true) => {
+                    summary.numeric_recovered += 1;
+                }
+                (None, Some(_), Err(old)) if eligible(old, true) => {}
+                _ => return Err(QualityError::Provenance(block.id)),
+            }
+        }
+        if let Ok(translated) = &result.outcome {
+            if !complete(block.source, translated) {
+                return Err(QualityError::Coverage(block.id));
+            }
+            output += translated.text.len();
+            if output > MAX_OUTPUT_BYTES || translated.segments.len() > 64 {
+                return Err(QualityError::Coverage(block.id));
+            }
+            for segment in &translated.segments {
+                let source = &block.source[segment.source.clone()];
+                let glossary = engine.glossary(segment.domain);
+                let plan = crate::protection::Plan::prepare_indexed(source, glossary)
+                    .map_err(|e| QualityError::Plan(block.id, e))?;
+                paragraph::audit(source, &plan, &segment.text)
+                    .map_err(|e| QualityError::Lexical(block.id, e))?;
+                if num.is_some() {
+                    let extended = crate::protection::Plan::prepare_indexed_numeric(source, glossary)
+                        .map_err(|e| QualityError::Plan(block.id, e))?;
+                    paragraph::audit(source, &extended, &segment.text)
+                        .map_err(|e| QualityError::Lexical(block.id, e))?;
+                }
+            }
+            summary.accepted += 1;
+            summary.accepted_words += words;
+            summary.accepted_numbers += numbers;
+            summary.segments += translated.segments.len();
+        } else {
+            summary.rejected += 1;
+        }
+    }
+    for id in retries.iter().map(|r| r.id).chain(numeric.iter().map(|r| r.id)) {
+        if blocks.binary_search_by_key(&id, |b| b.id).is_err() {
+            return Err(QualityError::Provenance(id));
+        }
+    }
+    summary.first_pass_accepted = summary.accepted
+        - summary.beam_recovered
+        - summary.numeric_recovered;
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +706,75 @@ mod tests {
             result.previous.document.blocks[3].outcome,
             Err(rejection(false))
         );
+    }
+
+    #[test]
+    fn quality_summary_reports_rejections_and_needs_review() {
+        let blocks = [Block { id: 1, source: "A" }, Block { id: 2, source: "B" }];
+        let first = translate_with(&blocks, |source| {
+            if source == "A" {
+                Ok(accepted(source))
+            } else {
+                Err(rejection(true))
+            }
+        })
+        .unwrap();
+        let previous = recover_with(&blocks, first, 0, |_| panic!("no retry")).unwrap();
+        let report = recover_numeric_with(&blocks, previous, 0, |_| panic!("no retry")).unwrap();
+        let engine = ContextEngine::builtin().unwrap();
+        let summary = assess(&blocks, &report, &engine).unwrap();
+        assert_eq!(summary.accepted, 1);
+        assert_eq!(summary.rejected, 1);
+        assert_eq!(summary.source_words, 2);
+        assert_eq!(summary.accepted_words, 1);
+        assert!(summary.has_rejections());
+        assert!(summary.needs_semantic_review());
+    }
+
+    #[test]
+    fn quality_summary_rejects_forged_numeric_output() {
+        let blocks = [Block { id: 1, source: "2" }];
+        let document = translate_with(&blocks, |s| Ok(accepted(s))).unwrap();
+        let report = NumericRecoveryReport {
+            previous: RecoveryReport {
+                document,
+                retries: vec![],
+            },
+            numeric: vec![],
+        };
+        let engine = ContextEngine::builtin().unwrap();
+        assert_eq!(
+            assess(&blocks, &report, &engine),
+            Err(QualityError::Lexical(1, paragraph::QualityIssue::NumericMismatch))
+        );
+    }
+
+    #[test]
+    fn quality_summary_rejects_unknown_and_contradictory_provenance() {
+        let blocks = [Block { id: 1, source: "A" }];
+        let document = translate_with(&blocks, |s| Ok(accepted(s))).unwrap();
+        let mut report = NumericRecoveryReport {
+            previous: RecoveryReport {
+                document,
+                retries: vec![RetryRecord {
+                    id: 99,
+                    initial: rejection(true),
+                    recovered: true,
+                }],
+            },
+            numeric: vec![],
+        };
+        let engine = ContextEngine::builtin().unwrap();
+        assert_eq!(assess(&blocks, &report, &engine), Err(QualityError::Provenance(99)));
+        report.previous.retries[0].id = 1;
+        report.previous.retries[0].recovered = false;
+        assert_eq!(assess(&blocks, &report, &engine), Err(QualityError::Provenance(1)));
+        report.previous.retries[0].recovered = true;
+        let summary = assess(&blocks, &report, &engine).unwrap();
+        assert_eq!(summary.first_pass_accepted, 0);
+        assert_eq!(summary.beam_recovered, 1);
+        assert!(!summary.has_rejections());
+        assert!(summary.needs_semantic_review());
     }
 
     #[test]

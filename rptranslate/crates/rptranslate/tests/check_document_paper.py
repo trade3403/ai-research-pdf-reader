@@ -81,9 +81,14 @@ def check(mode, expected):
         "UnexpectedBoilerplate", "MissingSurface", "ExtraSurface", "Conflict",
         "RepeatedClause",
     }
+    summary = None
     for line in lines:
         fields = line.split("\t")
-        if fields[0] == "RETRY":
+        assert summary is None, "unexpected rows after quality summary"
+        if fields[0] == "SUMMARY":
+            assert len(fields) == 14
+            summary = fields[1:]
+        elif fields[0] == "RETRY":
             _, key, recovered = fields
             key = int(key)
             assert mode == "int8" and key not in retries
@@ -133,8 +138,23 @@ def check(mode, expected):
     baseline_rejected = len(expected) - baseline_accepted
     if mode == "int8":
         assert baseline_accepted >= 234 and previous_accepted >= 240
+        assert len(accepted) >= 242 and accepted_words >= 5221 and accepted_numbers >= 245
     else:
         assert not retries and not numeric
+        assert len(accepted) >= 4
+    source_numbers = sum(len(numbers.findall(text)) for _, text in expected)
+    independent = [
+        len(expected), len(accepted), len(rejected), total_words,
+        accepted_words, source_numbers, accepted_numbers, segment_count,
+        baseline_accepted, recovered, numeric_recovered,
+    ]
+    assert summary is not None
+    assert [int(value) for value in summary[:11]] == independent
+    assert summary[11:] == [str(bool(rejected)).lower(), "true"]
+    print(f"DOCUMENT_QUALITY PASS precision={mode} rust_python_equal=true "
+          f"accepted={len(accepted)} rejected={len(rejected)} "
+          f"source_numbers={source_numbers} accepted_numbers={accepted_numbers} "
+          f"semantic_review_required=true release_approval=false", flush=True)
     print(f"DOCUMENT_NUMERIC_RECOVERY PASS precision={mode} previous_accepted={previous_accepted} "
           f"retried={len(numeric)} recovered={numeric_recovered} "
           f"final_accepted={len(accepted)} final_rejected={len(rejected)}", flush=True)

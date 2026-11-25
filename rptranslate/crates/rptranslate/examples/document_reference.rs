@@ -73,8 +73,8 @@ fn main() -> Result<(), String> {
         max_new: 128,
         mode: GenerationMode::Cached,
     };
-    let (report, retries, numeric) = if retry {
-        let report = document::translate_with_numeric_retry(
+    let recovery = if retry {
+        document::translate_with_numeric_retry(
             &session,
             &blocks,
             &engine,
@@ -82,12 +82,7 @@ fn main() -> Result<(), String> {
             options,
             Kernel::Auto,
         )
-        .map_err(|e| format!("{e:?}"))?;
-        (
-            report.previous.document,
-            report.previous.retries,
-            report.numeric,
-        )
+        .map_err(|e| format!("{e:?}"))?
     } else {
         let report = document::translate(
             &session,
@@ -98,9 +93,20 @@ fn main() -> Result<(), String> {
             Kernel::Auto,
         )
         .map_err(|e| format!("{e:?}"))?;
-        (report, Vec::new(), Vec::new())
+        document::NumericRecoveryReport {
+            previous: document::RecoveryReport {
+                document: report,
+                retries: Vec::new(),
+            },
+            numeric: Vec::new(),
+        }
     };
     let seconds = start.elapsed().as_secs_f64();
+    let summary = document::assess(&blocks, &recovery, &engine)
+        .map_err(|e| format!("quality assessment: {e:?}"))?;
+    let report = recovery.previous.document;
+    let retries = recovery.previous.retries;
+    let numeric = recovery.numeric;
     println!("DOCUMENT\t{precision}\t{load_ms:.6}\t{seconds:.9}");
     for block in &report.blocks {
         let id = block.id;
@@ -146,5 +152,21 @@ fn main() -> Result<(), String> {
             diagnostics(record.id, "numeric", &error);
         }
     }
+    println!(
+        "SUMMARY\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        summary.blocks,
+        summary.accepted,
+        summary.rejected,
+        summary.source_words,
+        summary.accepted_words,
+        summary.source_numbers,
+        summary.accepted_numbers,
+        summary.segments,
+        summary.first_pass_accepted,
+        summary.beam_recovered,
+        summary.numeric_recovered,
+        summary.has_rejections(),
+        summary.needs_semantic_review()
+    );
     Ok(())
 }

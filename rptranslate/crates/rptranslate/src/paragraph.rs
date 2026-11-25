@@ -298,6 +298,10 @@ fn repeated_clause(text: &str) -> bool {
     false
 }
 
+pub(crate) fn numeric_string_count(source: &str) -> usize {
+    numbers(source).values().sum()
+}
+
 /// Exact lexical numeric check for candidate selection, including percent binding.
 pub(crate) fn numeric_strings_match(source: &str, output: &str) -> bool {
     numbers(source) == numbers(output) && percentages(source) == percentages(output)
