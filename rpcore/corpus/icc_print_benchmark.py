@@ -30,13 +30,13 @@ GATE_MAX=12
 GATE_MEAN=3.0
 GATE_P95=6
 # These are engineering RGB8 thresholds, not perceptual Delta E thresholds.
-def reference(lib,data,rows):
+def reference(lib,data,rows,intent=1):
     buf=C.create_string_buffer(data)
     src=lib.cmsOpenProfileFromMem(buf,len(data));dst=lib.cmsCreate_sRGBProfile()
     t=None
     try:
         if not src or not dst:raise RuntimeError('reference profile open')
-        t=lib.cmsCreateTransform(src,CMYK_DOUBLE,dst,RGB8,1,0)
+        t=lib.cmsCreateTransform(src,CMYK_DOUBLE,dst,RGB8,intent,0)
         if not t:raise RuntimeError('reference transform')
         out=[]
         for row in rows:
@@ -55,13 +55,49 @@ def metadata(data):
         raise ValueError('expected bounded CMYK ICC')
     n=S.unpack_from('>I',data,128)[0]
     if n>1024 or 132+12*n>len(data):raise ValueError('ICC directory')
-    tags={}
+    tags={};media_white=None
     for i in range(n):
         key,off,size=S.unpack_from('>4sII',data,132+12*i)
         if off+size>len(data) or size<8:raise ValueError('ICC bounds')
+        if key==b'wtpt':
+            if size!=20 or data[off:off+8]!=b'XYZ '+bytes(4):raise ValueError('media white tag')
+            media_white=[v/65536 for v in S.unpack_from('>iii',data,off+8)]
+            if any(not 0<v<=2 for v in media_white):raise ValueError('media white range')
         tags[key.decode('ascii',errors='replace')]=data[off:off+4].decode('ascii',errors='replace')
     return {'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data),'version':data[8],
-            'class':data[12:16].decode('ascii'),'pcs':data[20:24].decode('ascii'),'tag_types':tags}
+            'class':data[12:16].decode('ascii'),'pcs':data[20:24].decode('ascii'),'tag_types':tags,'media_white_xyz':media_white}
+
+def absolute_print_gate(a,lib,work,data,meta,name):
+    """Independent absolute LCMS oracle, mandatory native paths, numeric output only."""
+    if meta['media_white_xyz'] is None:raise ValueError('missing media white')
+    tag=meta['tag_types'].get('A2B1')
+    if tag not in ('mft1','mft2','mAB '):raise ValueError('unsupported absolute A2B1')
+    want='mab_A2B1' if tag=='mAB ' else 'cmyk_A2B1'
+    result={'media_white_xyz':meta['media_white_xyz'],'rows':[],'pages':0}
+    for bits in (8,16):
+        samples=DENSE if bits==8 else [tuple(v*257+(1 if 0<v<255 else 0) for v in row) for row in DENSE]
+        for offset in range(0,len(samples),32):
+            pdf=work/'absolute.pdf'
+            size,rows=make_pdf(pdf,data,4,samples[offset:offset+32],bits,intent='AbsoluteColorimetric')
+            expected=reference(lib,data,rows,intent=3)
+            for dpi in (72,144):
+                label=f'{name}-absolute-{bits}-{offset}-{dpi}'
+                n,r,im,ri=render_pair(a,pdf,1,dpi,work,label,None)
+                diag=[v for k,v in n.items() if k.startswith('icc_diag_')]
+                if im is None or im.size!=tuple(v*dpi//72 for v in size):raise ValueError('absolute render size')
+                if (n.get('icc_vector_native'),n.get('icc_image_native'),n.get('icc_vector_alternate'),n.get('icc_image_alternate'))!=('1','1','0','0') or len(diag)!=2 or any(';'+want+';' not in d for d in diag):
+                    raise ValueError('absolute native A2B1 required')
+                result['pages']+=1
+                for row,ex in zip(rows,expected):
+                    nv,ns=zip(*(measure(im,tuple(v*dpi//72 for v in b)) for b in row['boxes']))
+                    parity=max(error(nv[0],v) for v in nv[:3])
+                    alpha=error(nv[3],[round((v*128+255*127)/255) for v in nv[2]])
+                    result['rows'].append({'case':label,'raw':row['raw'],'lcms_rgb':ex,'native_rgb':nv,
+                        'error':max(error(v,ex) for v in nv[:3]),'parity':parity,'alpha':alpha,'uniform':max(ns)==0})
+    errors=sorted(r['error'] for r in result['rows'])
+    result['max']=max(errors);result['mean']=statistics.mean(errors);result['p95']=errors[(95*len(errors)+99)//100-1]
+    result['pass']=len(errors)==512 and result['pages']==16 and result['max']<=GATE_MAX and result['mean']<=GATE_MEAN and result['p95']<=GATE_P95 and all(r['parity']<=1 and r['alpha']<=1 and r['uniform'] for r in result['rows'])
+    return result
 
 def main():
     p=argparse.ArgumentParser()
@@ -117,7 +153,8 @@ def main():
                 errors=sorted(r['lcms_error'] for r in entry['rows'])
                 metrics={'max':max(errors),'mean_max_channel':statistics.mean(errors),'p95_max_channel':errors[(95*len(errors)+99)//100-1]}
                 entry['metrics']=metrics
-                entry['status']='compared' if all(r['pass'] for r in entry['rows']) and metrics['max']<=GATE_MAX and metrics['mean_max_channel']<=GATE_MEAN and metrics['p95_max_channel']<=GATE_P95 else 'accuracy_failed'
+                entry['absolute']=absolute_print_gate(a,lib,work,data,entry,name)
+                entry['status']='compared' if entry['absolute']['pass'] and all(r['pass'] for r in entry['rows']) and metrics['max']<=GATE_MAX and metrics['mean_max_channel']<=GATE_MEAN and metrics['p95_max_channel']<=GATE_P95 else 'accuracy_failed'
             except (OSError,ValueError,RuntimeError) as e:
                 entry['reason']=str(e)[:300]
     (a.out/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
@@ -125,6 +162,8 @@ def main():
     for e in report['profiles']:
         tags=e.get('tag_types',{})
         lines.append(f"| {e['id']} | {tags.get('A2B0','—')} / {tags.get('A2B1','—')} | {e.get('path','—')} | {e['status']} | {len(e['rows'])} | {max((r['lcms_error'] for r in e['rows']),default='—')} | {e.get('metrics',{}).get('mean_max_channel','—')} | {e.get('metrics',{}).get('p95_max_channel','—')} |")
+        if 'absolute' in e:
+            v=e['absolute'];lines.append(f"\n- {e['id']} absolute: {len(v['rows'])} checks; max {v['max']}; mean {v['mean']}; P95 {v['p95']}; media white {v['media_white_xyz']}; {'PASS' if v['pass'] else 'FAIL'}")
         for d in e.get('diagnostics',[]):lines.append(f"\n- {e['id']}: {d}")
         if e.get('reason'):lines.append(f"\n- {e['id']}: {e['reason']}")
     lines+=['',f"Native A2B1 mandatory. LCMS RGB8 max <= {GATE_MAX}, mean maximum channel <= {GATE_MEAN}, p95 <= {GATE_P95}; image/stroke parity <=1, alpha <=1 and uniform patches. Poppler diagnostic only. No ICC/PDF/images exported."]

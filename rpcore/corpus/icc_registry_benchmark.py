@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.parse
-from icc_print_benchmark import metadata,reference,DENSE
+from icc_print_benchmark import metadata,reference,DENSE,absolute_print_gate
 from icc_render_benchmark import lcms,make_pdf,error
 from color_benchmark import measure
 from chart_benchmark import render_pair
@@ -92,7 +92,7 @@ def main():
                     e['status']='not_v4_mab';continue
                 # Required profile retains the published ID pin. Changed
                 # APTEC bytes may be evaluated, but never counted as verified.
-                if name==REQUIRED and not e['identity_match']:
+                if name==REQUIRED and not (e['identity_match'] and e['header_matches_computed']):
                     e['status']='identity_mismatch';continue
                 e['status']='reference_or_render_error'
                 e['renders']=[];native=True
@@ -128,6 +128,10 @@ def main():
                 expected=len(source)*len(bits_list)*len(dpi_list)
                 passed=native and len(errors)==expected and e['max_error']<=MAX_ERROR and e['mean_max_channel']<=MEAN_ERROR and e['p95']<=P95_ERROR and all(x['parity']<=1 and x['alpha']<=1 and x['uniform'] for x in e['rows'])
                 if passed and name==REQUIRED:
+                    e['status']='absolute_error'
+                    e['absolute']=absolute_print_gate(a,lib,work,data,e,'crpc6')
+                    passed=e['absolute']['pass']
+                if passed and name==REQUIRED:
                     e['status']='performance_error'
                     profile_path=work/'benchmark.icc';profile_path.write_bytes(data)
                     e['performance']=performance(a.icc_probe.resolve(),profile_path)
@@ -141,6 +145,8 @@ def main():
         lines.append(f"| {e['file']} | {e.get('version','—')} | {e.get('tag_types',{}).get('A2B1','—')} | {e['status']} | {len(e['rows'])} | {e.get('max_error','—')} | {e.get('mean_max_channel','—')} | {e.get('p95','—')} |")
         if 'profile_id' in e:
             lines.append(f"\n- {e['file']}: expected ID {e['expected_profile_id']}; header ID {e['profile_id']}; recomputed ID {e['computed_profile_id']}; SHA256 {e['sha256']}")
+        if 'absolute' in e:
+            v=e['absolute'];lines.append(f"\n- {e['file']} absolute: {len(v['rows'])} checks; max {v['max']}; mean {v['mean']}; P95 {v['p95']}; media white {v['media_white_xyz']}; {'PASS' if v['pass'] else 'FAIL'}")
         if 'performance' in e:
             v=e['performance']
             lines.append(f"\n- {e['file']}: parse {v['parse_us']} us; median {v['median_samples_per_second']} XYZ evaluations/s, {v['samples']} samples x 3 measured passes, checksum {v['checksum']}")
@@ -150,7 +156,7 @@ def main():
             'CRPC6: 512 paired checks, pinned header ID, native A2B1 both paths, max <=12/mean <=3/P95 <=6. Performance requires successful repeatable finite XYZ output, not a fixed speed on shared runners. APTEC identity mismatch is diagnostic only. No profile/PDF/image assets exported.']
     md='\n'.join(lines)+'\n';(a.out/'report.md').write_text(md);print(md)
     required=next(x for x in report['profiles'] if x['file']==REQUIRED)
-    return int(a.require_mab and (required['status']!='native_pass' or len(required['rows'])!=512 or len(required.get('renders',[]))!=16 or 'performance' not in required))
+    return int(a.require_mab and (required['status']!='native_pass' or len(required['rows'])!=512 or len(required.get('renders',[]))!=16 or not required.get('absolute',{}).get('pass',False) or 'performance' not in required))
 
 if __name__=='__main__':
     raise SystemExit(main())
