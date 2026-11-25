@@ -127,3 +127,6 @@ pub use font_flatten::{FlattenLimits,FlattenOptions,ContourOrientation,FlatConto
 
 pub mod font_raster;
 pub use font_raster::{GlyphFillRule,RasterTransform,RasterViewport,RasterLimits,RasterOptions,GlyphBitmap,rasterize_flat_glyph};
+
+pub mod font_render;
+pub use font_render::{RenderFontLimits,GlyphRenderLimits,GlyphRenderOptions,RenderedGlyph,TrueTypeRenderer,parse_true_type_renderer};
