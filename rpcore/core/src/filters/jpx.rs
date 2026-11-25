@@ -3,6 +3,7 @@
 //! No external runtime dependencies; unsupported structures fail closed.
 use crate::{Error,Result,MAX_BYTES};
 pub mod codestream;
+pub mod geometry;
 
 const SIGNATURE:&[u8]=b"\x00\x00\x00\x0cjP  \x0d\x0a\x87\x0a";
 const MAX_BOXES:usize=4096;
