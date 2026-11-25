@@ -44,7 +44,7 @@ fn namespace<'a>(root: roxmltree::Node<'a, '_>, name: &str) -> Result<&'a str, E
 }
 
 /// Parse top-level paragraphs, direct formatting, text, tabs and text breaks.
-/// Field instructions and cached results are retained separately; nested tables and drawings remain diagnostics;
+/// Field instructions and cached results are retained separately; nested tables and unsupported drawings remain diagnostics;
 /// unsupported top-level blocks retain their names.
 pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Result<Story, Error> {
     if bytes.len() > limits.max_part_bytes { return Err(Error::Limit("part bytes")); }
@@ -95,6 +95,10 @@ pub fn parse_story(bytes: &[u8], kind: HeaderFooterKind, limits: Limits) -> Resu
                         run.text.push('\t');
                     } else if named(item, ns, "br") && matches!(item.attribute((ns, "type")), None | Some("textWrapping")) {
                         run.text.push('\n');
+                    } else if named(item, ns, "drawing") {
+                        if let Err(e)=crate::drawing_inline::append_run_picture(&mut run,item){
+                            out.diagnostics.push(format!("Unsupported or invalid inline drawing: {e}"));
+                        }
                     } else {
                         out.diagnostics.push(format!("Unsupported story run element: {}", item.tag_name().name()));
                     }

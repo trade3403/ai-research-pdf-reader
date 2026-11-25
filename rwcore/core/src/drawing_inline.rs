@@ -85,14 +85,23 @@ pub fn parse_inline_picture(bytes:&[u8],limits:Limits)->Result<InlinePicture,Err
     if bytes.len()>limits.max_part_bytes{return Err(Error::Limit("part bytes"));}
     let tree=xml(bytes,limits)?;
     let root=tree.root_element();
-    let inline=if named(root,W,"drawing")||named(root,WS,"drawing"){
-        let wp=if named(root,W,"drawing"){WP}else{WPS};
-        if root.children().filter(|n|n.is_element()).count()!=1{
-            return Err(Error::Unsupported("multiple drawing children"));
-        }
-        one(root,wp,"inline")?
-    }else{root};
-    parse_inline_picture_node(inline)
+    if named(root,W,"drawing")||named(root,WS,"drawing"){
+        parse_drawing_node(root)
+    }else{parse_inline_picture_node(root)}
+}
+fn parse_drawing_node(root:Node<'_, '_>)->Result<InlinePicture,Error>{
+    let wp=if named(root,W,"drawing"){WP}
+        else if named(root,WS,"drawing"){WPS}
+        else{return Err(Error::Invalid("drawing namespace"));};
+    if root.children().filter(|n|n.is_element()).count()!=1{
+        return Err(Error::Unsupported("multiple drawing children"));
+    }
+    parse_inline_picture_node(one(root,wp,"inline")?)
+}
+pub(crate) fn append_run_picture(run:&mut crate::Run,node:Node<'_, '_>)->Result<(),Error>{
+    let picture=parse_drawing_node(node)?;
+    run.pictures.push(crate::InlinePictureAt{text_offset:run.text.len(),picture});
+    Ok(())
 }
 pub(crate) fn parse_inline_picture_node(inline:Node<'_, '_>)->Result<InlinePicture,Error>{
     let (wp,a,pic,r)=if named(inline,WP,"inline"){(WP,A,PIC,R)}

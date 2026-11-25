@@ -29,8 +29,11 @@ pub struct Paragraph {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Run {
+    /// Plain-text projection, retained for existing text consumers.
     pub text: String,
     pub properties: crate::opc::DirectRunProperties,
+    /// Ordered image anchors at UTF-8 byte boundaries in text.
+    pub pictures: Vec<InlinePictureAt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,5 +53,38 @@ pub struct PageSize {
 impl Paragraph {
     pub fn text(&self) -> String {
         self.runs.iter().map(|r| r.text.as_str()).collect()
+    }
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlinePictureAt {
+    pub text_offset: usize,
+    pub picture: crate::InlinePicture,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunContent<'a> {
+    Text(&'a str),
+    Picture(&'a crate::InlinePicture),
+}
+impl Run {
+    /// Borrow ordered text slices and picture nodes without copying text.
+    /// Equal offsets retain source order. Public model edits must keep offsets
+    /// sorted and on UTF-8 boundaries; inconsistent offsets fail explicitly.
+    pub fn inline_content(&self)->Result<Vec<RunContent<'_>>,crate::Error>{
+        let mut out=Vec::new();
+        let mut cursor=0;
+        for p in &self.pictures{
+            if p.text_offset<cursor || !self.text.is_char_boundary(p.text_offset){
+                return Err(crate::Error::Invalid("inline picture text offset"));
+            }
+            if p.text_offset>cursor{
+                out.push(RunContent::Text(&self.text[cursor..p.text_offset]));
+            }
+            out.push(RunContent::Picture(&p.picture));
+            cursor=p.text_offset;
+        }
+        if cursor<self.text.len(){out.push(RunContent::Text(&self.text[cursor..]));}
+        Ok(out)
     }
 }
