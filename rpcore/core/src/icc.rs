@@ -95,6 +95,10 @@ impl<'a> Profile<'a>{
         invert_chad(m)?;
         Ok(Some(m))
     }
+    /// Opt-in source CHAD interpolation; missing CHAD is explicit.
+    pub fn partial_chad(&self,degree:AdaptationDegree)->Result<Option<PartialAdaptation>>{
+        self.chromatic_adaptation()?.map(|m|PartialAdaptation::from_chad(m,degree)).transpose()
+    }
     /// Recover the pre-adaptation D50 white for diagnostics, not for the
     /// fully adapted absolute rendering path.
     pub fn unadapted_pcs_white(&self)->Result<Option<[f64;3]>>{
@@ -246,6 +250,76 @@ pub fn invert_chad(m:[[f64;3];3])->Result<[[f64;3];3]>{
     let inv_norm=inv.iter().map(|r|r.iter().map(|v|v.abs()).sum::<f64>()).fold(0.,f64::max);
     if !inv_norm.is_finite()||norm*inv_norm>1e6{return Err(Error::Invalid("ICC ill-conditioned CHAD"));}
     Ok(inv)
+}
+/// Explicit partial adaptation policy in Bradford cone space.
+/// Not an emulation of another CMM's correlated-temperature interpolation.
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct AdaptationDegree(f64);
+impl AdaptationDegree{
+    pub fn new(v:f64)->Result<Self>{
+        if !v.is_finite()||!(0. ..=1.).contains(&v){return Err(Error::Invalid("ICC adaptation degree"));}
+        Ok(Self(v))
+    }
+    pub fn value(self)->f64{self.0}
+}
+const CAT_BRADFORD:[[f64;3];3]=[[0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]];
+const CAT_ID:[[f64;3];3]=[[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]];
+fn cat_mv(m:[[f64;3];3],v:[f64;3])->[f64;3]{m.map(|r|(0..3).map(|i|r[i]*v[i]).sum())}
+fn cat_mm(a:[[f64;3];3],b:[[f64;3];3])->[[f64;3];3]{
+    std::array::from_fn(|i|std::array::from_fn(|j|(0..3).map(|k|a[i][k]*b[k][j]).sum()))
+}
+fn cat_diag(v:[f64;3])->[[f64;3];3]{std::array::from_fn(|i|std::array::from_fn(|j|if i==j{v[i]}else{0.}))}
+/// Prepared transform with bounded positive cone gains. D=0 leaves XYZ
+/// unchanged; D=1 maps the source white exactly to the destination white.
+#[derive(Clone,Copy,Debug)]
+pub struct PartialAdaptation{matrix:[[f64;3];3]}
+impl PartialAdaptation{
+    pub fn from_whites(source:[f64;3],destination:[f64;3],degree:AdaptationDegree)->Result<Self>{
+        if source.iter().chain(destination.iter()).any(|v|!v.is_finite()||*v<=0.||*v>4.){
+            return Err(Error::Invalid("ICC adaptation white"));
+        }
+        let a=cat_mv(CAT_BRADFORD,source);let b=cat_mv(CAT_BRADFORD,destination);
+        if a.iter().chain(b.iter()).any(|v|!v.is_finite()||*v<=1e-6){
+            return Err(Error::Unsupported("ICC adaptation cone white"));
+        }
+        let gains=std::array::from_fn(|i|b[i]/a[i]);
+        Self::from_gains(gains,degree)
+    }
+    /// Accept only Bradford-diagonalizable CHAD within fixed-point tolerance.
+    /// A generic non-Bradford matrix is not silently approximated.
+    pub fn from_chad(chad:[[f64;3];3],degree:AdaptationDegree)->Result<Self>{
+        invert_chad(chad)?;
+        let cone=cat_mm(cat_mm(CAT_BRADFORD,chad),invert_chad(CAT_BRADFORD)?);
+        let gains=std::array::from_fn(|i|cone[i][i]);
+        for i in 0..3{for j in 0..3{
+            if i!=j&&cone[i][j].abs()>0.0002{return Err(Error::Unsupported("ICC non-Bradford CHAD"));}
+        }}
+        let mut t=Self::from_gains(gains,degree)?;
+        // Preserve exact supplied endpoints, including fixed-point rounding.
+        if degree.value()==1.{t.matrix=chad;}
+        Ok(t)
+    }
+    fn from_gains(gains:[f64;3],degree:AdaptationDegree)->Result<Self>{
+        if gains.iter().any(|v|!v.is_finite()||*v<1./32.||*v>32.){
+            return Err(Error::Unsupported("ICC adaptation cone gain"));
+        }
+        if degree.value()==0.{return Ok(Self{matrix:CAT_ID});}
+        // Linear interpolation of positive cone gains, not XYZ entries.
+        let g=gains.map(|v|1.+degree.value()*(v-1.));
+        let matrix=cat_mm(cat_mm(invert_chad(CAT_BRADFORD)?,cat_diag(g)),CAT_BRADFORD);
+        invert_chad(matrix)?;
+        Ok(Self{matrix})
+    }
+    pub fn matrix(&self)->[[f64;3];3]{self.matrix}
+    pub fn apply(&self,xyz:[f64;3])->Result<[f64;3]>{
+        if xyz.iter().any(|v|!v.is_finite()||v.abs()>64.){return Err(Error::Invalid("ICC adaptation XYZ"));}
+        let out=cat_mv(self.matrix,xyz);
+        if out.iter().any(|v|!v.is_finite()){return Err(Error::Invalid("ICC adaptation output"));}
+        Ok(out)
+    }
+    pub fn undo(&self,xyz:[f64;3])->Result<[f64;3]>{
+        Self{matrix:invert_chad(self.matrix)?}.apply(xyz)
+    }
 }
 #[derive(Debug)]
 enum Curve{Identity,Gamma(f64),Table(Vec<u16>),Parametric{kind:u16,p:[f64;7]}}
@@ -1033,5 +1107,48 @@ mod chad_tag_tests{
     #[test]fn rejects_invalid_media_white(){
         let b=profile(4,*b"GRAY",[0.,1.,0.8],None);
         assert!(Profile::parse(&b).unwrap().absolute_matrix_scale().is_err());
+    }
+}
+
+#[cfg(test)]
+mod partial_adaptation_tests{
+    use super::*;
+    const D50:[f64;3]=[0.9642,1.,0.8249];
+    const D65:[f64;3]=[0.95047,1.,1.08883];
+    fn near(a:[f64;3],b:[f64;3]){for i in 0..3{assert!((a[i]-b[i]).abs()<1e-11);}}
+    #[test]fn validates_degree(){for v in [-0.01,1.01,f64::NAN,f64::INFINITY]{assert!(AdaptationDegree::new(v).is_err());}}
+    #[test]fn white_endpoints(){
+        for (d,w) in [(0.,D65),(1.,D50)]{
+            let p=PartialAdaptation::from_whites(D65,D50,AdaptationDegree::new(d).unwrap()).unwrap();
+            near(p.apply(D65).unwrap(),w);
+        }
+    }
+    #[test]fn intermediate_cone_gains(){
+        for d in [0.25,0.5,0.75]{
+            let p=PartialAdaptation::from_whites(D65,D50,AdaptationDegree::new(d).unwrap()).unwrap();
+            near(p.apply(D65).unwrap(),std::array::from_fn(|i|D65[i]+d*(D50[i]-D65[i])));
+            near(p.undo(p.apply([0.2,0.3,0.4]).unwrap()).unwrap(),[0.2,0.3,0.4]);
+        }
+    }
+    #[test]fn chad_decompose_reconstruct(){
+        let full=PartialAdaptation::from_whites(D65,D50,AdaptationDegree::new(1.).unwrap()).unwrap().matrix();
+        for d in [0.,0.25,0.5,0.75,1.]{
+            let degree=AdaptationDegree::new(d).unwrap();
+            let a=PartialAdaptation::from_whites(D65,D50,degree).unwrap();
+            let b=PartialAdaptation::from_chad(full,degree).unwrap();
+            near(a.apply([0.3,0.5,0.2]).unwrap(),b.apply([0.3,0.5,0.2]).unwrap());
+        }
+    }
+    #[test]fn rejects_bad_inputs(){
+        let d=AdaptationDegree::new(0.5).unwrap();
+        assert!(PartialAdaptation::from_whites([0.,1.,1.],D50,d).is_err());
+        assert!(PartialAdaptation::from_chad([[0.;3];3],d).is_err());
+        assert!(PartialAdaptation::from_chad([[1.,0.5,0.],[0.,1.,0.],[0.,0.,1.]],d).is_err());
+        let a=PartialAdaptation::from_whites(D65,D50,d).unwrap();
+        assert!(a.apply([f64::NAN,0.,0.]).is_err());
+    }
+    #[test]fn equal_whites_identity(){
+        let a=PartialAdaptation::from_whites(D50,D50,AdaptationDegree::new(0.5).unwrap()).unwrap();
+        near(a.apply([0.2,0.3,0.4]).unwrap(),[0.2,0.3,0.4]);
     }
 }
