@@ -156,3 +156,133 @@ fn verify(font:&[u8],glyphs:u32,counts:[usize;9],formats:&[((u16,u16),usize)]){
         [202,2364,1406,305,11087,312,17562,290,14104],
         &[((5,1),425),((5,2),9536),((5,3),1775),((6,2),4914),((6,3),912)]);
 }
+
+
+// Independent Boolean matrix oracle for positive-length paths. This uses
+// Warshall closure, rather than the production iterative DFS. Real-font
+// action coordinates come from the raw-byte inventory above.
+struct MatrixOracle{
+    direct:Vec<Vec<bool>>,
+    reach:Vec<Vec<bool>>,
+    covered:Vec<bool>,
+}
+impl MatrixOracle{
+    fn new(n:usize,sources:&[u16],raw:&[GsubDependency])->Self{
+        let mut covered=vec![false;n];
+        for &i in sources{covered[i as usize]=true;}
+        let mut direct=vec![vec![false;n];n];
+        for e in raw{
+            let i=e.site.lookup_index as usize;
+            if covered[i]{direct[i][e.action.lookup_index as usize]=true;}
+        }
+        let mut reach=direct.clone();
+        for k in 0..n{
+            let row=reach[k].clone();
+            for i in 0..n{
+                if reach[i][k]{
+                    for j in 0..n{reach[i][j]|=row[j];}
+                }
+            }
+        }
+        Self{direct,reach,covered}
+    }
+    fn compare(&self,actual:&GsubDependencyClosure,roots:&[u16]){
+        let n=self.covered.len();
+        let reached:Vec<u16>=(0..n).filter(|&i|{
+            roots.contains(&(i as u16))||roots.iter().any(|&r|self.reach[r as usize][i])
+        }).map(|i|i as u16).collect();
+        let missing:Vec<u16>=reached.iter().copied().filter(|&i|!self.covered[i as usize]).collect();
+        let edges:usize=reached.iter().map(|&i|self.direct[i as usize].iter().filter(|&&v|v).count()).sum();
+        let cyclic=reached.iter().any(|&i|self.reach[i as usize][i as usize]);
+        assert_eq!(actual.reachable,reached);
+        assert_eq!(actual.missing_sources,missing);
+        assert_eq!(actual.reachable_edges,edges);
+        assert_eq!(actual.is_complete(),missing.is_empty());
+        assert_eq!(actual.is_proven_acyclic(),missing.is_empty()&&!cyclic);
+        assert_eq!(actual.cycle_witness.is_some(),cyclic);
+        if let Some(w)=&actual.cycle_witness{
+            assert!(w.len()>=2);assert_eq!(w.first(),w.last());
+            assert!(w.iter().all(|i|reached.contains(i)));
+            assert!(w.windows(2).all(|p|self.direct[p[0] as usize][p[1] as usize]));
+        }
+    }
+}
+fn verify_closure(font:&[u8],glyphs:u32,counts:[usize;5]){
+    let b=table(font,b"GSUB");
+    let gd=table(font,b"GDEF");
+    let (n,raw)=raw_inventory(b);
+    let ids:Vec<u16>=(0..n as u16).collect();
+    let g=parse_gdef(gd,glyphs,Default::default()).unwrap();
+    let compiled=compile_gsub_lookups(b,&ids,glyphs,Some(&g),Default::default()).unwrap();
+    let edges=discover_gsub_dependencies(&compiled,n,Default::default()).unwrap();
+    assert_eq!(edges,raw.edges);
+    let oracle=MatrixOracle::new(n,&ids,&raw.edges);
+    let mut total_reached=0usize;
+    let mut max_reached=0usize;
+    let mut transitive_only=0usize;
+    let mut cyclic_vertices=0usize;
+    for i in 0..n{
+        let roots=[i as u16];
+        let a=analyze_gsub_dependency_closure(n,&ids,&edges,&roots,Default::default()).unwrap();
+        oracle.compare(&a,&roots);
+        total_reached+=a.reachable.len();
+        max_reached=max_reached.max(a.reachable.len());
+        cyclic_vertices+=usize::from(oracle.reach[i][i]);
+        transitive_only+=(0..n).filter(|&j|oracle.reach[i][j]&&!oracle.direct[i][j]).count();
+    }
+    let distinct:usize=oracle.direct.iter().map(|r|r.iter().filter(|&&v|v).count()).sum();
+    assert_eq!([distinct,total_reached,max_reached,cyclic_vertices,transitive_only],counts);
+    let a=analyze_gsub_dependency_closure(n,&ids,&edges,&ids,Default::default()).unwrap();
+    oracle.compare(&a,&ids);
+    assert!(a.is_proven_acyclic());
+    assert_eq!(a.reachable_edges,distinct);
+    // Exercise roots from every real language system's base plan.
+    // Planning itself was separately reference-tested in C4.4c2.
+    let layout=parse_gsub_layout(b,Default::default()).unwrap();
+    for script in &layout.scripts{
+        let languages=script.default_language.iter().map(|l|(None,l))
+            .chain(script.languages.iter().map(|(t,l)|(Some(*t),l)));
+        for (language,lang) in languages{
+            let enabled:Vec<_>=lang.features.iter().map(|&i|layout.features[i as usize].tag).collect();
+            let plan=build_gsub_base_plan(&layout,script.tag,language,&enabled,Default::default()).unwrap().unwrap();
+            let roots:Vec<_>=plan.lookups.iter().map(|r|r.index).collect();
+            let a=analyze_gsub_dependency_closure(n,&ids,&edges,&roots,Default::default()).unwrap();
+            oracle.compare(&a,&roots);
+        }
+    }
+    // Partial source coverage: use actual compiled subset, preserving
+    // edges to missing sources, and independently mask raw outgoing rows.
+    let subset:Vec<_>=compiled.into_iter().filter(|l|l.index()%3==0).collect();
+    let sources:Vec<_>=subset.iter().map(|l|l.index()).collect();
+    let partial=discover_gsub_dependencies(&subset,n,Default::default()).unwrap();
+    let partial_oracle=MatrixOracle::new(n,&sources,&raw.edges);
+    for &i in &ids{
+        let a=analyze_gsub_dependency_closure(n,&sources,&partial,&[i],Default::default()).unwrap();
+        partial_oracle.compare(&a,&[i]);
+    }
+    let a=analyze_gsub_dependency_closure(n,&sources,&partial,&ids,Default::default()).unwrap();
+    partial_oracle.compare(&a,&ids);
+    assert!(!a.is_proven_acyclic());
+    assert_eq!(a.missing_sources.len(),n-sources.len());
+}
+#[test]fn abeezee_regular_closure_reference(){
+    verify_closure(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,[7,22,3,0,0]);
+}
+#[test]fn abeezee_italic_closure_reference(){
+    verify_closure(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,[7,22,3,0,0]);
+}
+#[test]fn alegreya_closure_reference(){
+    verify_closure(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,[14,71,4,0,0]);
+}
+#[test]fn aref_closure_reference(){
+    verify_closure(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,[33,119,3,0,0]);
+}
+#[test]fn padauk_closure_reference(){
+    verify_closure(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,[64,181,14,0,0]);
+}
+#[test]fn devanagari_closure_reference(){
+    verify_closure(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,[126,303,38,0,0]);
+}
+#[test]fn nastaliq_closure_reference(){
+    verify_closure(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,[290,729,44,0,237]);
+}
