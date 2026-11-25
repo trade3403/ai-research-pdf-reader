@@ -12,6 +12,7 @@ pub enum Error {
     NonFinite,
     DivisionByZero,
     Allocation,
+    Worker,
 }
 
 #[derive(Debug, PartialEq)]

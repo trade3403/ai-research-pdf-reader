@@ -40,8 +40,10 @@ jobs:
       - name: Smoke test
         run: ./target/release/rptranslate self-check
 
+      - name: Forced portable fallback tests
+        run: cargo test --locked --offline -p rpinfer --features portable-only
       - name: Matrix release benchmark
-        if: contains(github.event.head_commit.message, 'D1.4a')
+        if: contains(github.event.head_commit.message, 'D1.4a') || contains(github.event.head_commit.message, 'D1.4b')
         run: |
           lscpu | grep -E 'Model name:|^CPU\(s\):' || true
           cargo run --locked --offline --release -p rpinfer --example matmul_bench

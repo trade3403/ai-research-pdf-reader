@@ -1,6 +1,6 @@
 //! Bounded release-mode benchmark; not a performance acceptance threshold.
 use rpinfer::{
-    matmul::{matmul, Kernel},
+    matmul::{avx2_available, matmul, Kernel},
     tensor::Tensor,
 };
 use std::time::Instant;
@@ -18,7 +18,8 @@ fn median_ms(a: &Tensor, b: &Tensor, kernel: Kernel) -> f64 {
 }
 
 fn main() {
-    for n in [128, 256] {
+    println!("avx2_available={}", avx2_available());
+    for n in [128, 256, 512] {
         let a = Tensor::new(
             &[n, n],
             (0..n * n).map(|i| (i % 31) as f32 / 31.0).collect(),
@@ -32,11 +33,14 @@ fn main() {
         let reference = matmul(&a, &b, Kernel::Scalar).unwrap();
         let optimized = matmul(&a, &b, Kernel::Blocked).unwrap();
         assert_eq!(reference, optimized);
+        assert_eq!(reference, matmul(&a, &b, Kernel::Auto).unwrap());
+        assert_eq!(reference, matmul(&a, &b, Kernel::Parallel(4)).unwrap());
         let scalar = median_ms(&a, &b, Kernel::Scalar);
         let blocked = median_ms(&a, &b, Kernel::Blocked);
+        let auto = median_ms(&a, &b, Kernel::Auto);
+        let parallel = median_ms(&a, &b, Kernel::Parallel(4));
         println!(
-            "matmul n={n} scalar_ms={scalar:.3} blocked_ms={blocked:.3} speedup={:.3}x exact=true",
-            scalar / blocked
+            "matmul n={n} scalar_ms={scalar:.3} blocked_ms={blocked:.3} auto_ms={auto:.3} parallel4_ms={parallel:.3} exact=true"
         );
     }
 }
