@@ -41,3 +41,6 @@ pub use page_structure::{PageStructurePlan, StructuredPage, EvaluatedField};
 
 pub mod table;
 pub use table::{parse_table, Table, TableRow, TableCell, VerticalMerge};
+
+pub mod table_grid;
+pub use table_grid::{resolve_table_grid, LogicalTable, LogicalCell, MergeAnchor, CellAddress};
