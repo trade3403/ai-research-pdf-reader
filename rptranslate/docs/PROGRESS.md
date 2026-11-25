@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D1.11b [#114 / 45672855813](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45672855813) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45672855813/job/139412487094) document.rs:204 max_retries if/else 需换行。按 rustfmt 日志逐字修复，不改变算法、重试上限、覆盖审计或历史测试。真实专项查询时仍运行（整句术语约束测试），未取消，未取得恢复率结果；待新提交全量验收，不提前启动D1.11c。
+
 2026-11-26 D1.11 首批基线 66b0de11b00f2da4c8dfb11e76292d92e6a1f673 / [#113 / 45667003065](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45667003065) 全量 success；138 workspace + 56 portable=194/194。INT8 269块234接受35拒绝，4993/6036词、224数字串、243内部段（whole106/constrained66/gaps71），147.130332s、631.266337ms加载、114684KiB RSS；FP32 8样本4接受4拒绝，130.598911s，和INT8同样本状态8/8、接受译文3/4相同。#112 相同覆盖，INT8耗时256.673144s，跨runner仅观察。用户授权D1.11b：新增稳定候选失败类别（Generation及八类QualityIssue），不解析任意生成错误字符串；保留初始错误、重试最终错误、恢复状态。显式opt-in document::translate_with_retry，原API及首轮结果不改，仅beam=1且存在词面失败的Rejected块最多64块各一次beam=2重试，沿用同一domain、max_new、kernel、paragraph完整审计及文档范围/输出预算，原已接受结果不重算。纯生成失败及输入/保护/限制错误不重试，不放宽数值/术语/完整性检查；重试成功不等于语义正确。2新增测试覆盖资格、原失败保留、预算、无效覆盖拒绝。真实INT8全269块开启重试，FP32 8样本仍原路径（上轮慢Runner接近240s上限）；独立Python核对接受/拒绝、各策略的初始/最终类别及重试状态，INT8首轮接受不少于234，不要求虚构覆盖提升，全文译文仍仅Runner临时文件。保留历史所有CI，40分钟job及15/4分钟探针硬上限不变；未本地编译待CI。D2独立；后续依据实际失败类别与覆盖决定。
 
 2026-11-26 D1.11 [#112 / 45664250887](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45664250887) CPU Format 失败，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45664250887/job/139381965753) 七组差异：document_reference.rs:13、document.rs:64/153/176/186/192/218。严格按 rustfmt 日志修复，不改变算法、覆盖审计及验收门槛，不删除历史测试。真实专项查询时仍运行（术语词典验证），未取消；尚未取得全文审计数据。待修复版全量验收，不提前进入后续阶段。

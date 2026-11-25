@@ -204,7 +204,11 @@ pub fn translate_with_retry(
     kernel: Kernel,
 ) -> Result<RecoveryReport, Error> {
     let document = translate(session, blocks, engine, explicit, options, kernel)?;
-    let max_retries = if options.beam_width == 1 { MAX_RETRIES } else { 0 };
+    let max_retries = if options.beam_width == 1 {
+        MAX_RETRIES
+    } else {
+        0
+    };
     recover_with(blocks, document, max_retries, |source| {
         session.translate_paragraph(
             source,
