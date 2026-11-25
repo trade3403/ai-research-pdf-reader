@@ -1,7 +1,9 @@
 //! Model metadata and bounded local weight-file reader.
 pub mod marian;
 pub mod normalization;
+pub mod package;
 pub mod safetensors;
+pub mod sha256;
 pub mod spm;
 pub mod tokenizer;
 

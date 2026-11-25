@@ -28,7 +28,8 @@
 | D1.8a | 已通过 | 固定真实权重与元数据核验 |
 | D1.8b | 已通过 | 大词表分块读取、共享权重、投影 |
 | D1.8c1 | 待验证 | 固定官方权重安全转换与 RPModel v1 |
-| D1.8c2–D1.8c7 | 未开始 | 配置解析、权重映射与完整模型构建 |
+| D1.8c2a | 待验证 | SHA256、严格 manifest、固定配置 profile、权重索引 |
+| D1.8c2b–D1.8c7 | 未开始 | 配置字段解析、权重加载与完整模型构建 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -125,10 +126,13 @@ D1 里程碑完成 8/14（按阶段数统计，不是工作量百分比）。
 新增 RowTable/ChunkedTable，有界分段读取 Safetensors（复用内部 rpmodel），共享 Encoder/Decoder/LM Head，单块<=1M元素，单表<=512MiB且调用者预算、保持 Tensor 64MiB。合成65001×512全词表 FP32、跨块查找与全词表投影、异常与小 Safetensors fixture，独立 PyTorch 合成模型改用分块表对照。实际验收：[f6891e2](https://github.com/trade3403/ai-research-pdf-reader/commit/f6891e22a8c3d12f796b840d3d792b9cf0db23bd)、[Actions 45529834798](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45529834798) completed/success。9组 rustfmt 修正后 workspace 61/61、portable 37/37、真实尺寸合成词表65001 logits、独立框架240张量4744元素、生成36组84候选3 HF greedy全部通过。尚非真实模型推理。
 
 ## 当前阶段 D1.8c1
-离线 converter 固定官方 checkpoint 与5个元数据/分词 SHA256、严格258名称及 shape/FP32/finite，weights_only=True，2个共享词表别名逐位检查后去重；256 canonical tensors、原始位置表及 [1,65001] bias 保留，标准 Safetensors + RPModel v1 manifest，临时目录转换成功才发布到新本地目录。专用 CI 下载一次并验证官方 Safetensors 读取和自主 Rust 全量分段 FP32 位对照。待验收；未实现 Rust manifest 校验和真实模型构建。
+离线 converter 固定官方 checkpoint 与5个元数据/分词 SHA256、严格258名称及 shape/FP32/finite，weights_only=True，2个共享词表别名逐位检查后去重；256 canonical tensors、原始位置表及 [1,65001] bias 保留，标准 Safetensors + RPModel v1 manifest，临时目录转换成功才发布到新本地目录。专用 CI 下载一次并验证官方 Safetensors 读取和自主 Rust 全量分段 FP32 位对照。D1.8c1 首轮 [45530926188](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45530926188) CPU CI 与真实权重校验通过，但 safetensors.torch 缺 packaging，转换失败；固定 packaging==24.2 后保留原 roundtrip 门槛复测。 待验收。
 
-## 下一阶段 D1.8c2
-自主配置解析、manifest 完整性/版本检查与严格权重名称映射。
+## 当前阶段 D1.8c2a
+自主 SHA256 流式校验、受限 JSON manifest 解析、严格来源/版本/文件白名单/别名/shape/dtype/metadata，固定官方5个配置和分词文件原始字节哈希，256个权重索引校验；真实转换通过后同一 Runner 执行完整包验证、同大小配置损坏/版本错误/权重哈希错误反例。仅支持固定 revision，非通用 Marian JSON 配置解析，manifest 自述权重哈希不代表签名或真实性；实际 CI 待验收。保留 D1.8c1 逐位验证，未执行真实推理。
+
+## 下一阶段 D1.8c2b
+受限 Marian 配置字段解析与类型化配置绑定，固定 profile 的配置和权重映射验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

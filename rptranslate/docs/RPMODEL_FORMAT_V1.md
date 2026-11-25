@@ -4,3 +4,6 @@
 - model.encoder.embed_tokens.weight、model.decoder.embed_tokens.weight 与 model.shared.weight 逐位相等后去重；manifest aliases 显式映射，LM Head 后续借用 shared（原权重无独立 lm_head）。保留两个位置表 [512,512] 及 final_logits_bias [1,65001]，后续加载再逻辑展平 bias。
 - 256 canonical tensors，预期 payload 312033188 bytes（78008297 FP32 元素），不是压缩或量化。保存到同一父目录临时目录，成功后 rename 为新目录；单进程、可信本地目录，不提供多写者事务保证。不上传权重。
 - 研发转换依赖 torch 2.6.0、safetensors 0.7.0、numpy 2.2.6；运行时 Rust reader 自主。CI 使用官方读取器逐张量对照原始权重，再通过 Rust read_f32 每次<=1M元素输出排序后的 little-endian bytes，Python 逐块比较所有位，检查 EOF 与退出码。Rust 示例为研发检查器，不是完整运行时 loader。实际转换与 roundtrip 结果待 CI；完整 manifest 自主解析、校验、权重映射、模型实例、推理及性能留后续。
+
+D1.8c1 首轮 [45530926188](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45530926188) CPU CI 与真实权重校验通过，但 safetensors.torch 缺 packaging，转换失败；固定 packaging==24.2 后保留原 roundtrip 门槛复测。
+D1.8c2a 新增自主 package::open，固定 profile manifest 与文件哈希校验、256 canonical shape/dtype 索引、2个显式 alias；固定官方配置字节哈希而非任意配置字段解析，后续 c2b 类型化解析。稳定本地目录假设，无签名、并发修改或来源认证保证。

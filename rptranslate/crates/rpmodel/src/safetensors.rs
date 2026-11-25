@@ -54,12 +54,12 @@ pub struct TensorInfo {
 
 /// A restricted JSON grammar: objects, strings and unsigned integer arrays.
 /// No recursion into arbitrary JSON; duplicate keys are rejected.
-struct Parser<'a> {
-    rest: &'a str,
+pub(crate) struct Parser<'a> {
+    pub(crate) rest: &'a str,
 }
 
 impl<'a> Parser<'a> {
-    fn ws(&mut self) {
+    pub(crate) fn ws(&mut self) {
         self.rest = self.rest.trim_start_matches([' ', '\n', '\r', '\t']);
     }
 
@@ -95,7 +95,7 @@ impl<'a> Parser<'a> {
         Ok(n)
     }
 
-    fn string(&mut self) -> Result<String, Error> {
+    pub(crate) fn string(&mut self) -> Result<String, Error> {
         self.expect('"')?;
         let mut s = String::new();
         loop {
@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn number(&mut self) -> Result<u64, Error> {
+    pub(crate) fn number(&mut self) -> Result<u64, Error> {
         self.ws();
         let len = self.rest.bytes().take_while(u8::is_ascii_digit).count();
         let digits = &self.rest[..len];
@@ -166,7 +166,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn object<T>(
+    pub(crate) fn object<T>(
         &mut self,
         limit: usize,
         mut value: impl FnMut(&mut Self, &str) -> Result<T, Error>,

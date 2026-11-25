@@ -145,7 +145,7 @@ jobs:
   real-model-conversion:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'D1.8c1')
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, 'D1.8c1') || contains(github.event.head_commit.message, 'D1.8c2'))
     defaults:
       run:
         working-directory: rptranslate
@@ -164,7 +164,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/rp-convert"
           "$RUNNER_TEMP/rp-convert/bin/pip" install --disable-pip-version-check --only-binary=:all: torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-          "$RUNNER_TEMP/rp-convert/bin/pip" install --disable-pip-version-check --only-binary=:all: numpy==2.2.6 safetensors==0.7.0
+          "$RUNNER_TEMP/rp-convert/bin/pip" install --disable-pip-version-check --only-binary=:all: numpy==2.2.6 safetensors==0.7.0 packaging==24.2
       - name: Download and verify one official checkpoint
         run: |
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/probe_real_checkpoint.py "$RUNNER_TEMP/opus-source"
@@ -175,3 +175,8 @@ jobs:
         run: |
           cargo build --locked --offline --release -p rpmodel --example stream_weights
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_converted_checkpoint.py "$RUNNER_TEMP/opus-source" "$RUNNER_TEMP/rpmodel-v1" target/release/examples/stream_weights
+      - name: Validate actual RPModel package through Rust
+        if: contains(github.event.head_commit.message, 'D1.8c2')
+        run: |
+          cargo build --locked --offline --release -p rpmodel --example verify_package
+          "$RUNNER_TEMP/rp-convert/bin/python" crates/rpinfer/tests/check_package_integrity.py "$RUNNER_TEMP/rpmodel-v1" target/release/examples/verify_package
