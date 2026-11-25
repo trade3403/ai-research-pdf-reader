@@ -252,3 +252,5 @@ D1.9f run45538582134 CPU format 5组失败，本次按完整上下文修正；�
 D1.9g/D1.9h 真实专项 [45540564400/job/138958019476](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45540564400/job/138958019476) success。MIXED_INFERENCE_REFERENCE PASS 1371165元素、10候选、max_abs=0、cache/scalar位级一致。PAIRED_TRANSLATION_REFERENCE PASS 24正式计时/12质量输出/2 CLI/4负例；FP32/INT8 package315294472/88160260 bytes、RSS331828/107268KiB、load1752.359/1799.760ms、cached2.830836/64.540152及3.132952/73.752100 tokens/s，延迟比22.798972/23.540767；6/6译文相同、char_f2均72.914、数字4/5、术语12/12、capped0。仅短句与该Runner观察。CPU format 12组失败导致后续基础测试跳过，本提交按日志修正；全量CI尚待复验。冻结新功能开发，D1.9全量成功后等待用户指示；加载加速D1.9i-l为拟议任务，未授权执行。
 
 D1.9 全量复验修复：run45542273543/job138963393404 format通过，Clippy `chunks_exact_to_as_chunks` 两处失败（mixed_inference.rs 80/81），改为固定数组切片并显式验证尾部与行数；另预防性修正 protection.rs 的奇偶判断为 is_multiple_of（不变更语义）。保留既有全部CI门槛和正在运行的真实专项，定时自动任务保持关闭，待新提交复验。不进入新阶段。
+
+D1.9复验 run45542753928/job138965410757：上次修复新增 if 条件触发rustfmt单组换行差异，按日志原样修正，仅格式变化；Clippy和单测因format失败尚未执行。保留全部门槛，定时任务关闭，不开始新功能。

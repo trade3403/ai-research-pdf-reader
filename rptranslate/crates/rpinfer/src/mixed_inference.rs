@@ -78,7 +78,8 @@ impl Attention<'_> {
             let context = scaled_dot_product(&qh, &kh, &vh, mask, kernels.float)?.context;
             let (joined_rows, joined_tail) = joined.as_chunks_mut::<512>();
             let (parts, part_tail) = context.data().as_chunks::<64>();
-            if !joined_tail.is_empty() || !part_tail.is_empty() || joined_rows.len() != parts.len() {
+            if !joined_tail.is_empty() || !part_tail.is_empty() || joined_rows.len() != parts.len()
+            {
                 return Err(Error::Shape);
             }
             for (row, part) in joined_rows.iter_mut().zip(parts) {
