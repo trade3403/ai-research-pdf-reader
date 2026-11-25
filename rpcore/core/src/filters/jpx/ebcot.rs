@@ -547,4 +547,31 @@ mod tests{
     #[test]fn independent_real_partial_stripe(){
         independent_gray(3,5,"ff4fff510029000000000003000000050000000000000000000000030000000500000000000000000001070101ff52000c00000001000001010001ff5c00044040ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000001a0001ff93c1f209002e709cb049aa11cdffd9",&[128,127,130,125,132,123,134,121,136,119,138,117,140,115,142]);
     }
+
+    #[test]fn independent_real_all_subbands(){
+        // Pillow/OpenJPEG 2.5.4, reversible 5/3, one decomposition,
+        // 4x4 input: 128,129,127,130,125,140,116,128,
+        // 255,0,128,129,130,131,132,133.
+        // Expected coefficients from separate integer lifting calculation.
+        let hex="ff4fff510029000000000004000000040000000000000000000000040000000400000000000000000001070101ff52000c00000001000104040001ff5c00074040484850ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000002d0001ff93c3e7080b051374c7da0d0fa8123f00500c4d9e8d14ef0f3b351b0b55c6a1f2ffd9";
+        let data:Vec<u8>=hex.as_bytes().chunks_exact(2).map(|p|u8::from_str_radix(std::str::from_utf8(p).unwrap(),16).unwrap()).collect();
+        let p=super::super::packet::inspect_packets(&data,0).unwrap();
+        let mut count=0;
+        for packet in &p.packets{
+            for e in &packet.contributions{
+                let (base,expected)=match e.band{
+                    Band::Ll=>(8,[-3,10,22,-29]),
+                    Band::Hl=>(9,[60,8,-114,4]),
+                    Band::Lh=>(9,[-9,20,-30,51]),
+                    Band::Hh=>(10,[115,10,191,0]),
+                };
+                let plane=base-e.zero_bit_planes;
+                assert_eq!(e.passes,u16::from(plane)*3+1);
+                let b=decode_codeblock(&data[e.data.clone()],2,2,e.band,plane,e.passes,0).unwrap();
+                assert_eq!(b.signed_coefficients(),expected,"band {:?}",e.band);
+                count+=1;
+            }
+        }
+        assert_eq!(count,4);
+    }
 }
