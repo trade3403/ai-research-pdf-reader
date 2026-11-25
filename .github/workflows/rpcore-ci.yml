@@ -248,7 +248,7 @@ jobs:
           /usr/bin/python3 rpcore/corpus/icc_print_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/print-profiles --swop /usr/share/color/icc/ghostscript/default_cmyk.icc --fogra /usr/share/color/icc/colord/FOGRA40L_SC_paper.icc
       - if: success() || failure()
         run: |
-          /usr/bin/python3 rpcore/corpus/icc_registry_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/registry
+          /usr/bin/python3 rpcore/corpus/icc_registry_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/registry --icc-probe rpcore/target/release/examples/icc_probe --require-mab
       - if: always()
         uses: actions/upload-artifact@v4
         with:
