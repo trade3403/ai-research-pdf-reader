@@ -90,3 +90,5 @@
 - C4.4a7a only Type 5 format 1 matching, no real font reference yet, no class/coverage formats, chained matching, nested lookup execution/cycle checks, GDEF filtering or full shaping. Overlap validation not comprehensive.
 
 - C4.4a7b: ClassDef and class context synthetic tests only; real font references, coverage format 3, chaining, GDEF and nested execution remain outstanding. Overlap validation not comprehensive.
+
+- C4.4a7c: synthetic Type 5 format 3 tests only; real context references, chaining, nested execution, GDEF filtering, cluster propagation and full shaping remain outstanding. Payload overlap validation not comprehensive.

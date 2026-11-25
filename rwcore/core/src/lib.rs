@@ -163,3 +163,5 @@ pub use font_context_subst::{ContextLimits,ContextAction,ContextRule,ContextMatc
 pub mod font_class_def;
 pub use font_class_def::{GlyphClassDef,parse_glyph_class_def};
 pub use font_context_subst::{ClassContextSubstitution,parse_class_context_substitution};
+
+pub use font_context_subst::{CoverageContextSubstitution,parse_coverage_context_substitution};

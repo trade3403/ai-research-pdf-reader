@@ -98,3 +98,5 @@ C4.4a6b pending CI: independent raw SFNT GSUB Type 4 reference across ABeeZee Re
 C4.4a7a pending CI: GSUB Type 5 format 1 glyph-based context parser, nullable sets, ordered contiguous prefix matches, including empty action list; action sequence/lookup indices validated, cumulative rule/input/action budgets including repeated offsets. No nested execution or GDEF filtering.
 
 C4.4a7b pending CI: shared bounded ClassDef formats 1/2, implicit zero within face domain; class context type 5 format 2 uses first-glyph Coverage gate, class-indexed rule sets and shared bounded parser with format 1. No nested execution.
+
+C4.4a7c pending CI: GSUB Type 5 format 3 per-position Coverage matching with ordered lookup actions; validates header/offsets, action indices, cumulative records and expanded coverage glyphs, charging shared offsets per reference. All three Type 5 formats have standalone matching source; no nested execution.

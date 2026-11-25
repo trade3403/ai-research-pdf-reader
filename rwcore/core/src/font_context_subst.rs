@@ -1,4 +1,4 @@
-//! Standalone GSUB type 5 format 1. Match only; nested execution is separate.
+//! Standalone GSUB type 5 formats 1/2/3. Match only; nested execution is separate.
 use crate::{Error,GlyphCoverage,parse_glyph_coverage};
 #[derive(Debug,Clone,Copy)]
 pub struct ContextLimits{
@@ -143,4 +143,59 @@ pub fn parse_class_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
     let classes=crate::parse_glyph_class_def(&b[cls..],glyph_count,n as u32,l.max_sets,65536)?;
     let sets=parse_context_sets(b,n,8,header,n as u32,lookup_count,l)?;
     Ok(ClassContextSubstitution{coverage,classes,sets})
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct CoverageContextSubstitution{
+    coverages:Vec<GlyphCoverage>,actions:Vec<ContextAction>,
+}
+impl CoverageContextSubstitution{
+    pub fn input_len(&self)->usize{self.coverages.len()}
+    pub fn coverages(&self)->&[GlyphCoverage]{&self.coverages}
+    pub fn actions(&self)->&[ContextAction]{&self.actions}
+    pub fn match_prefix(&self,glyphs:&[u16])->Option<ContextMatch<'_>>{
+        if glyphs.len()<self.coverages.len(){return None;}
+        if !self.coverages.iter().zip(glyphs).all(|(c,&g)|c.index(g).is_some()){return None;}
+        Some(ContextMatch{input_len:self.coverages.len(),actions:&self.actions})
+    }
+}
+/// Type 5 format 3: one coverage per input position. The max_sets budget
+/// bounds cumulative coverage records and max_total_input bounds cumulative
+/// expanded coverage glyphs. Shared offsets are charged per reference.
+/// Actions preserve font order; no nested execution.
+pub fn parse_coverage_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<CoverageContextSubstitution,Error>{
+    if b.len()>l.max_bytes{return Err(Error::Limit("context bytes"));}
+    if word(b,0)?!=3{return Err(Error::Unsupported("coverage context format"));}
+    let n=usize::from(word(b,2)?);
+    let action_count=usize::from(word(b,4)?);
+    if n==0{return Err(Error::Invalid("context empty input"));}
+    if n>l.max_input||n>l.max_total_input||l.max_rules==0||action_count>l.max_actions{
+        return Err(Error::Limit("coverage context budget"));
+    }
+    let action_start=6+2*n;
+    let header=action_start+4*action_count;
+    if header>b.len(){return Err(Error::Invalid("coverage context truncated header"));}
+    let mut actions=Vec::with_capacity(action_count);
+    for i in 0..action_count{
+        let p=action_start+4*i;
+        let sequence_index=word(b,p)?;
+        let lookup_index=word(b,p+2)?;
+        if usize::from(sequence_index)>=n||usize::from(lookup_index)>=lookup_count{
+            return Err(Error::Invalid("context action index"));
+        }
+        actions.push(ContextAction{sequence_index,lookup_index});
+    }
+    let mut coverages=Vec::with_capacity(n);
+    let(mut records,mut expanded)=(0usize,0usize);
+    for i in 0..n{
+        let at=usize::from(word(b,6+2*i)?);
+        if at<header||at>=b.len(){return Err(Error::Invalid("coverage context offset"));}
+        let count=usize::from(word(b,at+2)?);
+        charge(&mut records,count,l.max_sets)?;
+        let remaining=l.max_total_input-expanded;
+        let c=parse_glyph_coverage(&b[at..],glyph_count,count,remaining.min(65536) as u32)?;
+        charge(&mut expanded,c.len() as usize,l.max_total_input)?;
+        coverages.push(c);
+    }
+    Ok(CoverageContextSubstitution{coverages,actions})
 }

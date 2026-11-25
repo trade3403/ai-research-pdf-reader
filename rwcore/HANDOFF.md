@@ -31,4 +31,4 @@
 继续 C 线路 RWCore 自主研发。读取 GitHub 仓库 trade3403/ai-research-pdf-reader 的 feature/rwcore 分支下 rwcore/HANDOFF.md，核对最新研发状态和 CI，接续上一窗口的任务，直接实际开发。
 
 ## Latest handoff checkpoint
-C4.4a7b source pending CI; parent CI #94 verified 621 tests per platform. Check actual HEAD and CI; see DEV_STATE.md for next task. Preserve outstanding real point attachment/general matrix and corpus gates.
+C4.4a7c source pending CI; parent CI #95 verified 632 tests per platform. Check actual HEAD and CI; see DEV_STATE.md for next task. Preserve outstanding real point attachment/general matrix and corpus gates. Handoff checkpoint: new window may resume after verifying exact HEAD; do not run concurrent writers.
