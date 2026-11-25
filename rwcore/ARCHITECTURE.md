@@ -92,3 +92,5 @@ C4.4a5a pending CI: AlternateSubst format 1 coverage-indexed nonempty ordered ca
 C4.4a5b pending CI: original OFL Alegreya Sans Regular fixture; independently decoded direct GSUB Type 3 mapping, candidate-order and atomic explicit selection across all referenced glyphs. No scheduling or shaping execution.
 
 C4.4a6a pending CI: LigatureSubst format 1 coverage-indexed ordered sets, nested relative offsets, bounded rule/component budgets, first matching contiguous rule in font order, atomic contraction. No GDEF filtering or cluster merging.
+
+C4.4a6b pending CI: independent raw SFNT GSUB Type 4 reference across ABeeZee Regular/Italic, Aref Ruqaa Regular, Alegreya Sans Regular (18 direct subtables, 142 ordered rules); full face coverage, exact rule order and prefix reference, contiguous contraction. No external shaping engine or lookup scheduling.
