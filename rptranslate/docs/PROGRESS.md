@@ -17,7 +17,7 @@
 | D1.4b | 已通过 | AVX2 自动检测、向量化、标量回退、多线程 |
 | D1.5a | 已通过 | 稳定 Softmax、单头缩放点积 Attention、组合 mask |
 | D1.5b | 已通过 | 多头注意力、LayerNorm、QKV 投影 |
-| D1.6a | 待验证 | Embedding、Marian 位置编码、激活与 FFN |
+| D1.6a | 已通过 | Embedding、Marian 位置编码、激活与 FFN |
 | D1.6b–D1.6e | 未开始 | Encoder、Decoder、联合推理与逐层对照 |
 | D1.7 | 未开始 | Beam Search |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
@@ -85,7 +85,7 @@ D1 里程碑完成 6/14（按阶段数统计，不是工作量百分比）。
 新增 Linear [out,in] 权重布局、Q/K/V 与输出投影、单序列多头 self/cross attention、按头切分与合并、FP64 统计 LayerNorm 及 post-norm 残差。独立 NumPy 2.3.5 FP64 参考实际生成，测试四种矩阵路径、异常形状和全 mask 输出 bias。实际验收：首轮 [45517208297](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517208297) rustfmt 失败，按日志修正11组格式；[修复代码 9365456](https://github.com/trade3403/ai-research-pdf-reader/commit/93654563fa3193ec06200e1e727286edfecc3995)、[复测 45517274719](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517274719) completed/success。新增3项测试通过，含 Linear 权重布局、双头 cross attention 与 residual LayerNorm 的 NumPy 独立参考、全 mask bias、形状与极端值检查；格式、Clippy、workspace 测试、Release、自检及强制 portable-only 通过。未重跑真实 tokenizer 或矩阵性能基准；未加载真实权重、未测 Attention 速度。D1.5 阶段门槛通过，D1.6 待研发。
 
 ## 当前阶段 D1.6a
-新增自主 embedding lookup、显式 scale、Marian grouped sin/cos 位置编码（含奇数宽度、offset、上限）、ReLU/GELU tanh/SiLU、两层 FFN。独立 NumPy 2.3.5 生成位置与 FFN 参考数组；Rust CI 待验收。[技术文档](D1.6_TRANSFORMER.md)。
+新增自主 embedding lookup、显式 scale、Marian grouped sin/cos 位置编码（含奇数宽度、offset、上限）、ReLU/GELU tanh/SiLU、两层 FFN。独立 NumPy 2.3.5 生成位置与 FFN 参考数组；实际验收：首轮 [45517949056](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45517949056) rustfmt 失败，按日志修正两组格式；[修复提交 68b3ae7](https://github.com/trade3403/ai-research-pdf-reader/commit/68b3ae78f04b2e2db76a1eb836d1a0ae2a744ed8)，[复测 45518013150](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45518013150) completed/success。新增四项测试、格式、Clippy、workspace 单元测试、Release、自检、强制 portable-only 全部通过。D1.6a 已通过；D1.6b 待研发，完整 D1.6 尚未验收，不增加整阶段计数。未加载真实模型或测试推理性能。[技术文档](D1.6_TRANSFORMER.md)。
 
 ## 下一阶段 D1.6b
 Post-norm Transformer Encoder layer、层堆叠和独立逐层对照。
