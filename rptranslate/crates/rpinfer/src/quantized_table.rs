@@ -36,17 +36,13 @@ pub struct QuantizedTable {
 }
 
 impl QuantizedTable {
-    fn allocate(
-        shape: &[u64],
-        block_size: usize,
-        budget: usize,
-    ) -> Result<Self, LoadError> {
+    fn allocate(shape: &[u64], block_size: usize, budget: usize) -> Result<Self, LoadError> {
         let &[rows, width] = shape else {
             return Err(Error::Shape.into());
         };
         let rows = usize::try_from(rows).map_err(|_| Error::Limit)?;
         let width = usize::try_from(width).map_err(|_| Error::Limit)?;
-        if rows == 0 || width == 0 || block_size == 0 || width % block_size != 0 {
+        if rows == 0 || width == 0 || block_size == 0 || !width.is_multiple_of(block_size) {
             return Err(Error::Shape.into());
         }
         if rows > MAX_ROWS || width > MAX_WIDTH || block_size > MAX_BLOCK {
@@ -62,7 +58,9 @@ impl QuantizedTable {
             return Err(Error::Limit.into());
         }
         let mut codes = Vec::new();
-        codes.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
+        codes
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
         Ok(Self {
             shape: [rows, width],
             block_size,
@@ -127,6 +125,24 @@ impl QuantizedTable {
 
     pub fn block_count(&self) -> usize {
         self.scales.len()
+    }
+
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    /// Borrow validated packed row data without dequantization or allocation.
+    pub(crate) fn packed_row(&self, id: usize) -> Result<(&[i8], &[f32]), Error> {
+        let [rows, width] = self.shape;
+        if id >= rows {
+            return Err(Error::Index);
+        }
+        let start = id * width;
+        let first = start / self.block_size;
+        Ok((
+            &self.codes[start..start + width],
+            &self.scales[first..first + width / self.block_size],
+        ))
     }
 
     /// Borrow packed weights directly for writing, no full-table copy.

@@ -42,7 +42,9 @@ fn main() -> Result<(), String> {
         let infos = reader.tensors().clone();
         for (name, info) in infos {
             for block in 0..info.blocks {
-                let b = reader.read_block(&name, block, 4100).map_err(|e| format!("{e:?}"))?;
+                let b = reader
+                    .read_block(&name, block, 4100)
+                    .map_err(|e| format!("{e:?}"))?;
                 println!("{name}|{block}|{:08x}|{:?}", b.scale.to_bits(), b.codes);
             }
         }

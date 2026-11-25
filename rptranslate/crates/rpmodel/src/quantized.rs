@@ -56,11 +56,7 @@ fn name_ok(name: &str) -> bool {
 }
 
 fn inventory(shape: &[u64], block: u32) -> Result<(u64, u64, u64), Error> {
-    if shape.is_empty()
-        || shape.len() > 8
-        || shape.contains(&0)
-        || block == 0
-        || block > MAX_BLOCK
+    if shape.is_empty() || shape.len() > 8 || shape.contains(&0) || block == 0 || block > MAX_BLOCK
     {
         return Err(Error::Format);
     }
@@ -174,11 +170,7 @@ impl<R: Read + Seek> Reader<R> {
             cursor.read_exact(&mut name).map_err(|_| Error::Io)?;
             let name = String::from_utf8(name).map_err(|_| Error::Format)?;
             let (elements, blocks, required) = inventory(&shape, block_size)?;
-            if !name_ok(&name)
-                || name <= previous
-                || offset != next
-                || bytes != required
-            {
+            if !name_ok(&name) || name <= previous || offset != next || bytes != required {
                 return Err(Error::Index);
             }
             next = next.checked_add(bytes).ok_or(Error::Limit)?;
@@ -229,12 +221,18 @@ impl<R: Read + Seek> Reader<R> {
             .checked_add(info.offset)
             .and_then(|v| v.checked_add(block.checked_mul(size + 4)?))
             .ok_or(Error::Limit)?;
-        self.inner.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
+        self.inner
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| Error::Io)?;
         let scale = f32::from_le_bytes(read(&mut self.inner)?);
         let mut raw = [0_u8; MAX_BLOCK as usize];
-        self.inner.read_exact(&mut raw[..count]).map_err(|_| Error::Io)?;
+        self.inner
+            .read_exact(&mut raw[..count])
+            .map_err(|_| Error::Io)?;
         let mut codes = Vec::new();
-        codes.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
+        codes
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
         codes.extend(raw[..count].iter().map(|&v| v as i8));
         validate_block(scale, &codes)?;
         Ok(Block { scale, codes })

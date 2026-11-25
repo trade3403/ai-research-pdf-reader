@@ -198,8 +198,13 @@ D1.9b 独立格式预研：RPQ8BIN v1 小端，32字节头(magic/version/count/i
 ## D1.9c（待验收）
 D1.9c 独立真实量化词表：QuantizedTable 只保留紧凑 codes/scales，行对齐 block 整除 width；FP32 reader 每次最多1Mi元素按行转换，RPQ8 writer借用原数组，释放后从RPQ8逐块检查并加载；row_into 一行反量化、按ID gather/scale、共享词表 tied projection FP32 累加，最多一行scratch，未变更原RowTable借用API与FP32翻译路径。实际65001x512 block64目标33280512 codes、520008 scales、35360544 bytes，2组单测。真实专项全权重代码/scale 独立NumPy位对照、8 token gather4096元素、2行全logits和末行195003元素，1e-5对照量化参考、FP32差异按绝对误差传播界检查并记录argmax，不声称量化无损。真实权重文件临时生成不提交、不发布。量化计算仍FP32，不等于INT8矩阵乘法或完整量化翻译。待CI。
 
-## 下一阶段 D1.9d
-前置全量验收后，研发自主INT8矩阵乘法与混合精度累加。
+D1.9c run45536668981 CPU format 9组失败，真实专项仍运行，前置a/b/c未完整验收；本批修复9组格式，保留D1.8f及a/b/c全部门槛，独立预研d，不改正式FP32路径。
+
+## D1.9d（独立预研，待验收）
+D1.9d 独立 QuantizedLinear：使用原 QuantizedTable 存储和行借用，W[out,in]；按权重块动态量化每输入行一次，signed INT8×INT8、INT32精确块内点积（4096*127²=66064384），FP32比例因子、f64乘积与跨块累加、FP32 bias后单次输出舍入（拒绝非有限），全/末行、维度与1<<30 MAC限额、仅一输入行量化scratch。不重新展开权重、不声称SIMD或模型速度。3组Rust测试（最大正/负点积、非法输入、跨块尺度/偏置、末行/溢出），真实原始Q投影512x512、FC1 2048x512、FC2 512x2048，3合成激活行/矩阵，独立NumPy整数点积及f64尺度参考12288元素，atol/rtol1e-6，FP32偏差按误差传播界检验并记录，不等同于真实模型激活或量化翻译。待CI。
+
+## 下一阶段 D1.9e
+前序全量验收通过后，开发AVX2 signed INT8点积优化与便携回退位级对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

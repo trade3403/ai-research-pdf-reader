@@ -17,8 +17,8 @@ fn main() -> Result<(), String> {
     };
     let (config, mut reader) =
         package::open_profile(Path::new(root)).map_err(|e| format!("{e:?}"))?;
-    let table = QuantizedTable::from_fp32(&mut reader, NAME, 64, BYTES)
-        .map_err(|e| format!("{e:?}"))?;
+    let table =
+        QuantizedTable::from_fp32(&mut reader, NAME, 64, BYTES).map_err(|e| format!("{e:?}"))?;
     if table.payload_bytes() != BYTES || table.shape() != [65001, 512] {
         return Err("wrong packed inventory".into());
     }
@@ -45,8 +45,8 @@ fn main() -> Result<(), String> {
     drop(reader);
     drop(table);
     let file = File::open(dest).map_err(|e| e.to_string())?;
-    let mut reader = quantized::Reader::open(BufReader::new(file), bytes)
-        .map_err(|e| format!("{e:?}"))?;
+    let mut reader =
+        quantized::Reader::open(BufReader::new(file), bytes).map_err(|e| format!("{e:?}"))?;
     let table = QuantizedTable::load(&mut reader, NAME, BYTES).map_err(|e| format!("{e:?}"))?;
     let ids = [0, 1, 2047, 2048, 4095, 4096, 64999, 65000];
     let embedding = table
@@ -69,7 +69,9 @@ fn main() -> Result<(), String> {
     let mut stdout = BufWriter::new(io::stdout().lock());
     for tensor in [&embedding, &logits, &last] {
         for &v in tensor.data() {
-            stdout.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
+            stdout
+                .write_all(&v.to_le_bytes())
+                .map_err(|e| e.to_string())?;
         }
     }
     stdout.flush().map_err(|e| e.to_string())?;
