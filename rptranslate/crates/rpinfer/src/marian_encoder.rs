@@ -167,8 +167,12 @@ impl MarianEncoder {
         config: &MarianConfig,
         max_bytes: usize,
     ) -> Result<Self, LoadError> {
-        if (config.hidden, config.encoder_layers, config.encoder_heads, config.encoder_ffn)
-            != (HIDDEN, LAYERS, HEADS, INNER)
+        if (
+            config.hidden,
+            config.encoder_layers,
+            config.encoder_heads,
+            config.encoder_ffn,
+        ) != (HIDDEN, LAYERS, HEADS, INNER)
         {
             return Err(Error::Shape.into());
         }
@@ -176,7 +180,9 @@ impl MarianEncoder {
             return Err(Error::Limit.into());
         }
         let mut layers = Vec::new();
-        layers.try_reserve_exact(LAYERS).map_err(|_| Error::Allocation)?;
+        layers
+            .try_reserve_exact(LAYERS)
+            .map_err(|_| Error::Allocation)?;
         for index in 0..LAYERS {
             layers.push(OwnedLayer::load(reader, index)?);
         }
@@ -199,7 +205,9 @@ impl MarianEncoder {
         source_keep: Option<&[bool]>,
         kernel: Kernel,
     ) -> Result<Tensor, Error> {
-        if ids.is_empty() || source_keep.is_some_and(|mask| mask.len() != ids.len() || !mask.iter().any(|&v| v)) {
+        if ids.is_empty()
+            || source_keep.is_some_and(|mask| mask.len() != ids.len() || !mask.iter().any(|&v| v))
+        {
             return Err(Error::Shape);
         }
         let input = embeddings.input(Side::Encoder, ids, 0)?;
@@ -214,8 +222,17 @@ mod tests {
     #[test]
     fn encoder_budget_matches_audited_inventory() {
         let shapes = rpmodel::package::expected_shapes();
-        let layers: Vec<_> = shapes.iter().filter(|(name, _)| name.starts_with("model.encoder.layers.")).collect();
+        let layers: Vec<_> = shapes
+            .iter()
+            .filter(|(name, _)| name.starts_with("model.encoder.layers."))
+            .collect();
         assert_eq!(layers.len(), 96);
-        assert_eq!(layers.iter().map(|(_, shape)| shape.iter().product::<u64>() * 4).sum::<u64>(), ENCODER_PAYLOAD_BYTES as u64);
+        assert_eq!(
+            layers
+                .iter()
+                .map(|(_, shape)| shape.iter().product::<u64>() * 4)
+                .sum::<u64>(),
+            ENCODER_PAYLOAD_BYTES as u64
+        );
     }
 }

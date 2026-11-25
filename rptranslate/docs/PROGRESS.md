@@ -32,7 +32,8 @@
 | D1.8c2b | 待验证 | 类型化配置和 search 参数绑定 |
 | D1.8c3 | 待验证 | 真实共享词表、位置权重、bias 和 logits |
 | D1.8c4 | 待验证 | 真实六层 Encoder 加载与逐层前向 |
-| D1.8c5–D1.8c7 | 未开始 | 真实 Decoder 与完整模型构建 |
+| D1.8c5 | 待验证 | 真实六层 Decoder 与联合 logits |
+| D1.8c6–D1.8c7 | 未开始 | 真实生成与完整模型构建 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -149,8 +150,13 @@ D1.8c3 复测 [45532454659](https://github.com/trade3403/ai-research-pdf-reader/
 ## 当前阶段 D1.8c4
 新增 MarianEncoder 真实6层96张量拥有型加载与借用视图，Q/K/V/out、8头 self attention、post-norm、2048 FFN、SiLU/Swish、实际位置表、源 key mask；独立 encoder 权重预算75657216 bytes，预算不足预拒绝，借用共享词表不复制；复用 OwnedLinear/Norm/Attention/Ffn 供后续 Decoder。独立 Transformers4.48.3 / PyTorch2.6.0 CPU eager 真实模型，3组 token 序列（含跨块、PAD mask）每组 input、6层各 attention/final norm、最终 memory，42个张量，预设 atol/rtol=1e-4（真实512/2048宽 FP32 累加差异；原 embedding 1e-5 门槛不变），public forward 与 trace 精确一致；真实 Encoder 专项仅在 c2b/c3 验证通过后运行。尚无测试结果、译文或性能实测。
 
-## 下一阶段 D1.8c5
-真实6层 Decoder 权重与 self/cross attention、实际位置及完整前向。
+D1.8c2b/c3/c4 [45532734293](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45532734293) 真实专项全部成功：配置及生成绑定通过；真实32块33869801权重元素逐位一致、9组288676计算元素、max_abs=1.78813934e-6、4/4 argmax；真实6层 Encoder 96 tensors、75657216 bytes、42组164864元素、max_abs=1.52587891e-5、memory max_abs=1.9762665e-6。整体 CPU format 失败，未完成全门槛验收。本批采用完整上下文补丁（含纯新增行）修复，确保保留 package imports。
+
+## 当前阶段 D1.8c5
+新增 MarianDecoder：156层张量、100896768 bytes 权重预算，真实 causal self/cross attention、FFN/Swish、post-norm、实际位置表，复用共享 embedding，前缀重算、全/末行 tied logits。测试3组 source/target（含 source PAD 和 target key mask/start），真实 HF MarianMTModel eager 逐层3个 norm、memory、input、hidden、完整词表及末行 logits，共69张量、13行 argmax、预设 atol/rtol=1e-4，额外 causal 首行不受未来 token、预算和非法 mask 检查；原 c3/c4 门槛不变。总纯权重312033188 bytes，非实测 RSS；尚未真实缓存或生成译文。待 CI。
+
+## 下一阶段 D1.8c6
+实际共享权重、位置表和真实 Decoder 的 KV Cache 与 Beam Search 接入、独立生成验收。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

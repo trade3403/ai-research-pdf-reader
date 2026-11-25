@@ -4,6 +4,7 @@ mod cache;
 pub mod decoder;
 pub mod encoder;
 pub mod layers;
+pub mod marian_decoder;
 pub mod marian_encoder;
 pub mod marian_weights;
 pub mod matmul;
