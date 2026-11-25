@@ -1,7 +1,8 @@
 //! Decode image samples and masks without delegating to an external image library.
 use super::{Budget,MAX_PIXELS,MAX_SIDE,rgb,Color};
 use crate::{Document,Object,Error,Result,filters::jpeg::{self,Transform}};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap,sync::Arc};
+use crate::color::{IccTransform,ICC_PAGE_BYTES,ICC_PAGE_PROFILES};
 type Dict=BTreeMap<Vec<u8>,Object>;
 pub(super) struct Image{pub w:usize,pub h:usize,pub rgb:Vec<u8>,pub alpha:Option<Vec<u8>>,pub stencil:bool,pub interpolate:bool}
 fn integer(d:&Dict,k:&[u8],max:usize)->Result<usize>{
@@ -30,11 +31,31 @@ fn device(o:&Object)->Result<usize>{
         _=>Err(Error::Unsupported("image color space")),
     }
 }
-enum Space{Device(usize),Indexed{base:usize,high:usize,palette:Vec<u8>}}
-fn space(doc:&Document<'_>,d:&Dict)->Result<Space>{
+enum Space{Device(usize),Icc(Arc<IccTransform>),Indexed{base:usize,high:usize,palette:Vec<u8>}}
+/// Cache even alternate decisions so uncached image objects cannot repeatedly
+/// inflate/parse the same profile. Scope is a single raster pass.
+#[derive(Default)]
+pub(super) struct IccCache{entries:BTreeMap<(u32,u16),(usize,Option<Arc<IccTransform>>)>,bytes:usize}
+impl IccCache{
+    fn space(&mut self,doc:&Document<'_>,a:&[Object],budget:&mut Budget)->Result<Space>{
+        let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
+        if let Some((n,t))=self.entries.get(&id){
+            return Ok(match t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(*n)});
+        }
+        if self.entries.len()>=ICC_PAGE_PROFILES{return Err(Error::Limit("ICC image profiles"));}
+        let (n,t,used)=crate::color::load_icc(doc,a,ICC_PAGE_BYTES-self.bytes)?;
+        self.bytes+=used;
+        budget.charge(used)?;
+        let t=t.map(Arc::new);
+        let space=match &t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(n)};
+        self.entries.insert(id,(n,t));
+        Ok(space)
+    }
+}
+fn space(doc:&Document<'_>,d:&Dict,cache:&mut IccCache,budget:&mut Budget)->Result<Space>{
     let o=doc.dereference(d.get(b"ColorSpace".as_slice()).ok_or(Error::Invalid("image color space"))?)?;
     if let Object::Array(a)=&o{
-        if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased"){return Ok(Space::Device(crate::color::icc_components(doc,a)?));}
+        if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased"){return cache.space(doc,a,budget);}
         if a.len()!=4||!matches!(&a[0],Object::Name(n) if n==b"Indexed"||n==b"I"){return Err(Error::Unsupported("image color space array"));}
         let base=device(&doc.dereference(&a[1])?)?;
         let high=match a[2]{Object::Number(v) if v>=0.&&v<=255.&&v.fract()==0.=>v as usize,_=>return Err(Error::Invalid("Indexed hival"))};
@@ -97,14 +118,23 @@ fn mask_image(doc:&Document<'_>,o:&Object,w:usize,h:usize,budget:&mut Budget,har
     let b=if hard&&!dict.contains_key(b"BitsPerComponent".as_slice()){1}else{bits(dict)?};
     if hard{
         if b!=1||dict.contains_key(b"ColorSpace".as_slice()){return Err(Error::Invalid("explicit mask dictionary"));}
-    }else if !matches!(space(doc,dict)?,Space::Device(1)){return Err(Error::Unsupported("SMask color space"));}
+    }else{
+        // A soft-mask sample is opacity, not a display color. Keep the
+        // existing one-component ICC alternate policy, never apply RGB/TRCs.
+        let cs=doc.dereference(dict.get(b"ColorSpace".as_slice()).ok_or(Error::Invalid("image color space"))?)?;
+        let n=match &cs{
+            Object::Array(a) if matches!(a.first(),Some(Object::Name(n)) if n==b"ICCBased")=>crate::color::icc_components(doc,a)?,
+            _=>device(&cs)?,
+        };
+        if n!=1{return Err(Error::Unsupported("SMask color space"));}
+    }
     let p=pairs(dict,1)?[0];
     if hard&&p!=[0.,1.]&&p!=[1.,0.]{return Err(Error::Invalid("mask Decode"));}
     let raw=sample_data(&o,sw,sh,1,b,budget)?;
     let a:Vec<u8>=raw.into_iter().map(|v|{let c=channel(v,max_sample(b),p);if hard{255-c}else{c}}).collect();
     if (sw,sh)==(w,h){Ok(a)}else{resample_alpha(&a,sw,sh,w,h,budget)}
 }
-pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget)->Result<Image>{
+pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut IccCache)->Result<Image>{
     let o=doc.resolve(id.0,id.1)?;let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("image stream"));};
     if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==b"Image"){return Err(Error::Invalid("image subtype"));}
     let interpolate=flag(dict,b"Interpolate")?;
@@ -122,8 +152,8 @@ pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget)->Result<Im
         for y in 0..h{for x in 0..w{let b=(data[y*row+x/8]>>(7-x%8))&1;let paint=if pair[0]==0.{b==0}else{b==1};alpha.push(if paint{255}else{0});}}
         return Ok(Image{w,h,rgb:Vec::new(),alpha:Some(alpha),stencil:true,interpolate});
     }
-    let b=bits(dict)?;let max=max_sample(b);let cs=space(doc,dict)?;
-    let n=match &cs{Space::Device(n)=>*n,Space::Indexed{..}=>1};
+    let b=bits(dict)?;let max=max_sample(b);let cs=space(doc,dict,cache,budget)?;
+    let n=match &cs{Space::Device(n)=>*n,Space::Icc(t)=>t.components(),Space::Indexed{..}=>1};
     if matches!(&cs,Space::Indexed{..})&&(b==16||matches!(dict.get(b"Filter".as_slice()),Some(Object::Name(n)) if n==b"DCTDecode"||n==b"DCT")){return Err(Error::Unsupported("Indexed sample format"));}
     let data=sample_data(&o,w,h,n,b,budget)?;
     let mut p=pairs(dict,n)?;
@@ -146,10 +176,23 @@ pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget)->Result<Im
             _=>return Err(Error::Invalid("image Mask")),
         }
     }else{None};
+    // Charge before evaluating potentially millions of LUTs. The CMYK path
+    // uses 16 interpolation corners; the RGB path is three TRCs and a matrix.
+    if let Space::Icc(t)=&cs{
+        budget.stage="raster work (image ICC)";
+        budget.charge(w*h*if t.components()==4{128}else{32})?;
+    }
     let mut out=Vec::with_capacity(w*h*3);
     for v in data.chunks_exact(n){
         let color=match &cs{
             Space::Device(n)=>{let mut c=[0;4];for i in 0..*n{c[i]=channel(v[i],max,p[i]);}rgb_components(&c[..*n])}
+            Space::Icc(t)=>{
+                // Decode at original sample precision, clamp in the profile's
+                // supported default Range, and quantize only after conversion.
+                let mut c=[0.;4];
+                for i in 0..n{c[i]=(p[i][0]+f64::from(v[i])/f64::from(max)*(p[i][1]-p[i][0])).clamp(0.,1.);}
+                t.rgb(c)?.map(|x|(x.clamp(0.,1.)*255.).round() as u8)
+            }
             Space::Indexed{base,high,palette}=>{
                 let i=(p[0][0]+f64::from(v[0])/f64::from(max)*(p[0][1]-p[0][0])).round().clamp(0.,*high as f64)as usize;
                 rgb_components(&palette[i*base..(i+1)*base])

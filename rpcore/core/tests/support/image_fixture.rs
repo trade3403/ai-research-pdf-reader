@@ -35,7 +35,11 @@ pub fn stream(dict:&str,data:&[u8])->Vec<u8>{
     let mut b=format!("<< {dict} /Length {} >>\nstream\n",data.len()).into_bytes();b.extend_from_slice(data);b.extend_from_slice(b"\nendstream");b
 }
 pub fn pdf(content:&[u8],im:Vec<u8>,mask:Vec<u8>,gs:&str)->Vec<u8>{
-    let objs=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 20 20] >>".to_vec(),b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Im 5 0 R >> /ExtGState << /Half 7 0 R >> >> >>".to_vec(),stream("",content),im,mask,gs.as_bytes().to_vec()];
+    pdf_extra(content,im,mask,gs,Vec::new())
+}
+pub fn pdf_extra(content:&[u8],im:Vec<u8>,mask:Vec<u8>,gs:&str,extra:Vec<Vec<u8>>)->Vec<u8>{
+    let mut objs=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 20 20] >>".to_vec(),b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Im 5 0 R >> /ExtGState << /Half 7 0 R >> >> >>".to_vec(),stream("",content),im,mask,gs.as_bytes().to_vec()];
+    objs.extend(extra);
     let mut p=b"%PDF-1.4\n".to_vec();let mut offs=Vec::new();
     for(i,o)in objs.iter().enumerate(){offs.push(p.len());p.extend_from_slice(format!("{} 0 obj\n",i+1).as_bytes());p.extend(o);p.extend_from_slice(b"\nendobj\n");}
     let x=p.len();p.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n",objs.len()+1).as_bytes());

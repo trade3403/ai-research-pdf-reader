@@ -401,7 +401,7 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
-struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize}
+struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<(u32,u16),Arc<images::Image>>,image_cache_bytes:usize,icc_cache:images::IccCache}
 impl Surface{
     fn local_index(&self,page_sample:usize)->Option<usize>{
         let p=page_sample/4;self.region.index(p%self.w,p/self.w,page_sample%4)
@@ -602,7 +602,7 @@ impl Surface{
     fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix)->Result<()>{
         self.budget.stage="raster work (image decode)";
         let img=if let Some(img)=self.image_cache.get(&id){Arc::clone(img)}else{
-            let img=Arc::new(images::load(doc,id,&mut self.budget)?);
+            let img=Arc::new(images::load(doc,id,&mut self.budget,&mut self.icc_cache)?);
             let bytes=img.rgb.capacity()+img.alpha.as_ref().map_or(0,Vec::capacity);
             // No eviction/reload churn, no caching unbounded numbers of tiny images.
             if self.image_cache.len()<128&&bytes<=32*1024*1024-self.image_cache_bytes{
@@ -635,7 +635,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
     let mut clip=vec![0u8;w*h];
     for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
     let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
-    let mut s=Surface{w,h,text_quality,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0};
+    let mut s=Surface{w,h,text_quality,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0,icc_cache:images::IccCache::default()};
     let mut missing_text=false;
     let mut text=rendertext::TextRenderer::new();
     for c in &list.commands{

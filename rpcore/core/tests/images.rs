@@ -1,3 +1,4 @@
+#[path="support/icc_fixture.rs"] mod icc_fixture;
 #[path="support/image_fixture.rs"] mod fixture;
 use rpcore::{Document,filters::jpeg::{self,Transform},raster::{Bitmap,Options}};
 fn close(a:u8,b:u8){assert!((i32::from(a)-i32::from(b)).abs()<=2,"{a} != {b}");}
@@ -109,4 +110,51 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
     let profile=fixture::stream("/N 3",b"uninterpreted ICC profile");
     let p=fixture::pdf(b"1 0 0 1 0 0 cm /Im Do",im,profile,"<< >>");
     let b=render(&p);assert_eq!(px(&b,0,19),[255,0,0,255]);
+}
+
+#[test]fn native_icc_rgb_16bit_decode_and_raw_mask(){
+    let samples:[u16;9]=[0,0,0,49152,49152,49152,65535,65535,65535];
+    let data:Vec<u8>=samples.into_iter().flat_map(u16::to_be_bytes).collect();
+    let im=fixture::stream("/Subtype /Image /Width 3 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 16 /Mask [0 0 0 0 0 0]",&data);
+    let p=fixture::pdf(b"3 0 0 1 0 0 cm /Im Do",im,fixture::stream("/N 3",&icc_fixture::rgb_icc()),"<< >>");
+    let b=render(&p);
+    assert_eq!(px(&b,0,19),[255;4]); // raw zero transparent
+    // 49152/65535 through gamma=2 and sRGB -> 198, prequantizing ->197.
+    assert_eq!(px(&b,1,19),[198,198,198,255]);
+    assert_eq!(px(&b,2,19),[255;4]);
+    let im=fixture::stream("/Subtype /Image /Width 2 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8 /Decode [1 0 1 0 1 0] /Mask [0 0 0 0 0 0]",&[0,0,0,255,255,255]);
+    let p=fixture::pdf(b"1 0 0 rg 0 0 20 20 re f 2 0 0 1 0 0 cm /Im Do",im,fixture::stream("/N 3",&icc_fixture::rgb_icc()),"<< >>");
+    let b=render(&p);assert_eq!(px(&b,0,19),[255,0,0,255]);assert_eq!(px(&b,1,19),[0,0,0,255]);
+}
+#[test]fn native_icc_rgb_jpeg_and_soft_mask(){
+    let im=fixture::stream("/Subtype /Image /Width 17 /Height 9 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8 /Filter /DCTDecode /SMask 8 0 R",&fixture::rgb());
+    let mask=fixture::stream("/Subtype /Image /Width 17 /Height 9 /ColorSpace /DeviceGray /BitsPerComponent 8",&[128;153]);
+    let p=fixture::pdf_extra(b"17 0 0 9 0 0 cm /Im Do",im,fixture::stream("/N 3",&icc_fixture::rgb_icc()),"<< >>",vec![mask]);
+    let b=render(&p);
+    // Independent expected neutral channel from fixture RGB squares, not
+    // native ICC output. Mask alpha is linear and independent of the TRCs.
+    let linear=[200_f64,39.,70.].into_iter().map(|v|(v/255.).powi(2)).sum::<f64>()/3.;
+    let s=(255.*(1.055*linear.powf(1./2.4)-0.055)).round();
+    let expected=(255.+(s-255.)*128./255.).round()as u8;
+    for &v in &px(&b,3,14)[..3]{close(v,expected);}
+}
+#[test]fn native_icc_cmyk_packed_and_jpeg(){
+    // Relative A2B1 produces neutral L=100*(1-K); check K changes.
+    let im=fixture::stream("/Subtype /Image /Width 2 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 4",&[0,0,0,15]);
+    let p=fixture::pdf(b"2 0 0 1 0 0 cm /Im Do",im,fixture::stream("/N 4",&icc_fixture::cmyk_icc()),"<< >>");
+    let b=render(&p);assert_eq!(px(&b,0,19),[255;4]);assert_eq!(px(&b,1,19),[0,0,0,255]);
+    let im=fixture::stream("/Subtype /Image /Width 8 /Height 8 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8 /Filter /DCTDecode /Decode [1 0 1 0 1 0 1 0]",&fixture::cmyk());
+    let p=fixture::pdf(b"8 0 0 8 0 0 cm /Im Do",im,fixture::stream("/N 4",&icc_fixture::cmyk_icc()),"<< >>");
+    let b=render(&p);assert_eq!(px(&b,2,15),[255;4]); // K decoded from 255 to 0
+}
+#[test]fn native_icc_image_rejects_component_mismatch_and_work_limit(){
+    let im=fixture::stream("/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8",&[0,0,0]);
+    let p=fixture::pdf(b"/Im Do",im,fixture::stream("/N 3",&icc_fixture::cmyk_icc()),"<< >>");
+    let d=Document::open(&p).unwrap();
+    assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(rpcore::Error::Invalid("ICCBased profile N mismatch"))));
+    // Large image on a tiny page must still charge its decode/ICC cost.
+    let im=fixture::stream("/Subtype /Image /Width 1500 /Height 1500 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 1",&vec![0;750*1500]);
+    let p=fixture::pdf(b"/Im Do",im,fixture::stream("/N 4",&icc_fixture::cmyk_icc()),"<< >>");
+    let d=Document::open(&p).unwrap();
+    assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(rpcore::Error::Limit("raster work (image ICC)"))));
 }
