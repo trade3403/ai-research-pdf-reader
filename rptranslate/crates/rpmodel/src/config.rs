@@ -64,7 +64,9 @@ fn value(p: &mut Parser<'_>, depth: usize) -> Result<Value, JsonError> {
     p.ws();
     match p.rest.as_bytes().first() {
         Some(b'"') => Ok(Value::Text(p.string()?)),
-        Some(b'{') => Ok(Value::Object(p.object(MAX_ITEMS, |p, _| value(p, depth + 1))?)),
+        Some(b'{') => Ok(Value::Object(
+            p.object(MAX_ITEMS, |p, _| value(p, depth + 1))?,
+        )),
         Some(b'[') => {
             p.expect('[')?;
             let mut out = Vec::new();
@@ -188,10 +190,14 @@ impl MarianConfig {
         text(&m, "model_type", "marian")?;
         text(&m, "activation_function", "swish")?;
         for (key, expected) in [
-            ("is_encoder_decoder", true), ("scale_embedding", true),
-            ("static_position_embeddings", true), ("normalize_before", false),
-            ("normalize_embedding", false), ("add_final_layer_norm", false),
-            ("add_bias_logits", false), ("force_bos_token_to_be_generated", false),
+            ("is_encoder_decoder", true),
+            ("scale_embedding", true),
+            ("static_position_embeddings", true),
+            ("normalize_before", false),
+            ("normalize_embedding", false),
+            ("add_final_layer_norm", false),
+            ("add_bias_logits", false),
+            ("force_bos_token_to_be_generated", false),
             ("do_blenderbot_90_layernorm", false),
         ] {
             flag(&m, key, expected)?;
@@ -207,7 +213,8 @@ impl MarianConfig {
         let max_positions = uint(&m, "max_position_embeddings")?;
         if (vocab, hidden, encoder_layers, decoder_layers) != (65001, 512, 6, 6)
             || (encoder_heads, decoder_heads, encoder_ffn, decoder_ffn) != (8, 8, 2048, 2048)
-            || max_positions != 512 || uint(&m, "extra_pos_embeddings")? != 0
+            || max_positions != 512
+            || uint(&m, "extra_pos_embeddings")? != 0
             || uint(&m, "num_hidden_layers")? != encoder_layers
         {
             return Err(Error::Unsupported);
@@ -215,12 +222,24 @@ impl MarianConfig {
         // The exact upstream generation file contains only this subset.
         // Unknown options are rejected, not silently interpreted as defaults.
         for key in g.keys() {
-            if !matches!(key.as_str(), "_from_model_config" | "transformers_version"
-                | "bad_words_ids" | "bos_token_id" | "decoder_start_token_id"
-                | "eos_token_id" | "forced_eos_token_id" | "pad_token_id"
-                | "num_beams" | "max_length" | "min_length" | "length_penalty"
-                | "early_stopping" | "do_sample" | "renormalize_logits")
-            {
+            if !matches!(
+                key.as_str(),
+                "_from_model_config"
+                    | "transformers_version"
+                    | "bad_words_ids"
+                    | "bos_token_id"
+                    | "decoder_start_token_id"
+                    | "eos_token_id"
+                    | "forced_eos_token_id"
+                    | "pad_token_id"
+                    | "num_beams"
+                    | "max_length"
+                    | "min_length"
+                    | "length_penalty"
+                    | "early_stopping"
+                    | "do_sample"
+                    | "renormalize_logits"
+            ) {
                 return Err(Error::Unsupported);
             }
         }
@@ -230,18 +249,28 @@ impl MarianConfig {
             }
         }
         for (key, expected) in [
-            ("decoder_start_token_id", 65000), ("pad_token_id", 65000),
-            ("eos_token_id", 0), ("bos_token_id", 0), ("forced_eos_token_id", 0),
-            ("num_beams", 4), ("max_length", 512),
+            ("decoder_start_token_id", 65000),
+            ("pad_token_id", 65000),
+            ("eos_token_id", 0),
+            ("bos_token_id", 0),
+            ("forced_eos_token_id", 0),
+            ("num_beams", 4),
+            ("max_length", 512),
         ] {
             if uint(&m, key)? != expected || uint(&g, key)? != expected {
                 return Err(Error::Field(key));
             }
         }
-        let min_length = if g.contains_key("min_length") { uint(&g, "min_length")? } else { 0 };
+        let min_length = if g.contains_key("min_length") {
+            uint(&g, "min_length")?
+        } else {
+            0
+        };
         let length_penalty = match g.get("length_penalty") {
             None => 1.,
-            Some(Value::Number(s)) => s.parse::<f64>().map_err(|_| Error::Field("length_penalty"))?,
+            Some(Value::Number(s)) => s
+                .parse::<f64>()
+                .map_err(|_| Error::Field("length_penalty"))?,
             _ => return Err(Error::Field("length_penalty")),
         };
         if min_length != 0 || length_penalty != 1. {
@@ -251,8 +280,16 @@ impl MarianConfig {
         bad_words(&m, pad)?;
         bad_words(&g, pad)?;
         Ok(Self {
-            vocab, hidden, encoder_layers, decoder_layers, encoder_heads, decoder_heads,
-            encoder_ffn, decoder_ffn, max_positions, activation: Activation::Swish,
+            vocab,
+            hidden,
+            encoder_layers,
+            decoder_layers,
+            encoder_heads,
+            decoder_heads,
+            encoder_ffn,
+            decoder_ffn,
+            max_positions,
+            activation: Activation::Swish,
             embedding_scale: (hidden as f32).sqrt(),
             generation: Generation {
                 start: uint(&g, "decoder_start_token_id")? as u32,
@@ -260,8 +297,10 @@ impl MarianConfig {
                 pad: pad as u32,
                 forced_eos: uint(&g, "forced_eos_token_id")? as u32,
                 num_beams: uint(&g, "num_beams")?,
-                min_length, max_length: uint(&g, "max_length")?,
-                length_penalty, suppress: vec![pad as u32],
+                min_length,
+                max_length: uint(&g, "max_length")?,
+                length_penalty,
+                suppress: vec![pad as u32],
             },
         })
     }
@@ -287,7 +326,10 @@ mod tests {
     #[test]
     fn fixed_profile_and_defaults() {
         let c = MarianConfig::parse(MODEL, GEN).unwrap();
-        assert_eq!((c.vocab, c.hidden, c.encoder_layers, c.decoder_heads), (65001, 512, 6, 8));
+        assert_eq!(
+            (c.vocab, c.hidden, c.encoder_layers, c.decoder_heads),
+            (65001, 512, 6, 8)
+        );
         assert_eq!(c.generation.suppress, [65000]);
         assert_eq!(c.generation.max_length, 512);
         assert_eq!(c.generation.length_penalty, 1.);
@@ -309,7 +351,10 @@ mod tests {
         for bad in [
             GEN.replace(r#""num_beams":4"#, r#""num_beams":5"#),
             GEN.replace(r#""num_beams":4"#, r#""num_beams":4,"do_sample":true"#),
-            GEN.replace(r#""num_beams":4"#, r#""num_beams":4,"renormalize_logits":true"#),
+            GEN.replace(
+                r#""num_beams":4"#,
+                r#""num_beams":4,"renormalize_logits":true"#,
+            ),
             GEN.replace(r#""num_beams":4"#, r#""num_beams":4,"unknown":false"#),
             GEN.replace("[[65000]]", "[[1,2]]"),
         ] {

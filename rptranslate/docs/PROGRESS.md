@@ -30,7 +30,8 @@
 | D1.8c1 | 已通过 | 固定官方权重安全转换与 RPModel v1 |
 | D1.8c2a | 已通过 | SHA256、严格 manifest、固定配置 profile、权重索引 |
 | D1.8c2b | 待验证 | 类型化配置和 search 参数绑定 |
-| D1.8c3–D1.8c7 | 未开始 | 真实权重加载与完整模型构建 |
+| D1.8c3 | 待验证 | 真实共享词表、位置权重、bias 和 logits |
+| D1.8c4–D1.8c7 | 未开始 | 真实 Encoder/Decoder 与完整模型构建 |
 | D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
@@ -137,8 +138,13 @@ D1 里程碑完成 8/14（按阶段数统计，不是工作量百分比）。
 ## 当前阶段 D1.8c2b
 新增有界 JSON config 解析（64KiB、8层、单对象/数组128项、重复键/错误数字/非有限拒绝），类型化固定 Marian architecture + Generation，严格结构和特殊 token 参数、单 token bad_words、未知 generation 字段拒绝，显式默认 min_length=0、penalty=1，禁用 sampling/renormalize/early_stopping。package::open_profile 在固定文件哈希及权重索引验证后读取真实配置，MarianGeneration::from_profile 绑定自主 SearchConfig。仍仅支持固定审计 profile，不是通用 Marian 加载器，未装载真实神经网络权重执行推理。真实转换、逐位、包损坏反例和类型化配置专项 CI 待验收。
 
-## 下一阶段 D1.8c3
-真实共享词嵌入分块读取、位置表及输出 bias、独立投影精度对照。
+D1.8c2b 首轮 [45531897761](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45531897761) 整体失败（基础格式检查），真实模型专项成功：MARIAN_PROFILE PASS vocab=65001 hidden=512 6+6层 heads8 FFN2048 positions512 Swish scale=22.627417 tensors=256；MARIAN_SEARCH_PROFILE PASS start/pad=65000 EOS=0 beams4 max_new511 penalty1 forced_eos=true suppress=[65000]；真实逐位 roundtrip 78008297元素仍通过。本次修复14组格式后复测，完整 c2b 待验收。
+
+## 当前阶段 D1.8c3
+新增 MarianEmbeddings 自主实际权重加载：32块共享词表、两个真实位置表、bias [1,65001] 无复制 reshape 为 [65001]，预算135479204 bytes，预算不足预先拒绝，保留 Tensor 上限。实际 checkpoint 位置表直接 gather（不重新计算），共享 table 做 token embedding 和 tied LM Head；提供后续 Encoder/Decoder adapter 的借用接口，未改变现有合成模型结构。独立 PyTorch 原始权重参考，Rust 逐行输出全部加载词表及位置/bias 位对照，8个跨块/特殊 ID，两个方向3种位置 offset（含504），3行全65001 logits和末行投影（4行 argmax），atol/rtol=1e-5，额外预算与ID/位置异常。CI 待验收，尚无真实 Encoder/Decoder 层前向、译文、速度或总 RSS 测量。
+
+## 下一阶段 D1.8c4
+真实6层 Encoder 权重映射及实际位置表接入、逐层前向对照。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

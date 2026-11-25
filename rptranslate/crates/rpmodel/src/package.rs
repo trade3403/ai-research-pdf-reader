@@ -298,7 +298,9 @@ pub fn open_profile(root: &Path) -> Result<(MarianConfig, SafeTensorReader<File>
         } else if name == "config.json" || name == "generation_config.json" {
             file.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
             let mut text = String::new();
-            file.take(info.bytes + 1).read_to_string(&mut text).map_err(|_| Error::Io)?;
+            file.take(info.bytes + 1)
+                .read_to_string(&mut text)
+                .map_err(|_| Error::Io)?;
             if name == "config.json" {
                 model_config = Some(text);
             } else {
@@ -311,7 +313,8 @@ pub fn open_profile(root: &Path) -> Result<(MarianConfig, SafeTensorReader<File>
     let config = MarianConfig::parse(
         &model_config.ok_or(Error::Manifest)?,
         &generation_config.ok_or(Error::Manifest)?,
-    ).map_err(Error::Config)?;
+    )
+    .map_err(Error::Config)?;
     Ok((config, reader))
 }
 
