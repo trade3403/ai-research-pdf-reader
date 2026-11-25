@@ -96,3 +96,5 @@ Lock artifacts (metadata, not installer): [macOS](https://github.com/trade3403/a
 #83 completed: 0cd30c796be53e37a8e60502fda3b8c80e415e82; 543 passed/platform, zero failed/ignored, locked Release and exact checkout SHA verified. https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45610902476 . Artifacts not independently inspected.
 
 #84 completed: a0e0c16bf1d4fde094ac79db746d2618bdc405c6; 551 passed/platform, zero failed/ignored, locked Release and exact checkout SHA verified. https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45612812111 . Artifacts not independently inspected.
+
+#85 completed: 5cb85f4e8c3ba9f5832a797e14c2086b82201a6b; 559 passed/platform, zero failed/ignored, locked Release and exact checkout SHA verified. https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45614736262 . Artifacts not independently inspected.

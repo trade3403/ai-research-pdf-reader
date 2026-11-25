@@ -78,3 +78,5 @@ C4.4a1 pending CI: font_coverage.rs bounded Coverage format 1 glyph list and for
 C4.4a2a pending CI: font_gsub.rs bounded GSUB 1.0/1.1 top-level directories, absolute child offsets, cumulative record and byte budgets; no child body, variation execution or substitution validation.
 
 C4.4a2b pending CI: GSUB child headers, default and tagged LangSys, required feature and lookup index validation, lookup flags and optional mark filtering set metadata, bounded cumulative records. Subtable bodies opaque.
+
+C4.4a3a pending CI: standalone type 1 format 1 modulo-65536 delta and format 2 explicit replacements linked to validated Coverage; all outputs checked against face glyph count, bounded input and expanded coverage. No lookup scheduling.

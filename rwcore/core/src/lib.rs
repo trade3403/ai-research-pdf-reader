@@ -144,3 +144,6 @@ pub mod font_gsub;
 pub use font_gsub::{GsubRecord,GsubDirectory,GsubLimits,parse_gsub_directory};
 
 pub use font_gsub::{GsubLangSys,GsubScript,GsubFeature,GsubLookup,GsubLayout,parse_gsub_layout};
+
+pub mod font_single_subst;
+pub use font_single_subst::{SingleSubstLimits,SingleSubstitution,parse_single_substitution};
