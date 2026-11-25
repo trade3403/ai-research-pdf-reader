@@ -18,7 +18,7 @@ use rpmodel::{
 };
 use std::path::Path;
 
-use crate::{protection::Term, scientific};
+use crate::{glossary::Glossary, protection::Term, scientific};
 
 pub const LANGUAGE: &str = ">>cmn_Hans<<";
 
@@ -231,6 +231,27 @@ impl TextSession<'_> {
         options: GenerationOptions,
         kernel: Kernel,
     ) -> Result<scientific::ScientificTranslation, scientific::Error> {
+        self.validate_scientific(text, options)?;
+        scientific::translate_with(text, glossary, |gap| self.translate(gap, options, kernel))
+    }
+
+    /// Explicit domain-indexed translation; unmatched gaps use the same model.
+    pub fn translate_glossary(
+        &self,
+        text: &str,
+        glossary: &Glossary,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<scientific::ScientificTranslation, scientific::Error> {
+        self.validate_scientific(text, options)?;
+        scientific::translate_indexed_with(text, glossary, |gap| self.translate(gap, options, kernel))
+    }
+
+    fn validate_scientific(
+        &self,
+        text: &str,
+        options: GenerationOptions,
+    ) -> Result<(), scientific::Error> {
         self.encode(text).map_err(scientific::Error::Input)?;
         if options.beam_width == 0
             || options.beam_width > 16
@@ -241,7 +262,7 @@ impl TextSession<'_> {
                 InferError::Limit,
             )));
         }
-        scientific::translate_with(text, glossary, |gap| self.translate(gap, options, kernel))
+        Ok(())
     }
 
     pub fn translate(

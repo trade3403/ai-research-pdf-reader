@@ -1,0 +1,70 @@
+# RPTranslate v1 seed aliases; project-authored candidate glossary, not an exhaustive standard.
+general	uncertainty	不确定性
+general	confidence interval	置信区间
+general	confidence intervals	置信区间
+general	standard deviation	标准差
+general	standard deviations	标准差
+general	numerical simulation	数值模拟
+general	numerical simulations	数值模拟
+general	boundary condition	边界条件
+general	boundary conditions	边界条件
+general	finite element method	有限元法
+general	spectral element method	谱元法
+geotechnical	strain	应变
+geotechnical	strains	应变
+geotechnical	maximum strain	最大应变
+geotechnical	maximum strains	最大应变
+geotechnical	shear strain	剪应变
+geotechnical	shear strains	剪应变
+geotechnical	stress	应力
+geotechnical	shear stress	剪应力
+geotechnical	site response	场地响应
+geotechnical	site responses	场地响应
+geotechnical	non-linear site response	非线性场地响应
+geotechnical	nonlinear site response	非线性场地响应
+geotechnical	linear site response	线性场地响应
+geotechnical	soil non-linearity	土体非线性
+geotechnical	soil nonlinearity	土体非线性
+geotechnical	input motion	输入地震动
+geotechnical	input motions	输入地震动
+geotechnical	incidence angle	入射角
+geotechnical	incidence angles	入射角
+geotechnical	obliquely incident waves	斜入射波
+geotechnical	obliquely incident wave	斜入射波
+geotechnical	incident waves	入射波
+geotechnical	incident wave	入射波
+geotechnical	seismic waves	地震波
+geotechnical	seismic wave	地震波
+geotechnical	ground motion	地震动
+geotechnical	ground motions	地震动
+geotechnical	ground-motion	地震动
+geotechnical	ground-motion spectral amplitude	地震动谱幅值
+geotechnical	ground motion spectral amplitude	地震动谱幅值
+geotechnical	spectral amplitude	谱幅值
+geotechnical	spectral amplitudes	谱幅值
+geotechnical	seismic vulnerability	地震易损性
+geotechnical	ricker wavelet	Ricker 子波
+geotechnical	ricker wavelets	Ricker 子波
+geotechnical	peak acceleration	峰值加速度
+geotechnical	peak ground acceleration	峰值地面加速度
+geotechnical	shear wave velocity	剪切波速度
+geotechnical	shear-wave velocity	剪切波速度
+geotechnical	bedrock	基岩
+geotechnical	sedimentary basin	沉积盆地
+geotechnical	sedimentary basins	沉积盆地
+geotechnical	pulse-like input	类脉冲输入
+geotechnical	zero-crossings	过零点
+geotechnical	zero-crossing	过零点
+geotechnical	non-linear	非线性
+geotechnical	nonlinear	非线性
+geotechnical	northridge	Northridge
+geotechnical	kathmandu basin	加德满都盆地
+geotechnical	kathmandu valley	加德满都谷地
+biology	strain	菌株
+biology	strains	菌株
+biology	bacterial strain	细菌菌株
+biology	bacterial strains	细菌菌株
+biology	gene expression	基因表达
+biology	cell culture	细胞培养
+biology	cell cultures	细胞培养
+biology	protein structure	蛋白质结构

@@ -1,7 +1,8 @@
 //! Opt-in scientific translation. Recognized literals never enter the model.
 use crate::{
+    glossary::Glossary,
     offline::{Error as OfflineError, Translation},
-    protection::{self, Plan, Term},
+    protection::{self, Kind, Plan, Term},
 };
 
 const MAX_CALLS: usize = 128;
@@ -21,6 +22,7 @@ pub enum Error {
 pub struct ScientificTranslation {
     pub text: String,
     pub protected_spans: usize,
+    pub term_spans: usize,
     pub model_calls: usize,
     pub generated_tokens: usize,
     /// Separate gap translation may lose surrounding sentence context.
@@ -30,15 +32,37 @@ pub struct ScientificTranslation {
 pub(crate) fn translate_with(
     source: &str,
     glossary: &[Term],
-    mut translate: impl FnMut(&str) -> Result<Translation, OfflineError>,
+    translate: impl FnMut(&str) -> Result<Translation, OfflineError>,
 ) -> Result<ScientificTranslation, Error> {
+    validate_source(source)?;
+    let plan = Plan::prepare(source, glossary).map_err(Error::Plan)?;
+    execute(plan, translate)
+}
+
+pub(crate) fn translate_indexed_with(
+    source: &str,
+    glossary: &Glossary,
+    translate: impl FnMut(&str) -> Result<Translation, OfflineError>,
+) -> Result<ScientificTranslation, Error> {
+    validate_source(source)?;
+    let plan = Plan::prepare_indexed(source, glossary).map_err(Error::Plan)?;
+    execute(plan, translate)
+}
+
+fn validate_source(source: &str) -> Result<(), Error> {
     if source.trim().is_empty() {
         return Err(Error::Input(OfflineError::Empty));
     }
     if source.trim_start().starts_with(">>") {
         return Err(Error::Input(OfflineError::LanguagePrefix));
     }
-    let plan = Plan::prepare(source, glossary).map_err(Error::Plan)?;
+    Ok(())
+}
+
+fn execute(
+    plan: Plan,
+    mut translate: impl FnMut(&str) -> Result<Translation, OfflineError>,
+) -> Result<ScientificTranslation, Error> {
     let gaps = plan.gaps();
     let calls = gaps
         .iter()
@@ -80,6 +104,7 @@ pub(crate) fn translate_with(
     Ok(ScientificTranslation {
         text,
         protected_spans: plan.spans().len(),
+        term_spans: plan.spans().iter().filter(|s| s.kind == Kind::Term).count(),
         model_calls: calls,
         generated_tokens,
         fragmented_context: !plan.spans().is_empty() && calls > 0,
@@ -121,6 +146,22 @@ mod tests {
         assert_eq!(output.text, "0.1 g, 30°, $x=2$.");
         assert_eq!(output.model_calls, 0);
         assert!(!output.fragmented_context);
+    }
+
+    #[test]
+    fn indexed_terms_never_enter_model() {
+        let g = Glossary::builtin(crate::glossary::Domain::Geotechnical).unwrap();
+        let mut inputs = Vec::new();
+        let output = translate_indexed_with("We measured MAXIMUM STRAIN at 0.1 g.", &g, |s| {
+            inputs.push(s.to_owned());
+            Ok(result("测量"))
+        })
+        .unwrap();
+        assert_eq!(inputs, ["We measured", "at"]);
+        assert_eq!(output.term_spans, 1);
+        assert_eq!(output.protected_spans, 2);
+        assert!(output.text.contains("最大应变"));
+        assert!(output.text.contains("0.1 g"));
     }
 
     #[test]

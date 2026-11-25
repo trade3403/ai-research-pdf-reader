@@ -307,3 +307,12 @@ jobs:
           "$RUNNER_TEMP/rp-convert/bin/python" crates/rptranslate/tests/check_scientific_paper.py "$paper"
           target/release/rptranslate translate-scientific-int8 "$RUNNER_TEMP/rpmodel-mixed" 'The peak acceleration is 0.1 g.' 1 64 | grep -F '0.1 g'
           if target/release/rptranslate translate-scientific-int8 "$RUNNER_TEMP/rpmodel-mixed" 'broken $x' 1 64; then exit 1; fi
+      - name: Verify domain glossary through actual FP32 and INT8 models
+        if: contains(github.event.head_commit.message, 'D1.10c')
+        run: |
+          set -eu
+          cargo build --locked --offline --release -p rptranslate --example glossary_reference
+          target/release/examples/glossary_reference "$RUNNER_TEMP/rpmodel-v1" fp32
+          target/release/examples/glossary_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
+          target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain.' 1 64 | grep -F '最大应变'
+          if target/release/rptranslate translate-glossary-int8 "$RUNNER_TEMP/rpmodel-mixed" unknown 'strain' 1 64; then exit 1; fi

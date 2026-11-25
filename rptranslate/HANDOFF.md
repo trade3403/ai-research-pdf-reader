@@ -2,13 +2,14 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前只做 D1.10b 科学数值、公式及单位保护接入**。D1.9h-paper 及 D1.10a 基础测试已通过；用户已授权开始 D1.10b。未全量验收前不启动 D1.10c 或 D1.9i-l。
+- **当前只做 D1.10c 科研术语词典与精确匹配**。D1.10b 全量验收通过，用户已授权 D1.10c。未全量验收前不启动 D1.10d 或 D1.9i-l。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 ubuntu CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
-- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10b 全量后通知用户，等待下一阶段指示。
+- 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10c 全量后通知用户，等待下一阶段指示。
 
 ## 当前状态（最新优先）
+- D1.10b 基线 HEAD 257a156 / [45559761420](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45559761420) 全量 success，97 workspace + 52 portable =149/149；真实 FP32/INT8 各6组8字面量1负例；论文成功266/269、拒绝3，数字280/310→306/310，同成功集合106.321602→105.831631秒、120704 KiB。保护仍显式选择，非语义质量通过。用户授权 D1.10c：本提交新增 Rust trie、69条项目自编候选别名（三学科配置，通用/岩土地震/生物），ASCII case、横向空格、三种Unicode连字符规范化、显式复数别名、最长匹配、UTF-8边界、跨通用/学科冲突拒绝、公式/数值优先、显式 translate-glossary[-int8] API/CLI、双精度各8组真实句与同论文8片段观察。无自动语义消歧或权重训练；保留 D1.10b 全量专项，待CI，不启动 D1.10d。
 - D1.10b run [45555576461](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45555576461) 真实专项 success（job139006695845），FP32/INT8 各6组、8个保护字面量、1负例通过；全文269片段，成功266、拒绝3（9 NoTranslation；45/252 Truncated），302识别跨度、493模型调用。同成功集合数字字符串280/310→306/310，时间106.642471→105.359267秒，保护峰值RSS120768KiB。未证明语义质量提升；样本有漏译、额外数字、分段幻觉及术语错误，保护路径仍仅显式选择。CPU因offline.rs与protection.rs两处rustfmt换行失败，按真实日志修复，全部门槛待重新验收。
 - D1.10b run [45554897289](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45554897289) 失败：Rust 2021 不支持 let chains，protection.rs:269；scientific_reference.rs:30 rustfmt 元组换行。按真实日志改为 Option::filter 及格式修复，保持 Rust 2021 与原验收门槛。新提交待CI；上一轮科学专项未执行。
 - 基线 HEAD 1173be0b79784ebbd4a5eff20025725db37fbc7d，run [45549181329](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45549181329) 全量 success；CPU、真实模型实际运行均成功。D1.10a 六组基础测试通过，尚未接入默认翻译。
@@ -38,4 +39,4 @@
 用户问为何 INT8 1.8秒加载与FP32相近。实际源码：MixedModel::load先全文件hash_file，再quantized::Reader::open内SHA，QuantizedTable::load对1208136块逐一read_block，每块seek/read/临时Vec/validate；OfflineTranslator加载验证分词器、session再次初始化。候选优化 D1.9i 连续批量读取无每块分配；D1.9j 双重SHA单次扫描/加速；D1.9k mmap/零拷贝；D1.9l 模型常驻及分词器复用。0.3–0.6秒仅目标，保持安全完整性、真实位级对照及内存验收。待用户明确同意才做。后续D1.10b真实保护接入；D1.11真实论文、D1.12小规模训练与断点、D1.13 Windows工具；D2训练，D3集成。
 
 ## 新窗口提示
-继续 D 线路 RPTranslate 自主研发。读取 feature/rptranslate 的 rptranslate/HANDOFF.md，核对实际HEAD及CI日志。当前 D1.10b，先完成全量验收，按真实错误修复，不启用自动任务，不开发后续阶段或修改其他线路。
+继续 D 线路 RPTranslate 自主研发。读取 feature/rptranslate 的 rptranslate/HANDOFF.md，核对实际HEAD及CI日志。当前 D1.10c，先完成全量验收，按真实错误修复，不启用自动任务，不开发后续阶段或修改其他线路。

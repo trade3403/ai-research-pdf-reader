@@ -1,6 +1,7 @@
 //! Conservative English scientific text protection. No external dependencies.
 //! Explicit math, numeric literals, selected units/formulas and caller terms.
 //! Restoration checks the exact marker sequence; it cannot certify semantics.
+use crate::glossary::Glossary;
 use std::{collections::BTreeSet, ops::Range};
 
 const MAX_TEXT: usize = 64 * 1024;
@@ -256,6 +257,33 @@ impl Plan {
                 return Err(Error::Glossary);
             }
         }
+        Self::prepare_matched(source, |at| {
+            glossary
+                .iter()
+                .filter(|t| {
+                    source[at..].starts_with(&t.source)
+                        && right_boundary(source, at + t.source.len())
+                })
+                .max_by_key(|t| t.source.len())
+                .map(|t| (at + t.source.len(), t.target.as_str()))
+        })
+    }
+
+    /// Indexed domain glossary, with the same scientific literal precedence.
+    pub fn prepare_indexed(source: &str, glossary: &Glossary) -> Result<Self, Error> {
+        Self::prepare_matched(source, |at| glossary.match_at(source, at))
+    }
+
+    fn prepare_matched<'a>(
+        source: &str,
+        mut term_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
+    ) -> Result<Self, Error> {
+        if source.len() > MAX_TEXT {
+            return Err(Error::Limit);
+        }
+        if source.contains(PREFIX) {
+            return Err(Error::ReservedMarker);
+        }
         let mut spans = Vec::new();
         let mut at = 0;
         while at < source.len() {
@@ -308,16 +336,8 @@ impl Plan {
                     at = end;
                     continue;
                 }
-                if let Some(term) = glossary
-                    .iter()
-                    .filter(|t| {
-                        source[at..].starts_with(&t.source)
-                            && right_boundary(source, at + t.source.len())
-                    })
-                    .max_by_key(|t| t.source.len())
-                {
-                    let end = at + term.source.len();
-                    push(&mut spans, source, at, end, Kind::Term, Some(&term.target))?;
+                if let Some((end, target)) = term_at(at) {
+                    push(&mut spans, source, at, end, Kind::Term, Some(target))?;
                     at = end;
                     continue;
                 }
@@ -508,6 +528,31 @@ mod tests {
             Some(Error::UnclosedMath)
         );
         assert_eq!(Plan::prepare("3e+", &[]).err(), Some(Error::InvalidNumber));
+    }
+
+    #[test]
+    fn indexed_terms_share_scientific_precedence() {
+        let g = Glossary::builtin(crate::glossary::Domain::Geotechnical).unwrap();
+        let s = "$strain$; MAXIMUM  STRAIN; 0.1 g; non‑linear site response; restrain";
+        let plan = Plan::prepare_indexed(s, &g).unwrap();
+        let actual: Vec<_> = plan
+            .spans()
+            .iter()
+            .map(|s| (s.kind, s.replacement.as_str()))
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                (Kind::Formula, "$strain$"),
+                (Kind::Term, "最大应变"),
+                (Kind::Quantity, "0.1 g"),
+                (Kind::Term, "非线性场地响应"),
+            ]
+        );
+        assert_eq!(
+            plan.assemble(&plan.gaps()).unwrap(),
+            "$strain$; 最大应变; 0.1 g; 非线性场地响应; restrain"
+        );
     }
 
     #[test]
