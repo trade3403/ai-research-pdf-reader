@@ -3,6 +3,7 @@ pub mod constrained;
 pub mod context;
 pub mod glossary;
 pub mod offline;
+pub mod paragraph;
 pub mod protection;
 pub mod scientific;
 use rpdata::{deduplicate, SentencePair};

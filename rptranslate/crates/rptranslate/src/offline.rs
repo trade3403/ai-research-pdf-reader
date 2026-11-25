@@ -21,7 +21,8 @@ use std::path::Path;
 use crate::{
     constrained::{self, ConstrainedTranslation},
     context::{ContextEngine, Decision, DocumentContext},
-    glossary::Glossary,
+    glossary::{Domain, Glossary},
+    paragraph::{self, ParagraphTranslation, Strategy, MAX_SOURCE_TOKENS},
     protection::{Kind, Plan, Term},
     scientific,
 };
@@ -361,6 +362,47 @@ impl TextSession<'_> {
             return Err(constrained::Error::Truncated);
         }
         Err(constrained::Error::Input(Error::NoTranslation))
+    }
+
+    /// Paragraph-local domain prior, safe long-sentence boundaries and
+    /// audited candidate selection. No silent partial paragraph return.
+    pub fn translate_paragraph(
+        &self,
+        text: &str,
+        engine: &ContextEngine,
+        explicit: Option<Domain>,
+        options: GenerationOptions,
+        kernel: Kernel,
+    ) -> Result<ParagraphTranslation, paragraph::Error> {
+        paragraph::translate_with(
+            text,
+            engine,
+            explicit,
+            |source| match self.encode(source) {
+                Ok(ids) => Ok(ids.len() <= MAX_SOURCE_TOKENS),
+                Err(Error::SourceTooLong) => Ok(false),
+                Err(error) => Err(error),
+            },
+            |source, glossary, strategy| match strategy {
+                Strategy::Whole => {
+                    let result = self
+                        .translate(source, options, kernel)
+                        .map_err(|e| format!("{e:?}"))?;
+                    if result.reached_limit {
+                        return Err("Truncated".into());
+                    }
+                    Ok(result.text)
+                }
+                Strategy::Constrained => self
+                    .translate_constrained(source, glossary, options, kernel)
+                    .map(|result| result.translation.text)
+                    .map_err(|e| format!("{e:?}")),
+                Strategy::ProtectedGaps => self
+                    .translate_glossary(source, glossary, options, kernel)
+                    .map(|result| result.text)
+                    .map_err(|e| format!("{e:?}")),
+            },
+        )
     }
 
     fn validate_scientific(

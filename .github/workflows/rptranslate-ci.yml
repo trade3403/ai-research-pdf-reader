@@ -332,3 +332,11 @@ jobs:
           target/release/examples/constrained_reference "$RUNNER_TEMP/rpmodel-v1" fp32
           target/release/examples/constrained_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
           target/release/rptranslate translate-constrained-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain.' 1 128 | grep -F '最大应变'
+      - name: Verify paragraph context and audited duplicate suppression through actual models
+        if: contains(github.event.head_commit.message, 'D1.10f')
+        run: |
+          set -eu
+          cargo build --locked --offline --release -p rptranslate --example paragraph_reference
+          target/release/examples/paragraph_reference "$RUNNER_TEMP/rpmodel-v1" fp32
+          target/release/examples/paragraph_reference "$RUNNER_TEMP/rpmodel-mixed" int8 "$RUNNER_TEMP/rp-paper/sample.tsv"
+          target/release/rptranslate translate-paragraph-int8 "$RUNNER_TEMP/rpmodel-mixed" geotechnical 'We measured maximum strain. We calculated site response.' 1 128 | grep -F '最大应变'

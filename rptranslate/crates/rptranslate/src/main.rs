@@ -39,6 +39,20 @@ fn run_glossary(
         options.max_new = limit.parse().map_err(|_| "invalid token limit")?;
     }
     let session = translator.session().map_err(|e| format!("{e:?}"))?;
+    if command.starts_with("translate-paragraph") {
+        let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
+        let result = session
+            .translate_paragraph(text, &engine, explicit, options, Kernel::Auto)
+            .map_err(|e| format!("{e:?}"))?;
+        println!("{}", result.text);
+        for (index, segment) in result.segments.iter().enumerate() {
+            eprintln!(
+                "Segment {index}: {:?} {:?} {:?}; rejected={:?}",
+                segment.source, segment.domain, segment.strategy, segment.rejected
+            );
+        }
+        return Ok(());
+    }
     if command.starts_with("translate-constrained") {
         let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
         let domain = if let Some(domain) = explicit {
@@ -94,6 +108,8 @@ fn run(args: &[String]) -> Result<(), String> {
                     | "translate-glossary-int8"
                     | "translate-constrained"
                     | "translate-constrained-int8"
+                    | "translate-paragraph"
+                    | "translate-paragraph-int8"
             ) && rest.len() <= 2 =>
         {
             run_glossary(command, root, domain, text, rest)?;
@@ -136,7 +152,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-constrained[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
+                "Usage: rptranslate self-check | translate[-scientific][-int8] MODEL_DIR TEXT [BEAM_WIDTH] [MAX_NEW] | translate-glossary[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-constrained[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW] | translate-paragraph[-int8] MODEL_DIR DOMAIN TEXT [BEAM_WIDTH] [MAX_NEW]"
                     .into(),
             )
         }
