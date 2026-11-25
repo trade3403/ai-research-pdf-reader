@@ -27,13 +27,20 @@ pub struct Hypothesis {
 }
 
 fn validate(c: SearchConfig<'_>, vocab: usize) -> Result<(), Error> {
-    if vocab == 0 || vocab > MAX_VOCAB || c.beam_width == 0 || c.beam_width > MAX_BEAMS
-        || c.max_new == 0 || c.max_new > MAX_NEW || c.suppress.len() > vocab
+    if vocab == 0
+        || vocab > MAX_VOCAB
+        || c.beam_width == 0
+        || c.beam_width > MAX_BEAMS
+        || c.max_new == 0
+        || c.max_new > MAX_NEW
+        || c.suppress.len() > vocab
     {
         return Err(Error::Limit);
     }
-    if c.start as usize >= vocab || c.eos as usize >= vocab
-        || c.min_new > c.max_new || c.suppress.contains(&c.eos)
+    if c.start as usize >= vocab
+        || c.eos as usize >= vocab
+        || c.min_new > c.max_new
+        || c.suppress.contains(&c.eos)
         || c.suppress.iter().any(|&id| id as usize >= vocab)
     {
         return Err(Error::Shape);
@@ -48,7 +55,9 @@ fn validate(c: SearchConfig<'_>, vocab: usize) -> Result<(), Error> {
 }
 
 fn rank(a: &Hypothesis, b: &Hypothesis) -> std::cmp::Ordering {
-    b.score.total_cmp(&a.score).then_with(|| a.tokens.cmp(&b.tokens))
+    b.score
+        .total_cmp(&a.score)
+        .then_with(|| a.tokens.cmp(&b.tokens))
 }
 
 /// Beam width 1 is greedy. At each depth retain the best B hypotheses,
@@ -84,19 +93,29 @@ pub fn search(
             }
             let values = out.data();
             let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let log_sum = values.iter().map(|&x| (f64::from(x)-f64::from(max)).exp()).sum::<f64>().ln();
+            let log_sum = values
+                .iter()
+                .map(|&x| (f64::from(x) - f64::from(max)).exp())
+                .sum::<f64>()
+                .ln();
             let forced = config.force_eos_at_limit && step == config.max_new;
-            let mut candidates: Vec<_> = values.iter().enumerate().filter_map(|(id, &x)| {
-                if blocked[id] || (id == config.eos as usize && step < config.min_new)
-                    || (forced && id != config.eos as usize)
-                {
-                    None
-                } else {
-                    // Preserve original model probability, even for forced EOS.
-                    Some((id as u32, f64::from(x)-f64::from(max)-log_sum))
-                }
-            }).collect();
-            let order = |a: &(u32, f64), b: &(u32, f64)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+            let mut candidates: Vec<_> = values
+                .iter()
+                .enumerate()
+                .filter_map(|(id, &x)| {
+                    if blocked[id]
+                        || (id == config.eos as usize && step < config.min_new)
+                        || (forced && id != config.eos as usize)
+                    {
+                        None
+                    } else {
+                        // Preserve original model probability, even for forced EOS.
+                        Some((id as u32, f64::from(x) - f64::from(max) - log_sum))
+                    }
+                })
+                .collect();
+            let order =
+                |a: &(u32, f64), b: &(u32, f64)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
             if candidates.len() > config.beam_width {
                 candidates.select_nth_unstable_by(config.beam_width, order);
                 candidates.truncate(config.beam_width);
@@ -163,7 +182,10 @@ mod tests {
         assert_eq!(greedy[0].tokens, [3, 1, 0]);
         assert!(greedy[0].ended);
         assert!((greedy[0].log_probability - 0.22_f64.ln()).abs() < 1e-6);
-        let config = SearchConfig { beam_width: 2, ..cfg() };
+        let config = SearchConfig {
+            beam_width: 2,
+            ..cfg()
+        };
         let beams = search(4, config, fixture).unwrap();
         assert_eq!(beams[0].tokens, [3, 2, 0]);
         assert!((beams[0].log_probability - 0.4085_f64.ln()).abs() < 1e-6);
@@ -183,36 +205,59 @@ mod tests {
         let best = search(4, c, |_| {
             calls += 1;
             row(&[0.6, 0.3, 0.09, 0.01])
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(calls, 2);
         assert_eq!(best[0].tokens, [3, 1, 0]);
-        assert!((best[0].score - 0.18_f64.ln()/2.).abs() < 1e-6);
+        assert!((best[0].score - 0.18_f64.ln() / 2.).abs() < 1e-6);
         let best = search(4, cfg(), |_| row(&[0.9, 0.04, 0.05, 0.01])).unwrap();
         assert_eq!(best[0].tokens, [3, 0]);
     }
 
     #[test]
     fn deterministic_ties_and_unfinished_limit() {
-        let c = SearchConfig { max_new: 2, ..cfg() };
+        let c = SearchConfig {
+            max_new: 2,
+            ..cfg()
+        };
         let best = search(4, c, |_| row(&[0.1, 0.4, 0.4, 0.1])).unwrap();
         assert_eq!(best[0].tokens, [3, 1, 1]);
         assert!(!best[0].ended);
-        let extreme = search(4, c, |_| Tensor::new(&[1,4], vec![-f32::MAX, f32::MAX, 0., 0.])).unwrap();
+        let extreme = search(4, c, |_| {
+            Tensor::new(&[1, 4], vec![-f32::MAX, f32::MAX, 0., 0.])
+        })
+        .unwrap();
         assert_eq!(extreme[0].tokens, [3, 1, 1]);
         assert!(extreme[0].score.is_finite());
     }
 
     #[test]
     fn validates_limits_shape_and_errors() {
-        let invalid = SearchConfig { beam_width: 17, ..cfg() };
+        let invalid = SearchConfig {
+            beam_width: 17,
+            ..cfg()
+        };
         assert_eq!(search(4, invalid, fixture), Err(Error::Limit));
-        let invalid = SearchConfig { suppress: &[0], ..cfg() };
+        let invalid = SearchConfig {
+            suppress: &[0],
+            ..cfg()
+        };
         assert_eq!(search(4, invalid, fixture), Err(Error::Shape));
-        let invalid = SearchConfig { length_penalty: f64::NAN, ..cfg() };
+        let invalid = SearchConfig {
+            length_penalty: f64::NAN,
+            ..cfg()
+        };
         assert_eq!(search(4, invalid, fixture), Err(Error::NonFinite));
-        assert_eq!(search(4, cfg(), |_| Tensor::zeros(&[1,3])), Err(Error::Shape));
+        assert_eq!(
+            search(4, cfg(), |_| Tensor::zeros(&[1, 3])),
+            Err(Error::Shape)
+        );
         assert_eq!(search(4, cfg(), |_| Err(Error::Worker)), Err(Error::Worker));
-        let invalid = SearchConfig { min_new: 2, suppress: &[1,2,3], ..cfg() };
+        let invalid = SearchConfig {
+            min_new: 2,
+            suppress: &[1, 2, 3],
+            ..cfg()
+        };
         assert_eq!(search(4, invalid, fixture), Err(Error::Shape));
     }
 }
