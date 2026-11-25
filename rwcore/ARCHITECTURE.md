@@ -86,3 +86,5 @@ C4.4a3b pending CI: independent offline JS raw SFNT GSUB lookup directory and Co
 C4.4a4a pending CI: MultipleSubst format 1 coverage-indexed nonempty sequences, validated output IDs, cumulative expanded glyph budget including shared offsets; single-position atomic bounded expansion. No scheduling or recursive substitution.
 
 C4.4a4b pending CI: independently extracted direct Type 2 reference from Aref Ruqaa original SFNT bytes, all six subtables, full face glyph-domain comparison and atomic expansion budget tests. ABeeZee direct Type 2 absence verified in tests. No scheduling.
+
+C4.4a5a pending CI: AlternateSubst format 1 coverage-indexed nonempty ordered candidate sets, explicit zero-based selection, validated output IDs, cumulative candidate budget including shared offsets, atomic in-place replacement. No feature-value selection policy or lookup scheduling.

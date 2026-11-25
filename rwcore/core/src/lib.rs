@@ -150,3 +150,6 @@ pub use font_single_subst::{SingleSubstLimits,SingleSubstitution,parse_single_su
 
 pub mod font_multiple_subst;
 pub use font_multiple_subst::{MultipleSubstLimits,MultipleSubstitution,parse_multiple_substitution};
+
+pub mod font_alternate_subst;
+pub use font_alternate_subst::{AlternateSubstLimits,AlternateSubstitution,parse_alternate_substitution};
