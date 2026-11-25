@@ -193,3 +193,6 @@ pub use font_gsub_plan::{GsubPlanLimits,GsubPlannedLookup,GsubPlan,build_gsub_ba
 
 pub mod font_gsub_compile;
 pub use font_gsub_compile::{GsubCompileLimits,CompiledGsubSubtable,CompiledGsubLookup,compile_gsub_lookups,compile_gsub_plan};
+
+pub mod font_gsub_dependencies;
+pub use font_gsub_dependencies::{GsubDependencyLimits,GsubDependencySite,GsubDependency,discover_gsub_dependencies};

@@ -133,3 +133,5 @@
 - C4.4c3a: suffix-byte budget is conservative work accounting, not exact allocated memory or certified subtable extent. GDEF must belong to same font (domain checked, identity not proven). Base plan provenance checked but not cryptographic source identity. Only selected lookup targets compiled, nested references not recursively resolved, no execution/cycle protection, no feature variation evaluation. Real compilation acceptance pending next stage.
 
 - C4.4c3b: raw metadata and work charge independently checked; typed payload equality shares standalone production parsers, not an external semantic oracle. Full compilation CI pending; no native Type 8 in fixtures. Nested dependency closure, cycle protection and actual filtered lookup execution remain outstanding, as do complete shaping and Word fidelity.
+
+- C4.4c4a: direct reference inventory is conservative (includes unmatchable rules); not a proof of runtime reachability. Caller supplies full LookupList count; no font identity proof or closure/cycle rejection. Real raw action census and runtime guards remain outstanding. No actual substitution, complete shaping or Word fidelity claim.

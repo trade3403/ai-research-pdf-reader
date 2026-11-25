@@ -18,6 +18,8 @@ pub struct ChainContextSubstitution {
     sets:Vec<Option<Vec<ChainContextRule>>>,
 }
 impl ChainContextSubstitution {
+    /// Stored rule sets in font order, including null and unreachable sets.
+    pub fn rule_sets(&self)->&[Option<Vec<ChainContextRule>>]{&self.sets}
     pub fn len(&self)->usize{self.sets.len()}
     pub fn is_empty(&self)->bool{self.sets.is_empty()}
     pub fn rules(&self,id:u16)->Option<&[ChainContextRule]>{
@@ -142,6 +144,8 @@ pub struct ClassChainContextSubstitution {
     sets:Vec<Option<Vec<ChainContextRule>>>,
 }
 impl ClassChainContextSubstitution {
+    /// Stored rule sets in font order, including null and unreachable sets.
+    pub fn rule_sets(&self)->&[Option<Vec<ChainContextRule>>]{&self.sets}
     pub fn len(&self)->usize{self.sets.len()}
     pub fn is_empty(&self)->bool{self.sets.is_empty()}
     /// Rules contain class IDs in their respective independent class domains.

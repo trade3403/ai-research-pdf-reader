@@ -88,3 +88,6 @@ C4.4c3a source pending CI; parent CI #115 verified 778 tests per platform. Read 
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4c3b source pending CI; parent CI #116 verified 790 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Real compilation reference does not execute lookup targets.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4c4a source pending CI; parent CI #117 verified 797 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Direct dependency inventory retains cycles and does not execute or resolve closure.

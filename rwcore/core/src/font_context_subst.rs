@@ -18,6 +18,8 @@ pub struct ContextMatch<'a>{pub input_len:usize,pub actions:&'a [ContextAction]}
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub struct ContextSubstitution{coverage:GlyphCoverage,sets:Vec<Option<Vec<ContextRule>>>}
 impl ContextSubstitution{
+    /// Stored rule sets in font order, including null and unreachable sets.
+    pub fn rule_sets(&self)->&[Option<Vec<ContextRule>>]{&self.sets}
     pub fn len(&self)->usize{self.sets.len()}
     pub fn is_empty(&self)->bool{self.sets.is_empty()}
     pub fn rules(&self,id:u16)->Option<&[ContextRule]>{
@@ -112,6 +114,8 @@ pub struct ClassContextSubstitution{
     coverage:GlyphCoverage,classes:crate::GlyphClassDef,sets:Vec<Option<Vec<ContextRule>>>,
 }
 impl ClassContextSubstitution{
+    /// Stored rule sets in font order, including null and unreachable sets.
+    pub fn rule_sets(&self)->&[Option<Vec<ContextRule>>]{&self.sets}
     pub fn rules(&self,id:u16)->Option<&[ContextRule]>{
         self.coverage.index(id)?;
         self.sets.get(usize::from(self.classes.class(id)?))?.as_deref()
