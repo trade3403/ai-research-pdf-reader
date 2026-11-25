@@ -173,6 +173,112 @@ pub fn inspect(data:&[u8])->Result<Inspection>{
         external_references:external.into_iter().collect()})
 }
 
+
+/// Original stream and index of a segment. Byte ranges in Segment remain
+/// relative to that stream; globals and page bytes are never concatenated.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum SegmentSource{Globals,Page}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct SegmentLocation{pub source:SegmentSource,pub index:usize}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ResolvedSegment{
+    pub number:u32,
+    pub location:SegmentLocation,
+    pub dependencies:Vec<SegmentLocation>,
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct PdfInspection{
+    pub globals:Option<Inspection>,
+    pub page_stream:Inspection,
+    pub page:PageInfo,
+    pub graph:Vec<ResolvedSegment>,
+    pub explicit_end_of_page:bool,
+}
+impl PdfInspection{
+    pub fn segment(&self,location:SegmentLocation)->Option<&Segment>{
+        match location.source{
+            SegmentSource::Globals=>self.globals.as_ref()?.segments.get(location.index),
+            SegmentSource::Page=>self.page_stream.segments.get(location.index),
+        }
+    }
+}
+fn reusable_global(kind:u8)->bool{matches!(kind,0|16|52|53|62)}
+fn page_kind(kind:u8)->bool{
+    matches!(kind,0|4|6|7|16|20|22|23|36|38|39|40|42|43|48|49|50|51|52|53|62)
+}
+
+/// Structural dependency graph for a single, known-height, unstriped PDF
+/// JBIG2 image. Globals are parsed first, in a separate byte namespace;
+/// segment identifiers must be unique across both streams. Missing references
+/// cannot be satisfied by future segments. Retention bits are preserved but
+/// not executed, and opaque segment payload semantics are not validated.
+/// An omitted End-of-Page/End-of-File is permitted for embedded streams.
+pub fn inspect_pdf_streams(globals:&[u8],data:&[u8])->Result<PdfInspection>{
+    if globals.len().checked_add(data.len()).ok_or(Error::Limit("JBIG2 combined input"))?>MAX_BYTES{
+        return Err(Error::Limit("JBIG2 combined input"));
+    }
+    let global=if globals.is_empty(){None}else{Some(inspect(globals)?)};
+    let local=inspect(data)?;
+    if local.container!=Container::Embedded||
+        global.as_ref().is_some_and(|g|g.container!=Container::Embedded){
+        return Err(Error::Unsupported("JBIG2 PDF requires embedded streams"));
+    }
+    if local.pages.len()!=1{return Err(Error::Invalid("JBIG2 PDF single page required"));}
+    let page=local.pages[0].clone();
+    if page.striped||page.height.is_none(){return Err(Error::Unsupported("JBIG2 PDF striped page"));}
+    let global_segments=global.as_ref().map_or(&[][..],|g|g.segments.as_slice());
+    let count=global_segments.len().checked_add(local.segments.len()).ok_or(Error::Limit("JBIG2 combined segments"))?;
+    if count>MAX_SEGMENTS{return Err(Error::Limit("JBIG2 combined segments"));}
+    let mut refs=0usize;
+    let mut seen:BTreeMap<u32,(SegmentLocation,u32,u8)>=BTreeMap::new();
+    let mut graph=Vec::with_capacity(count);
+    let mut opened=false;
+    let mut closed=false;
+    for (source,segments) in [(SegmentSource::Globals,global_segments),(SegmentSource::Page,local.segments.as_slice())]{
+        for (index,s) in segments.iter().enumerate(){
+            let location=SegmentLocation{source,index};
+            if seen.contains_key(&s.number){return Err(Error::Invalid("JBIG2 cross-stream duplicate segment"));}
+            if source==SegmentSource::Globals{
+                if s.page!=0||!reusable_global(s.kind){return Err(Error::Unsupported("JBIG2 PDF globals segment kind/page"));}
+            }else{
+                if !page_kind(s.kind){return Err(Error::Unsupported("JBIG2 PDF segment kind"));}
+                if s.page==0{
+                    if s.kind!=51&&!reusable_global(s.kind){return Err(Error::Unsupported("JBIG2 PDF page-zero segment"));}
+                }else{
+                    if s.page!=page.page{return Err(Error::Invalid("JBIG2 PDF foreign page"));}
+                    if closed{return Err(Error::Invalid("JBIG2 PDF segment after page end"));}
+                    if s.kind==48{
+                        if opened{return Err(Error::Invalid("JBIG2 PDF duplicate page start"));}
+                        opened=true;
+                    }else if !opened{
+                        return Err(Error::Invalid("JBIG2 PDF segment before page info"));
+                    }
+                    if s.kind==50{return Err(Error::Unsupported("JBIG2 PDF stripe end"));}
+                    if s.kind==49{closed=true;}
+                }
+                if s.kind==51&&!opened{return Err(Error::Invalid("JBIG2 PDF EOF before page"));}
+            }
+            refs=refs.checked_add(s.referred.len()).ok_or(Error::Limit("JBIG2 combined references"))?;
+            if refs>MAX_TOTAL_REFS{return Err(Error::Limit("JBIG2 combined references"));}
+            let mut dependencies=Vec::with_capacity(s.referred.len());
+            for r in &s.referred{
+                let &(target,target_page,target_kind)=seen.get(r).ok_or(Error::Invalid("JBIG2 PDF unresolved reference"))?;
+                if target_page!=0&&target_page!=s.page{
+                    return Err(Error::Invalid("JBIG2 PDF reference page mismatch"));
+                }
+                if matches!(target_kind,48|49|50|51){
+                    return Err(Error::Invalid("JBIG2 PDF reference to page control"));
+                }
+                dependencies.push(target);
+            }
+            seen.insert(s.number,(location,s.page,s.kind));
+            graph.push(ResolvedSegment{number:s.number,location,dependencies});
+        }
+    }
+    if !opened{return Err(Error::Invalid("JBIG2 PDF missing page start"));}
+    Ok(PdfInspection{globals:global,page_stream:local,page,graph,explicit_end_of_page:closed})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -254,5 +360,87 @@ mod tests{
         dict.insert(b"Filter".to_vec(),crate::Object::Name(b"JBIG2Decode".to_vec()));
         let stream=crate::Object::Stream{dict,data:seg(1,48,1,&[],&info(13,7,0))};
         assert!(matches!(super::super::decode(&stream,1024),Err(Error::Unsupported("stream filter"))));
+    }
+
+    #[test]fn jbig2_pdf_globals_graph(){
+        let mut g=seg(1,0,0,&[],&[10]);
+        g.extend(seg(2,0,0,&[1],&[20,21]));
+        let mut p=seg(3,48,1,&[],&info(16,8,0));
+        p.extend(seg(4,0,1,&[2],&[30]));
+        p.extend(seg(5,6,1,&[1,4],&[40]));
+        let a=inspect_pdf_streams(&g,&p).unwrap();
+        assert_eq!((a.page.width,a.page.height),(16,Some(8)));
+        assert!(!a.explicit_end_of_page);
+        let g1=SegmentLocation{source:SegmentSource::Globals,index:0};
+        let g2=SegmentLocation{source:SegmentSource::Globals,index:1};
+        let p1=SegmentLocation{source:SegmentSource::Page,index:1};
+        assert_eq!(a.graph[1].dependencies,vec![g1]);
+        assert_eq!(a.graph[3].dependencies,vec![g2]);
+        assert_eq!(a.graph[4].dependencies,vec![g1,p1]);
+        assert_eq!(&g[a.segment(g2).unwrap().payload.clone()],&[20,21]);
+        assert_eq!(&p[a.segment(p1).unwrap().payload.clone()],&[30]);
+        assert!(a.segment(SegmentLocation{source:SegmentSource::Page,index:99}).is_none());
+    }
+    #[test]fn jbig2_pdf_globals_missing_duplicate(){
+        let mut p=seg(2,48,1,&[],&info(16,8,0));
+        p.extend(seg(3,6,1,&[1],&[]));
+        assert!(inspect_pdf_streams(&[],&p).is_err());
+        assert!(inspect_pdf_streams(&seg(2,0,0,&[],&[]),&p).is_err());
+        assert!(inspect_pdf_streams(&seg(1,0,0,&[],&[]),&p).is_ok());
+        let mut g=seg(2,0,0,&[1],&[]);
+        g.extend(seg(1,0,0,&[],&[]));
+        assert!(inspect_pdf_streams(&g,&p).is_err());
+    }
+    #[test]fn jbig2_pdf_globals_scope(){
+        let p=seg(8,48,1,&[],&info(8,8,0));
+        for g in [seg(1,48,1,&[],&info(8,8,0)),seg(1,0,2,&[],&[]),
+            seg(1,51,0,&[],&[]),seg(1,38,0,&[],&[]),file()]{
+            assert!(inspect_pdf_streams(&g,&p).is_err());
+        }
+        assert!(inspect_pdf_streams(&[],&file()).is_err());
+    }
+    #[test]fn jbig2_pdf_page_lifecycle(){
+        let mut p=seg(1,48,300,&[],&info(13,7,0));
+        p.extend(seg(2,38,300,&[],&[1]));
+        p.extend(seg(3,49,300,&[],&[]));
+        p.extend(seg(4,51,0,&[],&[]));
+        let a=inspect_pdf_streams(&[],&p).unwrap();
+        assert_eq!(a.page.page,300);assert!(a.explicit_end_of_page);
+        let mut p=seg(1,38,1,&[],&[]);
+        p.extend(seg(2,48,1,&[],&info(13,7,0)));
+        assert!(inspect_pdf_streams(&[],&p).is_err());
+        let mut p=seg(1,48,1,&[],&info(13,7,0));
+        p.extend(seg(2,49,1,&[],&[]));p.extend(seg(3,38,1,&[],&[]));
+        assert!(inspect_pdf_streams(&[],&p).is_err());
+    }
+    #[test]fn jbig2_pdf_page_dependency_scope(){
+        let mut p=seg(1,48,1,&[],&info(8,8,0));
+        p.extend(seg(2,0,1,&[],&[]));
+        let mut foreign=p.clone();foreign.extend(seg(3,6,2,&[2],&[]));
+        assert!(inspect_pdf_streams(&[],&foreign).is_err());
+        let mut global=p.clone();global.extend(seg(3,0,0,&[2],&[]));
+        assert!(inspect_pdf_streams(&[],&global).is_err());
+        let mut control=p.clone();control.extend(seg(3,6,1,&[1],&[]));
+        assert!(inspect_pdf_streams(&[],&control).is_err());
+        let mut good=p;good.extend(seg(3,6,1,&[2],&[]));
+        assert!(inspect_pdf_streams(&[],&good).is_ok());
+    }
+    #[test]fn jbig2_pdf_unsupported_lifecycle(){
+        for (h,stripes) in [(8,0x8004),(u32::MAX,0x8004)]{
+            assert!(matches!(inspect_pdf_streams(&[],&seg(1,48,1,&[],&info(8,h,stripes))),Err(Error::Unsupported(_))));
+        }
+        let mut p=seg(1,48,1,&[],&info(8,8,0));
+        p.extend(seg(2,50,1,&[],&4u32.to_be_bytes()));
+        assert!(inspect_pdf_streams(&[],&p).is_err());
+        let mut p=seg(1,48,1,&[],&info(8,8,0));
+        p.extend(seg(2,48,2,&[],&info(8,8,0)));
+        assert!(inspect_pdf_streams(&[],&p).is_err());
+        assert!(inspect_pdf_streams(&[],&seg(1,0,0,&[],&[])).is_err());
+    }
+    #[test]fn jbig2_pdf_combined_segment_limit(){
+        let mut g=Vec::new();
+        for n in 1..=MAX_SEGMENTS as u32{g.extend(seg(n,0,0,&[],&[]));}
+        let p=seg(MAX_SEGMENTS as u32+1,48,1,&[],&info(8,8,0));
+        assert!(matches!(inspect_pdf_streams(&g,&p),Err(Error::Limit(_))));
     }
 }
