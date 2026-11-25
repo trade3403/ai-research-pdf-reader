@@ -115,3 +115,6 @@ pub use font_measure::{MissingGlyphPolicy,MeasureUnit,MeasureLimits,MeasureOptio
 
 pub mod font_outline;
 pub use font_outline::{OutlineLimits,GlyphOutlineKind,OutlinePoint,HalfPoint,OutlineCommand,SimpleGlyph,TrueTypeOutlines,parse_true_type_outlines};
+
+pub mod font_composite;
+pub use font_composite::{COMPOSITE_ONE,ComponentPlacement,ComponentMatrix,GlyphComponent,CompositeGlyph,CompositeLimits,FixedOutlinePoint,AssembledGlyph,parse_composite_glyph,assemble_true_type_glyph};
