@@ -1,5 +1,5 @@
 //! JPEG 2000 Tier-1 context modelling for the baseline MQ coding style.
-//! Initial cleanup pass for baseline style; subsequent passes are not yet supported.
+//! Initial cleanup and first significance propagation for baseline MQ style.
 use super::{geometry::Band,mq::{Context,Decoder}};
 use crate::{Error,Result};
 
@@ -67,12 +67,13 @@ impl Contexts{
 
 /// Bounded raster storage; a coefficient becomes significant exactly once.
 #[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
-pub struct Coefficient{magnitude:u32,negative:bool,refined:bool}
+pub struct Coefficient{magnitude:u32,negative:bool,refined:bool,visited:bool}
 impl Coefficient{
     pub fn significant(self)->bool{self.magnitude!=0}
     pub fn magnitude(self)->u32{self.magnitude}
     pub fn negative(self)->bool{self.negative}
     pub fn refined(self)->bool{self.refined}
+    pub fn visited(self)->bool{self.visited}
 }
 pub struct Block{width:usize,height:usize,coefficients:Vec<Coefficient>}
 impl Block{
@@ -93,7 +94,7 @@ impl Block{
     pub fn make_significant(&mut self,x:usize,y:usize,plane:u8,negative:bool)->Result<()>{
         let i=self.index(x,y)?;
         if plane>30||self.coefficients[i].significant(){return Err(Error::Invalid("JPX EBCOT significance"));}
-        self.coefficients[i]=Coefficient{magnitude:1u32<<plane,negative,refined:false};Ok(())
+        self.coefficients[i]=Coefficient{magnitude:1u32<<plane,negative,refined:false,visited:false};Ok(())
     }
     fn sample(&self,x:i32,y:i32)->i8{
         if x<0||y<0{return 0;}
@@ -157,6 +158,40 @@ pub fn decode_initial_cleanup(data:&[u8],width:usize,height:usize,band:Band,plan
     let mut cx=Contexts::new()?;
     let mut mq=Decoder::new(data,4096*4)?;
     initial_cleanup(width,height,band,plane,|i|cx.decode(&mut mq,i))
+}
+
+fn propagation(b:&mut Block,band:Band,plane:u8,mut read:impl FnMut(usize)->Result<u8>)->Result<()>{
+    if plane>30{return Err(Error::Invalid("JPX EBCOT plane"));}
+    for top in (0..b.height).step_by(4){
+        for x in 0..b.width{
+            for y in top..(top+4).min(b.height){
+                let i=b.index(x,y)?;
+                let c=b.coefficients[i];
+                if c.significant()||c.visited{continue;}
+                let (n,h,v)=b.neighbours(x,y)?;
+                if n.h+n.v+n.d==0{continue;}
+                let bit=read(zero_context(band,n)?)?;
+                if bit!=0{
+                    let (cx,pred)=sign_context(h,v)?;
+                    let negative=(read(cx)?^pred)!=0;
+                    b.make_significant(x,y,plane,negative)?;
+                }
+                b.coefficients[i].visited=true;
+            }
+        }
+    }
+    Ok(())
+}
+/// Decode the first cleanup and the following significance propagation
+/// from the same MQ segment, preserving all 19 probability contexts.
+/// The result is a partial coefficient block, not a completed bitplane.
+pub fn decode_initial_and_propagation(data:&[u8],width:usize,height:usize,band:Band,plane:u8)->Result<Block>{
+    if !(1..=30).contains(&plane){return Err(Error::Invalid("JPX EBCOT propagation plane"));}
+    let mut cx=Contexts::new()?;
+    let mut mq=Decoder::new(data,4096*6)?;
+    let mut b=initial_cleanup(width,height,band,plane,|i|cx.decode(&mut mq,i))?;
+    propagation(&mut b,band,plane-1,|i|cx.decode(&mut mq,i))?;
+    Ok(b)
 }
 
 #[cfg(test)]
@@ -246,5 +281,52 @@ mod tests{
         let b=decode_initial_cleanup(&[0,0],1,1,Band::Ll,0).unwrap();
         assert_eq!(b.coefficients.len(),1);
         assert!(initial_cleanup(1,4,Band::Ll,0,|_|Err(Error::Invalid("test"))).is_err());
+    }
+
+    #[test]fn propagation_cascade_and_visited(){
+        let mut b=Block::new(4,1).unwrap();
+        b.make_significant(0,0,3,false).unwrap();
+        let mut seq=[(5,1),(12,0),(5,1),(12,1),(5,0)].into_iter();
+        propagation(&mut b,Band::Ll,2,|cx|{let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)}).unwrap();
+        assert!(seq.next().is_none());
+        assert!(!b.coefficient(0,0).unwrap().visited());
+        assert_eq!(b.coefficient(1,0).unwrap().magnitude(),4);
+        assert!(!b.coefficient(1,0).unwrap().negative());
+        assert!(b.coefficient(2,0).unwrap().negative());
+        assert!(!b.coefficient(3,0).unwrap().significant());
+        for x in 1..4{assert!(b.coefficient(x,0).unwrap().visited());}
+    }
+    #[test]fn propagation_does_not_revisit_earlier_sample(){
+        let mut b=Block::new(3,1).unwrap();
+        b.make_significant(2,0,3,false).unwrap();
+        let mut seq=[(5,1),(12,0)].into_iter();
+        propagation(&mut b,Band::Ll,2,|cx|{let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)}).unwrap();
+        assert!(seq.next().is_none());
+        assert!(!b.coefficient(0,0).unwrap().visited());
+        assert!(b.coefficient(1,0).unwrap().visited());
+    }
+    #[test]fn propagation_no_neighbour_no_decision(){
+        let mut b=Block::new(4,5).unwrap();
+        propagation(&mut b,Band::Hh,0,|_|panic!("unexpected decision")).unwrap();
+        assert!(b.coefficients.iter().all(|c|!c.visited()));
+    }
+    #[test]fn propagation_vertical_stripe_boundary(){
+        let mut b=Block::new(1,5).unwrap();
+        b.make_significant(0,3,4,true).unwrap();
+        let mut seq=[(3,0),(3,1),(10,0)].into_iter();
+        propagation(&mut b,Band::Ll,3,|cx|{let (want,bit)=seq.next().unwrap();assert_eq!(cx,want);Ok(bit)}).unwrap();
+        assert!(seq.next().is_none());
+        assert!(b.coefficient(0,2).unwrap().visited());
+        assert!(b.coefficient(0,4).unwrap().negative());
+        assert!(!b.coefficient(0,1).unwrap().visited());
+    }
+    #[test]fn propagation_mq_and_limits(){
+        assert!(decode_initial_and_propagation(&[0,0],1,1,Band::Ll,0).is_err());
+        assert!(decode_initial_and_propagation(&[],1,1,Band::Ll,1).is_err());
+        assert!(decode_initial_and_propagation(&[0,0],65,65,Band::Ll,1).is_err());
+        assert!(decode_initial_and_propagation(&[0,0],1,1,Band::Ll,1).is_ok());
+        let mut b=Block::new(2,1).unwrap();
+        b.make_significant(0,0,2,false).unwrap();
+        assert!(propagation(&mut b,Band::Ll,1,|_|Err(Error::Invalid("test"))).is_err());
     }
 }
