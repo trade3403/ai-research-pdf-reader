@@ -121,3 +121,6 @@ pub use font_composite::{COMPOSITE_ONE,ComponentPlacement,ComponentMatrix,GlyphC
 
 pub mod font_path;
 pub use font_path::{PATH_ONE,PathLimits,PathPoint,GlyphPathCommand,GlyphPathBounds,GlyphPath,build_glyph_path,true_type_glyph_path};
+
+pub mod font_flatten;
+pub use font_flatten::{FlattenLimits,FlattenOptions,ContourOrientation,FlatContour,FlattenedGlyph,flatten_glyph_path};
