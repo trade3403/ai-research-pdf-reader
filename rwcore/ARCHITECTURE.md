@@ -88,3 +88,5 @@ C4.4a4a pending CI: MultipleSubst format 1 coverage-indexed nonempty sequences, 
 C4.4a4b pending CI: independently extracted direct Type 2 reference from Aref Ruqaa original SFNT bytes, all six subtables, full face glyph-domain comparison and atomic expansion budget tests. ABeeZee direct Type 2 absence verified in tests. No scheduling.
 
 C4.4a5a pending CI: AlternateSubst format 1 coverage-indexed nonempty ordered candidate sets, explicit zero-based selection, validated output IDs, cumulative candidate budget including shared offsets, atomic in-place replacement. No feature-value selection policy or lookup scheduling.
+
+C4.4a5b pending CI: original OFL Alegreya Sans Regular fixture; independently decoded direct GSUB Type 3 mapping, candidate-order and atomic explicit selection across all referenced glyphs. No scheduling or shaping execution.
