@@ -1,5 +1,5 @@
 //! PDF ICCBased source color transforms and compatible device Alternate fallback.
-use crate::{Document,Object,Error,Result};
+use crate::{Document,Object,Error,Result,icc::ProfilePath};
 pub(crate) fn icc_components(doc:&Document<'_>,a:&[Object])->Result<usize>{
     Ok(icc_stream(doc,a)?.1)
 }
@@ -74,26 +74,26 @@ impl IccTransform{
 /// Invalid or unsupported profile payloads use the documented device alternate;
 /// a recognized profile with wrong component count or a resource limit is fatal.
 pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
-    ->Result<(usize,Option<IccTransform>,usize)>{
+    ->Result<(usize,Option<IccTransform>,usize,ProfilePath)>{
     let (o,n)=icc_stream(doc,a)?;
     let Object::Stream{data,..}=&o else{unreachable!()};
     let encoded=data.len();
     if encoded>MAX_ICC_BYTES||encoded>remaining{return Err(Error::Limit("ICC encoded bytes"));}
     let bytes=match crate::filters::decode(&o,MAX_ICC_BYTES.min(remaining-encoded)){
-        Ok(b)=>b,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(_)=>return Ok((n,None,encoded)),
+        Ok(b)=>b,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,encoded,ProfilePath::Alternate{reason:s})),
     };
     let charged=encoded+bytes.len();
     let p=match crate::icc::Profile::parse(&bytes){
-        Ok(p)=>p,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(_)=>return Ok((n,None,charged)),
+        Ok(p)=>p,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
     };
     if matches!(&p.color_space,b"GRAY"|b"RGB "|b"CMYK"){
         let actual=match &p.color_space{b"GRAY"=>1,b"RGB "=>3,_=>4};
         if n!=actual{return Err(Error::Invalid("ICCBased profile N mismatch"));}
     }
+    let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
     let transform=match n{
         3=>p.rgb_matrix().map(IccTransform::Rgb),
         4=>{
-            let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
             p.cmyk_a2b(key).and_then(|lut|{
                 // Validate that physical PCS conversion is supported, not
                 // merely that the encoded LUT parses.
@@ -104,9 +104,9 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
         _=>Err(Error::Unsupported("ICC gray transform")),
     };
     match transform{
-        Ok(t)=>Ok((n,Some(t),charged)),
+        Ok(t)=>Ok((n,Some(t),charged,if n==3{ProfilePath::RgbMatrix}else{ProfilePath::CmykLut{tag:*key}})),
         Err(Error::Limit(s))=>Err(Error::Limit(s)),
-        Err(_)=>Ok((n,None,charged)),
+        Err(Error::Invalid(s)|Error::Unsupported(s))=>Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
     }
 }
 

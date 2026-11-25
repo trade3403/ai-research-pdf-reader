@@ -63,6 +63,9 @@ pub struct SubstitutedBitmap{
     pub bitmap:Bitmap,
     /// Unique Standard 14 faces for which caller-supplied outlines were loaded.
     pub substituted_fonts:Vec<StandardFont>,
+    /// Bounded vector/image ICC profile decisions. Native paths do not
+    /// imply complete intent handling; opacity masks are not display colors.
+    pub icc_profiles:Vec<crate::icc::ProfileDiagnostic>,
 }
 fn viewport(p:&PageInfo,scale:f64)->Result<(Matrix,usize,usize,f64,f64)>{
     let [x0,y0,x1,y1]=p.crop_box;
@@ -689,7 +692,9 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
         for c in 0..3{rgba.push(((u16::from(samples[c])+u16::from(samples[c+3])+u16::from(samples[c+6])+u16::from(samples[c+9])+2)/4) as u8);}
         rgba.push(255);
     }
-    Ok(SubstitutedBitmap{bitmap:Bitmap{width:w,height:h,rgba,missing_text},substituted_fonts:text.substituted_fonts()})
+    let mut icc_profiles=list.icc_profiles.clone();
+    icc_profiles.extend(s.icc_cache.diagnostics);
+    Ok(SubstitutedBitmap{bitmap:Bitmap{width:w,height:h,rgba,missing_text},substituted_fonts:text.substituted_fonts(),icc_profiles})
 }
 impl Document<'_>{
     pub fn render_page(&self,page:&PageInfo,options:Options,content_limit:usize)->Result<Bitmap>{

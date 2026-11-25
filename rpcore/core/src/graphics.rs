@@ -124,6 +124,8 @@ pub struct DisplayList{
     pub crop_box:[f64;4],
     pub commands:Vec<Command>,
     pub warnings:Vec<Warning>,
+    /// Unique ICC source decisions, including the alternate reason.
+    pub icc_profiles:Vec<crate::icc::ProfileDiagnostic>,
 }
 #[derive(Clone)]
 struct State{
@@ -290,8 +292,9 @@ impl<'d,'a> Engine<'d,'a>{
                     let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
                     if let Some(s)=self.icc_cache.get(&id){return Ok(s.clone());}
                     if self.icc_cache.len()>=crate::color::ICC_PAGE_PROFILES{return Err(Error::Limit("ICC page profiles"));}
-                    let (n,t,used)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes)?;
+                    let (n,t,used,path)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes)?;
                     self.icc_bytes+=used;
+                    self.out.icc_profiles.push(crate::icc::ProfileDiagnostic{object_id:id,source:crate::icc::ProfileUse::Vector,components:n,path});
                     let space=if let Some(t)=t{
                         // PDF ri / absolute and saturation paths are not implemented.
                         self.warning(Warning::IccIntentApproximation);
@@ -508,7 +511,7 @@ impl Document<'_>{
         let limit=content_limit.min(content::MAX_CONTENT_BYTES);
         let data=self.page_content(page,limit)?;
         let ops=content::parse(&data)?;
-        let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new()},
+        let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new(),icc_profiles:Vec::new()},
             active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len(),icc_cache:BTreeMap::new(),icc_bytes:0};
         e.run(&ops,page.resources.as_ref(),State::default(),0,None,None)?;
         Ok(e.out)

@@ -8,6 +8,21 @@ const MAX_TAGS:usize=1024;
 const MAX_CURVE:usize=65536;
 pub type Signature=[u8;4];
 
+/// Source of a profile decision during page interpretation/rendering.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum ProfileUse{Vector,Image}
+/// Native paths currently approximate PDF rendering intents. Alternate is
+/// explicitly distinguishable from a native transform even for identity RGB.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum ProfilePath{RgbMatrix,CmykLut{tag:Signature},Alternate{reason:&'static str}}
+/// One record per profile reference and source category on a successful page.
+/// Selection/decode can occur even if the affected paint is clipped away.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct ProfileDiagnostic{
+    pub object_id:(u32,u16),pub source:ProfileUse,pub components:usize,pub path:ProfilePath,
+}
+
+
 fn sig(b:&[u8],p:usize)->Result<Signature>{
     b.get(p..p+4).ok_or(Error::Invalid("ICC truncated field"))?
         .try_into().map_err(|_|Error::Invalid("ICC signature"))

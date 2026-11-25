@@ -237,12 +237,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2 poppler-utils python3-pil
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2 poppler-utils python3-pil libgs-common colord-data
       - run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --example corpus_probe --example icc_probe
       - run: |
           mkdir -p rpcore/target/icc-render-report
-          dpkg-query -W liblcms2-2 poppler-utils python3-pil > rpcore/target/icc-render-report/reference-versions.txt
+          dpkg-query -W liblcms2-2 poppler-utils python3-pil libgs-common colord-data > rpcore/target/icc-render-report/reference-versions.txt
           /usr/bin/python3 rpcore/corpus/icc_render_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --icc-probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-render-report
+      - if: success() || failure()
+        run: |
+          /usr/bin/python3 rpcore/corpus/icc_print_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/print-profiles --swop /usr/share/color/icc/ghostscript/default_cmyk.icc --fogra /usr/share/color/icc/colord/FOGRA40L_SC_paper.icc
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -252,3 +255,4 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/icc-render-report/report.md ]; then cat rpcore/target/icc-render-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-render-report/print-profiles/report.md ]; then cat rpcore/target/icc-render-report/print-profiles/report.md >> "$GITHUB_STEP_SUMMARY"; fi

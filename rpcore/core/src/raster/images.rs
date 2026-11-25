@@ -35,7 +35,7 @@ enum Space{Device(usize),Icc(Arc<IccTransform>),Indexed{base:usize,high:usize,pa
 /// Cache even alternate decisions so uncached image objects cannot repeatedly
 /// inflate/parse the same profile. Scope is a single raster pass.
 #[derive(Default)]
-pub(super) struct IccCache{entries:BTreeMap<(u32,u16),(usize,Option<Arc<IccTransform>>)>,bytes:usize}
+pub(super) struct IccCache{entries:BTreeMap<(u32,u16),(usize,Option<Arc<IccTransform>>)>,bytes:usize,pub(super) diagnostics:Vec<crate::icc::ProfileDiagnostic>}
 impl IccCache{
     fn space(&mut self,doc:&Document<'_>,a:&[Object],budget:&mut Budget)->Result<Space>{
         let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
@@ -43,12 +43,13 @@ impl IccCache{
             return Ok(match t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(*n)});
         }
         if self.entries.len()>=ICC_PAGE_PROFILES{return Err(Error::Limit("ICC image profiles"));}
-        let (n,t,used)=crate::color::load_icc(doc,a,ICC_PAGE_BYTES-self.bytes)?;
+        let (n,t,used,path)=crate::color::load_icc(doc,a,ICC_PAGE_BYTES-self.bytes)?;
         self.bytes+=used;
         budget.charge(used)?;
         let t=t.map(Arc::new);
         let space=match &t{Some(t)=>Space::Icc(Arc::clone(t)),None=>Space::Device(n)};
         self.entries.insert(id,(n,t));
+        self.diagnostics.push(crate::icc::ProfileDiagnostic{object_id:id,source:crate::icc::ProfileUse::Image,components:n,path});
         Ok(space)
     }
 }

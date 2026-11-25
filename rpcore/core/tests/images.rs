@@ -158,3 +158,20 @@ fn px(b:&Bitmap,x:usize,y:usize)->&[u8]{let i=(y*b.width+x)*4;&b.rgba[i..i+4]}
     let d=Document::open(&p).unwrap();
     assert!(matches!(d.render_page(&d.pages().unwrap()[0],Options::default(),10000),Err(rpcore::Error::Limit("raster work (image ICC)"))));
 }
+
+#[test]fn image_icc_diagnostics_native_and_alternate(){
+    use rpcore::icc::{ProfileUse,ProfilePath};
+    for (profile,n,path) in [
+        (icc_fixture::rgb_icc(),3,ProfilePath::RgbMatrix),
+        (icc_fixture::cmyk_icc(),4,ProfilePath::CmykLut{tag:*b"A2B1"}),
+        (b"short invalid ICC".to_vec(),3,ProfilePath::Alternate{reason:"ICC profile header"}),
+    ]{
+        let im=fixture::stream(&format!("/Subtype /Image /Width 1 /Height 1 /ColorSpace [/ICCBased 6 0 R] /BitsPerComponent 8"),&vec![0;n]);
+        let p=fixture::pdf(b"q /Im Do Q /Im Do",im,fixture::stream(&format!("/N {n}"),&profile),"<< >>");
+        let d=Document::open(&p).unwrap();
+        let out=d.render_page_with_text_quality(&d.pages().unwrap()[0],Options::default(),10000,None,rpcore::raster::TextQuality::Standard).unwrap();
+        assert_eq!(out.icc_profiles.len(),1);
+        let x=out.icc_profiles[0];
+        assert_eq!((x.object_id,x.source,x.components,x.path),((6,0),ProfileUse::Image,n,path));
+    }
+}

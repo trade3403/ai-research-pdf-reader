@@ -6,6 +6,22 @@ fn classify(e:Error){
     let (kind,reason)=match e{Error::Invalid(s)=>("invalid",s),Error::Unsupported(s)=>("unsupported",s),Error::Limit(s)=>("limit",s)};
     println!("status={kind}\nreason={reason}");
 }
+fn report_icc(v:&[rpcore::icc::ProfileDiagnostic]){
+    use rpcore::icc::{ProfileUse,ProfilePath};
+    let mut counts=[0;4];
+    for (i,p) in v.iter().enumerate(){
+        let source=match p.source{ProfileUse::Vector=>"vector",ProfileUse::Image=>"image"};
+        let (path,reason)=match p.path{
+            ProfilePath::RgbMatrix=>("rgb_matrix".to_owned(),""),
+            ProfilePath::CmykLut{tag}=>(format!("cmyk_{}",String::from_utf8_lossy(&tag)),""),
+            ProfilePath::Alternate{reason}=>("alternate".to_owned(),reason),
+        };
+        let base=if p.source==ProfileUse::Vector{0}else{2};
+        counts[base+usize::from(matches!(p.path,ProfilePath::Alternate{..}))]+=1;
+        println!("icc_diag_{i}={source};{}:{};{};{path};{reason}",p.object_id.0,p.object_id.1,p.components);
+    }
+    println!("icc_vector_native={}\nicc_vector_alternate={}\nicc_image_native={}\nicc_image_alternate={}",counts[0],counts[1],counts[2],counts[3]);
+}
 fn run()->Result<(),Box<dyn std::error::Error>>{
     let mut args=std::env::args_os().skip(1);
     let path=args.next().ok_or("usage: corpus_probe FILE inspect|content|text|render|math [PAGE [OUTPUT.png or normalized rectangle]]")?;
@@ -98,9 +114,9 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
             let fonts=urw::load(std::path::Path::new(&dir))?;
             doc.render_page_with_text_quality(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,Some(&fonts),quality).map(|v|{
                 let names=v.substituted_fonts.iter().map(|f|std::str::from_utf8(f.name()).unwrap()).collect::<Vec<_>>().join(",");
-                println!("substituted_fonts={names}");v.bitmap
+                println!("substituted_fonts={names}");report_icc(&v.icc_profiles);v.bitmap
             })
-        }else{doc.render_page_with_text_quality(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,None,quality).map(|v|v.bitmap)}{
+        }else{doc.render_page_with_text_quality(p,Options{scale,allow_missing_text:false},MAX_CONTENT_BYTES,None,quality).map(|v|{report_icc(&v.icc_profiles);v.bitmap})}{
             Ok(b)=>{
                 if b.missing_text{Err(Error::Invalid("strict render returned missing text"))}else{
                     let png=match b.png(){Ok(v)=>v,Err(e)=>{classify(e);return Ok(());}};
