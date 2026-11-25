@@ -149,8 +149,9 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize,intent:crat
                 IccTransform::Mab(_)=>ProfilePath::CmykMab{tag:*key},
                 _=>return Err(Error::Invalid("ICC unexpected legacy transform")),
             };
-            let t=if intent==RenderingIntent::AbsoluteColorimetric&&n==4{
-                match p.absolute_output_scale(){
+            let t=if intent==RenderingIntent::AbsoluteColorimetric{
+                let scale=if n==4{p.absolute_output_scale()}else{p.absolute_matrix_scale()};
+                match scale{
                     Ok(scale)=>IccTransform::AbsoluteOutput{inner:Box::new(t),scale},
                     Err(Error::Limit(s))=>return Err(Error::Limit(s)),
                     Err(Error::Invalid(s)|Error::Unsupported(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),

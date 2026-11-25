@@ -83,6 +83,47 @@ impl<'a> Profile<'a>{
         if b.len()!=20||sig(b,0)?!=*b"XYZ "||b[4..8]!=[0;4]{return Err(Error::Invalid("ICC XYZ tag"));}
         Ok([fixed(b,8)?,fixed(b,12)?,fixed(b,16)?])
     }
+    /// Parse ICC s15Fixed16ArrayType CHAD (row-major, nine coefficients).
+    /// Reject singular or ill-conditioned matrices before exposing them.
+    pub fn chromatic_adaptation(&self)->Result<Option<[[f64;3];3]>>{
+        let Some(b)=self.tag(b"chad") else{return Ok(None);};
+        if b.len()!=44||sig(b,0)?!=*b"sf32"||b[4..8]!=[0;4]{
+            return Err(Error::Invalid("ICC CHAD tag"));
+        }
+        let mut m=[[0.;3];3];
+        for i in 0..3{for j in 0..3{m[i][j]=fixed(b,8+4*(3*i+j))?;}}
+        invert_chad(m)?;
+        Ok(Some(m))
+    }
+    /// Recover the pre-adaptation D50 white for diagnostics, not for the
+    /// fully adapted absolute rendering path.
+    pub fn unadapted_pcs_white(&self)->Result<Option<[f64;3]>>{
+        let Some(m)=self.chromatic_adaptation()? else{return Ok(None);};
+        let inv=invert_chad(m)?;
+        let w=inv.map(|r|r[0]*self.illuminant[0]+r[1]*self.illuminant[1]+r[2]*self.illuminant[2]);
+        if w.iter().any(|v|!v.is_finite()||*v<=0.||*v>4.){
+            return Err(Error::Invalid("ICC CHAD white"));
+        }
+        Ok(Some(w))
+    }
+    /// Fully adapted (state 1) absolute matrix/TRC path. Legacy v2 display
+    /// profiles use D50 media white under the reference CMM convention.
+    pub fn absolute_matrix_scale(&self)->Result<[f64;3]>{
+        if !matches!(&self.color_space,b"RGB "|b"GRAY")||
+            !matches!(&self.class,b"mntr"|b"scnr"|b"prtr")||self.pcs!=*b"XYZ "{
+            return Err(Error::Unsupported("ICC absolute matrix profile"));
+        }
+        if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
+            return Err(Error::Unsupported("ICC non-D50 PCS"));
+        }
+        // Validate CHAD if present without undoing full adaptation.
+        self.chromatic_adaptation()?;
+        let white=if self.version_major==2&&self.class==*b"mntr"{[0.9642,1.,0.8249]}else{self.xyz(b"wtpt")?};
+        if white.iter().any(|v|!v.is_finite()||*v<=0.||*v>2.){
+            return Err(Error::Invalid("ICC absolute media white"));
+        }
+        Ok(std::array::from_fn(|i|white[i]/[0.9642,1.,0.8249][i]))
+    }
     /// Media-relative to ICC-absolute PCS scaling for CMYK output profiles.
     /// Do not apply to native D2B3, or assume display/input profile semantics.
     pub fn absolute_output_scale(&self)->Result<[f64;3]>{
@@ -182,6 +223,29 @@ impl<'a> Profile<'a>{
         Ok(())
     }
 
+}
+/// Bounded Gauss-Jordan 3x3 inversion with partial pivoting.
+pub fn invert_chad(m:[[f64;3];3])->Result<[[f64;3];3]>{
+    if m.iter().flatten().any(|v|!v.is_finite()||v.abs()>64.){
+        return Err(Error::Invalid("ICC CHAD coefficient"));
+    }
+    let norm=m.iter().map(|r|r.iter().map(|v|v.abs()).sum::<f64>()).fold(0.,f64::max);
+    if norm==0.{return Err(Error::Invalid("ICC singular CHAD"));}
+    let mut a=[[0.;6];3];
+    for i in 0..3{a[i][..3].copy_from_slice(&m[i]);a[i][i+3]=1.;}
+    for k in 0..3{
+        let mut p=k;
+        for i in k+1..3{if a[i][k].abs()>a[p][k].abs(){p=i;}}
+        if a[p][k].abs()<=norm*1e-10{return Err(Error::Invalid("ICC singular CHAD"));}
+        a.swap(k,p);let pivot=a[k][k];
+        for v in &mut a[k]{*v/=pivot;}
+        let row=a[k];
+        for i in 0..3{if i!=k{let v=a[i][k];for j in 0..6{a[i][j]-=v*row[j];}}}
+    }
+    let inv:[[f64;3];3]=std::array::from_fn(|i|std::array::from_fn(|j|a[i][j+3]));
+    let inv_norm=inv.iter().map(|r|r.iter().map(|v|v.abs()).sum::<f64>()).fold(0.,f64::max);
+    if !inv_norm.is_finite()||norm*inv_norm>1e6{return Err(Error::Invalid("ICC ill-conditioned CHAD"));}
+    Ok(inv)
 }
 #[derive(Debug)]
 enum Curve{Identity,Gamma(f64),Table(Vec<u16>),Parametric{kind:u16,p:[f64;7]}}
@@ -885,5 +949,28 @@ mod intent_selection_tests{
         assert!(matches!(p.select_transform(dir,intent,|_|Err::<(),_>(Error::Invalid("test"))),Err(Error::Invalid("test"))));
         let (chosen,_) = p.select_transform(dir,RenderingIntent::Saturation,|_|Ok(())).unwrap();
         assert_eq!(chosen,Legacy{tag:*b"A2B0",absolute_adjustment:false});
+    }
+}
+
+#[cfg(test)]
+mod chad_tests{
+    use super::*;
+    #[test]fn inverse_identity_and_pivot(){
+        let m=[[0.,2.,0.],[1.,0.,0.],[0.,0.,4.]];
+        assert_eq!(invert_chad(m).unwrap(),[[0.,1.,0.],[0.5,0.,0.],[0.,0.,0.25]]);
+    }
+    #[test]fn inverse_roundtrip(){
+        let m=[[1.0479,0.0229,-0.0502],[0.0296,0.9904,-0.0171],[-0.0092,0.0151,0.7519]];
+        let inv=invert_chad(m).unwrap();
+        for i in 0..3{for j in 0..3{
+            let v=(0..3).map(|k|m[i][k]*inv[k][j]).sum::<f64>();
+            assert!((v-if i==j{1.}else{0.}).abs()<1e-12);
+        }}
+    }
+    #[test]fn rejects_bad_matrices(){
+        assert!(invert_chad([[0.;3];3]).is_err());
+        assert!(invert_chad([[1.,0.,0.],[1.,0.,0.],[0.,0.,1.]]).is_err());
+        assert!(invert_chad([[1.,0.,0.],[0.,1e-8,0.],[0.,0.,1.]]).is_err());
+        assert!(invert_chad([[f64::NAN,0.,0.],[0.,1.,0.],[0.,0.,1.]]).is_err());
     }
 }
