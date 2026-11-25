@@ -1,4 +1,4 @@
-//! Reversible JPEG 2000 5/3 inverse lifting in one dimension.
+//! Reversible JPEG 2000 5/3 inverse lifting in one and two dimensions.
 //! Inputs are compact low/high subbands in increasing coordinate order.
 //! Integer arithmetic uses floor division and symmetric boundary extension.
 use crate::{Error,Result};
@@ -33,6 +33,42 @@ pub fn inverse53_line(low:&[i32],high:&[i32],odd_origin:bool)->Result<Vec<i32>>{
     a.into_iter().map(|v|i32::try_from(v).map_err(|_|Error::Limit("JPX 5/3 sample overflow"))).collect()
 }
 
+const MAX_PLANE:usize=4_194_304;
+/// Reconstruct one resolution from compact row-major subbands.
+/// HL is high in X, LH is high in Y. Undo horizontal lifting first,
+/// then vertical; reversing this order changes integer rounding.
+/// The origin flags refer to the output resolution's reference grid.
+pub fn inverse53_plane(width:usize,height:usize,odd_x:bool,odd_y:bool,
+    ll:&[i32],hl:&[i32],lh:&[i32],hh:&[i32])->Result<Vec<i32>>{
+    let area=width.checked_mul(height).ok_or(Error::Limit("JPX 5/3 plane area"))?;
+    if width==0||height==0{return Err(Error::Invalid("JPX 5/3 empty plane"));}
+    if width>MAX_LINE||height>MAX_LINE||area>MAX_PLANE{return Err(Error::Limit("JPX 5/3 plane area"));}
+    let lw=width/2+usize::from(width%2!=0&&!odd_x);
+    let lhgt=height/2+usize::from(height%2!=0&&!odd_y);
+    let hw=width-lw;
+    let hhgt=height-lhgt;
+    if ll.len()!=lw*lhgt||hl.len()!=hw*lhgt||lh.len()!=lw*hhgt||hh.len()!=hw*hhgt{
+        return Err(Error::Invalid("JPX 5/3 subband plane dimensions"));
+    }
+    let mut rows=Vec::with_capacity(area);
+    for (lo,hi,count) in [(ll,hl,lhgt),(lh,hh,hhgt)]{
+        for y in 0..count{
+            rows.extend(inverse53_line(&lo[y*lw..(y+1)*lw],&hi[y*hw..(y+1)*hw],odd_x)?);
+        }
+    }
+    let mut out=vec![0;area];
+    let mut low=Vec::with_capacity(lhgt);
+    let mut high=Vec::with_capacity(hhgt);
+    for x in 0..width{
+        low.clear();high.clear();
+        for y in 0..lhgt{low.push(rows[y*width+x]);}
+        for y in lhgt..height{high.push(rows[y*width+x]);}
+        let col=inverse53_line(&low,&high,odd_y)?;
+        for (y,v) in col.into_iter().enumerate(){out[y*width+x]=v;}
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -64,5 +100,39 @@ mod tests{
         assert!(inverse53_line(&[i32::MAX],&[i32::MIN],false).is_err());
         assert!(inverse53_line(&[i32::MIN],&[i32::MAX],true).is_err());
         assert!(inverse53_line(&vec![0;MAX_LINE+1],&[],false).is_err());
+    }
+
+    #[test]fn plane_reference_real_subbands(){
+        assert_eq!(inverse53_plane(4,4,false,false,&[-3,11,22,-29],&[59,8,-114,4],
+            &[-8,20,-29,52],&[115,10,192,0]).unwrap(),
+            [0,1,-1,2,-3,12,-12,0,127,-128,0,1,2,3,4,5]);
+    }
+    #[test]fn plane_reference_odd_shapes(){
+        let want=[-50,-13,24,-40,-3,34,-30,7,44,-20,17,-47,-10,27,-37];
+        assert_eq!(inverse53_plane(5,3,false,false,&[-30,15,-15,12,-6,2],&[-13,-24,-63,77],
+            &[39,7,26],&[-25,51]).unwrap(),want);
+        assert_eq!(inverse53_plane(5,3,true,true,&[-17,13],&[39,13,-39],
+            &[5,-46,-17,-17],&[-101,51,101,0,0,0]).unwrap(),want);
+    }
+    #[test]fn plane_reference_mixed_origins(){
+        let want=[-50,-13,24,-40,-3,34,-30,7,44,-20,17,-47];
+        assert_eq!(inverse53_plane(3,4,true,false,&[-13,4],&[-37,37,-37,11],
+            &[0,-15],&[0,0,0,-101]).unwrap(),want);
+        assert_eq!(inverse53_plane(4,3,false,true,&[4,-5],&[13,-13],
+            &[-72,16,-3,-3],&[-50,-101,-101,-101]).unwrap(),want);
+    }
+    #[test]fn plane_degenerate_axes(){
+        let want=[-50,-13,24,-40,-3];
+        assert_eq!(inverse53_plane(1,5,true,false,&[],&[-100,24,-56],&[],&[0,-100]).unwrap(),want);
+        assert_eq!(inverse53_plane(5,1,false,true,&[],&[],&[-100,23,-56],&[0,-101]).unwrap(),want);
+        assert_eq!(inverse53_plane(1,1,true,true,&[],&[],&[],&[-200]).unwrap(),[-50]);
+        assert_eq!(inverse53_plane(1,1,false,false,&[7],&[],&[],&[]).unwrap(),[7]);
+    }
+    #[test]fn plane_limits_and_overflow(){
+        assert!(inverse53_plane(0,1,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse53_plane(usize::MAX,2,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse53_plane(4096,4096,false,false,&[],&[],&[],&[]).is_err());
+        assert!(inverse53_plane(2,2,false,false,&[0],&[],&[0],&[0]).is_err());
+        assert!(inverse53_plane(2,1,false,false,&[i32::MAX],&[i32::MIN],&[],&[]).is_err());
     }
 }
