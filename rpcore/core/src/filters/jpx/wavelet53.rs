@@ -69,6 +69,60 @@ pub fn inverse53_plane(width:usize,height:usize,odd_x:bool,odd_y:bool,
     Ok(out)
 }
 
+const MAX_LEVELS:usize=32;
+const MAX_RECONSTRUCTION_WORK:usize=MAX_PLANE*4;
+/// Detail bands of one resolution, ordered from coarsest to finest.
+#[derive(Debug,Clone,Copy)]
+pub struct Detail53<'a>{pub hl:&'a[i32],pub lh:&'a[i32],pub hh:&'a[i32]}
+#[derive(Clone,Copy)]
+struct Grid{ x0:u64,y0:u64,x1:u64,y1:u64 }
+impl Grid{
+    fn low(self)->Self{
+        Self{x0:(self.x0+1)/2,y0:(self.y0+1)/2,x1:(self.x1+1)/2,y1:(self.y1+1)/2}
+    }
+    fn size(self)->(usize,usize){((self.x1-self.x0)as usize,(self.y1-self.y0)as usize)}
+}
+/// Reconstruct all requested resolutions from a compact coarsest LL band.
+/// Origins are absolute component-grid coordinates, not local tile offsets.
+/// Detail levels are ordered coarse to fine. Each level derives its low/high
+/// geometry by ceiling projection; no caller-supplied intermediate sizes.
+pub fn inverse53_levels(width:usize,height:usize,x_origin:u32,y_origin:u32,
+    ll:&[i32],details:&[Detail53<'_>])->Result<Vec<i32>>{
+    let area=width.checked_mul(height).ok_or(Error::Limit("JPX 5/3 plane area"))?;
+    if width==0||height==0{return Err(Error::Invalid("JPX 5/3 empty plane"));}
+    if width>MAX_LINE||height>MAX_LINE||area>MAX_PLANE||details.len()>MAX_LEVELS{
+        return Err(Error::Limit("JPX 5/3 reconstruction dimensions"));
+    }
+    let mut grids=Vec::with_capacity(details.len()+1);
+    let mut g=Grid{x0:u64::from(x_origin),y0:u64::from(y_origin),
+        x1:u64::from(x_origin)+width as u64,y1:u64::from(y_origin)+height as u64};
+    if g.x1>u64::from(u32::MAX)||g.y1>u64::from(u32::MAX){
+        return Err(Error::Limit("JPX 5/3 grid coordinates"));
+    }
+    grids.push(g);
+    for _ in details{g=g.low();grids.push(g);}
+    let (cw,ch)=g.size();
+    if ll.len()!=cw*ch{return Err(Error::Invalid("JPX 5/3 coarsest LL dimensions"));}
+    // Validate all bands and total work before allocating reconstructed planes.
+    let mut work=ll.len();
+    for (g,d) in grids[..details.len()].iter().rev().zip(details){
+        let (w,h)=g.size();let (lw,lh)=g.low().size();
+        let (hw,hh)=(w-lw,h-lh);
+        if d.hl.len()!=hw*lh||d.lh.len()!=lw*hh||d.hh.len()!=hw*hh{
+            return Err(Error::Invalid("JPX 5/3 detail dimensions"));
+        }
+        work=work.checked_add(w*h).ok_or(Error::Limit("JPX 5/3 reconstruction work"))?;
+        if work>MAX_RECONSTRUCTION_WORK{return Err(Error::Limit("JPX 5/3 reconstruction work"));}
+    }
+    let mut current=ll.to_vec();
+    for (g,d) in grids[..details.len()].iter().rev().zip(details){
+        let (w,h)=g.size();
+        if w==0||h==0{continue;}
+        current=inverse53_plane(w,h,g.x0%2!=0,g.y0%2!=0,&current,d.hl,d.lh,d.hh)?;
+    }
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -134,5 +188,37 @@ mod tests{
         assert!(inverse53_plane(4096,4096,false,false,&[],&[],&[],&[]).is_err());
         assert!(inverse53_plane(2,2,false,false,&[0],&[],&[0],&[0]).is_err());
         assert!(inverse53_plane(2,1,false,false,&[i32::MAX],&[i32::MIN],&[],&[]).is_err());
+    }
+    #[test]fn levels_reference_even(){
+        let details=[Detail53{hl:&[19,36,28,17],lh:&[-3,15],hh:&[-6,12]},
+            Detail53{hl:&[26,1,25,0,1,38,-25,1,-51],lh:&[77,-12,-37,26,26,-37,-25,51],hh:&[51,101,-50,-50,101,0]}];
+        assert_eq!(inverse53_levels(7,5,0,0,&[-1,0,4,4],&details).unwrap(),[-50,-13,24,-40,-3,34,-30,7,44,-20,17,-47,-10,27,-37,0,37,-27,10,47,-17,20,-44,-7,30,-34,3,40,-24,13,50,-14,23,-41,-4]);
+    }
+    #[test]fn levels_reference_odd(){
+        let details=[Detail53{hl:&[-6],lh:&[9,-23],hh:&[-45]},
+            Detail53{hl:&[-50,-6,-25,-14,27,32,-13,12],lh:&[-32,-19,32,7,-18,39,45,-6,-19],hh:&[0,101,51,-101,-50,76,51,-101,-101,51,101,0]}];
+        assert_eq!(inverse53_levels(7,5,3,5,&[-2,2],&details).unwrap(),[-50,-13,24,-40,-3,34,-30,7,44,-20,17,-47,-10,27,-37,0,37,-27,10,47,-17,20,-44,-7,30,-34,3,40,-24,13,50,-14,23,-41,-4]);
+    }
+    #[test]fn levels_reference_mixed(){
+        let details=[Detail53{hl:&[15],lh:&[-3],hh:&[-30]},
+            Detail53{hl:&[4,-5,26,-14,8,-7],lh:&[23,-9],hh:&[-24,-23,58]},
+            Detail53{hl:&[50,-6,-25,19,-38,38,38,0,50,-38,-75,-12],lh:&[-55,46,-17,-17,46,26,19,-44,32,-37,-50,32,-31,7,-12],hh:&[-50,-50,101,-50,51,25,0,-75,0,-75,-50,76]}];
+        assert_eq!(inverse53_levels(9,6,2,3,&[2],&details).unwrap(),[-50,-13,24,-40,-3,34,-30,7,44,-20,17,-47,-10,27,-37,0,37,-27,10,47,-17,20,-44,-7,30,-34,3,40,-24,13,50,-14,23,-41,-4,33,-31,6,43,-21,16,-48,-11,26,-38,-1,36,-28,9,46,-18,19,-45,-8]);
+    }
+    #[test]fn levels_zero_and_empty_coarsest(){
+        assert_eq!(inverse53_levels(2,2,1,2,&[1,2,3,4],&[]).unwrap(),[1,2,3,4]);
+        let d=Detail53{hl:&[],lh:&[],hh:&[-200]};
+        assert_eq!(inverse53_levels(1,1,1,1,&[],&[d]).unwrap(),[-50]);
+        let empty=Detail53{hl:&[],lh:&[],hh:&[]};
+        assert_eq!(inverse53_levels(1,1,1,1,&[],&[empty,d]).unwrap(),[-50]);
+    }
+    #[test]fn levels_dimensions_and_limits(){
+        let empty=Detail53{hl:&[],lh:&[],hh:&[]};
+        assert!(inverse53_levels(2,2,0,0,&[1],&[empty]).is_err());
+        assert!(inverse53_levels(2,2,0,0,&[],&[]).is_err());
+        assert!(inverse53_levels(1,1,0,0,&[0],&[empty;MAX_LEVELS+1]).is_err());
+        assert!(inverse53_levels(1,1,u32::MAX,0,&[0],&[]).is_err());
+        assert!(inverse53_levels(usize::MAX,2,0,0,&[],&[]).is_err());
+        assert!(inverse53_levels(0,1,0,0,&[],&[]).is_err());
     }
 }
