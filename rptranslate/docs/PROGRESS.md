@@ -193,8 +193,13 @@ D1.8f 45535270286：原生/便携跨内核、512位置、真实文本翻译步�
 ## D1.9b（独立预研，待验收）
 D1.9b 独立格式预研：RPQ8BIN v1 小端，32字节头(magic/version/count/index_bytes/payload_bytes)，排序名称、rank/dims/block size/offset/bytes，块记录FP32 scale+signed codes，尾部64 ASCII SHA256覆盖全部头/索引/载荷。文件<=512MiB、索引<=1MiB、<=4096 tensors、rank1..8、每张量<=128Mi元素、block1..4096；严格连续偏移/长度，无重叠/空洞/重复/路径名/尾随字节。Reader验证哈希和索引后按块读取，逐块检查 -128、scale有限正值、重建溢出和预算；未读取块仅做完整性哈希，不提前验证语义。Rust writer 接收借用已量化 codes/scales，先验证再写空目标，流式写入、回读计算SHA；IO失败需丢弃不完整输出，非原子替换。3 Rust 单测、独立Python字节精确writer对照/reader三块/17损坏反例。SHA非签名，假设稳定文件。仅INT8容器，未支持混合FP32完整模型、未转换真实权重、未接推理。待CI。
 
-## 下一阶段 D1.9c
-前序全部门槛通过后，真实INT8分块词表与逐块反量化。
+前置D1.9a 45535708639 基础格式失败已在c6520e4修复，真实专项仍运行；D1.9b复测45536217953排队。新提交保留D1.9b/D1.9a/D1.8f所有门槛，CI允许旧运行完成；待最新全量验收。
+
+## D1.9c（待验收）
+D1.9c 独立真实量化词表：QuantizedTable 只保留紧凑 codes/scales，行对齐 block 整除 width；FP32 reader 每次最多1Mi元素按行转换，RPQ8 writer借用原数组，释放后从RPQ8逐块检查并加载；row_into 一行反量化、按ID gather/scale、共享词表 tied projection FP32 累加，最多一行scratch，未变更原RowTable借用API与FP32翻译路径。实际65001x512 block64目标33280512 codes、520008 scales、35360544 bytes，2组单测。真实专项全权重代码/scale 独立NumPy位对照、8 token gather4096元素、2行全logits和末行195003元素，1e-5对照量化参考、FP32差异按绝对误差传播界检查并记录argmax，不声称量化无损。真实权重文件临时生成不提交、不发布。量化计算仍FP32，不等于INT8矩阵乘法或完整量化翻译。待CI。
+
+## 下一阶段 D1.9d
+前置全量验收后，研发自主INT8矩阵乘法与混合精度累加。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
