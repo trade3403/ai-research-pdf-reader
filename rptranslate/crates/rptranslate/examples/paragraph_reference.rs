@@ -32,7 +32,13 @@ fn main() -> Result<(), String> {
     };
     let source = "We measured maximum strain. We calculated site response.";
     let result = session
-        .translate_paragraph(source, &engine, Some(Domain::Geotechnical), options, Kernel::Auto)
+        .translate_paragraph(
+            source,
+            &engine,
+            Some(Domain::Geotechnical),
+            options,
+            Kernel::Auto,
+        )
         .map_err(|e| format!("fixed paragraph: {e:?}"))?;
     if result.segments.len() != 2
         || !result.segments[0].text.contains("最大应变")

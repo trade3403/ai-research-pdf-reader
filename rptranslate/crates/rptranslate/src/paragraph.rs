@@ -99,8 +99,23 @@ fn abbreviation(before: &str) -> bool {
     let lower = word.to_ascii_lowercase();
     matches!(
         lower.as_str(),
-        "fig" | "figs" | "eq" | "eqs" | "ref" | "refs" | "dr" | "prof" | "mr" | "mrs"
-            | "al" | "etc" | "vs" | "e.g" | "i.e" | "u.s" | "no"
+        "fig"
+            | "figs"
+            | "eq"
+            | "eqs"
+            | "ref"
+            | "refs"
+            | "dr"
+            | "prof"
+            | "mr"
+            | "mrs"
+            | "al"
+            | "etc"
+            | "vs"
+            | "e.g"
+            | "i.e"
+            | "u.s"
+            | "no"
     ) || (word.len() == 1 && word.as_bytes()[0].is_ascii_uppercase())
 }
 
@@ -131,8 +146,7 @@ fn ranges(text: &str, clauses: bool) -> Result<Vec<Range<usize>>, Error> {
         let end = at + c.len_utf8();
         let space_after = text[end..].chars().next().is_none_or(char::is_whitespace);
         let boundary = if clauses {
-            matches!(c, '；' | '，' | '：')
-                || (matches!(c, ';' | ',' | ':') && space_after)
+            matches!(c, '；' | '，' | '：') || (matches!(c, ';' | ',' | ':') && space_after)
         } else {
             matches!(c, '。' | '！' | '？')
                 || (matches!(c, '!' | '?') && space_after)
@@ -204,8 +218,7 @@ fn numbers(text: &str) -> BTreeMap<&str, usize> {
         at += 1;
         while at < bytes.len()
             && (bytes[at].is_ascii_digit()
-                || (bytes[at] == b'.'
-                    && bytes.get(at + 1).is_some_and(u8::is_ascii_digit)))
+                || (bytes[at] == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_digit)))
         {
             at += 1;
         }
@@ -300,7 +313,11 @@ fn select(
     mut generate: impl FnMut(Strategy) -> Result<String, String>,
 ) -> Result<Selection, Vec<Attempt>> {
     let mut rejected = Vec::new();
-    for strategy in [Strategy::Whole, Strategy::Constrained, Strategy::ProtectedGaps] {
+    for strategy in [
+        Strategy::Whole,
+        Strategy::Constrained,
+        Strategy::ProtectedGaps,
+    ] {
         let failure = match generate(strategy) {
             Ok(text) => match audit(source, plan, &text) {
                 Ok(()) => {
@@ -441,7 +458,11 @@ mod tests {
         );
         let p = Plan::prepare("Results are stable.", &[]).unwrap();
         assert_eq!(
-            audit("Results are stable.", &p, "研究结果保持稳定。研究结果保持稳定。"),
+            audit(
+                "Results are stable.",
+                &p,
+                "研究结果保持稳定。研究结果保持稳定。"
+            ),
             Err(QualityIssue::RepeatedClause)
         );
     }

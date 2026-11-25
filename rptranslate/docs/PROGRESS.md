@@ -282,3 +282,5 @@ D1.10e run [45577712411](https://github.com/trade3403/ai-research-pdf-reader/act
 
 ## D1.10f
 D1.10e 基线 HEAD 6dadc58 / [45579659701](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45579659701) 全量 success，116 workspace+56 portable=172/172；双精度4组及1预算负例各通过，论文8/8、17术语，仍有强制末尾补入及数字重复。用户授权 D1.10f，本提交实现段落级先验、保守句边界/超192源token安全子句分割、64片段上限、完整句→约束→保护间隔候选顺序、数字串多重集合/最长非重叠术语计数/已观察错误词/重复长子句校验、拒绝原因报告及整段失败关闭、双精度2固定段落4片段、数字安全门和1负例、论文8样本覆盖率观察。校验仅词面启发式，可能误拒绝，不判断语义或数字位置；不进行神经跨句attention，不自动删改错误译文，旧默认不变。待最新全量CI，不启动 D1.10g。
+
+D1.10f run [45582711679](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45582711679) CPU Format 失败：paragraph_reference.rs 一处、paragraph.rs 五处换行。已按实际 rustfmt 日志逐处修复；原真实模型专项仍运行，尚未取得段落专项结果。保留全部门槛，新提交全量复验前不启动 D1.10g。
