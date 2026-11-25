@@ -1,7 +1,7 @@
 //! Native packet header and codeblock contribution spans for a bounded
 //! baseline subset: default codeblock style, one tile-part per tile,
 //! inline headers. Entropy bytes remain opaque.
-use super::{codestream::inspect_codestream,geometry::{self,Band,Packet,Precinct},packet_bits::{HeaderBits,TagTree}};
+use super::{codestream::{inspect_codestream,Codestream},geometry::{self,Band,Packet,Precinct,TilePlan},packet_bits::{HeaderBits,TagTree}};
 use crate::{Error,Result};
 use std::{collections::BTreeMap,ops::Range};
 const MAX_VISITS:usize=2_000_000;
@@ -120,12 +120,17 @@ fn read_packet(data:&[u8],range:&Range<usize>,pos:&mut usize,packet:Packet,seq:u
 /// this call; failures never return partial contribution ranges.
 pub fn inspect_packets(data:&[u8],tile:u16)->Result<TilePackets>{
     let c=inspect_codestream(data)?;
+    let plan=geometry::plan(&c,tile)?;
+    inspect_planned_packets(data,&c,&plan)
+}
+// Internal callers reuse the already validated codestream and tile geometry.
+pub(super) fn inspect_planned_packets(data:&[u8],c:&Codestream,plan:&TilePlan)->Result<TilePackets>{
+    let tile=plan.tile;
     if c.coding.layers>256{return Err(Error::Unsupported("JPX packet layer limit"));}
     if c.component_coding.iter().any(|s|s.codeblock_style!=0){return Err(Error::Unsupported("JPX packet codeblock style"));}
     let mut parts=c.tile_parts.iter().filter(|p|p.tile==tile);
     let part=parts.next().ok_or(Error::Invalid("JPX missing tile part"))?;
     if parts.next().is_some(){return Err(Error::Unsupported("JPX multiple tile parts"));}
-    let plan=geometry::plan(&c,tile)?;
     let mut states=BTreeMap::new();let mut pos=part.payload.start;
     let mut visits=MAX_VISITS;let mut remaining=MAX_CONTRIBUTIONS;
     let mut packets=Vec::with_capacity(plan.packets.len());
