@@ -21,6 +21,9 @@ pub struct Appearance {
     pub width: Option<TableWidth>,
     pub borders: Option<BTreeMap<TableEdge,TableBorder>>,
     pub margins: Option<BTreeMap<TableEdge,TableWidth>>,
+    pub shading: Option<TableShading>,
+    pub layout: Option<TableLayout>,
+    pub vertical_align: Option<CellVerticalAlign>,
 }
 fn set<T>(slot: &mut Option<T>, value: T) -> Result<(), Error> {
     if slot.is_some() { return Err(Error::Invalid("duplicate table appearance property")); }
@@ -78,6 +81,61 @@ pub(crate) fn appearance_property(n: Node<'_, '_>, ns: &str, table: bool, out: &
             map.insert(e,width(item,ns)?);
         }
         set(&mut out.margins,map)?;
+    } else if named(n,ns,"shd") {
+        let pattern=n.attribute((ns,"val")).map(|s| {
+            if s.is_empty() || s.len()>128 || s.chars().any(char::is_whitespace) {
+                return Err(Error::Invalid("invalid shading pattern"));
+            }
+            Ok(s.to_owned())
+        }).transpose()?;
+        for key in ["themeColor","themeTint","themeShade","themeFill","themeFillTint","themeFillShade"] {
+            if n.attribute((ns,key)).is_some() {warnings.push(format!("Unsupported shading attribute: {key}"));}
+        }
+        set(&mut out.shading,TableShading{pattern,fill:n.attribute((ns,"fill")).map(color).transpose()?,color:n.attribute((ns,"color")).map(color).transpose()?})?;
+    } else if table && named(n,ns,"tblLayout") {
+        set(&mut out.layout,match n.attribute((ns,"type")) {
+            Some("fixed")=>TableLayout::Fixed,
+            Some("autofit")|None=>TableLayout::Autofit,
+            _=>return Err(Error::Invalid("invalid table layout")),
+        })?;
+    } else if !table && named(n,ns,"vAlign") {
+        set(&mut out.vertical_align,match n.attribute((ns,"val")) {
+            Some("top")=>CellVerticalAlign::Top,Some("center")=>CellVerticalAlign::Center,
+            Some("bottom")=>CellVerticalAlign::Bottom,Some("both")=>CellVerticalAlign::Both,
+            _=>return Err(Error::Invalid("invalid cell vertical alignment")),
+        })?;
     } else {return Ok(false);}
     Ok(true)
+}
+
+
+/// Direct metadata only; no theme resolution or pattern painting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableShading {
+    pub pattern: Option<String>,
+    pub fill: Option<TableColor>,
+    pub color: Option<TableColor>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableLayout { Fixed, Autofit }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellVerticalAlign { Top, Center, Bottom, Both }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowHeightRule { Auto, AtLeast, Exact }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowHeight {
+    pub twips: Option<u32>,
+    pub rule: Option<RowHeightRule>,
+}
+pub(crate) fn row_height(n: Node<'_, '_>, ns: &str, slot: &mut Option<RowHeight>) -> Result<(), Error> {
+    let rule=match n.attribute((ns,"hRule")) {
+        None=>None,Some("auto")=>Some(RowHeightRule::Auto),
+        Some("atLeast")=>Some(RowHeightRule::AtLeast),Some("exact")=>Some(RowHeightRule::Exact),
+        _=>return Err(Error::Invalid("invalid row height rule")),
+    };
+    let twips=number(n,ns,"val")?;
+    if matches!(rule,Some(RowHeightRule::AtLeast|RowHeightRule::Exact)) && twips.is_none() {
+        return Err(Error::Invalid("missing explicit row height"));
+    }
+    set(slot,RowHeight{twips,rule})
 }

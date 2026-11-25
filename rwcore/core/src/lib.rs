@@ -47,3 +47,5 @@ pub use table_grid::{resolve_table_grid, LogicalTable, LogicalCell, MergeAnchor,
 
 pub mod table_properties;
 pub use table_properties::{Appearance, TableWidth, TableEdge, TableColor, TableBorder};
+
+pub use table_properties::{TableShading, TableLayout, CellVerticalAlign, RowHeight, RowHeightRule};

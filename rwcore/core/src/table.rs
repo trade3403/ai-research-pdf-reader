@@ -2,7 +2,7 @@
 use crate::{Block, Paragraph, Run, Error, Limits};
 use crate::opc::{xml, named, parse_paragraph_node, parse_run_node};
 use roxmltree::Node;
-use crate::table_properties::{Appearance, appearance_property};
+use crate::table_properties::{Appearance, appearance_property, RowHeight, row_height};
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
@@ -24,6 +24,7 @@ pub struct TableRow {
     pub cells: Vec<TableCell>,
     pub grid_before: Option<u16>,
     pub grid_after: Option<u16>,
+    pub height: Option<RowHeight>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +170,10 @@ pub(crate) fn parse_table_node(root: Node<'_, '_>, ns: &str) -> Result<Table, Er
                     if props_seen { return Err(Error::Invalid("duplicate table row properties")); }
                     props_seen = true;
                     for prop in item.children().filter(|n| n.is_element()) {
+                        if named(prop, ns, "trHeight") {
+                            row_height(prop, ns, &mut row.height)?;
+                            continue;
+                        }
                         let slot = if named(prop, ns, "gridBefore") { &mut row.grid_before }
                             else if named(prop, ns, "gridAfter") { &mut row.grid_after }
                             else {
