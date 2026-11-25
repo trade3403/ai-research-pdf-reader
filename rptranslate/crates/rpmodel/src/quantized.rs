@@ -14,6 +14,7 @@ const MAX_INDEX: u64 = 1024 * 1024;
 const MAX_TENSORS: usize = 4096;
 const MAX_ELEMENTS: u64 = 128 * 1024 * 1024;
 const MAX_BLOCK: u32 = 4096;
+const BATCH_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -237,6 +238,57 @@ impl<R: Read + Seek> Reader<R> {
         validate_block(scale, &codes)?;
         Ok(Block { scale, codes })
     }
+
+    /// Read one complete tensor with a single seek and bounded batch scratch.
+    /// Caller supplies exact-sized output arrays. On error discard both arrays:
+    /// a prefix may have been written. Every block uses the original validation.
+    pub fn read_tensor_into(
+        &mut self,
+        name: &str,
+        codes: &mut [i8],
+        scales: &mut [f32],
+    ) -> Result<(), Error> {
+        let info = self.tensors.get(name).ok_or(Error::Index)?;
+        if codes.len() as u64 != info.elements || scales.len() as u64 != info.blocks {
+            return Err(Error::Limit);
+        }
+        let size = info.block_size as usize;
+        let record_size = size + 4;
+        let offset = self
+            .payload_start
+            .checked_add(info.offset)
+            .ok_or(Error::Limit)?;
+        self.inner
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| Error::Io)?;
+        let mut raw = [0_u8; BATCH_BYTES];
+        let mut block = 0;
+        let mut at = 0;
+        while block < scales.len() {
+            let records = (raw.len() / record_size).min(scales.len() - block);
+            let count = (records * size).min(codes.len() - at);
+            let bytes = count + records * 4;
+            self.inner
+                .read_exact(&mut raw[..bytes])
+                .map_err(|_| Error::Io)?;
+            for (record, scale) in raw[..bytes]
+                .chunks(record_size)
+                .zip(&mut scales[block..block + records])
+            {
+                let (header, data) = record.split_at(4);
+                let value = f32::from_le_bytes(header.try_into().map_err(|_| Error::Format)?);
+                let dest = &mut codes[at..at + data.len()];
+                for (code, &byte) in dest.iter_mut().zip(data) {
+                    *code = byte as i8;
+                }
+                validate_block(value, dest)?;
+                *scale = value;
+                at += data.len();
+            }
+            block += records;
+        }
+        Ok(())
+    }
 }
 
 /// Borrowed already-quantized data. Writer accepts sorted canonical names only.
@@ -371,6 +423,73 @@ mod tests {
         assert_eq!(reader.read_block("a.weight", 1, 5), Err(Error::Limit));
         assert_eq!(reader.read_block("a.weight", 2, 100), Err(Error::Index));
         assert_eq!(reader.read_block("missing", 0, 100), Err(Error::Index));
+    }
+
+    #[test]
+    fn batch_matches_reference_across_chunks_and_tail() {
+        let codes = vec![-127_i8; 70_003];
+        let scales = vec![0.25_f32; codes.len().div_ceil(64)];
+        let mut file = Cursor::new(Vec::new());
+        write_container(
+            &mut file,
+            &[TensorInput {
+                name: "large",
+                shape: &[codes.len() as u64],
+                block_size: 64,
+                codes: &codes,
+                scales: &scales,
+            }],
+            200_000,
+        )
+        .unwrap();
+        let mut reader = Reader::open(file, 200_000).unwrap();
+        let mut actual = vec![0; codes.len()];
+        let mut factors = vec![0.; scales.len()];
+        reader
+            .read_tensor_into("large", &mut actual, &mut factors)
+            .unwrap();
+        assert_eq!(actual, codes);
+        assert_eq!(factors, scales);
+        for (index, expected) in actual.chunks(64).enumerate() {
+            let block = reader.read_block("large", index as u64, 68).unwrap();
+            assert_eq!(block.codes, expected);
+            assert_eq!(block.scale.to_bits(), factors[index].to_bits());
+        }
+    }
+
+    #[test]
+    fn batch_rejects_lengths_names_and_invalid_blocks() {
+        let data = fixture();
+        let mut reader = Reader::open(Cursor::new(data.clone()), 1024).unwrap();
+        assert_eq!(
+            reader.read_tensor_into("a.weight", &mut [0; 5], &mut [0.; 2]),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            reader.read_tensor_into("a.weight", &mut [0; 6], &mut [0.; 1]),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            reader.read_tensor_into("missing", &mut [], &mut []),
+            Err(Error::Index)
+        );
+        let start = reader.payload_start as usize;
+        for (offset, bytes) in [
+            (start, 0_f32.to_le_bytes().to_vec()),
+            (start + 4, vec![128]),
+            (start + 8, f32::MAX.to_le_bytes().to_vec()),
+        ] {
+            let mut bad = data.clone();
+            bad[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            let prefix = bad.len() - TRAILER as usize;
+            let (_, hash) = digest_reader(&bad[..prefix], prefix as u64).unwrap();
+            bad[prefix..].copy_from_slice(hash.as_bytes());
+            let mut reader = Reader::open(Cursor::new(bad), 1024).unwrap();
+            assert_eq!(
+                reader.read_tensor_into("a.weight", &mut [0; 6], &mut [0.; 2]),
+                Err(Error::Block)
+            );
+        }
     }
 
     #[test]

@@ -29,6 +29,7 @@ with tempfile.TemporaryDirectory() as temp:
     dest = Path(temp) / "mixed"
     subprocess.run([str(exe), "convert", str(package), str(dest)], check=True, timeout=120)
     subprocess.run([str(exe), "verify", str(dest)], check=True, timeout=120)
+    subprocess.run([str(exe), "batch-reference", str(dest)], check=True, timeout=120)
     qpath = dest / "weights.rpq"
     q_elements = q_blocks = f_elements = 0
     with qpath.open("rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:

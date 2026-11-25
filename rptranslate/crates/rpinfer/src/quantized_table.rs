@@ -102,16 +102,13 @@ impl QuantizedTable {
         budget: usize,
     ) -> Result<Self, LoadError> {
         let info = reader.tensors().get(name).ok_or(Error::Index)?;
-        let blocks = info.blocks;
         let size = info.block_size as usize;
         let mut table = Self::allocate(&info.shape, size, budget)?;
-        for index in 0..blocks {
-            let block = reader
-                .read_block(name, index, size + 4)
-                .map_err(LoadError::Quantized)?;
-            table.codes.extend_from_slice(&block.codes);
-            table.scales.push(block.scale);
-        }
+        table.codes.resize(info.elements as usize, 0);
+        table.scales.resize(info.blocks as usize, 0.);
+        reader
+            .read_tensor_into(name, &mut table.codes, &mut table.scales)
+            .map_err(LoadError::Quantized)?;
         Ok(table)
     }
 
