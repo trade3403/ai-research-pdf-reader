@@ -188,8 +188,13 @@ D1.8f [45535270286](https://github.com/trade3403/ai-research-pdf-reader/actions/
 ## D1.9a（独立预研，待验收）
 D1.9a 独立数学预研：BlockInt8 对称零点0、[-127,127]，按连续块 max_abs/127 FP32 scale，f64 中间、ties-to-even、尾块、全零 scale=1、极小 subnormal 与最大有限值安全处理；拒绝 -128、非有限/非正 scale、异常 shape/长度/预算/重建溢出，支持无复制 from_parts、有界局部反量化。块长1..4096、单实例最多16Mi elements，payload=len+4*ceil(len/block)。5组Rust单测、独立Python stdlib 12组位级对照 codes/scales/restored，误差界包含最终FP32舍入。尚不接真实模型、不改FP32计算路径、不代表量化推理或实际模型体积。
 
-## 下一阶段 D1.9b
-前置D1.8d/e/f及D1.9a通过后，自主量化权重格式与安全索引。
+D1.8f 45535270286：原生/便携跨内核、512位置、真实文本翻译步骤均 success；性能基准仍运行，基础格式此前失败。D1.9a 45535708639 尚待执行。保留运行中任务；新提交复跑 D1.8f/D1.9a 全量门槛。
+
+## D1.9b（独立预研，待验收）
+D1.9b 独立格式预研：RPQ8BIN v1 小端，32字节头(magic/version/count/index_bytes/payload_bytes)，排序名称、rank/dims/block size/offset/bytes，块记录FP32 scale+signed codes，尾部64 ASCII SHA256覆盖全部头/索引/载荷。文件<=512MiB、索引<=1MiB、<=4096 tensors、rank1..8、每张量<=128Mi元素、block1..4096；严格连续偏移/长度，无重叠/空洞/重复/路径名/尾随字节。Reader验证哈希和索引后按块读取，逐块检查 -128、scale有限正值、重建溢出和预算；未读取块仅做完整性哈希，不提前验证语义。Rust writer 接收借用已量化 codes/scales，先验证再写空目标，流式写入、回读计算SHA；IO失败需丢弃不完整输出，非原子替换。3 Rust 单测、独立Python字节精确writer对照/reader三块/17损坏反例。SHA非签名，假设稳定文件。仅INT8容器，未支持混合FP32完整模型、未转换真实权重、未接推理。待CI。
+
+## 下一阶段 D1.9c
+前序全部门槛通过后，真实INT8分块词表与逐块反量化。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

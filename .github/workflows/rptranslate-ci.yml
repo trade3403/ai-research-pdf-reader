@@ -43,10 +43,15 @@ jobs:
       - name: Forced portable fallback tests
         run: cargo test --locked --offline -p rpinfer --features portable-only
       - name: Independent INT8 mathematical reference
-        if: contains(github.event.head_commit.message, 'D1.9a')
+        if: contains(github.event.head_commit.message, 'D1.9a') || contains(github.event.head_commit.message, 'D1.9b')
         run: |
           cargo build --locked --offline --release -p rpinfer --example int8_reference
           python3 crates/rpinfer/tests/check_int8_reference.py target/release/examples/int8_reference
+      - name: Independent RPQ8 binary format reference
+        if: contains(github.event.head_commit.message, 'D1.9b')
+        run: |
+          cargo build --locked --offline --release -p rpmodel --example quantized_reference
+          python3 crates/rpmodel/tests/check_quantized_format.py target/release/examples/quantized_reference
       - name: Matrix release benchmark
         if: contains(github.event.head_commit.message, 'D1.4a') || contains(github.event.head_commit.message, 'D1.4b')
         run: |

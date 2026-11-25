@@ -3,6 +3,7 @@ pub mod config;
 pub mod marian;
 pub mod normalization;
 pub mod package;
+pub mod quantized;
 pub mod safetensors;
 pub mod sha256;
 pub mod spm;
