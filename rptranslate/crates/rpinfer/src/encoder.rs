@@ -269,7 +269,7 @@ mod tests {
                     1.376_005_8,
                     -0.535_743_6,
                     0.191_146_69,
-                    -1.434_470_1,
+                    -1.434_47,
                 ],
             );
             let altered = encode_hidden(&changed, &layers, Some(&mask), kernel).unwrap();
