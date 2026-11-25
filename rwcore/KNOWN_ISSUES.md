@@ -62,3 +62,5 @@
 - C4.3h-2d2: two Latin families only; no CJK, independent Abel outlines, transformed real composite reference, or Word fidelity acceptance. Gray reference shares parsed paths.
 
 - C4.3h-2e1: real scaled/reflected composite fixture only; general off-diagonal matrix, point attachment, Arabic shaping, CJK, and broad font fidelity remain outstanding.
+
+- C4.3h-2e2a: new exact synthetic regressions do not establish real-font off-diagonal matrix or point attachment compatibility; those remain outstanding alongside Arabic shaping/CJK.

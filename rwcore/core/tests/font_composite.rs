@@ -104,3 +104,39 @@ fn pt(x:i64,y:i64,on_curve:bool)->FixedOutlinePoint{FixedOutlinePoint{x:x*COMPOS
     assert!(assemble_true_type_glyph(&f,2,CompositeLimits{max_components:3,..Default::default()}).is_err());
     assert_eq!(assemble_true_type_glyph(&f,2,CompositeLimits::default()).unwrap().points.len(),4);
 }
+
+#[test]fn general_matrix_scaled_offset_exact(){
+    // M=(1/2,1/4;-1/4,1/2), scaled offset (8,-4) -> (3,-4).
+    let c=composite(&[(0x883,0,args(&[8,-4,8192,-4096,4096,8192]))],&[]);
+    let g=assemble(&[leaf(),c],1).unwrap();
+    assert_eq!(g.points,vec![
+        FixedOutlinePoint{x:5*65536,y:-163840,on_curve:true},
+        FixedOutlinePoint{x:13*65536,y:229376,on_curve:false}
+    ]);
+    assert_eq!(g.contour_ends,vec![1]);
+}
+#[test]fn general_matrix_point_attachment_exact(){
+    // First component translated (3,-7); attach second transformed point 1
+    // to parent point 0. M=(1,1/2;-1/2,1).
+    let c=composite(&[(3,0,args(&[3,-7])),(0x81,0,args(&[0,1,16384,-8192,8192,16384]))],&[]);
+    let g=assemble(&[leaf(),c],1).unwrap();
+    assert_eq!(g.points,vec![pt(5,-3,true),pt(13,13,false),pt(-11,-15,true),pt(5,-3,false)]);
+    assert_eq!(g.contour_ends,vec![1,3]);
+}
+#[test]fn nested_half_lsb_rounding_both_signs(){
+    // First scale 1/16384 maps first leaf x=2 to 8 fixed units.
+    // Second scale +/-1/16 yields +/-0.5 fixed units, ties away from zero.
+    let a=composite(&[(0xb,0,args(&[0,0,1]))],&[]);
+    for (s,expected) in [(1024,1),(-1024,-1)]{
+        let b=composite(&[(0xb,1,args(&[0,0,s]))],&[]);
+        let g=assemble(&[leaf(),a.clone(),b],2).unwrap();
+        assert_eq!(g.points[0].x,expected);
+        assert_eq!(g.points[0].y,expected);
+    }
+}
+#[test]fn byte_attachment_after_reflection(){
+    let c=composite(&[(2,0,vec![0,0]),(8,0,vec![1,0,0xc0,0])],&[]);
+    let g=assemble(&[leaf(),c],1).unwrap();
+    assert_eq!(g.points,vec![pt(2,4,true),pt(10,20,false),pt(10,20,true),pt(2,4,false)]);
+    assert_eq!(g.contour_ends,vec![1,3]);
+}
