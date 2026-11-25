@@ -34,8 +34,9 @@
 | D1.8c4 | 已通过 | 真实六层 Encoder 加载与逐层前向 |
 | D1.8c5 | 已通过 | 真实六层 Decoder 与联合 logits |
 | D1.8c6 | 已通过 | 真实 KV Cache 与 beam generation |
-| D1.8c7 | 待验证 | 完整模型构建与加载验收 |
-| D1.8d–D1.8f | 未开始 | 真实逐层对照、翻译与性能 |
+| D1.8c7 | 已通过 | 完整模型构建与加载验收 |
+| D1.8d | 待验证 | 真实跨内核与位置边界 |
+| D1.8e–D1.8f | 未开始 | 文本翻译与性能 |
 | D1.9–D1.11 | 未开始 | 量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
@@ -166,8 +167,13 @@ D1.8c2b/c3/c4 [45532734293](https://github.com/trade3403/ai-research-pdf-reader/
 ## 当前阶段 D1.8c7
 新增拥有型 MarianModel：一次验证包、加载256 canonical tensors（唯一共享表）、总权重预算312033188 bytes、提前拒绝低预算，关闭 reader 后纯内存模型；TokenSession 拥有 source memory 与复制/自动 PAD mask，借用不可变模型、每次生成 request-local cache；统一 encode/logits/cached_logits/generate_tokens，默认官方 beam4/max_new511/cache，显式选项 beam1..16、max_new1..511、Full/Cached，保留官方特殊 IDs/EOS/suppress/penalty。真实独立生成参考改用统一接口（原门槛不变），新增真实生命周期 probe：预算、非法 source/mask/length/options、2 session 独立、自动 PAD 与显式 mask 一致、full/cache logits、重复/直接生成及 drop/reload 重现。9个负例，4次生成，260004 logits元素。权重预算不含 KV/临时/RSS；drop/reload 仅功能验证，不宣称 RSS 释放量或速度。暂不接 tokenizer 文本入口；固定审计 profile，不是通用模型 loader。待 CI。
 
-## 下一阶段 D1.8d
-真实模型综合精度、跨内核回归及实际 Token 长度边界验收，再进入文本分词/反分词接入。
+实际验收：[fa9c9e4](https://github.com/trade3403/ai-research-pdf-reader/commit/fa9c9e46d4c7ef3c37b42341750986bc062207ae) / [45533989873](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45533989873) completed/success，workspace70/70、portable40/40；REAL_GENERATION_REFERENCE PASS cases=2 logits_comparisons=4 elements=910014 generation_checks=8 hypotheses=20 hf_greedy=2 max_abs=2.7179718e-05 cache_diff=0 max_score_error=1.01827798e-05 atol=0.0001 rtol=0.0001；FULL_MODEL PASS tensors=256 payload_bytes=312033188 sessions=2 generation_calls=4 invalid_cases=9 reload=true logits_elements=260004。D1.8c7 已验收。
+
+## 当前阶段 D1.8d
+D1.8d 新增实际模型跨内核验收程序：真实权重、2组短源/目标及PAD mask，Scalar/Blocked/Auto/Parallel4 四内核，native 明确要求 AVX2 available、portable-only 明确 false；两模式各24个 memory/full/cached logits 张量对照独立 HF eager，16组生成设置（beam1 full/beam4 cached）及40候选序列、排序、EOS、分数对照穷举参考。native 另加64源/16目标 Auto/Parallel4 6张量；512源与512目标 Auto 完整 hidden forward、仅末行 logits 两张量；4项长度/全词表 tensor/KV 预算拒绝。合计 native32、portable24张量；统一 atol/rtol1e-4 不改变前序门槛。512边界不代表511步完整生成，不做512行全词表 logits（超过 Tensor 上限），不测速度或RSS，尚未文本翻译。所有测试待CI。
+
+## 下一阶段 D1.8e
+自主 RPTokenizer 与真实 MarianModel 文本级离线英中翻译接入。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
