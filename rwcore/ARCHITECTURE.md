@@ -100,3 +100,5 @@ C4.4a7a pending CI: GSUB Type 5 format 1 glyph-based context parser, nullable se
 C4.4a7b pending CI: shared bounded ClassDef formats 1/2, implicit zero within face domain; class context type 5 format 2 uses first-glyph Coverage gate, class-indexed rule sets and shared bounded parser with format 1. No nested execution.
 
 C4.4a7c pending CI: GSUB Type 5 format 3 per-position Coverage matching with ordered lookup actions; validates header/offsets, action indices, cumulative records and expanded coverage glyphs, charging shared offsets per reference. All three Type 5 formats have standalone matching source; no nested execution.
+
+C4.4a7d pending CI: original OFL Padauk and Noto Sans Devanagari fixtures; independent raw SFNT extraction of all Padauk direct Type 5 subtables and Noto Format 1. Exact ordered actions/rules, glyph-domain coverage gates, representative class sequence and coverage position matching. No nested execution.
