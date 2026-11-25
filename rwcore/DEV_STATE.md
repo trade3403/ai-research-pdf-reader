@@ -1,9 +1,9 @@
 # C 线路当前研发检查点
 
-- Last verified baseline: 8ad0fdbfb0de7091a48c0b933fe4dab3fc3907aa
-- CI #61: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45566499551
-- Verified: Ubuntu 316/316, Windows 316/316, macOS 316/316; total 948/948; zero failed/ignored; locked release builds passed.
-- Current stage: C3.3b atomic paragraph structure transactions; 12 new regressions (328 per platform / 984 executions expected, PENDING CI).
-- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C3.3c integrate structural history and path/revision-safe undo/redo before C4.
-- Scope: one contiguous existing paragraph-only sibling range in body or nested body cell, local staged copies, split at run boundary or Unicode point, explicit anchor side, join formatting policy, section partition validation and range shifts. No cross-section/cell joins, nonparagraph structural changes, story editing or structural history yet. Standalone API must not reuse stale text paths; DocumentEditor remains text-only until C3.3c.
+- Last verified baseline: 5dbe493b11d78780cf09c05288ffe884dfe9a855
+- CI #62: https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45567776959
+- Verified: Ubuntu 328/328, Windows 328/328, macOS 328/328; total 984/984; zero failed/ignored; locked release builds passed.
+- Current stage: C3.3c unified text/structure history; 12 new synthetic regressions (340 per platform / 1020 executions expected, PENDING CI).
+- Next: verify actual HEAD and all three platform logs; repair evidenced failures only. On pass C4.1 native bounded font container and SFNT table directory parsing (first font-engine batch).
+- Scope: existing body/nested body-cell paragraph range snapshots, shared LIFO text/structure undo/redo, section and picture metadata restore, revision-checked index path resolution, bounded retention. No automatic path remapping or stable node IDs; callers refresh paths after any revision. History counts logical text, offsets and run/paragraph/section snapshot slots, not heap bytes. No persistence, structural edits beyond C3.3b, or GUI/DOCX serialization.
 - Draft PR #1 remains open; no merge. See HANDOFF.md and KNOWN_ISSUES.md.

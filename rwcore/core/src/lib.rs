@@ -96,7 +96,7 @@ pub mod selection;
 pub use selection::{ParagraphPath,SelectionLimits,RunBoundary,RunPoint,BytePoint,Selection,ResolvedSelection,ParagraphIndex,SelectionEdit,replace_selection};
 
 pub mod history;
-pub use history::{HistoryLimits,HistoryUsage,HistoryReport,HistoryEditReport,DocumentEditor};
+pub use history::{HistoryLimits,HistoryUsage,HistoryReport,HistoryEditReport,StructureHistoryReport,DocumentEditor};
 
 pub mod structure;
 pub use structure::{SplitAnchors,SplitPoint,JoinFormatting,StructureOp,StructureTransaction,StructureLimits,StructureReport,apply_structure_transaction};

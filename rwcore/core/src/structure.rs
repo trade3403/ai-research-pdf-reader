@@ -36,7 +36,7 @@ impl Default for StructureLimits{
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct StructureReport{pub operations:usize,pub before_paragraphs:usize,pub after_paragraphs:usize}
-fn siblings<'a>(doc:&'a Document,cells:&[CellStep])->Result<&'a Vec<Block>,Error>{
+pub(crate) fn siblings<'a>(doc:&'a Document,cells:&[CellStep])->Result<&'a Vec<Block>,Error>{
     if cells.len()>16{return Err(Error::Limit("structure table depth"));}
     let mut blocks=&doc.blocks;
     for s in cells{
@@ -45,7 +45,7 @@ fn siblings<'a>(doc:&'a Document,cells:&[CellStep])->Result<&'a Vec<Block>,Error
     }
     Ok(blocks)
 }
-fn siblings_mut<'a>(doc:&'a mut Document,cells:&[CellStep])->Option<&'a mut Vec<Block>>{
+pub(crate) fn siblings_mut<'a>(doc:&'a mut Document,cells:&[CellStep])->Option<&'a mut Vec<Block>>{
     let mut blocks=&mut doc.blocks;
     for s in cells{
         let Block::Table(t)=blocks.get_mut(s.block)? else{return None;};
@@ -141,8 +141,21 @@ fn split(p:&mut Paragraph,point:SplitPoint)->Result<Paragraph,Error>{
 /// right paragraph via the updated section range. Join policy is explicit.
 /// The staged range is the only cloned content, plus section metadata.
 /// Limits count logical items/text, not exact heap bytes. Structural edits
-/// invalidate index-based paths; use outside DocumentEditor text history.
+/// invalidate index-based paths; use DocumentEditor::structure for history.
 pub fn apply_structure_transaction(doc:&mut Document,t:&StructureTransaction,l:StructureLimits)->Result<StructureReport,Error>{
+    let plan=stage_structure_transaction(doc,t,l)?;
+    let report=plan.report;
+    commit_structure(doc,plan);
+    Ok(report)
+}
+pub(crate) struct StructurePlan{
+    pub(crate) cells:Vec<CellStep>,
+    pub(crate) range:Range<usize>,
+    pub(crate) blocks:Vec<Block>,
+    pub(crate) sections:Option<Vec<DocumentSection>>,
+    pub(crate) report:StructureReport,
+}
+pub(crate) fn stage_structure_transaction(doc:&Document,t:&StructureTransaction,l:StructureLimits)->Result<StructurePlan,Error>{
     if t.operations.len()>l.max_operations{return Err(Error::Limit("structure operations"));}
     validate_sections(doc,l)?;
     let blocks=siblings(doc,&t.cells)?;
@@ -188,9 +201,12 @@ pub fn apply_structure_transaction(doc:&mut Document,t:&StructureTransaction,l:S
     }
     let after=staged.len();
     let sections=adjusted_sections(doc,owner,before,after)?;
-    // No fallible logical operation remains; the path is unchanged until splice.
-    siblings_mut(doc,&t.cells).expect("validated structure path")
-        .splice(t.range.clone(),staged.into_iter().map(Block::Paragraph));
-    if let Some(s)=sections{doc.sections=s;}
-    Ok(StructureReport{operations:t.operations.len(),before_paragraphs:before,after_paragraphs:after})
+    Ok(StructurePlan{cells:t.cells.clone(),range:t.range.clone(),blocks:staged.into_iter().map(Block::Paragraph).collect(),
+        sections,report:StructureReport{operations:t.operations.len(),before_paragraphs:before,after_paragraphs:after}})
+}
+pub(crate) fn commit_structure(doc:&mut Document,plan:StructurePlan){
+    // The path was validated against the unchanged tree.
+    siblings_mut(doc,&plan.cells).expect("validated structure path")
+        .splice(plan.range,plan.blocks);
+    if let Some(s)=plan.sections{doc.sections=s;}
 }
