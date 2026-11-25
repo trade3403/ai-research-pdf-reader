@@ -134,3 +134,79 @@ fn cumulative_form_budget(){
     let b=d.render_page(&d.pages().unwrap()[0],rpcore::raster::Options::default(),10000).unwrap();
     assert_eq!(&b.rgba[0..4],&[137,137,137,255]);
 }
+
+
+fn test_icc(class:&[u8;4],device:&[u8;4],pcs:&[u8;4],tags:Vec<([u8;4],Vec<u8>)>)->Vec<u8>{
+    let mut b=vec![0;132+12*tags.len()];b[8]=2;
+    b[12..16].copy_from_slice(class);b[16..20].copy_from_slice(device);b[20..24].copy_from_slice(pcs);
+    b[36..40].copy_from_slice(b"acsp");
+    let put=|b:&mut[u8],p:usize,v:u32|b[p..p+4].copy_from_slice(&v.to_be_bytes());
+    for (i,v) in [0.9642_f64,1.,0.8249].into_iter().enumerate(){put(&mut b,68+4*i,(v*65536.).round()as u32);}
+    put(&mut b,128,tags.len()as u32);
+    for (i,(name,data)) in tags.into_iter().enumerate(){
+        let p=132+12*i;let off=b.len()as u32;
+        b[p..p+4].copy_from_slice(&name);put(&mut b,p+4,off);put(&mut b,p+8,data.len()as u32);
+        b.extend(data);while b.len()%4!=0{b.push(0);}
+    }
+    let len=b.len()as u32;put(&mut b,0,len);b
+}
+fn rgb_icc()->Vec<u8>{
+    let mut tags=Vec::new();
+    // Original analytic matrix: each column contributes 1/3 D50 white.
+    for name in [*b"rXYZ",*b"gXYZ",*b"bXYZ"]{
+        let mut v=b"XYZ \0\0\0\0".to_vec();
+        for x in [0.9642_f64,1.,0.8249]{v.extend_from_slice(&((x/3.*65536.).round()as i32).to_be_bytes());}
+        tags.push((name,v));
+    }
+    for name in [*b"rTRC",*b"gTRC",*b"bTRC"]{tags.push((name,b"curv\0\0\0\0\0\0\0\x01\x02\0".to_vec()));}
+    test_icc(b"mntr",b"RGB ",b"XYZ ",tags)
+}
+fn cmyk_icc()->Vec<u8>{
+    // Relative A2B1: neutral lightness controlled by K. Perceptual A2B0
+    // deliberately constant black, so choosing the wrong intent fails.
+    let lut=|relative:bool|{
+        let mut t=vec![0;52];t[..4].copy_from_slice(b"mft2");t[8..11].copy_from_slice(&[4,3,2]);
+        for i in [0,4,8]{t[12+4*i..16+4*i].copy_from_slice(&65536_u32.to_be_bytes());}
+        t[48..52].copy_from_slice(&[0,2,0,2]);
+        for _ in 0..4{t.extend_from_slice(&[0,0,255,255]);}
+        for i in 0..16{
+            let l=if relative&&i%2==0{65280_u16}else{0};
+            for v in [l,32768,32768]{t.extend_from_slice(&v.to_be_bytes());}
+        }
+        for _ in 0..3{t.extend_from_slice(&[0,0,255,255]);}t
+    };
+    test_icc(b"prtr",b"CMYK",b"Lab ",vec![(*b"A2B0",lut(false)),(*b"A2B1",lut(true))])
+}
+#[test]fn native_rgb_icc_vector_and_bitmap(){
+    // Use ASCIIHex to exercise the embedded profile stream decoder.
+    let mut hex=rgb_icc().iter().map(|b|format!("{b:02x}")).collect::<String>();hex.push('>');
+    let profile=stream("/N 3 /Filter /ASCIIHexDecode",hex.as_bytes());
+    let code=b"/ICC cs .5 .5 .5 sc /ICC CS 1 1 1 SC 0 0 612 792 re B q /DeviceRGB cs 1 0 0 sc 0 0 10 10 re f Q 20 20 10 10 re f";
+    let p=fixture(code,vec![profile]);let d=Document::open(&p).unwrap();let page=d.pages().unwrap();
+    let l=d.page_display_list(&page[0],10000).unwrap();
+    assert!(!l.warnings.contains(&Warning::IccAlternateUsed));
+    assert!(l.warnings.contains(&Warning::IccIntentApproximation));
+    let colors:Vec<_>=l.commands.iter().filter_map(|c|if let Command::Paint{fill:Some((Color::Rgb(v),_)),..}=c{Some(*v)}else{None}).collect();
+    for i in [0,2]{assert!(colors[i].iter().all(|x|(x-0.537099).abs()<0.002));}
+    assert_eq!(colors[1],[1.,0.,0.]);
+    let Command::Paint{stroke:Some(s),..}=&l.commands[0] else{panic!("stroke")};
+    let Color::Rgb(v)=s.color else{panic!("ICC stroke")};assert!(v.iter().all(|x|(*x-1.).abs()<0.002));
+    let b=d.render_page(&page[0],rpcore::raster::Options::default(),10000).unwrap();
+    let i=(100*b.width as usize+100)*4;assert_eq!(&b.rgba[i..i+4],&[137,137,137,255]);
+}
+#[test]fn native_cmyk_icc_relative_and_initial(){
+    let l=list(b"/ICC cs 0 0 10 10 re f 0 0 0 .5 sc 0 0 10 10 re f 0 0 0 1 sc 0 0 10 10 re f",vec![stream("/N 4",&cmyk_icc())]);
+    assert!(!l.warnings.contains(&Warning::IccAlternateUsed));
+    let colors:Vec<_>=l.commands.iter().filter_map(|c|if let Command::Paint{fill:Some((Color::Rgb(v),_)),..}=c{Some(*v)}else{None}).collect();
+    for (a,e) in colors.iter().zip([1.,0.466327,0.]){assert!(a.iter().all(|x|(*x-e).abs()<0.002),"{a:?}");}
+    let p=fixture(b"/ICC cs",vec![stream("/N 3",&cmyk_icc())]);let d=Document::open(&p).unwrap();
+    assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Invalid("ICCBased profile N mismatch"))));
+}
+#[test]fn icc_cache_repeated_switches_and_arity(){
+    let mut code=Vec::new();for _ in 0..200{code.extend_from_slice(b"q /ICC cs .5 .5 .5 sc Q ");}
+    let p=fixture(&code,vec![stream("/N 3",&rgb_icc())]);let d=Document::open(&p).unwrap();
+    let l=d.page_display_list(&d.pages().unwrap()[0],10000).unwrap();
+    assert_eq!(l.warnings,vec![Warning::IccIntentApproximation]);
+    let p=fixture(b"/ICC cs .5 sc",vec![stream("/N 3",&rgb_icc())]);let d=Document::open(&p).unwrap();
+    assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
+}

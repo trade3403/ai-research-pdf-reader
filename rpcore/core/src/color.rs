@@ -1,10 +1,12 @@
-//! PDF ICCBased fallback to a compatible device Alternate.
-//! ICC transforms themselves are not implemented.
+//! PDF ICCBased source color transforms and compatible device Alternate fallback.
 use crate::{Document,Object,Error,Result};
 pub(crate) fn icc_components(doc:&Document<'_>,a:&[Object])->Result<usize>{
+    Ok(icc_stream(doc,a)?.1)
+}
+fn icc_stream(doc:&Document<'_>,a:&[Object])->Result<(Object,usize)>{
     if a.len()!=2{return Err(Error::Invalid("ICCBased array"));}
     let o=doc.dereference(&a[1])?;
-    let Object::Stream{dict,..}=o else{return Err(Error::Invalid("ICCBased profile stream"));};
+    let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("ICCBased profile stream"));};
     let n=match dict.get(b"N".as_slice()).map(|x|doc.dereference(x)).transpose()?{
         Some(Object::Number(1.))=>1,Some(Object::Number(3.))=>3,Some(Object::Number(4.))=>4,
         _=>return Err(Error::Invalid("ICCBased N")),
@@ -22,12 +24,12 @@ pub(crate) fn icc_components(doc:&Document<'_>,a:&[Object])->Result<usize>{
     }
     // PDF defines DeviceGray/RGB/CMYK defaults for N=1/3/4 respectively
     // when the reader cannot process the embedded ICC profile.
-    Ok(n)
+    Ok((o,n))
 }
 
 // Native calibrated color to an sRGB display target. Bradford adaptation
 // and the standard sRGB transfer function; see W3C CSS Color 4 conversion
-// and ISO 32000 CIE-based color spaces. No ICC profile execution.
+// and ISO 32000 CIE-based color spaces.
 const BRADFORD:[[f64;3];3]=[
     [0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]
 ];
@@ -45,6 +47,69 @@ fn srgb(x:f64)->f64{
     let x=x.clamp(0.,1.);
     if x<=0.0031308{12.92*x}else{1.055*x.powf(1./2.4)-0.055}
 }
+
+const MAX_ICC_BYTES:usize=16*1024*1024;
+pub(crate) const ICC_PAGE_BYTES:usize=32*1024*1024;
+pub(crate) const ICC_PAGE_PROFILES:usize=16;
+#[derive(Debug)]
+pub(crate) enum IccTransform{
+    Rgb(crate::icc::RgbMatrix),
+    Cmyk{tag:Vec<u8>,pcs:crate::icc::Signature},
+}
+impl IccTransform{
+    pub(crate) fn components(&self)->usize{match self{Self::Rgb(_)=>3,Self::Cmyk{..}=>4}}
+    pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
+        let xyz=match self{
+            Self::Rgb(m)=>m.to_xyz_d50([v[0],v[1],v[2]])?,
+            Self::Cmyk{tag,pcs}=>crate::icc::CmykLut::parse(tag,*pcs)?.to_xyz_d50(v)?,
+        };
+        let src=mv(BRADFORD,[0.9642,1.,0.8249]);let dst=mv(BRADFORD,D65);
+        let cone=mv(BRADFORD,xyz);
+        let adapted=mv(BRADFORD_INV,std::array::from_fn(|i|cone[i]*dst[i]/src[i]));
+        Ok(mv(XYZ_RGB,adapted).map(srgb))
+    }
+}
+/// Default relative-colorimetric source path. For legacy CMYK choose A2B1
+/// if present, otherwise A2B0. Full PDF rendering-intent switching is deferred.
+/// Invalid or unsupported profile payloads use the documented device alternate;
+/// a recognized profile with wrong component count or a resource limit is fatal.
+pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
+    ->Result<(usize,Option<IccTransform>,usize)>{
+    let (o,n)=icc_stream(doc,a)?;
+    let Object::Stream{data,..}=&o else{unreachable!()};
+    let encoded=data.len();
+    if encoded>MAX_ICC_BYTES||encoded>remaining{return Err(Error::Limit("ICC encoded bytes"));}
+    let bytes=match crate::filters::decode(&o,MAX_ICC_BYTES.min(remaining-encoded)){
+        Ok(b)=>b,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(_)=>return Ok((n,None,encoded)),
+    };
+    let charged=encoded+bytes.len();
+    let p=match crate::icc::Profile::parse(&bytes){
+        Ok(p)=>p,Err(Error::Limit(s))=>return Err(Error::Limit(s)),Err(_)=>return Ok((n,None,charged)),
+    };
+    if matches!(&p.color_space,b"GRAY"|b"RGB "|b"CMYK"){
+        let actual=match &p.color_space{b"GRAY"=>1,b"RGB "=>3,_=>4};
+        if n!=actual{return Err(Error::Invalid("ICCBased profile N mismatch"));}
+    }
+    let transform=match n{
+        3=>p.rgb_matrix().map(IccTransform::Rgb),
+        4=>{
+            let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
+            p.cmyk_a2b(key).and_then(|lut|{
+                // Validate that physical PCS conversion is supported, not
+                // merely that the encoded LUT parses.
+                lut.to_xyz_d50([0.;4])?;
+                Ok(IccTransform::Cmyk{tag:p.tag(key).unwrap().to_vec(),pcs:p.pcs})
+            })
+        }
+        _=>Err(Error::Unsupported("ICC gray transform")),
+    };
+    match transform{
+        Ok(t)=>Ok((n,Some(t),charged)),
+        Err(Error::Limit(s))=>Err(Error::Limit(s)),
+        Err(_)=>Ok((n,None,charged)),
+    }
+}
+
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub(crate) enum CalKind{
     Gray{gamma:f64},

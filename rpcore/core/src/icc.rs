@@ -86,13 +86,16 @@ impl<'a> Profile<'a>{
     /// Explicit legacy A2B0 path for CMYK output profiles. Returns encoded PCS
     /// channels, not display RGB. No automatic intent selection or LUT fallback.
     pub fn cmyk_a2b0(&self)->Result<CmykLut<'a>>{
+        self.cmyk_a2b(b"A2B0")
+    }
+    pub(crate) fn cmyk_a2b(&self,tag:&Signature)->Result<CmykLut<'a>>{
         if self.class!=*b"prtr"||self.color_space!=*b"CMYK"||!matches!(&self.pcs,b"XYZ "|b"Lab "){
             return Err(Error::Unsupported("ICC CMYK output profile class or space"));
         }
         if self.illuminant.iter().zip([0.9642,1.,0.8249]).any(|(a,b)|(*a-b).abs()>0.001){
             return Err(Error::Unsupported("ICC non-D50 PCS"));
         }
-        let b=self.tag(b"A2B0").ok_or(Error::Unsupported("ICC missing A2B0"))?;
+        let b=self.tag(tag).ok_or(Error::Unsupported("ICC missing A2B tag"))?;
         CmykLut::parse(b,self.pcs)
     }
 
@@ -160,7 +163,7 @@ pub struct CmykLut<'a>{
     input_entries:usize,output_entries:usize,input:usize,clut:usize,output:usize,
 }
 impl<'a> CmykLut<'a>{
-    fn parse(b:&'a [u8],pcs:Signature)->Result<Self>{
+    pub(crate) fn parse(b:&'a [u8],pcs:Signature)->Result<Self>{
         if b.len()<48||b[4..8]!=[0;4]||b[11]!=0{return Err(Error::Invalid("ICC LUT header"));}
         if b[8]!=4||b[9]!=3{return Err(Error::Unsupported("ICC LUT channel count"));}
         let grid=b[10] as usize;

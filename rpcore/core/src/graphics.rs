@@ -1,7 +1,7 @@
 //! Bounded vector display-list interpreter, not a rasterizer.
 //! Paths use unrotated PDF user coordinates; strokes retain the painting CTM.
 use crate::{content::{self,Operation},text::{Matrix,Point},Document,Error,Object,PageInfo,Result};
-use std::collections::BTreeSet;
+use std::{collections::{BTreeSet,BTreeMap},sync::Arc};
 const MAX_OPS:usize=100_000;
 const MAX_SEGMENTS:usize=200_000;
 const MAX_COMMANDS:usize=100_000;
@@ -17,15 +17,25 @@ pub type Path=Vec<Segment>;
 pub enum FillRule{NonZero,EvenOdd}
 #[derive(Debug,Clone,Copy,PartialEq)]
 pub enum Color{Gray(f64),Rgb([f64;3]),Cmyk([f64;4])}
-#[derive(Debug,Clone,Copy,PartialEq)]
-enum Space{Gray,Rgb,Cmyk,Calibrated(crate::color::Calibrated)}
+#[derive(Debug,Clone)]
+enum Space{Gray,Rgb,Cmyk,Calibrated(crate::color::Calibrated),Icc(Arc<crate::color::IccTransform>),IccAlternate(usize)}
 impl Space{
-    fn initial(self)->Color{match self{Self::Gray=>Color::Gray(0.),Self::Rgb=>Color::Rgb([0.;3]),Self::Cmyk=>Color::Cmyk([0.,0.,0.,1.]),Self::Calibrated(c)=>Color::Rgb(c.rgb([0.;3]))}}
-    fn color(self,a:&[Object])->Result<Color>{Ok(match self{
+    fn initial(&self)->Result<Color>{Ok(match self{
+        Self::Gray=>Color::Gray(0.),Self::Rgb=>Color::Rgb([0.;3]),Self::Cmyk=>Color::Cmyk([0.,0.,0.,1.]),
+        Self::Calibrated(c)=>Color::Rgb(c.rgb([0.;3])),
+        Self::Icc(t)=>Color::Rgb(t.rgb([0.;4])?),
+        Self::IccAlternate(n)=>match n{1=>Color::Gray(0.),3=>Color::Rgb([0.;3]),_=>Color::Cmyk([0.;4])},
+    })}
+    fn color(&self,a:&[Object])->Result<Color>{Ok(match self{
         Self::Gray=>Color::Gray(nums::<1>(a)?[0].clamp(0.,1.)),
         Self::Rgb=>Color::Rgb(nums::<3>(a)?.map(|x|x.clamp(0.,1.))),
         Self::Cmyk=>Color::Cmyk(nums::<4>(a)?.map(|x|x.clamp(0.,1.))),
         Self::Calibrated(c)=>Color::Rgb(c.rgb(if c.components()==1{[nums::<1>(a)?[0],0.,0.]}else{nums::<3>(a)?})),
+        Self::Icc(t)=>{
+            let v=if t.components()==3{let [r,g,b]=nums::<3>(a)?;[r,g,b,0.]}else{nums::<4>(a)?};
+            Color::Rgb(t.rgb(v)?)
+        }
+        Self::IccAlternate(n)=>match n{1=>Self::Gray.color(a)?,3=>Self::Rgb.color(a)?,_=>Self::Cmyk.color(a)?},
     })}
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -107,7 +117,7 @@ pub enum Command{
     Text{operation:Operation,ctm:Matrix,fill:Color,stroke:Stroke,scope:Option<(u32,u16)>,resource_owner:Option<(u32,u16)>},
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
-pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed,DeviceQualityHintNotInterpreted}
+pub enum Warning{TextRenderingDeferred,ImageRenderingDeferred,MarkedContentNotInterpreted,IccAlternateUsed,DeviceQualityHintNotInterpreted,IccIntentApproximation}
 #[derive(Debug,Clone,PartialEq)]
 pub struct DisplayList{
     /// Initial clip is the page CropBox; Rotate is not applied.
@@ -152,6 +162,7 @@ fn device(n:&[u8])->Result<Space>{match n{
 struct Engine<'d,'a>{
     doc:&'d Document<'a>,out:DisplayList,
     active:BTreeSet<(u32,u16)>,ops:usize,segments:usize,bytes_left:usize,
+    icc_cache:BTreeMap<(u32,u16),Space>,icc_bytes:usize,
 }
 impl<'d,'a> Engine<'d,'a>{
     fn command(&mut self,c:Command)->Result<()>{
@@ -276,8 +287,20 @@ impl<'d,'a> Engine<'d,'a>{
             Object::Name(n)=>device(&n),
             Object::Array(a)=>match a.first(){
                 Some(Object::Name(n)) if n==b"ICCBased"=>{
-                    let space=match crate::color::icc_components(self.doc,&a)?{1=>Space::Gray,3=>Space::Rgb,4=>Space::Cmyk,_=>unreachable!()};
-                    self.warning(Warning::IccAlternateUsed);
+                    let id=match a.get(1){Some(Object::Ref(id,gen)) if a.len()==2=>(*id,*gen),_=>return Err(Error::Invalid("ICCBased profile reference"))};
+                    if let Some(s)=self.icc_cache.get(&id){return Ok(s.clone());}
+                    if self.icc_cache.len()>=crate::color::ICC_PAGE_PROFILES{return Err(Error::Limit("ICC page profiles"));}
+                    let (n,t,used)=crate::color::load_icc(self.doc,&a,crate::color::ICC_PAGE_BYTES-self.icc_bytes)?;
+                    self.icc_bytes+=used;
+                    let space=if let Some(t)=t{
+                        // PDF ri / absolute and saturation paths are not implemented.
+                        self.warning(Warning::IccIntentApproximation);
+                        Space::Icc(Arc::new(t))
+                    }else{
+                        self.warning(Warning::IccAlternateUsed);
+                        Space::IccAlternate(n)
+                    };
+                    self.icc_cache.insert(id,space.clone());
                     Ok(space)
                 }
                 Some(Object::Name(n)) if n==b"Pattern"=>Err(Error::Unsupported("graphics Pattern color space")),
@@ -451,7 +474,7 @@ impl<'d,'a> Engine<'d,'a>{
                     let color=space.color(a)?;
                     if w[0].is_ascii_uppercase(){s.stroke_space=space;s.stroke.color=color;}else{s.fill_space=space;s.fill=color;}
                 }
-                b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;if w==b"CS"{s.stroke_space=space;s.stroke.color=space.initial();}else{s.fill_space=space;s.fill=space.initial();}}
+                b"CS"|b"cs"=>{arity(a,1)?;let space=self.color_space(resources,name(&a[0])?)?;let initial=space.initial()?;if w==b"CS"{s.stroke_space=space;s.stroke.color=initial;}else{s.fill_space=space;s.fill=initial;}}
                 b"SC"|b"SCN"=>s.stroke.color=s.stroke_space.color(a)?,
                 b"sc"|b"scn"=>s.fill=s.fill_space.color(a)?,
                 b"Do"=>{if s.knockout||s.in_mask{return Err(Error::Unsupported("XObject inside path-only knockout or soft mask"));}arity(a,1)?;self.xobject(resources,name(&a[0])?,&s,depth,resource_owner)?;}
@@ -486,7 +509,7 @@ impl Document<'_>{
         let data=self.page_content(page,limit)?;
         let ops=content::parse(&data)?;
         let mut e=Engine{doc:self,out:DisplayList{crop_box:page.crop_box,commands:Vec::new(),warnings:Vec::new()},
-            active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len()};
+            active:BTreeSet::new(),ops:0,segments:0,bytes_left:limit-data.len(),icc_cache:BTreeMap::new(),icc_bytes:0};
         e.run(&ops,page.resources.as_ref(),State::default(),0,None,None)?;
         Ok(e.out)
     }
