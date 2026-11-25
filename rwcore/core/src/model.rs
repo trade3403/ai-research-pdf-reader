@@ -17,6 +17,7 @@ pub struct Document {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     Paragraph(Paragraph),
+    Table(Box<crate::Table>),
     Unsupported { name: String },
 }
 

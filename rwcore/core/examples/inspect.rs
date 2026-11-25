@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for block in document.blocks {
         match block {
             Block::Paragraph(p) => println!("{}", p.text()),
+            Block::Table(t) => println!("Table: {} rows, {} declared columns", t.rows.len(), t.grid.len()),
             Block::Unsupported { name } => eprintln!("Unsupported block: {name}"),
         }
     }

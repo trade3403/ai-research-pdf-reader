@@ -129,6 +129,7 @@ pub struct FormattedRun<'a> {
 #[derive(Debug)]
 pub enum FormattedBlock<'a> {
     Paragraph(FormattedParagraph<'a>),
+    Table(&'a crate::Table),
     Unsupported { name: &'a str },
 }
 
@@ -147,6 +148,7 @@ impl crate::Document {
                         catalog: self.styles.as_ref(),
                     }))
                 }
+                crate::Block::Table(table) => Ok(FormattedBlock::Table(table.as_ref())),
                 crate::Block::Unsupported { name } => Ok(FormattedBlock::Unsupported { name }),
             }
         })

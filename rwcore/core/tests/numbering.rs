@@ -176,7 +176,7 @@ fn document_numbering_from_docx_preserves_text_and_order() {
         let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
         assert!(p.label.unwrap().is_none());
         assert_eq!(p.formatted.source.text(), "普通段落");
-        assert!(matches!(it.next().unwrap().unwrap(), NumberedBlock::Unsupported { name: "tbl" }));
+        assert!(matches!(it.next().unwrap().unwrap(), NumberedBlock::Table(t) if t.rows.is_empty()));
         let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
         assert_eq!(p.label.unwrap().unwrap().text, "4.");
         assert!(p.formatted.source.runs.is_empty());

@@ -166,6 +166,12 @@ fn read_docx_impl(bytes: &[u8], limits: Limits, load_stories: bool) -> Result<Do
             final_section_seen = true;
             continue;
         }
+        if named(node, ns, "tbl") {
+            let table = crate::table::parse_table_node(node, ns)?;
+            for message in &table.diagnostics { warn(&mut document, message.clone()); }
+            document.blocks.push(Block::Table(Box::new(table)));
+            continue;
+        }
         if !named(node, ns, "p") {
             let name = node.tag_name().name().to_owned();
             warn(&mut document, format!("Unsupported body element: {name}"));

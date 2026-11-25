@@ -24,8 +24,8 @@ fn paragraph_text_and_diagnostics() {
     let Block::Paragraph(p) = &document.blocks[0] else { panic!("paragraph expected") };
     assert_eq!(p.text(), "中文 & SCI \t论文\nsecond");
     assert_eq!(document.blocks.len(), 2);
-    assert!(matches!(&document.blocks[1], Block::Unsupported { name } if name == "tbl"));
-    assert_eq!(document.diagnostics.len(), 1);
+    assert!(matches!(&document.blocks[1], Block::Table(t) if t.rows.is_empty()));
+    assert!(document.diagnostics.is_empty());
     assert_eq!(document.sections.len(), 1);
     assert_eq!(document.sections[0].blocks, 0..2);
     assert_eq!(document.sections[0].end, rwcore::SectionEnd::Body);
@@ -195,7 +195,8 @@ fn sections_terminate_own_content_ranges() {
     let Block::Paragraph(p) = &d.blocks[1] else { panic!("paragraph expected") };
     assert_eq!(p.text(),"Methods");
     assert!(p.properties.diagnostics.is_empty());
-    assert_eq!(d.diagnostics.len(),1);
+    assert!(matches!(&d.blocks[2],Block::Table(_)));
+    assert!(d.diagnostics.is_empty());
 }
 
 #[test]
@@ -248,4 +249,55 @@ fn document_sections_preserve_header_footer_and_page_number_metadata() {
     assert_eq!(last.page_number.as_ref().unwrap().start,Some(1));
     assert_eq!(last.page_number.as_ref().unwrap().format.as_deref(),Some("decimal"));
     assert!(d.diagnostics.is_empty());
+}
+
+
+#[test]
+fn main_table_source_order_and_borrowed_views() {
+    let d=section_doc("<w:p><w:r><w:t>Before</w:t></w:r></w:p><w:tbl><w:tblGrid><w:gridCol w:w='2400'/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>科研</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>After</w:t></w:r></w:p>").unwrap();
+    let Block::Table(t)=&d.blocks[1] else {panic!("table expected")};
+    assert_eq!(d.sections[0].blocks,0..3);
+    assert_eq!(t.grid,vec![Some(2400)]);
+    let Block::Paragraph(p)=&t.rows[0].cells[0].blocks[0] else {panic!("cell paragraph expected")};
+    assert_eq!(p.text(),"科研");
+    assert_eq!(p.runs[0].properties.bold,Some(true));
+    let rwcore::FormattedBlock::Table(f)=d.formatted_blocks().nth(1).unwrap().unwrap() else {panic!("formatted table expected")};
+    let rwcore::NumberedBlock::Table(n)=d.numbered_blocks().nth(1).unwrap().unwrap() else {panic!("numbered table expected")};
+    assert!(std::ptr::eq(t.as_ref(),f));
+    assert!(std::ptr::eq(f,n));
+    assert!(d.diagnostics.is_empty());
+}
+#[test]
+fn main_table_merges_and_direct_properties_use_existing_engines() {
+    let d=section_doc("<w:tbl><w:tblPr><w:tblCellMar><w:top w:w='120'/></w:tblCellMar></w:tblPr><w:tr><w:tc><w:tcPr><w:gridSpan w:val='2'/><w:vMerge w:val='restart'/></w:tcPr></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:gridSpan w:val='2'/><w:vMerge/></w:tcPr></w:tc></w:tr></w:tbl>").unwrap();
+    let Block::Table(t)=&d.blocks[0] else {panic!("table expected")};
+    let g=rwcore::resolve_table_grid(t).unwrap();
+    assert_eq!(g.anchor_at(1,1).unwrap().row_span,2);
+    let e=rwcore::resolve_effective_cell(&t.appearance,&g.cell_at(0,0).unwrap().source.appearance,rwcore::TableDirection::LeftToRight).unwrap();
+    assert_eq!(e.margins[&rwcore::TableEdge::Top].value,rwcore::TableWidth::Twips(120));
+}
+#[test]
+fn main_table_diagnostics_and_unknown_blocks_retained() {
+    let d=section_doc("<w:sdt/><w:tbl><w:tblPr><w:tblLook/></w:tblPr><w:tr><w:tc><w:tbl/><w:p/></w:tc></w:tr></w:tbl>").unwrap();
+    assert!(matches!(&d.blocks[0],Block::Unsupported{name} if name=="sdt"));
+    let Block::Table(t)=&d.blocks[1] else {panic!("table expected")};
+    assert_eq!(t.diagnostics.len(),2);
+    assert_eq!(d.diagnostics.len(),3);
+    assert!(matches!(&t.rows[0].cells[0].blocks[0],Block::Unsupported{name} if name=="tbl"));
+}
+#[test]
+fn main_table_malformed_and_foreign_namespace() {
+    assert_eq!(section_doc("<w:tbl><w:tr><w:tc><w:tcPr><w:gridSpan w:val='0'/></w:tcPr></w:tc></w:tr></w:tbl>"),Err(Error::Invalid("zero table grid span")));
+    let d=section_doc("<x:tbl xmlns:x='urn:foreign'/><w:tbl/>").unwrap();
+    assert!(matches!(&d.blocks[0],Block::Unsupported{name} if name=="tbl"));
+    assert!(matches!(&d.blocks[1],Block::Table(_)));
+}
+#[test]
+fn main_tables_also_load_in_story_opt_in_reader() {
+    let xml=format!("<w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'><w:body><w:tbl/><w:p/><w:sectPr/></w:body></w:document>");
+    let bytes=fixture(&xml,REL);
+    let d=rwcore::read_docx_with_stories(&bytes,Limits::default()).unwrap();
+    assert!(matches!(&d.blocks[0],Block::Table(_)));
+    assert!(d.header_footer.is_some());
+    assert_eq!(d.sections[0].blocks,0..2);
 }

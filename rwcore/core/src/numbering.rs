@@ -310,6 +310,7 @@ pub struct NumberedParagraph<'a> {
 #[derive(Debug)]
 pub enum NumberedBlock<'a> {
     Paragraph(NumberedParagraph<'a>),
+    Table(&'a crate::Table),
     Unsupported { name: &'a str },
 }
 
@@ -317,7 +318,7 @@ impl crate::Document {
     /// Resolve labels lazily in body order, with new counters per traversal.
     /// A missing level on a nonzero reference defaults to level zero in this
     /// subset. A zero ID suppresses numbering without consuming a counter.
-    /// Unsupported blocks are preserved but not traversed; their possible
+    /// Tables and unsupported blocks are preserved but not traversed; their possible
     /// internal list items cannot yet contribute to counters.
     /// Numbering errors are separate from formatting errors and leave counters
     /// unchanged. Source text and direct formatting are not modified.
@@ -325,6 +326,7 @@ impl crate::Document {
         let mut counter = NumberingCounter::default();
         self.formatted_blocks().map(move |block| {
             match block? {
+                crate::FormattedBlock::Table(table) => Ok(NumberedBlock::Table(table)),
                 crate::FormattedBlock::Unsupported { name } => Ok(NumberedBlock::Unsupported { name }),
                 crate::FormattedBlock::Paragraph(formatted) => {
                     let properties = &formatted.properties;
