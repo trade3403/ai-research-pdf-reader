@@ -54,7 +54,7 @@ fn device(v:i128)->Result<(),Error>{
     if !(-DEVICE_LIMIT..=DEVICE_LIMIT).contains(&v){return Err(Error::Limit("render device coordinate"));}
     Ok(())
 }
-fn validate(o:GlyphRenderOptions,units:u16)->Result<i64,Error>{
+pub(crate) fn validate(o:GlyphRenderOptions,units:u16)->Result<i64,Error>{
     if o.ppem_26_6==0||o.tolerance_16_16==0{return Err(Error::Invalid("render scale or tolerance"));}
     if !matches!(o.samples_per_axis,1|2|4|8|16){return Err(Error::Invalid("render samples"));}
     device(i128::from(o.origin_x_26_6)*1024)?;device(i128::from(o.origin_y_26_6)*1024)?;

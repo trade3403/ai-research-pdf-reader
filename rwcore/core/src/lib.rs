@@ -130,3 +130,6 @@ pub use font_raster::{GlyphFillRule,RasterTransform,RasterViewport,RasterLimits,
 
 pub mod font_render;
 pub use font_render::{RenderFontLimits,GlyphRenderLimits,GlyphRenderOptions,RenderedGlyph,TrueTypeRenderer,parse_true_type_renderer};
+
+pub mod font_text;
+pub use font_text::{TextRenderLimits,TextRenderOptions,PlacedGlyph,RenderedText,render_nominal_text};
