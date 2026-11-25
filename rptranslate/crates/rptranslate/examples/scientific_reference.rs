@@ -30,7 +30,10 @@ fn main() -> Result<(), String> {
         ("The pressure is 20 kPa.", &["20 kPa"]),
         ("The time step is 1.5 × 10⁻⁴ s.", &["1.5 × 10⁻⁴ s"]),
         ("We use $E=mc^2$ and P–SV waves.", &["$E=mc^2$", "P–SV"]),
-        ("The Mw 7.8 event was recorded below 2 Hz.", &["Mw 7.8", "2 Hz"]),
+        (
+            "The Mw 7.8 event was recorded below 2 Hz.",
+            &["Mw 7.8", "2 Hz"],
+        ),
     ];
     let mut total = 0;
     for (index, (source, expected)) in fixtures.iter().enumerate() {

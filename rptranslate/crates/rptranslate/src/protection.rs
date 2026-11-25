@@ -264,11 +264,12 @@ impl Plan {
                 at = end;
                 continue;
             }
-            if left_boundary(source, at)
-                && source[at..].starts_with("Mw ")
-                && let Some(end) = number_end(source, at + 3)?
-                && right_boundary(source, end)
-            {
+            let magnitude_end = if left_boundary(source, at) && source[at..].starts_with("Mw ") {
+                number_end(source, at + 3)?
+            } else {
+                None
+            };
+            if let Some(end) = magnitude_end.filter(|&end| right_boundary(source, end)) {
                 push(&mut spans, source, at, end, Kind::Quantity, None)?;
                 at = end;
                 continue;
@@ -288,9 +289,7 @@ impl Plan {
             if left_boundary(source, at) {
                 if let Some(symbol) = ["P–SV", "P-SV", "Vₛ", "Vₚ"]
                     .into_iter()
-                    .find(|s| {
-                        source[at..].starts_with(s) && right_boundary(source, at + s.len())
-                    })
+                    .find(|s| source[at..].starts_with(s) && right_boundary(source, at + s.len()))
                 {
                     let end = at + symbol.len();
                     push(&mut spans, source, at, end, Kind::Symbol, None)?;

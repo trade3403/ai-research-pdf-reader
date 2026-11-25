@@ -2,6 +2,13 @@ use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, matmul::Kernel, mixed_model::PA
 use rptranslate::offline::OfflineTranslator;
 use std::{path::Path, process::ExitCode};
 
+fn translation_command(command: &str) -> bool {
+    matches!(
+        command,
+        "translate" | "translate-int8" | "translate-scientific" | "translate-scientific-int8"
+    )
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     match args {
         [command] if command == "self-check" => {
@@ -9,7 +16,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("D1.0 PASS: synthetic corpus, scalar dot, model budget = {bytes} bytes");
             println!("Self-check only; no model loaded; no network requests");
         }
-        [command, root, text, rest @ ..] if matches!(command.as_str(), "translate" | "translate-int8" | "translate-scientific" | "translate-scientific-int8") && rest.len() <= 2 => {
+        [command, root, text, rest @ ..] if translation_command(command) && rest.len() <= 2 => {
             let translator = if command.ends_with("-int8") {
                 OfflineTranslator::load_mixed(Path::new(root), PAYLOAD_BYTES)
             } else {

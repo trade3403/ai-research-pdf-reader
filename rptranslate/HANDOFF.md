@@ -9,6 +9,7 @@
 - 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.10b 全量后通知用户，等待下一阶段指示。
 
 ## 当前状态（最新优先）
+- D1.10b run [45554897289](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45554897289) 失败：Rust 2021 不支持 let chains，protection.rs:269；scientific_reference.rs:30 rustfmt 元组换行。按真实日志改为 Option::filter 及格式修复，保持 Rust 2021 与原验收门槛。新提交待CI；上一轮科学专项未执行。
 - 基线 HEAD 1173be0b79784ebbd4a5eff20025725db37fbc7d，run [45549181329](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45549181329) 全量 success；CPU、真实模型实际运行均成功。D1.10a 六组基础测试通过，尚未接入默认翻译。
 - 真实论文 INT8 269/269 片段、6036英文词、110.690017秒、73.132159 tokens/s、114900 KiB、287/317数字字符串、0截断。同8片段 FP32/INT8 55.936918/3.206017秒、17.447482x，4/8译文一致；两个模型都将 strain 译为菌株、0.1 g 译为0.1克，非量化独有错误。仅提取文本，不含完整排版及独立人工评分。
 - D1.10b 本提交显式 translate-scientific[-int8]、TextSession::translate_scientific、分段保护恢复、拒绝截断/错误/预算、六组真实双精度固定样本、同论文完整提取文本对照。保留普通入口。标记 D1.10b D1.10a D1.9h-paper D1.8f 触发所有已有门槛。待本提交CI；先查真实HEAD及run。保护仅保证识别跨度字面恢复，分割可能损伤语义，全文失败计入拒绝，不能宣传100%科学准确率。
