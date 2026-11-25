@@ -91,3 +91,6 @@ pub use drawing_integration::{PictureGeometryState, RunDrawingKind, RunDrawingAt
 
 pub mod edit;
 pub use edit::{CellStep,RunPath,TextUnit,text_byte_offset,text_offset_from_byte,InsertAffinity,InteriorAnchorPolicy,TextEdit,EditLimits,EditReport,apply_text_transaction};
+
+pub mod selection;
+pub use selection::{ParagraphPath,SelectionLimits,RunBoundary,RunPoint,BytePoint,Selection,ResolvedSelection,ParagraphIndex,SelectionEdit,replace_selection};
