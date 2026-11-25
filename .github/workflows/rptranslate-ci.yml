@@ -104,3 +104,31 @@ jobs:
           "$RUNNER_TEMP/spm-reference/bin/pip" install --disable-pip-version-check --only-binary=:all: transformers==4.48.3
           cargo build --locked --offline -p rpmodel --example marian_codec
           "$RUNNER_TEMP/spm-reference/bin/python" crates/rpmodel/tests/check_real_marian.py "$RUNNER_TEMP/rp-tokenizer"
+
+  marian-forward-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'D1.6e')
+    defaults:
+      run:
+        working-directory: rptranslate
+    env:
+      CARGO_NET_OFFLINE: 'true'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned CPU reference only
+        run: |
+          python -m venv "$RUNNER_TEMP/marian-ref"
+          "$RUNNER_TEMP/marian-ref/bin/pip" install --disable-pip-version-check --only-binary=:all: torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/marian-ref/bin/pip" install --disable-pip-version-check --only-binary=:all: transformers==4.48.3 numpy==2.2.6
+      - name: Compare independent Marian forward traces
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example marian_reference
+          "$RUNNER_TEMP/marian-ref/bin/python" crates/rpinfer/tests/check_marian_reference.py "$RUNNER_TEMP/marian-weights.txt" target/release/examples/marian_reference
