@@ -1,4 +1,4 @@
-//! Standalone GSUB type 6 formats 1/2 (glyph/class-based chained context).
+//! Standalone GSUB type 6 formats 1/2/3 (glyph/class/coverage-based chained context).
 //! Matches a contiguous glyph stream without executing nested lookups.
 use crate::{ContextAction,ContextLimits,ContextMatch,Error,GlyphCoverage,parse_glyph_coverage};
 
@@ -191,4 +191,85 @@ pub fn parse_class_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_cou
     let lookahead=crate::parse_glyph_class_def(&b[ahead..],glyph_count,65536,l.max_sets,65536)?;
     let sets=parse_chain_sets(b,n,12,header,[65536,n as u32,65536],lookup_count,l)?;
     Ok(ClassChainContextSubstitution{coverage,backtrack,input,lookahead,sets})
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct CoverageChainContextSubstitution {
+    backtrack:Vec<GlyphCoverage>,
+    input:Vec<GlyphCoverage>,
+    lookahead:Vec<GlyphCoverage>,
+    actions:Vec<ContextAction>,
+}
+impl CoverageChainContextSubstitution {
+    pub fn backtrack(&self)->&[GlyphCoverage]{&self.backtrack}
+    pub fn input(&self)->&[GlyphCoverage]{&self.input}
+    pub fn lookahead(&self)->&[GlyphCoverage]{&self.lookahead}
+    pub fn actions(&self)->&[ContextAction]{&self.actions}
+    pub fn input_len(&self)->usize{self.input.len()}
+    /// Backtrack coverages are nearest-first; input and lookahead are forward.
+    pub fn match_at(&self,glyphs:&[u16],position:usize)->Option<ContextMatch<'_>>{
+        let tail=glyphs.get(position..)?;
+        let before=&glyphs[..position];
+        if before.len()<self.backtrack.len()||tail.len()<self.input.len(){return None;}
+        let (input,ahead)=tail.split_at(self.input.len());
+        if ahead.len()<self.lookahead.len(){return None;}
+        if !self.backtrack.iter().zip(before.iter().rev()).all(|(c,&g)|c.index(g).is_some())||
+            !self.input.iter().zip(input).all(|(c,&g)|c.index(g).is_some())||
+            !self.lookahead.iter().zip(ahead).all(|(c,&g)|c.index(g).is_some()){return None;}
+        Some(ContextMatch{input_len:self.input.len(),actions:&self.actions})
+    }
+}
+fn read_coverage_offsets(b:&[u8],p:&mut usize,span:&mut usize,l:ContextLimits)->Result<Vec<u16>,Error>{
+    let n=usize::from(take(b,p)?);
+    charge(span,n,l.max_input)?;
+    if *span>l.max_total_input{return Err(Error::Limit("chain coverage positions"));}
+    read_glyphs(b,p,n,65536)
+}
+/// Format 3: all three segments contain per-position Coverage offsets relative
+/// to the subtable. The complete header (including actions) must precede the
+/// coverage payloads. Shared offsets are charged on each reference. max_sets
+/// bounds cumulative coverage records; max_total_input bounds both positions
+/// and cumulative expanded coverage glyphs independently. No nested execution.
+pub fn parse_coverage_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<CoverageChainContextSubstitution,Error>{
+    if b.len()>l.max_bytes{return Err(Error::Limit("chain bytes"));}
+    if word(b,0)?!=3{return Err(Error::Unsupported("coverage chain format"));}
+    if l.max_rules==0{return Err(Error::Limit("chain rules"));}
+    let mut p=2;
+    let mut span=0;
+    let back=read_coverage_offsets(b,&mut p,&mut span,l)?;
+    let input=read_coverage_offsets(b,&mut p,&mut span,l)?;
+    if input.is_empty(){return Err(Error::Invalid("chain empty input"));}
+    let ahead=read_coverage_offsets(b,&mut p,&mut span,l)?;
+    let n=usize::from(take(b,&mut p)?);
+    if n>l.max_actions{return Err(Error::Limit("chain actions"));}
+    if b.len().saturating_sub(p)/4<n{return Err(Error::Invalid("chain truncated actions"));}
+    let mut actions=Vec::with_capacity(n);
+    for _ in 0..n{
+        let sequence_index=take(b,&mut p)?;
+        let lookup_index=take(b,&mut p)?;
+        if usize::from(sequence_index)>=input.len()||usize::from(lookup_index)>=lookup_count{
+            return Err(Error::Invalid("chain action index"));
+        }
+        actions.push(ContextAction{sequence_index,lookup_index});
+    }
+    let header=p;
+    let(mut records,mut expanded)=(0usize,0usize);
+    let mut decode=|offsets:Vec<u16>|->Result<Vec<GlyphCoverage>,Error>{
+        let mut result=Vec::with_capacity(offsets.len());
+        for offset in offsets{
+            let at=usize::from(offset);
+            if at<header||at>=b.len(){return Err(Error::Invalid("chain coverage offset"));}
+            let count=usize::from(word(b,at+2)?);
+            charge(&mut records,count,l.max_sets)?;
+            let remaining=l.max_total_input-expanded;
+            let c=parse_glyph_coverage(&b[at..],glyph_count,count,remaining.min(65536) as u32)?;
+            charge(&mut expanded,c.len() as usize,l.max_total_input)?;
+            result.push(c);
+        }
+        Ok(result)
+    };
+    let backtrack=decode(back)?;
+    let input=decode(input)?;
+    let lookahead=decode(ahead)?;
+    Ok(CoverageChainContextSubstitution{backtrack,input,lookahead,actions})
 }

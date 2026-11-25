@@ -170,3 +170,5 @@ pub mod font_chain_context_subst;
 pub use font_chain_context_subst::{ChainContextRule,ChainContextSubstitution,parse_chain_context_substitution};
 
 pub use font_chain_context_subst::{ClassChainContextSubstitution,parse_class_chain_context_substitution};
+
+pub use font_chain_context_subst::{CoverageChainContextSubstitution,parse_coverage_chain_context_substitution};
