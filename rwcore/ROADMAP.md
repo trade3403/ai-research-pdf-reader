@@ -74,8 +74,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4b5 | Real GSUB LookupFlag and GDEF references | Verified |
 | C4.4c1 | GSUB script/language/feature selection and ordered lookup plan | Verified |
 | C4.4c2 | Real Script/LangSys/feature base plan reference | Verified |
-| C4.4c3a | Bounded GSUB lookup target compilation | Source implemented; CI pending |
-| C4.4c3b | Real-font lookup compilation reference | Planned |
+| C4.4c3a | Bounded GSUB lookup target compilation | Verified |
+| C4.4c3b | Real-font lookup compilation reference | Source implemented; CI pending |
+| C4.4c4a | Bounded nested GSUB lookup dependency discovery | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

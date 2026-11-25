@@ -85,3 +85,6 @@ C4.4c2 source pending CI; parent CI #114 verified 770 tests per platform. Read D
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4c3a source pending CI; parent CI #115 verified 778 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Compiler does not execute or recursively compile nested lookups.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4c3b source pending CI; parent CI #116 verified 790 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Preventive new conversation handoff recommended. Real compilation reference does not execute lookup targets.
