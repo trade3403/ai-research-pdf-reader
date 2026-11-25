@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-25。当前工程版本 0.1.0；D1.0、D1.1 已通过 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.2 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -11,14 +11,15 @@
 | D1.2b1 | 已通过 | SPM protobuf 读取、ID 映射与真实文件探测 |
 | D1.2b2a | 已通过 | 自主 compiled charsmap 与真实归一化对照 |
 | D1.2b2b1 | 已通过 | 真实 SPM 端到端 ID 编解码对照 |
-| D1.2b2b2 | 待验证 | Marian JSON、网络词表 ID、特殊 token |
-| D1.3–D1.7 | 未开始 | Tensor、SIMD、Transformer 和解码 |
+| D1.2b2b2 | 已通过 | Marian JSON、网络词表 ID、特殊 token |
+| D1.3 | 待验证 | FP32 Tensor shape/stride、reshape、permute、广播与基本运算 |
+| D1.4–D1.7 | 未开始 | 矩阵、SIMD、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 3/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -33,7 +34,7 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 - 无外部 Rust crate，未使用在线翻译 API；合成 fixture 不是真实论文模型结果。
 
 ## 当前限制
-尚未加载真实预训练模型（已有 FP32/FP16/BF16 Safetensors 子集读取器），已有受限 Unigram 分词子集（CPU CI 已通过），没有完整 Marian 分词兼容性、张量引擎、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
+尚未加载真实预训练模型（已有 FP32/FP16/BF16 Safetensors 子集读取器），已有受限 Unigram 分词子集（CPU CI 已通过），已通过选定 Marian 模型底层分词样本验收，有基础 FP32 张量引擎（待 CI），未实现通用 Marian 可选预处理、神经网络翻译、量化实现、训练程序、真实论文质量测试、Windows 验证、GUI 或 GPU/NPU 加速。未对 A/B/C 线路作修改，未合并 main。没有模型体积、翻译质量和本地性能实测。
 
 ## D1.1 阶段要求
 实现安全、边界明确的 Safetensors 解析。先确认格式规范，定义头长度和张量数/维度/大小上限，解析元数据及 dtype、shape、offset，支持小 fixture 的 FP32/FP16/BF16，校验数据区域、字节序、越界、重叠、溢出和异常输入。与成熟实现对照；通过 CPU CI 后更新本文件。不要提前宣称可翻译。
@@ -60,7 +61,13 @@ D1 里程碑完成 2/14（按阶段数统计，不是工作量百分比）。
 接入已验证的 compiled charsmap 与 Unigram，真实 source/target SPM 的 30 组样本各自对照 Python SentencePiece 0.2.1 ID 及 decode。新增离线示例 CLI 和独立参考脚本，保留 19 组归一化回归。[代码提交 0d876b6](https://github.com/trade3403/ai-research-pdf-reader/commit/0d876b64e9ab1428496bdd58e5cb0fbc109cdecd)，[Actions 45511290596](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45511290596) 已完成 success；CPU CI 通过，固定文件哈希一致；source/target 各 ID 30/30、decode 30/30，归一化各 19/19。SPM ID 不等于 Marian 网络 ID，D1.2 整体仍未完成。
 
 ## 当前阶段 D1.2b2b2
-新增自主共享 Marian JSON 词表、双向 ID 映射、保留未知片段、显式语言标记和 EOS/PAD/UNK 处理；以真实固定模型和 Transformers 4.48.3 的底层 Marian tokenization、特殊 token 构造、skip-special 解码作对照。CI 待验证。未实现可选 Moses 预处理、通用 added-token splitting、自动 padding/truncation，尚无神经翻译。通过后按实际对照范围决定 D1.2 验收及 D1.3 进入条件。
+新增自主共享 Marian JSON 词表、双向 ID 映射、保留未知片段、显式语言标记和 EOS/PAD/UNK 处理；以真实固定模型和 Transformers 4.48.3 的底层 Marian tokenization、特殊 token 构造、skip-special 解码作对照。[代码 ffea623](https://github.com/trade3403/ai-research-pdf-reader/commit/ffea623488c865f28f3386488be1a0bf7250d3c4)，[Actions 45511680357](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45511680357) success。真实共享词表 65001，UNK=1、EOS=0、PAD=65000；网络 ID 与解码分别61/61，SPM ID 与解码分别60/60，归一化38/38。D1.2 选定模型底层样本门槛通过；可选 Moses、added-token splitting、padding/truncation 尚未实现，无神经翻译。
+
+## 当前阶段 D1.3
+新增 dense FP32 Tensor、shape/stride、索引、原地元数据 reshape、materialized permute、NumPy-style broadcast、加减乘除、标量与空张量、内存上限及非有限检查。NumPy 2.3.5 在研发环境生成参考数组，Rust CI 待验收。[技术文档](D1.3_TENSOR.md)。
+
+## 下一阶段 D1.4
+标量矩阵乘法、分块/AVX2 优化及数值对照，保持 CPU 回退。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。

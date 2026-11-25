@@ -1,4 +1,6 @@
-//! D1.0 scalar numeric reference primitive, not a neural inference runtime.
+//! Scalar numeric primitives and dense FP32 tensor core.
+pub mod tensor;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum InferError {
     ShapeMismatch,
