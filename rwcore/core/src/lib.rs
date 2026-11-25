@@ -16,4 +16,4 @@ pub mod formatting;
 pub use formatting::{resolve_formatting, EffectiveFormatting, FormattedBlock, FormattedParagraph, FormattedRun};
 
 pub mod numbering;
-pub use numbering::{parse_numbering, NumberingCatalog};
+pub use numbering::{parse_numbering, NumberingCatalog, NumberingLabel, NumberingCounter, NumberedBlock, NumberedParagraph};

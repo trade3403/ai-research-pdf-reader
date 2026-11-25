@@ -297,3 +297,49 @@ impl NumberingCounter {
         Ok(Some(NumberingLabel { text, suffix, value }))
     }
 }
+
+
+/// A top-level paragraph with resolved formatting and a separate list label.
+/// An invalid numbering reference does not discard the paragraph or its runs.
+#[derive(Debug)]
+pub struct NumberedParagraph<'a> {
+    pub formatted: crate::FormattedParagraph<'a>,
+    pub label: Result<Option<NumberingLabel>, Error>,
+}
+
+#[derive(Debug)]
+pub enum NumberedBlock<'a> {
+    Paragraph(NumberedParagraph<'a>),
+    Unsupported { name: &'a str },
+}
+
+impl crate::Document {
+    /// Resolve labels lazily in body order, with new counters per traversal.
+    /// A missing level on a nonzero reference defaults to level zero in this
+    /// subset. A zero ID suppresses numbering without consuming a counter.
+    /// Unsupported blocks are preserved but not traversed; their possible
+    /// internal list items cannot yet contribute to counters.
+    /// Numbering errors are separate from formatting errors and leave counters
+    /// unchanged. Source text and direct formatting are not modified.
+    pub fn numbered_blocks(&self) -> impl Iterator<Item = Result<NumberedBlock<'_>, Error>> + '_ {
+        let mut counter = NumberingCounter::default();
+        self.formatted_blocks().map(move |block| {
+            match block? {
+                crate::FormattedBlock::Unsupported { name } => Ok(NumberedBlock::Unsupported { name }),
+                crate::FormattedBlock::Paragraph(formatted) => {
+                    let properties = &formatted.properties;
+                    let label = match properties.num_id {
+                        Some(0) => Ok(None),
+                        None if properties.num_level.is_some() => Err(Error::Invalid("numbering level without instance")),
+                        None => Ok(None),
+                        Some(id) => match self.numbering.as_ref() {
+                            Some(catalog) => counter.next_label(catalog, id, properties.num_level.unwrap_or(0)),
+                            None => Err(Error::Invalid("missing numbering catalog")),
+                        },
+                    };
+                    Ok(NumberedBlock::Paragraph(NumberedParagraph { formatted, label }))
+                }
+            }
+        })
+    }
+}

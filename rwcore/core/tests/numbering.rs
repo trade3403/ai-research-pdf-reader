@@ -44,9 +44,12 @@ fn strict_namespace_and_limits() {
 }
 
 fn fixture(rel: &str, mime: &str) -> Vec<u8> {
+    fixture_with_body(rel, mime, "<w:p/>")
+}
+fn fixture_with_body(rel: &str, mime: &str, body: &str) -> Vec<u8> {
     let ct = format!("<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Override PartName='/custom/main.xml' ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'/><Override PartName='/custom/lists.xml' ContentType='{mime}'/></Types>");
     let root = "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='r' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' Target='custom/main.xml'/></Relationships>";
-    let main = format!("<w:document xmlns:w='{NS}'><w:body><w:p/></w:body></w:document>");
+    let main = format!("<w:document xmlns:w='{NS}'><w:body>{body}</w:body></w:document>");
     let relationships = format!("<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>{rel}</Relationships>");
     let lists = xml(BODY);
     let mut z = ZipWriter::new(Cursor::new(Vec::new()));
@@ -152,4 +155,91 @@ fn counter_overflow_and_label_budget() {
     let huge = BODY.replace("%1.", &"x".repeat(4097));
     let c = parse_numbering(xml(&huge).as_bytes(), Limits::default()).unwrap();
     assert_eq!(NumberingCounter::default().next_label(&c,7,0),Err(Error::Limit("numbering template length")));
+}
+
+
+#[test]
+fn document_numbering_from_docx_preserves_text_and_order() {
+    use rwcore::NumberedBlock;
+    let body = "<w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr><w:r><w:t>Introduction</w:t></w:r></w:p>
+        <w:p><w:r><w:t>普通段落</w:t></w:r></w:p>
+        <w:tbl/>
+        <w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr></w:p>
+        <w:p><w:pPr><w:numPr><w:numId w:val='0'/></w:numPr></w:pPr></w:p>
+        <w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr><w:r><w:t>Results</w:t></w:r></w:p>";
+    let d = read_docx(&fixture_with_body(REL, MIME, body), Limits::default()).unwrap();
+    for _ in 0..2 {
+        let mut it = d.numbered_blocks();
+        let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+        assert_eq!(p.label.unwrap().unwrap().text, "3.");
+        assert_eq!(p.formatted.source.text(), "Introduction");
+        let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+        assert!(p.label.unwrap().is_none());
+        assert_eq!(p.formatted.source.text(), "普通段落");
+        assert!(matches!(it.next().unwrap().unwrap(), NumberedBlock::Unsupported { name: "tbl" }));
+        let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+        assert_eq!(p.label.unwrap().unwrap().text, "4.");
+        assert!(p.formatted.source.runs.is_empty());
+        let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+        assert!(p.label.unwrap().is_none());
+        let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+        assert_eq!(p.label.unwrap().unwrap().text, "5.");
+        assert_eq!(p.formatted.source.text(), "Results");
+        assert!(it.next().is_none());
+    }
+}
+
+#[test]
+fn document_numbering_errors_keep_source_and_counter_state() {
+    use rwcore::NumberedBlock;
+    let body = "<w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr></w:p>
+        <w:p><w:pPr><w:numPr><w:numId w:val='7'/><w:ilvl w:val='8'/></w:numPr></w:pPr><w:r><w:t>missing level</w:t></w:r></w:p>
+        <w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr></w:p>";
+    let d = read_docx(&fixture_with_body(REL, MIME, body), Limits::default()).unwrap();
+    let mut it = d.numbered_blocks();
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label.unwrap().unwrap().text, "3.");
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label, Err(Error::Invalid("missing numbering level")));
+    assert_eq!(p.formatted.source.text(), "missing level");
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label.unwrap().unwrap().text, "4.");
+}
+
+#[test]
+fn document_numbering_missing_catalog_and_orphan_level() {
+    use rwcore::NumberedBlock;
+    let body = "<w:p><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr></w:p>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val='1'/></w:numPr></w:pPr></w:p>
+        <w:p><w:pPr><w:numPr><w:numId w:val='0'/></w:numPr></w:pPr></w:p>";
+    let d = read_docx(&fixture_with_body("", MIME, body), Limits::default()).unwrap();
+    let mut it = d.numbered_blocks();
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label, Err(Error::Invalid("missing numbering catalog")));
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label, Err(Error::Invalid("numbering level without instance")));
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert!(p.label.unwrap().is_none());
+}
+
+#[test]
+fn document_numbering_uses_effective_inherited_reference() {
+    use rwcore::{Block, Document, Paragraph, NumberedBlock};
+    let styles = format!("<w:styles xmlns:w='{NS}'><w:style w:type='paragraph' w:styleId='List' w:default='1'><w:pPr><w:numPr><w:numId w:val='7'/></w:numPr></w:pPr></w:style></w:styles>");
+    let mut cancelled = Paragraph::default();
+    cancelled.properties.num_id = Some(0);
+    let d = Document {
+        styles: Some(rwcore::opc::parse_styles(styles.as_bytes(), Limits::default()).unwrap()),
+        numbering: Some(parse_numbering(xml(BODY).as_bytes(), Limits::default()).unwrap()),
+        blocks: vec![Block::Paragraph(Paragraph::default()), Block::Paragraph(cancelled), Block::Paragraph(Paragraph::default())],
+        ..Default::default()
+    };
+    let mut it = d.numbered_blocks();
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label.unwrap().unwrap().text, "3.");
+    assert_eq!(p.formatted.source.properties.num_id, None);
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert!(p.label.unwrap().is_none());
+    let NumberedBlock::Paragraph(p) = it.next().unwrap().unwrap() else { panic!("paragraph expected") };
+    assert_eq!(p.label.unwrap().unwrap().text, "4.");
 }
