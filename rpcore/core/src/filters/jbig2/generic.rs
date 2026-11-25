@@ -1,7 +1,7 @@
 //! Native T.88 generic-region header and causal arithmetic templates.
 //! Context bits are assigned in reverse nominal reading order (LSB at
 //! the nearest previously coded pixel); adaptive slots never move bits.
-//! Scoped known-length, explicitly terminated generic arithmetic reconstruction.
+//! Scoped known-length arithmetic and MMR generic region reconstruction.
 use crate::{Error,Result,MAX_BYTES};
 use super::bitmap::{self,Bitmap,RegionInfo};
 
@@ -113,8 +113,11 @@ pub struct DecodedGeneric{
 /// No external skip bitmap, MMR, retained contexts or unknown-length
 /// segment is supported. Explicit arithmetic termination is required.
 pub fn decode_arithmetic(data:&[u8],work_limit:u64)->Result<DecodedGeneric>{
-    use super::qm::{Context,Decoder};
     let (header,payload)=parse(data)?;
+    decode_arithmetic_body(header,payload,work_limit)
+}
+fn decode_arithmetic_body(header:GenericHeader,payload:&[u8],work_limit:u64)->Result<DecodedGeneric>{
+    use super::qm::{Context,Decoder};
     let (neighborhood,typical_prediction)=match header.coding{
         Coding::Arithmetic{neighborhood,typical_prediction}=>(neighborhood,typical_prediction),
         Coding::Mmr=>return Err(Error::Unsupported("JBIG2 generic MMR decoder")),
@@ -162,6 +165,47 @@ pub fn decode_arithmetic(data:&[u8],work_limit:u64)->Result<DecodedGeneric>{
     // Marker fill is normative, not an authenticity check; unused encoded
     // bytes before the marker may occur and are not a decision-count proof.
     Ok(DecodedGeneric{region:r,bitmap:image,decisions,copied_rows})
+}
+
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum DecodeStats{
+    Arithmetic{decisions:usize,copied_rows:u32},
+    Mmr{mode_counts:[u64;9],encoded_bits:usize,eofb_present:bool},
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedRegion{
+    pub region:RegionInfo,
+    pub bitmap:Bitmap,
+    pub stats:DecodeStats,
+}
+/// Dispatch a single known-length generic segment body through its native
+/// coding algorithm. The header is parsed once, both paths preserve the
+/// common region metadata and return canonical MSB-first black=1 bitmaps.
+/// MMR uses T.88's optional EOFB rule, not the stricter standalone T.6 API.
+/// The unified work cap includes the MMR packed-byte conversion; arithmetic
+/// retains its existing conservative per-pixel bound. This is not a page
+/// decoder and does not apply page-level combination-operator overrides.
+pub fn decode_region(data:&[u8],work_limit:u64)->Result<DecodedRegion>{
+    let (header,payload)=parse(data)?;
+    let limit=work_limit.min(MAX_GENERIC_WORK);
+    if matches!(&header.coding,Coding::Mmr){
+        let r=header.region;
+        let packed_len=u64::from(r.width).div_ceil(8)*u64::from(r.height);
+        // from_packed initializes, copies and canonicalizes the packed rows.
+        let copy_work=packed_len*3;
+        let remaining=limit.checked_sub(copy_work).ok_or(Error::Limit("JBIG2 generic MMR conversion"))?;
+        let decoded=crate::filters::ccitt::decode_mmr_known_length(payload,r.width,r.height,remaining)?;
+        let image=Bitmap::from_packed(r.width,r.height,&decoded.packed)?;
+        Ok(DecodedRegion{region:r,bitmap:image,stats:DecodeStats::Mmr{
+            mode_counts:decoded.mode_counts,encoded_bits:decoded.encoded_bits,eofb_present:decoded.eofb_present,
+        }})
+    }else{
+        let decoded=decode_arithmetic_body(header,payload,limit)?;
+        Ok(DecodedRegion{region:decoded.region,bitmap:decoded.bitmap,stats:DecodeStats::Arithmetic{
+            decisions:decoded.decisions,copied_rows:decoded.copied_rows,
+        }})
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +359,69 @@ mod tests{
         assert!(decode_arithmetic(&bad,MAX_GENERIC_WORK).is_err());
         let mmr=fixture(13,8,1,&[],"ffac");
         assert!(matches!(decode_arithmetic(&mmr,MAX_GENERIC_WORK),Err(Error::Unsupported(_))));
+    }
+
+    #[test]fn generic_dispatch_arithmetic_reference(){
+        let body=fixture(13,8,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac");
+        let a=decode_arithmetic(&body,MAX_GENERIC_WORK).unwrap();
+        let b=decode_region(&body,MAX_GENERIC_WORK).unwrap();
+        assert_eq!(a.bitmap,b.bitmap);assert_eq!(a.region,b.region);
+        assert_eq!(b.stats,DecodeStats::Arithmetic{decisions:104,copied_rows:0});
+        assert_eq!(b.bitmap.packed(),unhex("9130e0e00000e0e091304a50aaa85b48"));
+        assert!(decode_region(&body,13*8*17-1).is_err());
+    }
+    #[test]fn generic_dispatch_mmr_optional_marker(){
+        for code in ["f0","ff","f0010010","f001001f"]{
+            let data=fixture(13,4,1,&[],code);
+            let r=decode_region(&data,MAX_GENERIC_WORK).unwrap();
+            assert_eq!((r.region.width,r.region.height,r.region.x,r.region.y),(13,4,2,3));
+            assert_eq!(r.region.op,bitmap::ComposeOp::Xor);
+            assert_eq!(r.bitmap.packed(),[0;8]);
+            let mut modes=[0;9];modes[5]=4;
+            assert_eq!(r.stats,DecodeStats::Mmr{mode_counts:modes,encoded_bits:if code.len()==8{28}else{4},eofb_present:code.len()==8});
+            assert!(decode_arithmetic(&data,MAX_GENERIC_WORK).is_err());
+        }
+    }
+    #[test]fn generic_dispatch_mmr_libtiff_reference(){
+        // Pillow 12.3.0 / libtiff 4.7.1, 23x9, PhotometricInterpretation=1,
+        // one Group 4 strip, source and decoded TIFF bytes match. The
+        // second fixture removes exactly the final 24-bit EOFB.
+        let no="26b91d1745d11d1745d11f576169690413082b4820bf49249a097fff1082fb5fb4474924974b61584135aa5fb6124b15d826c24a95d86125";
+        let yes=format!("{no}001001");
+        let expected=unhex("d2525a4a9528aaaa14aaa8544a94a8525a4a924d9232266663318c");
+        for (code,present) in [(no,false),(yes.as_str(),true)]{
+            let data=fixture(23,9,1,&[],code);
+            let r=decode_region(&data,MAX_GENERIC_WORK).unwrap();
+            assert_eq!(r.bitmap.packed(),expected.as_slice());
+            match r.stats{
+                DecodeStats::Mmr{mode_counts,encoded_bits,eofb_present}=>{
+                    assert_eq!(eofb_present,present);assert_eq!(encoded_bits,448+if present{24}else{0});
+                    assert!(mode_counts[1]>0);
+                }
+                _=>panic!("expected MMR"),
+            }
+        }
+    }
+    #[test]fn generic_dispatch_mmr_composition(){
+        let data=fixture(13,4,1,&[],"26a09f80080080");
+        let r=decode_region(&data,MAX_GENERIC_WORK).unwrap();
+        assert_eq!(r.bitmap.packed(),[255,248,255,248,255,248,255,248]);
+        let mut dst=Bitmap::new(9,5,false).unwrap();
+        let mut budget=bitmap::ComposeBudget::new(14).unwrap();
+        dst.compose_region(&r.bitmap,r.region,&mut budget).unwrap();
+        assert_eq!(dst.packed(),[0,0,0,0,0,0,0x3f,0x80,0x3f,0x80]);
+        assert_eq!(budget.remaining(),0);
+    }
+    #[test]fn generic_dispatch_mmr_budget_and_errors(){
+        let data=fixture(13,4,1,&[],"f0");
+        // MMR area*2 + eight input bits + four mode charges + packed copy.
+        let work=13*4*2+8+4*32+8*3;
+        assert!(matches!(decode_region(&data,work-1),Err(Error::Limit(_))));
+        assert!(decode_region(&data,work).is_ok());
+        for code in ["","e0","f000","f001","f001001000"]{
+            assert!(decode_region(&fixture(13,4,1,&[],code),MAX_GENERIC_WORK).is_err());
+        }
+        assert!(decode_region(&fixture(13,4,9,&[],"f0"),MAX_GENERIC_WORK).is_err());
+        assert!(decode_region(&fixture(13,4,0,&[3,255,253,255,2,254,254,254],"f0"),MAX_GENERIC_WORK).is_err());
     }
 }
