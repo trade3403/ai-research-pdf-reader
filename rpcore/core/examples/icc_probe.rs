@@ -42,6 +42,14 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         return Ok(());
     }
     let p=Profile::parse(&bytes)?;
+    if std::env::args_os().nth(2).is_some_and(|s|s=="mpe-inspect"){
+        let tag=std::env::args().nth(3).unwrap_or_else(||"D2B1".into());
+        let tag:[u8;4]=tag.as_bytes().try_into().map_err(|_|"expected four-byte MPE tag")?;
+        let m=p.mpe(&tag)?;
+        println!("inputs={}\noutputs={}\nelements={}",m.inputs(),m.outputs(),m.elements().len());
+        for (i,e) in m.elements().iter().enumerate(){println!("element_{i}={e:?}");}
+        return Ok(());
+    }
     if std::env::args_os().nth(2).is_some_and(|s|s=="rgb"){
         let m=p.rgb_matrix()?;
         for x in [[0.,0.,0.],[1.,1.,1.],[1.,0.,0.],[0.,1.,0.],[0.,0.,1.],[0.02,0.5,0.8],[0.5,0.5,0.5],[0.8,0.3,0.1]]{

@@ -2,6 +2,7 @@
 //! ICC.1:2022 sections 7, 10 and Annex F; source transforms for PDF rendering.
 use crate::{Error,Result};
 use std::collections::BTreeMap;
+pub mod mpe;
 
 const MAX_PROFILE:usize=16*1024*1024;
 const MAX_TAGS:usize=1024;
@@ -113,6 +114,21 @@ impl<'a> Profile<'a>{
         let white=self.xyz(b"wtpt")?;
         if white.iter().any(|v|*v<=0.){return Err(Error::Invalid("ICC gray media white"));}
         Ok(GrayTrc{curve:Curve::parse(self.tag(b"kTRC").ok_or(Error::Unsupported("ICC missing gray TRC"))?)?})
+    }
+    /// Inspect a v4 D2B/B2D multi-process tag, without executing it.
+    /// Only known GRAY/RGB/CMYK device spaces and Lab/XYZ PCS are admitted.
+    pub fn mpe(&self,tag:&Signature)->Result<mpe::Mpe<'a>>{
+        if self.version_major!=4{return Err(Error::Unsupported("ICC MPE version"));}
+        let device=match &self.color_space{b"GRAY"=>1,b"RGB "=>3,b"CMYK"=>4,_=>return Err(Error::Unsupported("ICC MPE device space"))};
+        if !matches!(&self.pcs,b"XYZ "|b"Lab "){return Err(Error::Unsupported("ICC MPE PCS"));}
+        let (p,q)=match tag{
+            b"D2B0"|b"D2B1"|b"D2B2"|b"D2B3"=>(device,3),
+            b"B2D0"|b"B2D1"|b"B2D2"|b"B2D3"=>(3,device),
+            _=>return Err(Error::Unsupported("ICC MPE tag signature")),
+        };
+        let m=mpe::Mpe::parse(self.tag(tag).ok_or(Error::Unsupported("ICC missing MPE tag"))?)?;
+        if m.inputs()!=p||m.outputs()!=q{return Err(Error::Invalid("ICC MPE profile channels"));}
+        Ok(m)
     }
     /// Explicit legacy A2B0 path for CMYK output profiles. Returns encoded PCS
     /// channels, not display RGB. No automatic intent selection or LUT fallback.
