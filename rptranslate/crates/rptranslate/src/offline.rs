@@ -1,6 +1,8 @@
 //! End-to-end fixed-profile English to Simplified Chinese translation.
 use rpinfer::{
-    marian_model::{GenerationMode, GenerationOptions, MarianModel, ModelError, MODEL_PAYLOAD_BYTES},
+    marian_model::{
+        GenerationMode, GenerationOptions, MarianModel, ModelError, MODEL_PAYLOAD_BYTES,
+    },
     matmul::Kernel,
     mixed_inference::MixedKernels,
     mixed_model::{MixedModel, PAYLOAD_BYTES},

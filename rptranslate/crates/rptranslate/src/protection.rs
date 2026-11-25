@@ -10,10 +10,9 @@ const MAX_TERMS: usize = 128;
 const PREFIX: &str = "[[RPX:";
 const CHEMICALS: &[&str] = &["H2O", "CO2", "NaCl", "H2SO4", "NH3", "CH4", "O2", "N2"];
 const UNITS: &[&str] = &[
-    "mol/L", "mg/mL", "m/s", "kg/m3", "°C", "°F", "℃", "μm", "µm", "μL", "µL",
-    "mM", "μM", "µM", "mmol", "mol", "kPa", "MPa", "Pa", "GHz", "MHz", "kHz",
-    "Hz", "kg", "mg", "g", "mL", "L", "nm", "mm", "cm", "km", "m", "ms", "s",
-    "min", "h", "K", "V", "mV", "A", "W", "%",
+    "mol/L", "mg/mL", "m/s", "kg/m3", "°C", "°F", "℃", "μm", "µm", "μL", "µL", "mM", "μM", "µM",
+    "mmol", "mol", "kPa", "MPa", "Pa", "GHz", "MHz", "kHz", "Hz", "kg", "mg", "g", "mL", "L", "nm",
+    "mm", "cm", "km", "m", "ms", "s", "min", "h", "K", "V", "mV", "A", "W", "%",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +68,13 @@ fn right_boundary(s: &str, at: usize) -> bool {
 }
 
 fn escaped(s: &str, at: usize) -> bool {
-    s.as_bytes()[..at].iter().rev().take_while(|&&b| b == b'\\').count() % 2 != 0
+    s.as_bytes()[..at]
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'\\')
+        .count()
+        % 2
+        != 0
 }
 
 fn math_end(s: &str, start: usize) -> Result<Option<usize>, Error> {
@@ -332,7 +337,9 @@ impl Plan {
         for (i, span) in self.spans.iter().enumerate() {
             let at = rest.find(PREFIX).ok_or(Error::MarkerMismatch)?;
             let marker = Self::marker(i);
-            let suffix = rest[at..].strip_prefix(&marker).ok_or(Error::MarkerMismatch)?;
+            let suffix = rest[at..]
+                .strip_prefix(&marker)
+                .ok_or(Error::MarkerMismatch)?;
             Self::bounded_push(&mut out, &rest[..at])?;
             Self::bounded_push(&mut out, &span.replacement)?;
             rest = suffix;
@@ -378,15 +385,22 @@ mod tests {
     fn exact_scientific_spans_and_utf8_offsets() {
         let input = r"测量: $E=mc^2$, −1.25e-3 mol/L, 25 °C, H2O, 80% and \[x^2\].";
         let p = Plan::prepare(input, &[]).unwrap();
-        let actual: Vec<_> = p.spans().iter().map(|s| (s.kind, s.original.as_str())).collect();
-        assert_eq!(actual, [
-            (Kind::Formula, "$E=mc^2$"),
-            (Kind::Quantity, "−1.25e-3 mol/L"),
-            (Kind::Quantity, "25 °C"),
-            (Kind::Chemical, "H2O"),
-            (Kind::Quantity, "80%"),
-            (Kind::Formula, r"\[x^2\]"),
-        ]);
+        let actual: Vec<_> = p
+            .spans()
+            .iter()
+            .map(|s| (s.kind, s.original.as_str()))
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                (Kind::Formula, "$E=mc^2$"),
+                (Kind::Quantity, "−1.25e-3 mol/L"),
+                (Kind::Quantity, "25 °C"),
+                (Kind::Chemical, "H2O"),
+                (Kind::Quantity, "80%"),
+                (Kind::Formula, r"\[x^2\]"),
+            ]
+        );
         for span in p.spans() {
             assert_eq!(&input[span.range.clone()], span.original);
         }
@@ -398,33 +412,58 @@ mod tests {
     fn exponent_decimal_and_unit_boundaries() {
         let p = Plan::prepare("3.2 × 10^−5 mM; .5; +2; 10 mg/mL; 7 ms; 8 model; x2", &[]).unwrap();
         let actual: Vec<_> = p.spans().iter().map(|s| s.original.as_str()).collect();
-        assert_eq!(actual, ["3.2 × 10^−5 mM", ".5", "+2", "10 mg/mL", "7 ms", "8"]);
+        assert_eq!(
+            actual,
+            ["3.2 × 10^−5 mM", ".5", "+2", "10 mg/mL", "7 ms", "8"]
+        );
     }
 
     #[test]
     fn math_delimiters_and_escaped_dollar() {
-        let s = r"Cost \$5; $$x+1$$, \(a+b\), \[z\], $x\$y$.";
+        let s = r"Cost \$5; $x+1$, \(a+b\), \[z\], $x\$y$.";
         let p = Plan::prepare(s, &[]).unwrap();
-        assert_eq!(p.spans().iter().filter(|s| s.kind == Kind::Formula).count(), 4);
+        assert_eq!(
+            p.spans().iter().filter(|s| s.kind == Kind::Formula).count(),
+            4
+        );
         assert_eq!(p.restore(&p.masked()).unwrap(), s);
-        assert_eq!(Plan::prepare("broken $x", &[]).err(), Some(Error::UnclosedMath));
-        assert_eq!(Plan::prepare(r"broken \[x", &[]).err(), Some(Error::UnclosedMath));
+        assert_eq!(
+            Plan::prepare("broken $x", &[]).err(),
+            Some(Error::UnclosedMath)
+        );
+        assert_eq!(
+            Plan::prepare(r"broken \[x", &[]).err(),
+            Some(Error::UnclosedMath)
+        );
         assert_eq!(Plan::prepare("3e+", &[]).err(), Some(Error::InvalidNumber));
     }
 
     #[test]
     fn longest_term_and_boundary() {
-        let terms = [term("neural", "神经"), term("neural network", "神经网络"), term("model", "模型")];
+        let terms = [
+            term("neural", "神经"),
+            term("neural network", "神经网络"),
+            term("model", "模型"),
+        ];
         let p = Plan::prepare("A neural network model; models, neural.", &terms).unwrap();
         assert_eq!(p.spans().len(), 3);
-        assert_eq!(p.restore(&p.masked()).unwrap(), "A 神经网络 模型; models, 神经.");
-        assert_eq!(p.assemble(&["一种", " ", "；models，", "。"]).unwrap(), "一种神经网络 模型；models，神经。");
+        assert_eq!(
+            p.restore(&p.masked()).unwrap(),
+            "A 神经网络 模型; models, 神经."
+        );
+        assert_eq!(
+            p.assemble(&["一种", " ", "；models，", "。"]).unwrap(),
+            "一种神经网络 模型；models，神经。"
+        );
     }
 
     #[test]
     fn strict_marker_validation() {
         let p = Plan::prepare("1 mg and 2 mg", &[]).unwrap();
-        assert_eq!(p.restore("甲[[RPX:0000]]乙[[RPX:0001]]").unwrap(), "甲1 mg乙2 mg");
+        assert_eq!(
+            p.restore("甲[[RPX:0000]]乙[[RPX:0001]]").unwrap(),
+            "甲1 mg乙2 mg"
+        );
         for bad in [
             "[[RPX:0000]]",
             "[[RPX:0001]][[RPX:0000]]",
@@ -436,14 +475,26 @@ mod tests {
             assert_eq!(p.restore(bad), Err(Error::MarkerMismatch), "{bad}");
         }
         assert_eq!(p.assemble(&["only one"]), Err(Error::SegmentCount));
-        assert_eq!(p.assemble(&["", "[[RPX:0000]]", ""]), Err(Error::ReservedMarker));
+        assert_eq!(
+            p.assemble(&["", "[[RPX:0000]]", ""]),
+            Err(Error::ReservedMarker)
+        );
     }
 
     #[test]
     fn resource_and_dictionary_limits() {
-        assert_eq!(Plan::prepare("[[RPX:0000]]", &[]).err(), Some(Error::ReservedMarker));
-        assert_eq!(Plan::prepare(&"x".repeat(MAX_TEXT+1), &[]).err(), Some(Error::Limit));
-        assert_eq!(Plan::prepare(&"1 ".repeat(MAX_SPANS+1), &[]).err(), Some(Error::Limit));
+        assert_eq!(
+            Plan::prepare("[[RPX:0000]]", &[]).err(),
+            Some(Error::ReservedMarker)
+        );
+        assert_eq!(
+            Plan::prepare(&"x".repeat(MAX_TEXT + 1), &[]).err(),
+            Some(Error::Limit)
+        );
+        assert_eq!(
+            Plan::prepare(&"1 ".repeat(MAX_SPANS + 1), &[]).err(),
+            Some(Error::Limit)
+        );
         for terms in [
             vec![term("x", ""), term("x", "y")],
             vec![term("x", "a"), term("x", "b")],
@@ -452,7 +503,7 @@ mod tests {
             assert_eq!(Plan::prepare("x", &terms).err(), Some(Error::Glossary));
         }
         let p = Plan::prepare("plain", &[]).unwrap();
-        assert_eq!(p.restore(&"x".repeat(MAX_OUTPUT+1)), Err(Error::Limit));
+        assert_eq!(p.restore(&"x".repeat(MAX_OUTPUT + 1)), Err(Error::Limit));
         assert_eq!(p.restore("正常文本").unwrap(), "正常文本");
     }
 }

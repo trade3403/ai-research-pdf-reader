@@ -248,3 +248,5 @@ D1.10a 独立保护核心 Plan：UTF-8 原文范围、数学显式 $/$/\\(/\\[ �
 D1.9d 实际专项：[45537112727/job/138948023467](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45537112727/job/138948023467) success，REAL_INT8_LINEAR_REFERENCE PASS matrices=3 elements=12288 reference_max_abs=0 fp32_max_abs=0.0910242527 atol=1e-6 rtol=1e-6。仅真实权重/合成激活；整体CPU格式失败。D1.9e 45538079043 CPU format 4组失败，已修复，真实专项仍在运行。D1.9f 尚待CI。
 
 D1.9f run45538582134 CPU format 5组失败，本次按完整上下文修正；真实转换专项仍运行。D1.9g 已提交但未编译/验收，不宣称全模型量化翻译成功。
+
+D1.9g/D1.9h 真实专项 [45540564400/job/138958019476](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45540564400/job/138958019476) success。MIXED_INFERENCE_REFERENCE PASS 1371165元素、10候选、max_abs=0、cache/scalar位级一致。PAIRED_TRANSLATION_REFERENCE PASS 24正式计时/12质量输出/2 CLI/4负例；FP32/INT8 package315294472/88160260 bytes、RSS331828/107268KiB、load1752.359/1799.760ms、cached2.830836/64.540152及3.132952/73.752100 tokens/s，延迟比22.798972/23.540767；6/6译文相同、char_f2均72.914、数字4/5、术语12/12、capped0。仅短句与该Runner观察。CPU format 12组失败导致后续基础测试跳过，本提交按日志修正；全量CI尚待复验。冻结新功能开发，D1.9全量成功后等待用户指示；加载加速D1.9i-l为拟议任务，未授权执行。
