@@ -137,3 +137,7 @@ jobs:
         run: |
           cargo build --locked --offline --release -p rpinfer --example marian_generation_config
           "$RUNNER_TEMP/marian-ref/bin/python" crates/rpinfer/tests/probe_marian_generation.py target/release/examples/marian_generation_config
+      - name: D1.8a verify pinned real checkpoint (one bounded download)
+        if: contains(github.event.head_commit.message, 'D1.8a')
+        run: |
+          "$RUNNER_TEMP/marian-ref/bin/python" crates/rpinfer/tests/probe_real_checkpoint.py "$RUNNER_TEMP/opus-mt-en-zh"

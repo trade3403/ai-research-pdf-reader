@@ -111,10 +111,13 @@ D1 里程碑完成 7/14（按阶段数统计，不是工作量百分比）。
 新增内部 Cache：每层 self K/V 追加单行、cross K/V 只投影一次并 Rc 共享、不可变父快照、显式目标 mask 与位置 offset、两代 beam 缓存及 256MiB KV payload 预算；新增 cached_logits、generate_cached，保留全 prefix 基准。测试缓存全序列/带 mask logits、1/2/4 beam token 与分数一致，扩展 PyTorch Marian 独立对照 cached_logits。实际验收：[修复代码 08be738](https://github.com/trade3403/ai-research-pdf-reader/commit/08be738a82ef91a8b278fe84546ae0e5712de81e)，[复测 45528484279](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45528484279) completed/success；首轮9组 rustfmt 修正；基础 CPU CI 与独立 PyTorch/Marian 对照通过，240张量、4744元素，整体 max_abs=4.76837158e-7，cached_logits max_abs=1.78813934e-7，1/2/4 beam 缓存与完整前缀一致。未测速度及真实模型。
 
 ## 当前阶段 D1.7b2
-新增 MarianGeneration 受限生成元数据映射（total max_length-1，min_length 对应 EOS 允许步，start/pad 独立、forced EOS 校验、显式 suppress）。独立 PyTorch 小模型全量候选参考对照 3组源输入×2设置×3 beam×2缓存路径；检查所有返回序列、EOS、累计 logp、长度归一分数，另直接 HF greedy generate 三组对照。独立 Runner 下载固定 OPUS-MT config.json/可选 generation_config.json，记录 SHA256、有效 generation 参数、支持字段映射与未支持 processor 检查；未下载权重。真实 HF beam scorer 不是等价目标，明确 early_stopping/完成池/强制 EOS 评分差异。CI 待验收，完整 D1.7 暂不增加计数。
+新增 MarianGeneration 受限生成元数据映射（total max_length-1，min_length 对应 EOS 允许步，start/pad 独立、forced EOS 校验、显式 suppress）。独立 PyTorch 小模型全量候选参考对照 3组源输入×2设置×3 beam×2缓存路径；检查所有返回序列、EOS、累计 logp、长度归一分数，另直接 HF greedy generate 三组对照。独立 Runner 下载固定 OPUS-MT config.json/可选 generation_config.json，记录 SHA256、有效 generation 参数、支持字段映射与未支持 processor 检查；未下载权重。真实 HF beam scorer 不是等价目标，明确 early_stopping/完成池/强制 EOS 评分差异。首轮 Actions 45528748920 基础 CI 通过，独立生成36/36、84/84候选、HF greedy 3/3，max_score_error=2.50345785e-7；独立张量240/240、4744元素、max_abs=4.76837158e-7。但旧 revision 仅含 tokenizer，config.json 404。改用完整固定版本 a4193836671069f1f80ce341f9227a850ffb52d4（2023-01-24，早于 renormalize_logits=true 更新），真实配置复测待验收。 完整 D1.7 暂不增加计数。
 
-## 下一阶段 D1.8
-固定真实英中模型权重与元数据、内存设计、加载和离线翻译参考。
+## D1.8a 准备（待 D1.7b2 门槛）
+新增固定版本真实权重清单探测。前置 generation 核验通过后执行；重新验证旧 tokenizer SHA256，单次权重下载400MiB上限、官方 SHA256、CPU weights_only=True、逐张量检查。真实权重日志待验收，不计完成。
+
+## 下一阶段 D1.8b
+根据真实权重清单实现大词表分块存储和有界自主加载。
 
 ## 文档变更记录
 2026-11-24：建立开发规范、路线、目标验收、进度四份独立文档和 README 索引；本次仅文档，不增加算法功能，不替代 D1.0 测试证据。
