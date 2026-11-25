@@ -364,7 +364,10 @@ mod jpx_pdf_tests{
     }
     fn pdf(data:&[u8],w:usize,h:usize,fields:&str)->Vec<u8>{
         let contents=format!("q {w} 0 0 {h} 0 0 cm /Im Do Q");
-        let mut image=format!("<< /Type /XObject /Subtype /Image /Width {w} /Height {h} {fields} /Length {} >>\nstream\n",data.len()).into_bytes();
+        pdf_layout(data,w,h,w,h,fields,&contents)
+    }
+    fn pdf_layout(data:&[u8],iw:usize,ih:usize,w:usize,h:usize,fields:&str,contents:&str)->Vec<u8>{
+        let mut image=format!("<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} {fields} /Length {} >>\nstream\n",data.len()).into_bytes();
         image.extend(data);image.extend(b"\nendstream");
         let objects=[
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -518,5 +521,70 @@ mod jpx_pdf_tests{
         let Object::Stream{dict,data}=&stream else{panic!("stream");};
         let mut budget=Budget{work:super::super::MAX_WORK-data.len()*2-1,stage:"JPX prefix budget"};
         assert!(matches!(jpx_payload(dict,data,&mut budget),Err(Error::Limit(_))));
+    }
+
+    // B11.2i3a: independent layout reference pixels from the historical
+    // OpenJPEG-decoded 4x4 gray signal. Exact integer source-index geometry
+    // for nearest-neighbor/rotation/clip, rational 2x2 subpixel averaging
+    // for bilinear interpolation. Poppler 25.06.0 independent PDF raster
+    // reference is used separately for uniform image interiors below.
+    const GRAY_LAYOUT_REFERENCE:[u8;16]=[22,60,96,134,172,208,246,26,62,100,138,174,212,248,28,66];
+    fn layout(data:&[u8],w:usize,h:usize,fields:&str,contents:&str)->Result<super::super::Bitmap>{
+        let bytes=pdf_layout(data,4,4,w,h,fields,contents);
+        let doc=Document::open(&bytes)?;let pages=doc.pages()?;
+        doc.render_page(&pages[0],super::super::Options::default(),4096)
+    }
+    fn gray_layout_compare(a:&super::super::Bitmap,w:usize,h:usize,want:&[u8]){
+        assert_eq!((a.width,a.height),(w,h));
+        assert_eq!(a.rgba.len(),4*w*h);assert_eq!(want.len(),w*h);
+        for (i,(p,&e)) in a.rgba.chunks_exact(4).zip(want).enumerate(){
+            assert_eq!(p[0],p[1]);assert_eq!(p[1],p[2]);assert_eq!(p[3],255);
+            assert!(p[0].abs_diff(e)<=1,"pixel {i}: actual {}, expected {e}",p[0]);
+        }
+    }
+    #[test]fn pdf_jpx_layout_nearest_scale(){
+        let a=layout(&hex(GRAY),8,8,"/Filter /JPXDecode /ColorSpace /DeviceGray /Interpolate false",
+            "q 8 0 0 8 0 0 cm /Im Do Q").unwrap();
+        let want:Vec<u8>=(0..64).map(|i|GRAY_LAYOUT_REFERENCE[(i/8/2)*4+(i%8)/2]).collect();
+        gray_layout_compare(&a,8,8,&want);
+    }
+    #[test]fn pdf_jpx_layout_rotate(){
+        let a=layout(&hex(GRAY),4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray",
+            "q 0 4 -4 0 4 0 cm /Im Do Q").unwrap();
+        gray_layout_compare(&a,4,4,&hex("861aae4260f68a1c3cd064f816ac3ed4"));
+    }
+    #[test]fn pdf_jpx_layout_clip_repeat(){
+        let a=layout(&hex(GRAY),8,4,"/Filter /JPXDecode /ColorSpace /DeviceGray",
+            "q 0 0 2 4 re W n 4 0 0 4 0 0 cm /Im Do Q q 4 0 0 4 4 0 cm /Im Do Q").unwrap();
+        let want:Vec<u8>=(0..32).map(|i|match i%8{
+            0|1=>GRAY_LAYOUT_REFERENCE[i/8*4+i%8],
+            2|3=>255,
+            _=>GRAY_LAYOUT_REFERENCE[i/8*4+i%8-4],
+        }).collect();
+        gray_layout_compare(&a,8,4,&want);
+    }
+    #[test]fn pdf_jpx_layout_bilinear(){
+        let a=layout(&hex(GRAY),8,8,"/Filter /JPXDecode /ColorSpace /DeviceGray /Interpolate true",
+            "q 8 0 0 8 0 0 cm /Im Do Q").unwrap();
+        // Python Fraction reference calculated independently from exact
+        // eighth-coordinate bilinear weights and four subcenter samples.
+        gray_layout_compare(&a,8,8,&hex("16203346586a7d863c45586a7c7f726c8790a2b4c7aa5c36919aacbfd2b466405a6376899c9e908a646d808275788a94afb8caac5e41545ed4def0c254263942"));
+    }
+    #[test]fn pdf_jpx_layout_poppler_uniform(){
+        // New independent Pillow 12.3.0/OpenJPEG 2.5.4 4x4 constant JP2,
+        // actual Poppler 25.06.0 pdftoppm -r 72 RGB reference generated in
+        // B11.2i3a from the exact same PDF layout and dictionary.
+        let data=hex("0000000c6a5020200d0a870a00000014667479706a703220000000006a7032200000002d6a703268000000166968647200000004000000040001070700000000000f636f6c7201000000000011000000896a703263ff4fff510029000000000004000000040000000000000000000000040000000400000000000000000001070101ff52000c00000001000100000000ff5c000b42482457d357d35762ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a0000000000100001ff938080ffd9");
+        let a=layout(&data,8,4,"/Filter /JPXDecode /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "q 1 0 2 4 re W n 4 0 0 4 0 0 cm /Im Do Q q 0 4 -4 0 8 0 cm /Im Do Q").unwrap();
+        let external=hex("ff8080ef80808080ff8080ef80808080ff8080ef80808080ff8080ef80808080");
+        assert_eq!((a.width,a.height),(8,4));assert_eq!(a.rgba.len(),128);
+        for (i,p) in a.rgba.chunks_exact(4).enumerate(){
+            // Poppler antialiases the clip boundary into column 3 (239);
+            // RPCore's 2x2 coverage gives exact white there. Do not hide
+            // this policy difference by weakening the interior threshold.
+            let want=if i%8==3{255}else{external[i]};
+            assert_eq!(p,[want,want,want,255],"pixel {i}");
+        }
     }
 }
