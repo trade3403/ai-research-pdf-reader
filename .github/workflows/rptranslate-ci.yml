@@ -52,6 +52,10 @@ jobs:
         run: |
           cargo build --locked --offline --release -p rpmodel --example quantized_reference
           python3 crates/rpmodel/tests/check_quantized_format.py target/release/examples/quantized_reference
+      - name: Independent synthetic training and checkpoint reference
+        run: |
+          cargo build --locked --offline --release -p rpinfer --example toy_training_reference
+          python3 crates/rpinfer/tests/check_toy_training.py target/release/examples/toy_training_reference
       - name: Matrix release benchmark
         if: contains(github.event.head_commit.message, 'D1.4a') || contains(github.event.head_commit.message, 'D1.4b')
         run: |

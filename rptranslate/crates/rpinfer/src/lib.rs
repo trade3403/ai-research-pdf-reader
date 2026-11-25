@@ -18,6 +18,7 @@ pub mod quantized_table;
 pub mod search;
 pub mod seq2seq;
 pub mod tensor;
+pub mod toy_training;
 pub mod transformer;
 pub mod vocabulary;
 
