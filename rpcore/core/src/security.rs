@@ -1,10 +1,9 @@
-//! Structural inspection and authenticated legacy RC4 object decryption.
-//! Encrypted files cannot be opened as Document until a separate authenticated
-//! path exists. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
+//! Structural inspection and authenticated R2/R3/R4 RC4/AESV2 decoding.
+//! Only the explicit authenticated open path exposes supported encrypted documents. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
 mod legacy;
 mod auth;
 mod object_crypto;
-// Private primitives pending authenticated R4 integration.
+// Block encryption is retained for primitive tests and future R6 integration.
 #[allow(dead_code)]
 mod aes;
 pub(crate) use object_crypto::ObjectCrypto;
@@ -153,7 +152,15 @@ impl TrailerSecurity{
             let mask=if info.revision==2{0x3c}else{0xf3c};
             if info.permissions&mask!=mask{return Err(Error::Unsupported("restricted PDF user permissions"));}
         }
-        Ok(Some(ObjectCrypto::new(key,usize::from(info.key_bits/8),reference)?))
+        if info.revision==4{
+            // Separate embedded-file authentication is not yet implemented.
+            if let Some(Object::Dict(cf))=d.get(b"CF".as_slice()){
+                if cf.values().any(|v|matches!(v,Object::Dict(e) if matches!(e.get(b"AuthEvent".as_slice()),Some(Object::Name(n)) if n==b"EFOpen"))){
+                    return Err(Error::Unsupported("separate embedded file authentication"));
+                }
+            }
+        }
+        Ok(Some(ObjectCrypto::with_info(key,reference,&info)?))
     }
     pub(crate) fn authenticate(self,doc:&Document<'_>,password:&[u8])->Result<PasswordStatus>{
         let Some((d,id))=self.bootstrap(doc)? else{return Ok(PasswordStatus::Unencrypted);};

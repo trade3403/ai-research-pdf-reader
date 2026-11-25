@@ -1,4 +1,4 @@
-//! PDF Standard handler R2/R3 authentication only, ISO 32000-1 7.6.3.
+//! PDF Standard handler R2/R3/R4 authentication, ISO 32000-1 7.6.3.
 //! Passwords are caller-supplied legacy encoded bytes. No guessing, key
 //! export, logging or object decryption. Not side-channel/zeroization audited.
 use super::{Dict,EncryptionInfo,legacy::{md5,Rc4}};
@@ -31,12 +31,13 @@ fn xor_round(key:&[u8],round:u8,data:&mut [u8])->Result<()>{
     for (dst,src) in k.iter_mut().zip(key){*dst=*src^round;}
     crypt(&k[..key.len()],data)
 }
-fn file_key(password:&[u8;32],o:&[u8;32],p:i32,id:&[u8],r:u8,n:usize)->Result<[u8;16]>{
-    let mut input=Vec::with_capacity(68+id.len());
+fn file_key(password:&[u8;32],o:&[u8;32],p:i32,id:&[u8],r:u8,n:usize,metadata:bool)->Result<[u8;16]>{
+    let mut input=Vec::with_capacity(72+id.len());
     input.extend_from_slice(password);input.extend_from_slice(o);
     input.extend_from_slice(&p.to_le_bytes());input.extend_from_slice(id);
+    if r>=4&&!metadata{input.extend_from_slice(&[0xff;4]);}
     let mut hash=md5(&input)?;
-    if r==3{for _ in 0..50{hash=md5(&hash[..n])?;}}
+    if r>=3{for _ in 0..50{hash=md5(&hash[..n])?;}}
     Ok(hash)
 }
 fn equal(a:&[u8],b:&[u8])->bool{
@@ -56,7 +57,7 @@ fn validate_user(key:&[u8],u:&[u8;32],id:&[u8],r:u8)->Result<bool>{
 }
 fn recover_owner(password:&[u8],o:&[u8;32],r:u8,n:usize)->Result<[u8;32]>{
     let mut hash=md5(&padded(password))?;
-    if r==3{for _ in 0..50{hash=md5(&hash)?;}}
+    if r>=3{for _ in 0..50{hash=md5(&hash)?;}}
     let mut user=*o;
     if r==2{crypt(&hash[..n],&mut user)?;}
     else{for round in (0..=19).rev(){xor_round(&hash[..n],round,&mut user)?;}}
@@ -64,16 +65,16 @@ fn recover_owner(password:&[u8],o:&[u8;32],r:u8,n:usize)->Result<[u8;32]>{
 }
 pub(super) fn authenticate(d:&Dict,id:&[u8],info:&EncryptionInfo,password:&[u8])->Result<(PasswordStatus,Option<[u8;16]>)>{
     let r=info.revision;
-    if !matches!((info.version,r),(1,2)|(2,3)){return Err(Error::Unsupported("legacy password revision"));}
+    if !matches!((info.version,r),(1,2)|(2,3)|(4,4)){return Err(Error::Unsupported("legacy password revision"));}
     let n=usize::from(info.key_bits/8);
     if !(5..=16).contains(&n)||info.key_bits%8!=0||r==2&&n!=5{return Err(Error::Invalid("legacy password key length"));}
     if id.is_empty()||id.len()>1024{return Err(Error::Invalid("encrypted document ID"));}
     let o=field(d,b"O")?;let u=field(d,b"U")?;
     // If a supplied password is valid as both roles, prefer Owner.
     let recovered=recover_owner(password,o,r,n)?;
-    let key=file_key(&recovered,o,info.permissions,id,r,n)?;
+    let key=file_key(&recovered,o,info.permissions,id,r,n,info.encrypt_metadata)?;
     if validate_user(&key[..n],u,id,r)?{return Ok((PasswordStatus::Owner,Some(key)));}
-    let key=file_key(&padded(password),o,info.permissions,id,r,n)?;
+    let key=file_key(&padded(password),o,info.permissions,id,r,n,info.encrypt_metadata)?;
     if validate_user(&key[..n],u,id,r)?{return Ok((PasswordStatus::User,Some(key)));}
     Ok((PasswordStatus::Incorrect,None))
 }
@@ -124,7 +125,7 @@ mod tests{
         let c=&CASES[2];let d=dict(c);let mut info=super::super::parse(&d).unwrap();
         assert_eq!(verify(&d,b"other id",&info,&hex(c.user)).unwrap(),PasswordStatus::Incorrect);
         info.permissions^=4;assert_eq!(verify(&d,&hex(ID),&info,&hex(c.user)).unwrap(),PasswordStatus::Incorrect);
-        info.version=4;info.revision=4;assert!(matches!(verify(&d,&hex(ID),&info,&hex(c.user)),Err(Error::Unsupported("legacy password revision"))));
+        info.version=5;info.revision=6;assert!(matches!(verify(&d,&hex(ID),&info,&hex(c.user)),Err(Error::Unsupported("legacy password revision"))));
     }
     #[test]fn public_authentication_does_not_open_document(){
         let c=&CASES[2];let enc=text(c);
