@@ -68,3 +68,5 @@ C4.3h-2c pending CI: independent offline JS raw glyf point/endpoint and nominal 
 C4.3h-2d1 pending CI: independent JS raw SFNT/loca/glyf decoder recursively expands translation-only components and produces full ordered point/endpoint reference fixtures for Regular glyph IDs 6 and 81. Rust tests compare exact 16.16 coordinates.
 
 C4.3h-2d2 pending CI: Abel Regular second-family fixture, independently extracted nominal metrics, parameterized test-only reference raster units per em, four new grayscale comparisons. Original ABeeZee six cases retained.
+
+C4.3h-2e1 pending CI: independent JS raw SFNT decoder derives exact ordered 16.16 point and endpoint reference for four Aref Ruqaa transformed composite glyphs. Uniform and anisotropic scales, reflections and signed offsets; no runtime dependency.

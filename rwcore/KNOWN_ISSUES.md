@@ -60,3 +60,5 @@
 - C4.3h-2d1: translation-only real composites; transformed and point-attached real reference fixtures, additional font families and broader corpus validation outstanding.
 
 - C4.3h-2d2: two Latin families only; no CJK, independent Abel outlines, transformed real composite reference, or Word fidelity acceptance. Gray reference shares parsed paths.
+
+- C4.3h-2e1: real scaled/reflected composite fixture only; general off-diagonal matrix, point attachment, Arabic shaping, CJK, and broad font fidelity remain outstanding.

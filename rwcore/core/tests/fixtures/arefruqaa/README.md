@@ -1,0 +1,2 @@
+# Aref Ruqaa Regular
+Unmodified upstream https://github.com/google/fonts/tree/main/ofl/arefruqaa, 110696 bytes, blob 49e2c4e29ee2e24c4e36a8857f45a24d13d103f3; OFL blob f89db8233df5ee80af5f86b74ade558305ee13aa. Independent JS SFNT/loca/glyf decoder produced ordered exact fixed-point fixtures for glyph IDs 55, 428, 466, 467; signed XY offsets, uniform and anisotropic scale, reflections. Unhinted, per-transform ties-away rounding, unspecified offsets unscaled. No production decoder used. No Arabic shaping claim.
