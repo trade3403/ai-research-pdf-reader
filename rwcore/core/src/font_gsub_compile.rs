@@ -106,6 +106,10 @@ pub fn compile_gsub_lookups<'a>(b:&[u8],indices:&[u16],glyph_count:u32,gdef:Opti
 pub fn compile_gsub_plan<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef:Option<&'a Gdef>,
     l:GsubCompileLimits)->Result<Vec<CompiledGsubLookup<'a>>,Error>{
     let layout=parse_gsub_layout(b,l.layout)?;
+    let indices=validate_plan(&layout,plan,l)?;
+    compile(b,&layout,&indices,glyph_count,gdef,l)
+}
+fn validate_plan(layout:&GsubLayout,plan:&GsubPlan,l:GsubCompileLimits)->Result<Vec<u16>,Error>{
     if plan.lookups.len()>l.max_lookups||plan.features.len()>l.max_plan_refs{return Err(Error::Limit("gsub compile plan size"));}
     if plan.features.windows(2).any(|w|w[0]>=w[1]){return Err(Error::Invalid("gsub compile feature order"));}
     let script=layout.scripts.iter().find(|s|s.tag==plan.script).ok_or(Error::Invalid("gsub compile plan script"))?;
@@ -141,5 +145,93 @@ pub fn compile_gsub_plan<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef:Option<
         }
         indices.push(index);
     }
-    compile(b,&layout,&indices,glyph_count,gdef,l)
+    Ok(indices)
+}
+
+use crate::{GsubDependency,GsubDependencyLimits,GsubClosureLimits,GsubDependencyClosure,analyze_gsub_dependency_closure};
+#[derive(Debug,Clone,Copy,Default)]
+pub struct GsubProgramLimits{
+    pub compile:GsubCompileLimits,
+    pub dependencies:GsubDependencyLimits,
+    pub closure:GsubClosureLimits,
+}
+/// Static compiled program. Only roots are scheduled at top level.
+/// Dependency-only targets are available by original LookupList index.
+#[derive(Debug,Clone)]
+pub struct CompiledGsubProgram<'a>{
+    roots:Vec<u16>,
+    lookups:Vec<CompiledGsubLookup<'a>>,
+    dependencies:Vec<GsubDependency>,
+    closure:GsubDependencyClosure,
+}
+impl<'a> CompiledGsubProgram<'a>{
+    pub fn roots(&self)->&[u16]{&self.roots}
+    pub fn lookups(&self)->&[CompiledGsubLookup<'a>]{&self.lookups}
+    pub fn lookup(&self,id:u16)->Option<&CompiledGsubLookup<'a>>{
+        self.lookups.binary_search_by_key(&id,|l|l.index()).ok().map(|i|&self.lookups[i])
+    }
+    pub fn dependencies(&self)->&[GsubDependency]{&self.dependencies}
+    pub fn closure(&self)->&GsubDependencyClosure{&self.closure}
+}
+fn compile_program<'a>(b:&[u8],layout:&GsubLayout,roots:&[u16],glyph_count:u32,
+    gdef:Option<&'a Gdef>,l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
+    validate_domain(glyph_count,gdef)?;
+    let n=layout.lookups.len();
+    if n>l.closure.max_lookup_count||roots.len()>l.closure.max_roots{
+        return Err(Error::Limit("gsub program domain"));
+    }
+    if roots.windows(2).any(|w|w[0]>=w[1]){return Err(Error::Invalid("gsub program root order"));}
+    let mut pending=BTreeSet::new();
+    let mut seen=BTreeSet::new();
+    for &id in roots{
+        if usize::from(id)>=n{return Err(Error::Invalid("gsub program root index"));}
+        pending.insert(id);seen.insert(id);
+    }
+    let cap=l.compile.max_lookups.min(l.closure.max_reachable);
+    if seen.len()>cap{return Err(Error::Limit("gsub program lookups"));}
+    let mut budget=l.compile;
+    let mut dep=l.dependencies;
+    dep.max_actions=dep.max_actions.min(l.closure.max_actions);
+    let mut compiled=BTreeMap::new();
+    let mut edges=Vec::new();
+    while let Some(id)=pending.pop_first(){
+        let mut one=compile(b,layout,&[id],glyph_count,gdef,budget)?;
+        let lookup=one.pop().ok_or(Error::Invalid("gsub program lookup"))?;
+        charge(&mut budget.max_lookups,1,"gsub program lookups")?;
+        charge(&mut budget.max_total_subtables,lookup.subtables().len(),"gsub program subtables")?;
+        for sub in lookup.subtables(){
+            if lookup.declared_kind()==7{charge(&mut budget.max_total_target_bytes,8,"gsub program bytes")?;}
+            charge(&mut budget.max_total_target_bytes,b.len()-sub.target_offset(),"gsub program bytes")?;
+        }
+        let (found,remaining)=crate::font_gsub_dependencies::discover_with_scan(std::slice::from_ref(&lookup),n,dep)?;
+        dep.max_scan_records=remaining;
+        charge(&mut dep.max_actions,found.len(),"gsub program actions")?;
+        for e in &found{
+            let target=e.action.lookup_index;
+            if seen.insert(target){
+                if seen.len()>cap{return Err(Error::Limit("gsub program lookups"));}
+                pending.insert(target);
+            }
+        }
+        edges.extend(found);
+        compiled.insert(id,lookup);
+    }
+    let sources:Vec<_>=compiled.keys().copied().collect();
+    // Discovery order can differ from original LookupList order.
+    // Stable sort retains every source's original ordered actions.
+    edges.sort_by_key(|e|e.site.lookup_index);
+    let closure=analyze_gsub_dependency_closure(n,&sources,&edges,roots,l.closure)?;
+    if !closure.is_complete()||closure.reachable!=sources{return Err(Error::Invalid("gsub program incomplete"));}
+    Ok(CompiledGsubProgram{roots:roots.to_vec(),lookups:compiled.into_values().collect(),dependencies:edges,closure})
+}
+pub fn compile_gsub_program<'a>(b:&[u8],roots:&[u16],glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
+    let layout=parse_gsub_layout(b,l.compile.layout)?;
+    compile_program(b,&layout,roots,glyph_count,gdef,l)
+}
+pub fn compile_gsub_plan_program<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
+    let layout=parse_gsub_layout(b,l.compile.layout)?;
+    let roots=validate_plan(&layout,plan,l.compile)?;
+    compile_program(b,&layout,&roots,glyph_count,gdef,l)
 }

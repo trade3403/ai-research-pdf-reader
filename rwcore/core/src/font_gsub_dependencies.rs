@@ -75,6 +75,10 @@ impl Collector{
 /// Self references and mutual references are deliberately retained.
 pub fn discover_gsub_dependencies(lookups:&[CompiledGsubLookup<'_>],lookup_count:usize,
     l:GsubDependencyLimits)->Result<Vec<GsubDependency>,Error>{
+    discover_with_scan(lookups,lookup_count,l).map(|(edges,_)|edges)
+}
+pub(crate) fn discover_with_scan(lookups:&[CompiledGsubLookup<'_>],lookup_count:usize,
+    l:GsubDependencyLimits)->Result<(Vec<GsubDependency>,usize),Error>{
     if lookup_count>65535{return Err(Error::Invalid("gsub dependency lookup count"));}
     if lookups.len()>lookup_count{return Err(Error::Invalid("gsub dependency source count"));}
     let mut c=Collector{scan:l.max_scan_records,remaining:l.max_actions,lookup_count,edges:Vec::new()};
@@ -103,5 +107,5 @@ pub fn discover_gsub_dependencies(lookups:&[CompiledGsubLookup<'_>],lookup_count
             }
         }
     }
-    Ok(c.edges)
+    Ok((c.edges,c.scan))
 }

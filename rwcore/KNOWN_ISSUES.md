@@ -141,3 +141,5 @@
 - C4.4c4c: static closure depends on caller-supplied complete direct inventory for each declared source, from the same font; missing reachable sources prevent proven-acyclic status. Witness is first deterministic DFS cycle, not all cycles or runtime reachability. DFS stack limit is not longest-path limit. Nested execution still requires independent dynamic depth/action/work guards. Real closure reference pending next stage.
 
 - C4.4c4d: matrix reference checks static reachability only; seven fixtures have no static cycles (synthetic cycles retained). Partial source coverage remains explicitly incomplete. No runtime cycle guard or actual filtered execution yet. Native Type 8 and real point attachment fixtures remain outstanding.
+
+- C4.4c5a: static program retains cycles, does not execute. Conservative suffix byte accounting, not memory measurement. Closure stack depth is not runtime recursion bound. Real program reference pending.

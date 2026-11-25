@@ -79,8 +79,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4c4a | Bounded nested GSUB lookup dependency discovery | Verified |
 | C4.4c4b | Real raw contextual dependency reference | Verified |
 | C4.4c4c | Bounded static dependency closure and cycle diagnostics | Verified |
-| C4.4c4d | Real-font dependency closure references | Source implemented; CI pending |
-| C4.4c5a | Bounded dependency compilation integration | Planned |
+| C4.4c4d | Real-font dependency closure references | Verified |
+| C4.4c5a | Bounded dependency compilation integration | Source implemented; CI pending |
+| C4.4c5b | Real-font dependency program reference | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
