@@ -178,3 +178,6 @@ pub use font_extension_subst::{ExtensionSubstitution,ExtensionTarget,ExtensionLi
 
 pub mod font_reverse_subst;
 pub use font_reverse_subst::{ReverseSubstLimits,ReverseSubstitution,parse_reverse_substitution};
+
+pub mod font_gdef;
+pub use font_gdef::{GdefLimits,GdefDirectory,GdefGlyphClass,Gdef,parse_gdef_directory,parse_gdef};

@@ -59,3 +59,6 @@ C4.4a8b2a source pending CI; parent CI #105 verified 702 tests per platform. Ori
 
 ## Latest checkpoint superseding previous checkpoint
 C4.4a8b2b source pending CI; parent CI #106 verified 704 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Native Type 8 reference still fixture-blocked.
+
+## Latest checkpoint superseding previous checkpoint
+C4.4b1 source pending CI; parent CI #107 verified 706 tests per platform. Read DEV_STATE.md and verify exact HEAD; no concurrent writers. Native Type 8 reference still fixture-blocked. GDEF deferred child bodies not decoded.

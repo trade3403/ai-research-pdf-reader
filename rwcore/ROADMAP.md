@@ -64,10 +64,11 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4a8a | GSUB extension wrapper and target dispatch | Verified |
 | C4.4a8b1 | Real direct targets in synthetic extension wrappers | Verified |
 | C4.4a8b2a | Native Type 7 wrapper inventory and representative dispatch | Verified |
-| C4.4a8b2b | Full native Type 7 target decoding and reference checks | Source implemented; CI pending |
+| C4.4a8b2b | Full native Type 7 target decoding and reference checks | Verified |
 | C4.4a9a | Reverse chained single substitution Type 8 | Verified |
 | C4.4a9b | Real native Type 8 font reference | Outstanding: fixture needed |
-| C4.4b1 | GDEF header/directory and glyph class tables | Planned |
+| C4.4b1 | GDEF header/directory and glyph class tables | Source implemented; CI pending |
+| C4.4b2 | GDEF MarkGlyphSetsDef coverage sets | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
