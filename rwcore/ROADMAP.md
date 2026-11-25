@@ -1,6 +1,6 @@
 # C 线路研发路线
 
-Status below is baseline at CI #55, not full Word compatibility.
+Status below is baseline at CI #56, not full Word compatibility.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -14,8 +14,8 @@ Status below is baseline at CI #55, not full Word compatibility.
 | C2.4c-1 | Inline DrawingML metadata | Verified |
 | C2.4c-2 | Ordered inline pictures in document runs | Verified |
 | C2.4d-1 | Floating anchor metadata | Verified |
-| C2.4d-2 | Position and text wrap algorithms | Source implemented; CI pending |
-| C2.4e | Picture crop, rotation, geometry | Planned |
+| C2.4d-2 | Position and text wrap algorithms | Verified |
+| C2.4e | Picture crop, rotation, geometry | Source implemented; CI pending |
 | C2.4f | Media/document integration acceptance | Planned |
 | C3 | Document tree, incremental editing transactions | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |

@@ -82,3 +82,6 @@ pub use drawing_anchor::{parse_floating_picture, FloatingPicture, AnchorDistance
 
 pub mod drawing_layout;
 pub use drawing_layout::{EmuSpan, EmuRect, InsideEdge, AnchorLayoutContext, FloatingPlacement, ContourPolicy, LineWrap, place_floating_picture, wrap_floating_line};
+
+pub mod picture_geometry;
+pub use picture_geometry::{parse_picture_geometry, PictureCrop, PictureTransform, PictureGeometry, PictureMapping, GeometryPoint, GeometryBounds};
