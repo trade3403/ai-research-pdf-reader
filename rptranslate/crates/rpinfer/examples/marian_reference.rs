@@ -67,7 +67,11 @@ fn ffn<'a>(w: &'a Weights, name: &str) -> FeedForward<'a> {
 }
 
 fn emit(name: &str, value: &Tensor) {
-    let shape = value.shape().iter().map(usize::to_string).collect::<Vec<_>>();
+    let shape = value
+        .shape()
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>();
     let data = value.data().iter().map(f32::to_string).collect::<Vec<_>>();
     println!("{name}|{}|{}", shape.join(","), data.join(","));
 }
@@ -85,7 +89,12 @@ fn main() {
         _ => panic!("unknown kernel"),
     };
     let (source, sm, target, tm): (&[u32], &[bool], &[u32], &[bool]) = match case {
-        0 => (&[2, 5, 16], &[true, true, false], &[16, 4, 7], &[true, false, true]),
+        0 => (
+            &[2, 5, 16],
+            &[true, true, false],
+            &[16, 4, 7],
+            &[true, false, true],
+        ),
         1 => (&[3], &[true], &[16], &[true]),
         2 => (&[2, 8, 9, 0], &[true; 4], &[16, 6], &[true; 2]),
         _ => panic!("unknown fixture"),
@@ -151,7 +160,9 @@ fn main() {
     for (i, layer) in dec.iter().enumerate() {
         let a = layer.self_stage(&state, Some(tm), kernel).unwrap();
         emit(&format!("dec.{i}.self_norm"), &a);
-        let c = layer.cross_stage(&a, encoded.memory(), Some(sm), kernel).unwrap();
+        let c = layer
+            .cross_stage(&a, encoded.memory(), Some(sm), kernel)
+            .unwrap();
         emit(&format!("dec.{i}.cross_norm"), &c);
         let ff = layer.ffn.forward(&c, kernel).unwrap();
         emit(&format!("dec.{i}.ffn"), &ff);
