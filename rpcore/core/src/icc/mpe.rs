@@ -3,7 +3,7 @@
 //! The PDF renderer deliberately does not select MPE until intent tests exist.
 use super::{sig,u16be,u32be,Signature,MAX_PROFILE,MAX_CURVE};
 use crate::{Error,Result};
-use std::collections::BTreeMap;
+use std::{borrow::Cow,collections::BTreeMap};
 const MAX_ELEMENTS:usize=64;
 const MAX_CHANNELS:usize=16;
 const MAX_SEGMENTS:usize=256;
@@ -182,12 +182,12 @@ impl<'a> Mpe<'a>{
 /// once; large CLUT/sample arrays remain in the original validated tag.
 #[derive(Debug)]
 pub struct Program<'a>{
-    inputs:usize,outputs:usize,stages:Vec<std::sync::Arc<Stage<'a>>>,
+    inputs:usize,outputs:usize,stages:Vec<std::sync::Arc<Stage<'a>>>,work:usize,
 }
 #[derive(Debug)]
 enum Stage<'a>{
     Matrix{inputs:usize,outputs:usize,coeff:Vec<f64>,offset:Vec<f64>},
-    Clut{grid:Vec<u8>,strides:Vec<usize>,outputs:usize,data:&'a[u8]},
+    Clut{grid:Vec<u8>,strides:Vec<usize>,outputs:usize,data:Cow<'a,[u8]>},
     Curves(Vec<std::sync::Arc<Segmented<'a>>>),
     Identity,
 }
@@ -196,7 +196,7 @@ struct Segmented<'a>{breaks:Vec<f64>,segments:Vec<Segment<'a>>}
 #[derive(Debug)]
 enum Segment<'a>{
     Formula{kind:u16,p:[f64;5]},
-    Sampled{lo:f64,hi:f64,first:f64,data:&'a[u8]},
+    Sampled{lo:f64,hi:f64,first:f64,data:Cow<'a,[u8]>},
 }
 fn checked_float(v:f64)->Result<f64>{
     if !v.is_finite()||v.abs()>f32::MAX as f64{return Err(Error::Invalid("ICC MPE evaluation range"));}
@@ -249,7 +249,7 @@ impl<'a> Segmented<'a>{
                 let first=segments[i-1].eval(lo)?;
                 let data=&tail[12..12+4*count];
                 pos+=12+4*count;
-                Segment::Sampled{lo,hi,first,data}
+                Segment::Sampled{lo,hi,first,data:Cow::Borrowed(data)}
             };
             segments.push(seg);
         }
@@ -288,7 +288,7 @@ impl<'a> Mpe<'a>{
                 ElementKind::Clut{grid}=>{
                     let mut strides=vec![1;grid.len()];let mut s=1;
                     for j in (0..grid.len()).rev(){strides[j]=s;s*=grid[j] as usize;}
-                    Stage::Clut{grid:grid.clone(),strides,outputs:e.outputs,data:&raw[28..]}
+                    Stage::Clut{grid:grid.clone(),strides,outputs:e.outputs,data:Cow::Borrowed(&raw[28..])}
                 }
                 ElementKind::CurveSet{..}=>{
                     let mut seen=BTreeMap::<(usize,usize),Arc<Segmented<'a>>>::new();
@@ -306,10 +306,48 @@ impl<'a> Mpe<'a>{
             };
             let stage=Arc::new(stage);unique.insert(key,Arc::clone(&stage));stages.push(stage);
         }
-        Ok(Program{inputs:self.inputs,outputs:self.outputs,stages})
+        Ok(Program{inputs:self.inputs,outputs:self.outputs,stages,work})
     }
 }
 impl Program<'_>{
+    pub fn work(&self)->usize{self.work}
+    /// Own all borrowed payloads once per shared stage and curve. No
+    /// self-referential structure, leaked allocation or unsafe code.
+    pub fn into_owned(self)->Program<'static>{
+        use std::sync::Arc;
+        let mut stages=Vec::with_capacity(self.stages.len());
+        let mut shared:BTreeMap<_,Arc<Stage<'static>>>=BTreeMap::new();
+        for stage in self.stages{
+            let key=Arc::as_ptr(&stage);
+            if let Some(s)=shared.get(&key){stages.push(Arc::clone(s));continue;}
+            let owned=match stage.as_ref(){
+                Stage::Matrix{inputs,outputs,coeff,offset}=>Stage::Matrix{inputs:*inputs,outputs:*outputs,coeff:coeff.clone(),offset:offset.clone()},
+                Stage::Clut{grid,strides,outputs,data}=>Stage::Clut{grid:grid.clone(),strides:strides.clone(),outputs:*outputs,data:Cow::Owned(data.to_vec())},
+                Stage::Curves(curves)=>{
+                    let mut cache:BTreeMap<_,Arc<Segmented<'static>>>=BTreeMap::new();
+                    let mut out=Vec::with_capacity(curves.len());
+                    for curve in curves{
+                        let k=Arc::as_ptr(curve);
+                        let c=if let Some(c)=cache.get(&k){Arc::clone(c)}else{
+                            let segments=curve.segments.iter().map(|s|match s{
+                                Segment::Formula{kind,p}=>Segment::Formula{kind:*kind,p:*p},
+                                Segment::Sampled{lo,hi,first,data}=>Segment::Sampled{lo:*lo,hi:*hi,first:*first,data:Cow::Owned(data.to_vec())},
+                            }).collect();
+                            let c=Arc::new(Segmented{breaks:curve.breaks.clone(),segments});
+                            cache.insert(k,Arc::clone(&c));c
+                        };
+                        out.push(c);
+                    }
+                    Stage::Curves(out)
+                }
+                Stage::Identity=>Stage::Identity,
+            };
+            let owned=Arc::new(owned);
+            shared.insert(key,Arc::clone(&owned));stages.push(owned);
+        }
+        Program{inputs:self.inputs,outputs:self.outputs,stages,work:self.work}
+    }
+
     /// Raw MPE channel values, NOT normalized Lab, XYZ decoding or display RGB.
     /// Only CLUT inputs clip. Float32 payloads, f64 arithmetic, checked
     /// float32-representable stage outputs; no per-sample heap allocation.
@@ -444,6 +482,17 @@ mod tests{
         let bad=Segment::Formula{kind:0,p:[0.5,1.,0.,0.,0.]};
         assert!(bad.eval(-1.).is_err());
         assert!(exp.eval(1000.).is_err());
+    }
+    #[test]fn owned_program_outlives_profile_and_matches_borrowed(){
+        let (owned,expected)={
+            let raw=pipeline(4,3,&[matrix(4,2),curves(),clut()]);
+            let parsed=Mpe::parse(&raw).unwrap();
+            let program=parsed.prepare().unwrap();
+            let expected=program.evaluate(&[0.1,0.2,0.3,0.4]).unwrap();
+            (program.into_owned(),expected)
+        };
+        assert_eq!(owned.evaluate(&[0.1,0.2,0.3,0.4]).unwrap(),expected);
+        assert!(owned.work()>0);
     }
     #[test]fn shared_matrix_and_expansion_pass_through(){
         let mut m=head(b"matf",1,1);append_floats(&mut m,&[2.,1.]);

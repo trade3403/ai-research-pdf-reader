@@ -57,15 +57,20 @@ pub(crate) enum IccTransform{
     Gray(crate::icc::GrayTrc),
     Cmyk(crate::icc::OwnedCmykLut),
     Mab(crate::icc::CmykMab),
+    Mpe{transform:crate::icc::MpeTransform<'static>,components:usize},
 }
 impl IccTransform{
-    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4}}
+    pub(crate) fn components(&self)->usize{match self{Self::Gray(_)=>1,Self::Rgb(_)=>3,Self::Cmyk(_)|Self::Mab(_)=>4,Self::Mpe{components,..}=>*components}}
+    pub(crate) fn work(&self)->usize{
+        match self{Self::Mpe{transform,..}=>transform.work().max(32),_=>if self.components()==4{128}else{32}}
+    }
     pub(crate) fn rgb(&self,v:[f64;4])->Result<[f64;3]>{
         let xyz=match self{
             Self::Rgb(m)=>m.to_xyz_d50([v[0],v[1],v[2]])?,
             Self::Gray(t)=>t.to_xyz_d50(v[0])?,
             Self::Cmyk(lut)=>lut.to_xyz_d50(v)?,
             Self::Mab(lut)=>lut.to_xyz_d50(v)?,
+            Self::Mpe{transform,components}=>transform.to_xyz_d50(&v[..*components])?,
         };
         let src=mv(BRADFORD,[0.9642,1.,0.8249]);let dst=mv(BRADFORD,D65);
         let cone=mv(BRADFORD,xyz);
@@ -94,6 +99,25 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
         let actual=match &p.color_space{b"GRAY"=>1,b"RGB "=>3,_=>4};
         if n!=actual{return Err(Error::Invalid("ICCBased profile N mismatch"));}
     }
+    // Preserve the existing relative-colorimetric display policy. Both
+    // vector and image paths use this loader; PDF ri switching is separate.
+    if p.tag(b"D2B1").is_some(){
+        use crate::icc::{MpeDirection,RenderingIntent};
+        match p.mpe_transform(MpeDirection::DeviceToPcs,RenderingIntent::RelativeColorimetric){
+            Ok(transform)=>{
+                // Bound per-operation vector work as well as per-pixel
+                // raster work. Charge owned payloads conservatively.
+                if transform.work()>4096{return Err(Error::Limit("PDF MPE evaluation work"));}
+                let charged=charged.checked_add(bytes.len()).ok_or(Error::Limit("ICC owned MPE bytes"))?;
+                if charged>remaining{return Err(Error::Limit("ICC owned MPE bytes"));}
+                let transform=transform.into_owned();
+                return Ok((n,Some(IccTransform::Mpe{transform,components:n}),charged,ProfilePath::Mpe{tag:*b"D2B1"}));
+            }
+            Err(Error::Unsupported(_))=>{},
+            Err(Error::Limit(s))=>return Err(Error::Limit(s)),
+            Err(Error::Invalid(s))=>return Ok((n,None,charged,ProfilePath::Alternate{reason:s})),
+        }
+    }
     let key=if p.tag(b"A2B1").is_some(){b"A2B1"}else{b"A2B0"};
     let transform=match n{
         1=>p.gray_trc().map(IccTransform::Gray),
@@ -116,6 +140,7 @@ pub(crate) fn load_icc(doc:&Document<'_>,a:&[Object],remaining:usize)
                 IccTransform::Rgb(_)=>ProfilePath::RgbMatrix,
                 IccTransform::Cmyk(_)=>ProfilePath::CmykLut{tag:*key},
                 IccTransform::Mab(_)=>ProfilePath::CmykMab{tag:*key},
+                IccTransform::Mpe{transform,..}=>ProfilePath::Mpe{tag:transform.tag},
             };
             Ok((n,Some(t),charged,path))
         }

@@ -181,7 +181,7 @@ pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut 
     // uses 16 interpolation corners; the RGB path is three TRCs and a matrix.
     if let Space::Icc(t)=&cs{
         budget.stage="raster work (image ICC)";
-        budget.charge(w*h*if t.components()==4{128}else{32})?;
+        budget.charge((w*h).checked_mul(t.work()).ok_or(Error::Limit("raster work (image ICC)"))?)?;
     }
     let mut out=Vec::with_capacity(w*h*3);
     for v in data.chunks_exact(n){

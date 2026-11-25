@@ -15,7 +15,7 @@ pub enum ProfileUse{Vector,Image}
 /// Native paths currently approximate PDF rendering intents. Alternate is
 /// explicitly distinguishable from a native transform even for identity RGB.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub enum ProfilePath{RgbMatrix,GrayTrc,CmykLut{tag:Signature},CmykMab{tag:Signature},Alternate{reason:&'static str}}
+pub enum ProfilePath{RgbMatrix,GrayTrc,CmykLut{tag:Signature},CmykMab{tag:Signature},Mpe{tag:Signature},Alternate{reason:&'static str}}
 /// One record per profile reference and source category on a successful page.
 /// Selection/decode can occur even if the affected paint is clipped away.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -796,6 +796,11 @@ pub struct MpeTransform<'a>{
     program:mpe::Program<'a>,
 }
 impl MpeTransform<'_>{
+    pub fn work(&self)->usize{self.program.work()}
+    pub fn into_owned(self)->MpeTransform<'static>{
+        MpeTransform{tag:self.tag,direction:self.direction,intent:self.intent,pcs:self.pcs,program:self.program.into_owned()}
+    }
+
     pub fn evaluate(&self,input:&[f64])->Result<Vec<f64>>{self.program.evaluate(input)}
     pub fn evaluate_into(&self,input:&[f64],output:&mut[f64])->Result<()>{self.program.evaluate_into(input,output)}
     /// D50 PCS XYZ, retaining the selected intent's colorimetry.

@@ -14,6 +14,7 @@ fn report_icc(v:&[rpcore::icc::ProfileDiagnostic]){
         let (path,reason)=match p.path{
             ProfilePath::RgbMatrix=>("rgb_matrix".to_owned(),""),
             ProfilePath::GrayTrc=>("gray_trc".to_owned(),""),
+            ProfilePath::Mpe{tag}=>(format!("mpe_{}",String::from_utf8_lossy(&tag)),""),
             ProfilePath::CmykMab{tag}=>(format!("mab_{}",String::from_utf8_lossy(&tag)),""),
             ProfilePath::CmykLut{tag}=>(format!("cmyk_{}",String::from_utf8_lossy(&tag)),""),
             ProfilePath::Alternate{reason}=>("alternate".to_owned(),reason),
