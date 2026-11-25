@@ -97,3 +97,5 @@
 
 
 - C4.4a7e1: standalone GSUB Type 6 Format 1 glyph-based chaining. First covered input, nearest-first backtrack, forward lookahead, font-order first match including empty actions; input-relative checked action indices; cumulative rule/glyph/action limits charge shared offsets. Ten new synthetic tests (653/platform, 1959 expected); CI pending. No nested execution, GDEF filtering, class/coverage chaining, shaping or real Type 6 font acceptance. Caller supplies contiguous logical glyph stream and start index. No lookup flag interpretation or glyph skipping; parser permits trailing parent-table bytes and charges aliased rules. Real DOCX corpus, security/license review and reference compatibility still outstanding.
+
+- C4.4a7e2: synthetic class chaining only; ClassDef record budgets are per table, rule budgets cumulative, no comprehensive payload overlap checks. No nested lookup execution, GDEF filtering, real Type 6 font reference, shaping, or GUI acceptance. Real DOCX corpus and security/license review remain outstanding.

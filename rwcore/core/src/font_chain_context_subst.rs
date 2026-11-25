@@ -1,4 +1,4 @@
-//! Standalone GSUB type 6 format 1 (glyph-based chained context).
+//! Standalone GSUB type 6 formats 1/2 (glyph/class-based chained context).
 //! Matches a contiguous glyph stream without executing nested lookups.
 use crate::{ContextAction,ContextLimits,ContextMatch,Error,GlyphCoverage,parse_glyph_coverage};
 
@@ -80,10 +80,15 @@ pub fn parse_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
     if header>b.len()||cov<header||cov>=b.len(){return Err(Error::Invalid("chain coverage offset"));}
     let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,l.max_sets.min(65536) as u32)?;
     if coverage.len() as usize!=n{return Err(Error::Invalid("chain set count"));}
+    let sets=parse_chain_sets(b,n,6,header,[glyph_count;3],lookup_count,l)?;
+    Ok(ChainContextSubstitution{coverage,sets})
+}
+
+fn parse_chain_sets(b:&[u8],n:usize,offset_base:usize,header:usize,bounds:[u32;3],lookup_count:usize,l:ContextLimits)->Result<Vec<Option<Vec<ChainContextRule>>>,Error>{
     let mut sets=Vec::with_capacity(n);
     let(mut rules_total,mut glyph_total,mut action_total)=(0,0,0);
     for i in 0..n{
-        let at=usize::from(word(b,6+2*i)?);
+        let at=usize::from(word(b,offset_base+2*i)?);
         if at==0{sets.push(None);continue;}
         if at<header{return Err(Error::Invalid("chain set offset"));}
         let count=usize::from(word(b,at)?);
@@ -99,16 +104,16 @@ pub fn parse_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
             let mut span=0;
             charge(&mut span,back,l.max_input)?;
             charge(&mut glyph_total,back,l.max_total_input)?;
-            let backtrack=read_glyphs(b,&mut p,back,glyph_count)?;
+            let backtrack=read_glyphs(b,&mut p,back,bounds[0])?;
             let input=usize::from(take(b,&mut p)?);
             if input==0{return Err(Error::Invalid("chain empty input"));}
             charge(&mut span,input,l.max_input)?;
             charge(&mut glyph_total,input,l.max_total_input)?;
-            let remaining=read_glyphs(b,&mut p,input-1,glyph_count)?;
+            let remaining=read_glyphs(b,&mut p,input-1,bounds[1])?;
             let ahead=usize::from(take(b,&mut p)?);
             charge(&mut span,ahead,l.max_input)?;
             charge(&mut glyph_total,ahead,l.max_total_input)?;
-            let lookahead=read_glyphs(b,&mut p,ahead,glyph_count)?;
+            let lookahead=read_glyphs(b,&mut p,ahead,bounds[2])?;
             let count=usize::from(take(b,&mut p)?);
             charge(&mut action_total,count,l.max_actions)?;
             if b.len().saturating_sub(p)/4<count{return Err(Error::Invalid("chain truncated actions"));}
@@ -125,5 +130,65 @@ pub fn parse_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
         }
         sets.push(Some(rules));
     }
-    Ok(ChainContextSubstitution{coverage,sets})
+    Ok(sets)
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ClassChainContextSubstitution {
+    coverage:GlyphCoverage,
+    backtrack:crate::GlyphClassDef,
+    input:crate::GlyphClassDef,
+    lookahead:crate::GlyphClassDef,
+    sets:Vec<Option<Vec<ChainContextRule>>>,
+}
+impl ClassChainContextSubstitution {
+    pub fn len(&self)->usize{self.sets.len()}
+    pub fn is_empty(&self)->bool{self.sets.is_empty()}
+    /// Rules contain class IDs in their respective independent class domains.
+    pub fn rules(&self,id:u16)->Option<&[ChainContextRule]>{
+        self.coverage.index(id)?;
+        self.sets.get(usize::from(self.input.class(id)?))?.as_deref()
+    }
+    pub fn match_at(&self,glyphs:&[u16],position:usize)->Option<ContextMatch<'_>>{
+        let first=*glyphs.get(position)?;
+        let before=&glyphs[..position];
+        let tail=&glyphs[position+1..];
+        for r in self.rules(first)?{
+            if before.len()<r.backtrack.len()||tail.len()<r.remaining.len()||
+                !r.backtrack.iter().zip(before.iter().rev()).all(|(&c,&g)|self.backtrack.class(g)==Some(c))||
+                !r.remaining.iter().zip(tail).all(|(&c,&g)|self.input.class(g)==Some(c)){continue;}
+            let ahead=&tail[r.remaining.len()..];
+            if ahead.len()>=r.lookahead.len()&&r.lookahead.iter().zip(ahead).all(|(&c,&g)|self.lookahead.class(g)==Some(c)){
+                return Some(ContextMatch{input_len:r.remaining.len()+1,actions:&r.actions});
+            }
+        }
+        None
+    }
+}
+/// Format 2: independent backtrack/input/lookahead ClassDefs; input classes
+/// index nullable sets. Backtrack and lookahead class IDs are full uint16
+/// domains (a class with no members is simply unmatchable). Class zero is
+/// implicit only for in-face glyphs. Matching is contiguous and actions
+/// are returned, not executed. Shared rule offsets consume the same budgets
+/// as format 1; each ClassDef is bounded separately by max_sets records.
+pub fn parse_class_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassChainContextSubstitution,Error>{
+    if b.len()>l.max_bytes{return Err(Error::Limit("chain bytes"));}
+    if word(b,0)?!=2{return Err(Error::Unsupported("class chain format"));}
+    let cov=usize::from(word(b,2)?);
+    let back=usize::from(word(b,4)?);
+    let input=usize::from(word(b,6)?);
+    let ahead=usize::from(word(b,8)?);
+    let n=usize::from(word(b,10)?);
+    if n==0{return Err(Error::Invalid("class chain sets"));}
+    if n>l.max_sets{return Err(Error::Limit("chain sets"));}
+    let header=12+2*n;
+    if header>b.len()||[cov,back,input,ahead].iter().any(|&p|p<header||p>=b.len()){
+        return Err(Error::Invalid("class chain offset"));
+    }
+    let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,65536)?;
+    let backtrack=crate::parse_glyph_class_def(&b[back..],glyph_count,65536,l.max_sets,65536)?;
+    let input=crate::parse_glyph_class_def(&b[input..],glyph_count,n as u32,l.max_sets,65536)?;
+    let lookahead=crate::parse_glyph_class_def(&b[ahead..],glyph_count,65536,l.max_sets,65536)?;
+    let sets=parse_chain_sets(b,n,12,header,[65536,n as u32,65536],lookup_count,l)?;
+    Ok(ClassChainContextSubstitution{coverage,backtrack,input,lookahead,sets})
 }

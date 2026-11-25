@@ -105,3 +105,5 @@ C4.4a7d pending CI: original OFL Padauk and Noto Sans Devanagari fixtures; indep
 
 
 C4.4a7e1: standalone GSUB Type 6 Format 1 glyph-based chaining. First covered input, nearest-first backtrack, forward lookahead, font-order first match including empty actions; input-relative checked action indices; cumulative rule/glyph/action limits charge shared offsets. Ten new synthetic tests (653/platform, 1959 expected); CI pending. No nested execution, GDEF filtering, class/coverage chaining, shaping or real Type 6 font acceptance. Module: font_chain_context_subst.rs. ContextLimits.max_input is the full three-segment span, max_total_input counts implicit first input as well.
+
+C4.4a7e2 pending CI: font_chain_context_subst.rs adds Type 6 Format 2 independent backtrack/input/lookahead ClassDefs and class-indexed nullable sets, Coverage gate, class zero within face domain, contiguous ordered match. Shared bounded rule parser retains Format 1 API. Input class IDs bounded by set count; other class IDs are uint16 and absent classes never match. Ten synthetic tests pending CI.

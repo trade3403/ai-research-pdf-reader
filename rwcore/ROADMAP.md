@@ -56,9 +56,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4a7a | Contextual substitution format 1 parsing and matching | Verified |
 | C4.4a7b | ClassDef and contextual format 2 | Verified |
 | C4.4a7c | Contextual format 3 coverage matching | Verified |
-| C4.4a7d | Real-font direct contextual references | Source implemented; CI pending |
-| C4.4a7e1 | Glyph-based chained contextual format 1 | Source implemented; CI pending |
-| C4.4a7e2 | Class-based chained contextual format 2 | Planned |
+| C4.4a7d | Real-font direct contextual references | Verified |
+| C4.4a7e1 | Glyph-based chained contextual format 1 | Verified |
+| C4.4a7e2 | Class-based chained contextual format 2 | Source implemented; CI pending |
 | C4.4a7e3 | Coverage-based chained contextual format 3 | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
