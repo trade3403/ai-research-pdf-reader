@@ -74,3 +74,5 @@
 - C4.4a3a standalone single substitution only, bounded 16-bit domain scan for format 1; real-font reference, lookup scheduling, GDEF filtering, other substitution types and full shaping outstanding.
 
 - C4.4a3b pending CI: real direct type 1 subtable fixtures only; no extension lookup execution, script/language scheduling, GDEF filtering, Arabic shaping or full shaping acceptance. Reference generated independently from raw font bytes, not an external shaping engine.
+
+- C4.4a4a standalone multiple substitution; zero-length sequences rejected per spec, no real type 2 acceptance yet, no GDEF, cluster propagation or lookup scheduling; overlapping payload validation not comprehensive.
