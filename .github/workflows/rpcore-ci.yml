@@ -220,6 +220,7 @@ jobs:
           mkdir -p rpcore/target/icc-report
           dpkg-query -W liblcms2-2 > rpcore/target/icc-report/reference-version.txt
           python3 rpcore/corpus/icc_reference.py --probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-report
+          python3 rpcore/corpus/icc_mpe_reference.py --probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-report/mpe
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -229,6 +230,7 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/icc-report/report.md ]; then cat rpcore/target/icc-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-report/mpe/report.md ]; then cat rpcore/target/icc-report/mpe/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
   icc-render:
     # End-to-end embedded ICC gate; LCMS, Poppler and Pillow are CI-only.

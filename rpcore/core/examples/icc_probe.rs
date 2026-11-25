@@ -42,6 +42,15 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         return Ok(());
     }
     let p=Profile::parse(&bytes)?;
+    if std::env::args_os().nth(2).is_some_and(|s|s=="mpe-eval"){
+        let m=p.mpe(b"D2B1")?;let program=m.prepare()?;
+        if m.inputs()!=4||m.outputs()!=3{return Err("MPE differential probe expects 4 to 3 channels".into());}
+        for c in [0.,0.25,0.5,0.75,1.]{for m in [0.,0.25,0.5,0.75,1.]{for y in [0.,0.25,0.5,0.75,1.]{for k in [0.,0.25,0.5,0.75,1.]{
+            let mut v=[0.;3];program.evaluate_into(&[c,m,y,k],&mut v)?;
+            println!("{:.12},{:.12},{:.12}",v[0],v[1],v[2]);
+        }}}}
+        return Ok(());
+    }
     if std::env::args_os().nth(2).is_some_and(|s|s=="mpe-inspect"){
         let tag=std::env::args().nth(3).unwrap_or_else(||"D2B1".into());
         let tag:[u8;4]=tag.as_bytes().try_into().map_err(|_|"expected four-byte MPE tag")?;
