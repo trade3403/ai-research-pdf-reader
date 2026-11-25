@@ -58,3 +58,6 @@ pub use table_borders::{TableBorderPlan, ThreeLineBorders};
 
 pub mod table_geometry;
 pub use table_geometry::{compute_table_geometry, compute_declared_grid_geometry, TableGeometry, CellGeometry, CellInsets};
+
+pub mod table_rows;
+pub use table_rows::{layout_table_rows, place_vertical, TableRowLayout, CellMeasurement, VerticalPlacement};

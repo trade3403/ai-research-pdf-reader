@@ -96,19 +96,7 @@ pub fn compute_table_geometry<'a>(table:&'a Table, column_widths:&[u32],
             width:x_offsets[c+anchor.column_span]-x_offsets[c],
             height:y_offsets[r+anchor.row_span]-y_offsets[r]};
         let source=&table.rows[r].cells[anchor.address.cell];
-        let effective=resolve_effective_cell(&table.appearance,&source.appearance,direction)?;
-        let margin=|edge,default|match effective.margins.get(&edge).map(|m|m.value){
-            None=>Ok(default),
-            Some(TableWidth::Twips(v))=>Ok(v),
-            Some(TableWidth::Nil)=>Ok(0),
-            Some(TableWidth::Auto|TableWidth::Percent50(_))=>Err(Error::Unsupported("nonfixed cell margin")),
-        };
-        let insets=CellInsets{
-            left:margin(TableEdge::Left,default_insets.left)?,
-            right:margin(TableEdge::Right,default_insets.right)?,
-            top:margin(TableEdge::Top,default_insets.top)?,
-            bottom:margin(TableEdge::Bottom,default_insets.bottom)?,
-        };
+        let insets=resolve_cell_insets(&table.appearance,&source.appearance,direction,default_insets)?;
         let content=inset_rect(outer,insets)?;
         cells.push(CellGeometry{address:anchor.address,column:c,column_span:anchor.column_span,
             row_span:anchor.row_span,outer,content,insets});
@@ -127,4 +115,21 @@ pub fn compute_declared_grid_geometry<'a>(table:&'a Table,row_heights:&[u32],
     let widths=table.grid.iter().map(|w|w.ok_or(Error::Invalid("missing declared column width")))
         .collect::<Result<Vec<_>,_>>()?;
     compute_table_geometry(table,&widths,row_heights,origin,direction,default_insets)
+}
+
+pub(crate) fn resolve_cell_insets(table:&crate::Appearance,cell:&crate::Appearance,
+    direction:TableDirection,default_insets:CellInsets)->Result<CellInsets,Error>{
+    let effective=resolve_effective_cell(table,cell,direction)?;
+    let margin=|edge,default|match effective.margins.get(&edge).map(|m|m.value){
+        None=>Ok(default),
+        Some(TableWidth::Twips(v))=>Ok(v),
+        Some(TableWidth::Nil)=>Ok(0),
+        Some(TableWidth::Auto|TableWidth::Percent50(_))=>Err(Error::Unsupported("nonfixed cell margin")),
+    };
+    Ok(CellInsets{
+        left:margin(TableEdge::Left,default_insets.left)?,
+        right:margin(TableEdge::Right,default_insets.right)?,
+        top:margin(TableEdge::Top,default_insets.top)?,
+        bottom:margin(TableEdge::Bottom,default_insets.bottom)?,
+    })
 }
