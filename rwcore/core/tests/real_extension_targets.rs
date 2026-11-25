@@ -1,5 +1,5 @@
 //! Real direct target data in synthetic extension wrappers.
-//! This is NOT native Type 7 font acceptance: the original fonts contain none.
+//! Original Nastaliq Type 7 wrappers are also checked against raw-byte references.
 use rwcore::*;
 const AB:&[u8]=include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf");
 const ABI:&[u8]=include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf");
@@ -164,3 +164,205 @@ const NASTALIQ:&[u8]=include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[
         assert_eq!(actual,direct(kind,&b[target..],1723,202));
     }
 }
+
+fn ref_words(b:&[u8],p:usize,n:usize)->Vec<u16>{
+    (0..n).map(|i|u(b,p+2*i) as u16).collect()
+}
+fn ref_coverage(b:&[u8],p:usize)->Vec<u16>{
+    match u(b,p){
+        1=>ref_words(b,p+4,u(b,p+2)),
+        2=>(0..u(b,p+2)).flat_map(|i|{
+            let q=p+4+i*6;
+            u(b,q) as u16..=u(b,q+2) as u16
+        }).collect(),
+        f=>panic!("unexpected reference coverage {f}"),
+    }
+}
+fn ref_classes(b:&[u8],p:usize,n:usize)->Vec<u16>{
+    let mut out=vec![0;n];
+    match u(b,p){
+        1=>{let first=u(b,p+2);let count=u(b,p+4);
+            out[first..first+count].copy_from_slice(&ref_words(b,p+6,count));}
+        2=>for i in 0..u(b,p+2){
+            let q=p+4+6*i;
+            out[u(b,q)..=u(b,q+2)].fill(u(b,q+4) as u16);
+        },
+        f=>panic!("unexpected reference class format {f}"),
+    }
+    out
+}
+fn ref_actions(b:&[u8],p:usize,n:usize)->Vec<ContextAction>{
+    (0..n).map(|i|ContextAction{sequence_index:u(b,p+4*i) as u16,lookup_index:u(b,p+4*i+2) as u16}).collect()
+}
+fn ref_take_words(b:&[u8],p:&mut usize)->Vec<u16>{
+    let n=u(b,*p);
+    *p+=2;
+    let a=ref_words(b,*p,n);
+    *p+=2*n;
+    a
+}
+fn ref_context_set(b:&[u8],p:usize)->Option<Vec<ContextRule>>{
+    if p==0{return None;}
+    Some((0..u(b,p)).map(|i|{
+        let q=p+u(b,p+2+2*i);
+        let n=u(b,q)-1;
+        ContextRule{remaining:ref_words(b,q+4,n),actions:ref_actions(b,q+4+2*n,u(b,q+2))}
+    }).collect())
+}
+fn ref_chain_set(b:&[u8],p:usize)->Option<Vec<ChainContextRule>>{
+    if p==0{return None;}
+    Some((0..u(b,p)).map(|i|{
+        let mut q=p+u(b,p+2+2*i);
+        let backtrack=ref_take_words(b,&mut q);
+        let n=u(b,q)-1;q+=2;
+        let remaining=ref_words(b,q,n);q+=2*n;
+        let lookahead=ref_take_words(b,&mut q);
+        let actions=ref_actions(b,q+2,u(b,q));
+        ChainContextRule{backtrack,remaining,lookahead,actions}
+    }).collect())
+}
+fn ref_check_coverage(actual:&[GlyphCoverage],expected:&[Vec<u16>],n:usize){
+    assert_eq!(actual.len(),expected.len());
+    for (c,e) in actual.iter().zip(expected){
+        assert_eq!(c.len() as usize,e.len());
+        let mut dense=vec![None;n];
+        for (i,&g) in e.iter().enumerate(){dense[g as usize]=Some(i as u32);}
+        for (g,index) in dense.into_iter().enumerate(){assert_eq!(c.index(g as u16),index);}
+    }
+}
+fn check_target_reference(a:&ExtensionTarget,b:&[u8],n:usize){
+    match a{
+        ExtensionTarget::Single(x)=>{
+            assert_eq!(u(b,0),2);
+            let cov=ref_coverage(b,u(b,2));
+            let replacements=ref_words(b,6,u(b,4));
+            assert_eq!(cov.len(),replacements.len());assert_eq!(x.len(),cov.len());
+            let mut expected=vec![None;n];
+            for (&g,&r) in cov.iter().zip(&replacements){expected[g as usize]=Some(r);}
+            for (g,v) in expected.into_iter().enumerate(){assert_eq!(x.substitute(g as u16),v);}
+        }
+        ExtensionTarget::Multiple(x)=>{
+            let cov=ref_coverage(b,u(b,2));
+            assert_eq!(cov.len(),u(b,4));assert_eq!(x.len(),cov.len());
+            let mut expected=vec![None;n];
+            for (i,&g) in cov.iter().enumerate(){
+                let p=u(b,6+2*i);
+                expected[g as usize]=Some(ref_words(b,p+2,u(b,p)));
+            }
+            for (g,v) in expected.iter().enumerate(){assert_eq!(x.substitute(g as u16),v.as_deref());}
+        }
+        ExtensionTarget::Ligature(x)=>{
+            let cov=ref_coverage(b,u(b,2));
+            assert_eq!(cov.len(),u(b,4));assert_eq!(x.len(),cov.len());
+            let mut expected=vec![None;n];
+            for (i,&g) in cov.iter().enumerate(){
+                let p=u(b,6+2*i);
+                let rules:Vec<_>=(0..u(b,p)).map(|j|{
+                    let q=p+u(b,p+2+2*j);
+                    LigatureRule{output:u(b,q) as u16,remaining:ref_words(b,q+4,u(b,q+2)-1)}
+                }).collect();
+                expected[g as usize]=Some(rules);
+            }
+            for (g,v) in expected.iter().enumerate(){assert_eq!(x.rules(g as u16),v.as_deref());}
+        }
+        ExtensionTarget::Context(_)|ExtensionTarget::ClassContext(_)=>{
+            let format=u(b,0);
+            let cov=ref_coverage(b,u(b,2));
+            let (base,count,classes)=if format==1{
+                (6,u(b,4),None)
+            }else{(8,u(b,6),Some(ref_classes(b,u(b,4),n)))};
+            let sets:Vec<_>=(0..count).map(|i|ref_context_set(b,u(b,base+2*i))).collect();
+            for g in 0..n{
+                let expected=cov.binary_search(&(g as u16)).ok().and_then(|i|{
+                    sets.get(classes.as_ref().map_or(i,|c|c[g] as usize))
+                }).and_then(|s|s.as_deref());
+                let actual=match a{
+                    ExtensionTarget::Context(x)=>x.rules(g as u16),
+                    ExtensionTarget::ClassContext(x)=>x.rules(g as u16),
+                    _=>unreachable!(),
+                };
+                assert_eq!(actual,expected);
+            }
+        }
+        ExtensionTarget::CoverageContext(x)=>{
+            let len=u(b,2);
+            let expected:Vec<_>=(0..len).map(|i|ref_coverage(b,u(b,6+2*i))).collect();
+            ref_check_coverage(x.coverages(),&expected,n);
+            assert_eq!(x.actions(),ref_actions(b,6+2*len,u(b,4)));
+            if expected.iter().all(|c|!c.is_empty()){
+                let glyphs:Vec<_>=expected.iter().map(|c|c[0]).collect();
+                let m=x.match_prefix(&glyphs).unwrap();
+                assert_eq!(m.input_len,len);assert_eq!(m.actions,x.actions());
+                assert!(x.match_prefix(&glyphs[..len-1]).is_none());
+            }
+        }
+        ExtensionTarget::ClassChain(x)=>{
+            let cov=ref_coverage(b,u(b,2));
+            let classes=ref_classes(b,u(b,6),n);
+            let sets:Vec<_>=(0..u(b,10)).map(|i|ref_chain_set(b,u(b,12+2*i))).collect();
+            for g in 0..n{
+                let expected=cov.binary_search(&(g as u16)).ok().and_then(|_|sets.get(classes[g] as usize)).and_then(|s|s.as_deref());
+                assert_eq!(x.rules(g as u16),expected);
+            }
+            // Independent dense backtrack/input/lookahead reference matching.
+            let maps=[ref_classes(b,u(b,4),n),classes,ref_classes(b,u(b,8),n)];
+            for &g in &cov{
+                let Some(rs)=sets.get(maps[1][g as usize] as usize).and_then(|s|s.as_ref())else{continue;};
+                for r in rs{
+                    let pick=|v:&[u16],k:usize|->Option<Vec<u16>>{
+                        v.iter().map(|c|maps[k].iter().position(|x|x==c).map(|i|i as u16)).collect()
+                    };
+                    let (Some(mut seq),Some(tail),Some(ahead))=(pick(&r.backtrack,0),pick(&r.remaining,1),pick(&r.lookahead,2))else{continue;};
+                    seq.reverse();let pos=seq.len();seq.push(g);seq.extend(tail);seq.extend(ahead);
+                    let expected=rs.iter().find(|q|{
+                        if pos<q.backtrack.len()||seq.len()-pos-1<q.remaining.len()+q.lookahead.len(){return false;}
+                        q.backtrack.iter().enumerate().all(|(i,&c)|maps[0][seq[pos-1-i] as usize]==c)&&
+                        q.remaining.iter().enumerate().all(|(i,&c)|maps[1][seq[pos+1+i] as usize]==c)&&
+                        q.lookahead.iter().enumerate().all(|(i,&c)|maps[2][seq[pos+1+q.remaining.len()+i] as usize]==c)
+                    }).unwrap();
+                    let m=x.match_at(&seq,pos).unwrap();
+                    assert_eq!(m.input_len,expected.remaining.len()+1);assert_eq!(m.actions,expected.actions);
+                }
+            }
+        }
+        ExtensionTarget::CoverageChain(x)=>{
+            let mut p=2;
+            let back:Vec<_>=ref_take_words(b,&mut p).iter().map(|&o|ref_coverage(b,o as usize)).collect();
+            let input:Vec<_>=ref_take_words(b,&mut p).iter().map(|&o|ref_coverage(b,o as usize)).collect();
+            let ahead:Vec<_>=ref_take_words(b,&mut p).iter().map(|&o|ref_coverage(b,o as usize)).collect();
+            ref_check_coverage(x.backtrack(),&back,n);
+            ref_check_coverage(x.input(),&input,n);
+            ref_check_coverage(x.lookahead(),&ahead,n);
+            assert_eq!(x.actions(),ref_actions(b,p+2,u(b,p)));
+            let all:Vec<_>=back.iter().rev().chain(&input).chain(&ahead).collect();
+            if all.iter().all(|c|!c.is_empty()){
+                let glyphs:Vec<_>=all.iter().map(|c|c[0]).collect();
+                let m=x.match_at(&glyphs,back.len()).unwrap();
+                assert_eq!(m.input_len,input.len());assert_eq!(m.actions,x.actions());
+                assert!(x.match_at(&glyphs[..glyphs.len()-1],back.len()).is_none());
+            }
+        }
+        _=>panic!("target kind absent from native reference"),
+    }
+}
+fn check_native_targets(context:bool,expected:usize){
+    let b=table(NASTALIQ,b"GSUB").unwrap();
+    let layout=parse_gsub_layout(b,GsubLimits::default()).unwrap();
+    let mut count=0;
+    for (kind,i,at) in lookup_records(b){
+        if kind!=7{continue;}
+        let inner=u(b,at+2) as u16;
+        if (inner==5||inner==6)!=context{continue;}
+        let target=at+d(b,at+4);
+        let payload=&b[target..];
+        let ext=parse_extension_substitution(&b[at..],b.len()).unwrap();
+        let actual=parse_extension_target(ext,1723,layout.lookups.len(),Default::default())
+            .unwrap_or_else(|e|panic!("lookup {i}, wrapper {at}, target {target}, kind {inner}: {e:?}"));
+        assert_eq!(actual,direct(inner,payload,1723,202));
+        check_target_reference(&actual,payload,1723);
+        count+=1;
+    }
+    assert_eq!(count,expected);
+}
+#[test]fn native_nastaliq_all_simple_targets_reference(){check_native_targets(false,97);}
+#[test]fn native_nastaliq_all_context_targets_reference(){check_native_targets(true,1406);}
