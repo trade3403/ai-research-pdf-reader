@@ -52,3 +52,6 @@ pub use table_properties::{TableShading, TableLayout, CellVerticalAlign, RowHeig
 
 pub mod table_effective;
 pub use table_effective::{resolve_effective_cell, resolve_preferred_width, EffectiveCell, PreferredWidth, TableDirection, PropertySource, Sourced};
+
+pub mod table_borders;
+pub use table_borders::{TableBorderPlan, ThreeLineBorders};
