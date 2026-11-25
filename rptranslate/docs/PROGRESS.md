@@ -1,6 +1,6 @@
 # D 线路实际开发进度
 
-更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.3 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
+更新：2026-11-25。当前工程版本 0.1.0；D1.0–D1.4 已通过阶段 CI。此文件只记录可核验进度，不将路线目标计为实现。
 
 ## 状态总览
 | 阶段 | 状态 | 说明 |
@@ -14,14 +14,14 @@
 | D1.2b2b2 | 已通过 | Marian JSON、网络词表 ID、特殊 token |
 | D1.3 | 已通过 | FP32 Tensor shape/stride、reshape、permute、广播与基本运算 |
 | D1.4a | 已通过 | 标量与分块 FP32 矩阵乘法、数值对照及性能基准 |
-| D1.4b | 待验证 | AVX2 自动检测、向量化、标量回退、多线程 |
+| D1.4b | 已通过 | AVX2 自动检测、向量化、标量回退、多线程 |
 | D1.5–D1.7 | 未开始 | Attention、Transformer 和解码 |
 | D1.8–D1.11 | 未开始 | 真实模型、量化、科研保护和评估 |
 | D1.12–D1.13 | 未开始 | 小规模训练和 Windows 工具 |
 | D2 | 未开始 | 尚未使用本地电脑训练或测试 GPU/NPU |
 | D3 | 未开始 | 未集成 A/B/C、无发布包及实际 GUI |
 
-D1 里程碑完成 4/14（按阶段数统计，不是工作量百分比）。
+D1 里程碑完成 5/14（按阶段数统计，不是工作量百分比）。
 
 ## D1.0 证据
 - 分支：feature/rptranslate
@@ -72,7 +72,7 @@ D1 里程碑完成 4/14（按阶段数统计，不是工作量百分比）。
 新增 rank-2 FP32 MatMul、32×32 分块、标量基准、矩形尾块/空张量/异常测试及独立 f64 逐元素参考。新增有限 release CPU 基准（128/256 方阵，3 次中位数）。实际验收：[代码 9515ca5](https://github.com/trade3403/ai-research-pdf-reader/commit/9515ca57909aa9cc4ff64ca3dc8411a065a36af5)、[Actions 45515952092](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45515952092) completed/success。4 项 MatMul 新测试及全部 workspace 35 项单元测试通过（3+11+19+2），格式、Clippy、Release、自检、矩阵基准通过。Runner Intel Xeon Platinum 8573C，4 vCPU，release 3 次中位数：128 方阵 scalar 1.620ms / blocked 0.328ms，4.944x；256 方阵 20.304ms / 2.724ms，7.453x。两路径结果完全相等（exact=true）；仅该次共享 Runner、该合成输入，不代表实际模型或本机性能。未实施显式 SIMD 或多线程，完整 D1.4 待验收。 不增加完整阶段计数。[技术文档](D1.4_MATMUL.md)。
 
 ## 当前阶段 D1.4b
-新增 x86_64 AVX2 运行时派发、8 lane FP32 内核及尾部、portable-only 编译回退、按输出行分配的有界 scoped threads（1–16），小任务自动串行。保留标量/分块和 FP64 参考；增加线程数/尾块测试，CI 追加强制 portable-only 测试及 128/256/512 方阵四路径实际性能记录。待验收。
+新增 x86_64 AVX2 运行时派发、8 lane FP32 内核及尾部、portable-only 编译回退、按输出行分配的有界 scoped threads（1–16），小任务自动串行。保留标量/分块和 FP64 参考；增加线程数/尾块测试，CI 追加强制 portable-only 测试及 128/256/512 方阵四路径实际性能记录。实际验收：[代码 5bd2c31](https://github.com/trade3403/ai-research-pdf-reader/commit/5bd2c315e418fc82f99e672b37dca70719f54630)、[Actions 45516342377](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45516342377) completed/success。workspace 36/36 测试（3+12+19+2），强制 portable-only 12/12；格式、Clippy、Release、自检、基准均成功。AMD EPYC 9V45，4 vCPU，avx2_available=true。128 方阵 scalar/blocked/auto/parallel4 = 0.724/0.233/0.190/0.158 ms；256 = 12.447/1.811/1.214/0.628 ms；512 = 203.857/15.442/10.731/6.125 ms；三种尺寸四路径 exact=true。512 方阵 parallel4 比标量约33.28x，比同轮 blocked 约2.52x。仅共享 Runner 单次合成基准，未测试用户机器、真实翻译或物理无 AVX2 CPU；编译强制回退通过。D1.4 当前阶段门槛通过；后续按真实模型需要补 batched matmul、线程池和更大张量。
 
 ## 下一阶段 D1.5
 Attention、mask、稳定 softmax 与归一化，先逐算子数值参考测试。
