@@ -72,13 +72,19 @@ impl<'m, 'a> Cache<'m, 'a> {
         let &[_, width] = decoder.embeddings.shape() else {
             return Err(Error::Shape);
         };
-        if source == 0 || hidden == 0 || width != hidden || decoder.layers.is_empty()
+        if source == 0
+            || hidden == 0
+            || width != hidden
+            || decoder.layers.is_empty()
             || source_keep.is_some_and(|m| m.len() != source)
         {
             return Err(Error::Shape);
         }
-        if limit == 0 || limit > 512 || limit > decoder.max_positions
-            || !(1..=16).contains(&branches) || decoder.layers.len() > 64
+        if limit == 0
+            || limit > 512
+            || limit > decoder.max_positions
+            || !(1..=16).contains(&branches)
+            || decoder.layers.len() > 64
         {
             return Err(Error::Limit);
         }
@@ -139,9 +145,10 @@ impl<'m, 'a> Cache<'m, 'a> {
                 key_keep: Some(&target_keep),
                 ..Mask::default()
             };
-            let branch = layer.self_attention.forward_projected(
-                &x, &kv.k, &kv.v, mask, self.kernel,
-            )?;
+            let branch =
+                layer
+                    .self_attention
+                    .forward_projected(&x, &kv.k, &kv.v, mask, self.kernel)?;
             x = layer.self_norm.residual(&x, &branch)?;
             let cross = &self.cross[i];
             let mask = Mask {
@@ -149,7 +156,11 @@ impl<'m, 'a> Cache<'m, 'a> {
                 ..Mask::default()
             };
             let branch = layer.cross_attention.forward_projected(
-                &x, &cross.k, &cross.v, mask, self.kernel,
+                &x,
+                &cross.k,
+                &cross.v,
+                mask,
+                self.kernel,
             )?;
             x = layer.cross_norm.residual(&x, &branch)?;
             let branch = layer.ffn.forward(&x, self.kernel)?;

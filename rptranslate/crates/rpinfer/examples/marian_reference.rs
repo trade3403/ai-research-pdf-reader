@@ -173,7 +173,10 @@ fn main() {
     let logits = encoded.logits(target, Some(tm)).unwrap();
     let next = encoded.next_logits(target, Some(tm)).unwrap();
     assert_eq!(next.data(), &logits.data()[logits.data().len() - 17..]);
-    emit("cached_logits", &encoded.cached_logits(target, Some(tm)).unwrap());
+    emit(
+        "cached_logits",
+        &encoded.cached_logits(target, Some(tm)).unwrap(),
+    );
     emit("logits", &logits);
     emit("next_logits", &next);
     emit("probabilities", &softmax(&next).unwrap());

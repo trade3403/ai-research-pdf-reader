@@ -130,13 +130,20 @@ impl Encoded<'_, '_> {
         };
         let (_, size) = layout(&[prefix.len(), vocab])?;
         let mut cache = Cache::new(
-            &self.model.decoder, &self.memory, self.source_keep.as_deref(),
-            prefix.len(), 1, self.kernel,
+            &self.model.decoder,
+            &self.memory,
+            self.source_keep.as_deref(),
+            prefix.len(),
+            1,
+            self.kernel,
         )?;
         let mut data = buffer(size)?;
         for (i, &id) in prefix.iter().enumerate() {
             let (next, hidden) = cache.step(id, target_keep.is_none_or(|m| m[i]))?;
-            let logits = self.model.head.project(&hidden, self.model.decoder.embeddings, true)?;
+            let logits = self
+                .model
+                .head
+                .project(&hidden, self.model.decoder.embeddings, true)?;
             data.extend_from_slice(logits.data());
             cache = next;
         }
@@ -152,8 +159,12 @@ impl Encoded<'_, '_> {
         };
         validate(config, vocab)?;
         let root = Cache::new(
-            &self.model.decoder, &self.memory, self.source_keep.as_deref(),
-            config.max_new, config.beam_width, self.kernel,
+            &self.model.decoder,
+            &self.memory,
+            self.source_keep.as_deref(),
+            config.max_new,
+            config.beam_width,
+            self.kernel,
         )?;
         let mut previous = BTreeMap::new();
         let mut current = BTreeMap::new();
@@ -173,7 +184,10 @@ impl Encoded<'_, '_> {
                 previous.get(parent).ok_or(Error::Shape)?
             };
             let (next, hidden) = cache.step(token, true)?;
-            let logits = self.model.head.project(&hidden, self.model.decoder.embeddings, true)?;
+            let logits = self
+                .model
+                .head
+                .project(&hidden, self.model.decoder.embeddings, true)?;
             current.insert(prefix.to_vec(), next);
             Ok(logits)
         })
