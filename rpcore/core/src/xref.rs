@@ -196,6 +196,12 @@ impl<'a> Document<'a>{
         let (doc,security)=Self::index(bytes,true)?;
         security.inspect(&doc)
     }
+    /// Verify a supplied legacy PDF password. No key or readable Document is returned.
+    /// Password bytes use the caller's legacy PDF encoding, not implicit UTF-8 conversion.
+    pub fn authenticate_legacy_password(bytes:&'a [u8],password:&[u8])->Result<crate::security::PasswordStatus>{
+        let (doc,security)=Self::index(bytes,true)?;
+        security.authenticate(&doc,password)
+    }
     fn index(bytes:&'a [u8],inspect:bool)->Result<(Self,crate::security::TrailerSecurity)>{
         if bytes.len()>MAX_BYTES{return Err(Error::Limit("file size"));}
         if !bytes.starts_with(b"%PDF-"){return Err(Error::Invalid("PDF header"));}

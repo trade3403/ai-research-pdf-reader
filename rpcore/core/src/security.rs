@@ -1,9 +1,9 @@
-//! Structural inspection only. No passwords, authentication or decryption.
+//! Structural inspection and legacy password authentication. No decryption of PDF objects.
 //! Encrypted files cannot be opened as Document until a separate authenticated
 //! path exists. EncryptionInfo intentionally excludes O/U/OE/UE/Perms and IDs.
-// Temporary until authenticated legacy file-key integration uses the primitives.
-#[allow(dead_code)]
 mod legacy;
+mod auth;
+pub use auth::PasswordStatus;
 use crate::{Document,Error,Object,Result,xref::Entry};
 use std::collections::BTreeMap;
 type Dict=BTreeMap<Vec<u8>,Object>;
@@ -117,7 +117,7 @@ impl TrailerSecurity{
         }
         Ok(())
     }
-    pub(crate) fn inspect(self,doc:&Document<'_>)->Result<Option<EncryptionInfo>>{
+    fn bootstrap(self,doc:&Document<'_>)->Result<Option<(Dict,Vec<u8>)>>{
         let Some(e)=self.encrypt else{return Ok(None);};
         if self.invalid_id||self.first_id.is_none(){return Err(Error::Invalid("encrypted document ID"));}
         if self.conflicting_id{return Err(Error::Unsupported("conflicting encryption document ID"));}
@@ -133,7 +133,15 @@ impl TrailerSecurity{
             }
             _=>return Err(Error::Invalid("encryption dictionary")),
         };
-        parse(&d).map(Some)
+        Ok(Some((d,self.first_id.ok_or(Error::Invalid("encrypted document ID"))?)))
+    }
+    pub(crate) fn inspect(self,doc:&Document<'_>)->Result<Option<EncryptionInfo>>{
+        self.bootstrap(doc)?.map(|(d,_)|parse(&d)).transpose()
+    }
+    pub(crate) fn authenticate(self,doc:&Document<'_>,password:&[u8])->Result<PasswordStatus>{
+        let Some((d,id))=self.bootstrap(doc)? else{return Ok(PasswordStatus::Unencrypted);};
+        let info=parse(&d)?;
+        auth::verify(&d,&id,&info,password)
     }
 }
 
