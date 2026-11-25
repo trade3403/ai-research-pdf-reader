@@ -6,7 +6,7 @@ fn stream(dict:&str,content:&[u8])->Vec<u8>{
 fn fixture(content:&[u8],extra:Vec<Vec<u8>>)->Vec<u8>{
     let mut objs=vec![b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> /ColorSpace << /C /DeviceRGB /ICC [/ICCBased 5 0 R] /Cal [/CalRGB << /WhitePoint [1 1 1] >>] >> /ExtGState << /GS << /LW 2 /LC 1 /LJ 2 /ML 4 /D [[3 2] 1] /OP false /op false /OPM 1 /TR2 /Default >> /Bad << /OP true >> /Neutral << /HT /Default /BG2 /Default /UCR2 /Default /SA true >> /Soft << /SMask << /S /Alpha >> >> /TK0 << /TK false >> >> >> >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R /Im 6 0 R >> /ColorSpace << /C /DeviceRGB /ICC [/ICCBased 5 0 R] /Cal [/CalRGB << /WhitePoint [0.95047 1 1.08883] /Matrix [0.4124564 0.2126729 0.0193339 0.3575761 0.7151522 0.1191920 0.1804375 0.0721750 0.9503041] >>] /CG [/CalGray << /WhitePoint [0.96422 1 0.82521] /Gamma 2 >>] /Lab [/Lab << /WhitePoint [0.96422 1 0.82521] >>] /CalBad [/CalGray << /WhitePoint [1 1 1] /BlackPoint [0.01 0.01 0.01] >>] /CalZero [/CalGray << /WhitePoint [1 1 1] /Gamma 0 >>] >> /ExtGState << /GS << /LW 2 /LC 1 /LJ 2 /ML 4 /D [[3 2] 1] /OP false /op false /OPM 1 /TR2 /Default >> /Bad << /OP true >> /Neutral << /HT /Default /BG2 /Default /UCR2 /Default /SA true >> /Soft << /SMask << /S /Alpha >> >> /TK0 << /TK false >> >> >> >>".to_vec(),
         stream("",content)];
     objs.extend(extra);
     let mut p=b"%PDF-1.4\n".to_vec();let mut offsets=Vec::new();
@@ -85,8 +85,8 @@ fn cumulative_form_budget(){
     assert!(l.warnings.contains(&Warning::IccAlternateUsed));
     let Command::Paint{fill,..}=l.commands.last().unwrap() else{panic!("paint")};
     assert_eq!(*fill,Some((Color::Rgb([0.1,0.2,0.3]),FillRule::NonZero)));
-    let p=fixture(b"/Cal cs",vec![]);let d=Document::open(&p).unwrap();
-    assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Unsupported("graphics CalRGB color space"))));
+    let p=fixture(b"/CalBad cs",vec![]);let d=Document::open(&p).unwrap();
+    assert!(matches!(d.page_display_list(&d.pages().unwrap()[0],10000),Err(Error::Unsupported("calibrated nonzero BlackPoint"))));
     let profile=stream("/N 3 /Alternate /DeviceGray",b"bad");
     let p=fixture(b"/ICC cs",vec![profile]);let d=Document::open(&p).unwrap();
     assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
@@ -108,4 +108,29 @@ fn cumulative_form_budget(){
     let f=stream("/Subtype /Form /BBox [0 0 0 10]",b"0 0 10 10 re f");
     let l=list(b"/Fm Do",vec![f]);
     assert!(matches!(&l.commands[1],Command::Clip{path,..} if path.is_empty()));
+}
+
+#[test]fn calibrated_vector_colors_and_state(){
+    let l=list(b"/Cal cs 1 0 0 sc /Lab CS 50 0 0 SC 0 0 10 10 re B q /CG cs .5 sc 0 0 10 10 re f Q 0 0 10 10 re f",vec![]);
+    let paints:Vec<_>=l.commands.iter().filter_map(|c|if let Command::Paint{fill,stroke,..}=c{Some((fill,stroke))}else{None}).collect();
+    let rgb=|c:Color|match c{Color::Rgb(v)=>v,_=>panic!("expected sRGB")};
+    let near=|a:[f64;3],b:[f64;3]|{for i in 0..3{assert!((a[i]-b[i]).abs()<0.002,"{a:?} vs {b:?}");}};
+    near(rgb(paints[0].0.unwrap().0),[1.,0.,0.]);
+    near(rgb(paints[0].1.as_ref().unwrap().color),[0.466327;3]);
+    near(rgb(paints[1].0.unwrap().0),[0.537099;3]);
+    near(rgb(paints[2].0.unwrap().0),[1.,0.,0.]);
+    let l=list(b"/Lab cs 100 0 0 sc 0 0 10 10 re f /Lab cs 0 0 10 10 re f",vec![]);
+    let colors:Vec<_>=l.commands.iter().filter_map(|c|if let Command::Paint{fill:Some((c,_)),..}=c{Some(rgb(*c))}else{None}).collect();
+    near(colors[0],[1.;3]);near(colors[1],[0.;3]);
+}
+#[test]fn calibrated_color_rejects_bad_parameters_and_arity(){
+    for code in [b"/CalZero cs".as_slice(),b"/Cal cs 1 sc",b"/CG cs 1 0 0 sc",b"/Lab cs 50 0 sc"]{
+        let p=fixture(code,vec![]);let d=Document::open(&p).unwrap();
+        assert!(d.page_display_list(&d.pages().unwrap()[0],10000).is_err());
+    }
+}
+#[test]fn calibrated_color_reaches_native_bitmap(){
+    let p=fixture(b"/CG cs .5 sc 0 0 612 792 re f",vec![]);let d=Document::open(&p).unwrap();
+    let b=d.render_page(&d.pages().unwrap()[0],rpcore::raster::Options::default(),10000).unwrap();
+    assert_eq!(&b.rgba[0..4],&[137,137,137,255]);
 }

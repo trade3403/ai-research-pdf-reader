@@ -17,14 +17,15 @@ pub type Path=Vec<Segment>;
 pub enum FillRule{NonZero,EvenOdd}
 #[derive(Debug,Clone,Copy,PartialEq)]
 pub enum Color{Gray(f64),Rgb([f64;3]),Cmyk([f64;4])}
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
-enum Space{Gray,Rgb,Cmyk}
+#[derive(Debug,Clone,Copy,PartialEq)]
+enum Space{Gray,Rgb,Cmyk,Calibrated(crate::color::Calibrated)}
 impl Space{
-    fn initial(self)->Color{match self{Self::Gray=>Color::Gray(0.),Self::Rgb=>Color::Rgb([0.;3]),Self::Cmyk=>Color::Cmyk([0.,0.,0.,1.])}}
+    fn initial(self)->Color{match self{Self::Gray=>Color::Gray(0.),Self::Rgb=>Color::Rgb([0.;3]),Self::Cmyk=>Color::Cmyk([0.,0.,0.,1.]),Self::Calibrated(c)=>Color::Rgb(c.rgb([0.;3]))}}
     fn color(self,a:&[Object])->Result<Color>{Ok(match self{
         Self::Gray=>Color::Gray(nums::<1>(a)?[0].clamp(0.,1.)),
         Self::Rgb=>Color::Rgb(nums::<3>(a)?.map(|x|x.clamp(0.,1.))),
         Self::Cmyk=>Color::Cmyk(nums::<4>(a)?.map(|x|x.clamp(0.,1.))),
+        Self::Calibrated(c)=>Color::Rgb(c.rgb(if c.components()==1{[nums::<1>(a)?[0],0.,0.]}else{nums::<3>(a)?})),
     })}
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -280,9 +281,9 @@ impl<'d,'a> Engine<'d,'a>{
                     Ok(space)
                 }
                 Some(Object::Name(n)) if n==b"Pattern"=>Err(Error::Unsupported("graphics Pattern color space")),
-                Some(Object::Name(n)) if n==b"CalRGB"=>Err(Error::Unsupported("graphics CalRGB color space")),
-                Some(Object::Name(n)) if n==b"CalGray"=>Err(Error::Unsupported("graphics CalGray color space")),
-                Some(Object::Name(n)) if n==b"Lab"=>Err(Error::Unsupported("graphics Lab color space")),
+                Some(Object::Name(n)) if matches!(n.as_slice(),b"CalRGB"|b"CalGray"|b"Lab")=>{
+                    Ok(Space::Calibrated(crate::color::Calibrated::parse(self.doc,&a)?))
+                }
                 Some(Object::Name(n)) if n==b"Separation"||n==b"DeviceN"=>Err(Error::Unsupported("graphics spot color space")),
                 Some(Object::Name(n)) if n==b"Indexed"=>Err(Error::Unsupported("graphics Indexed color space")),
                 _=>Err(Error::Unsupported("graphics complex color space")),
