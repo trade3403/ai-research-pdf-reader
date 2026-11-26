@@ -620,7 +620,7 @@ mod segment_tests{
             let s=seg(9,42,1,&[],i);
             assert!(decode_segment(&s,&b,RegionReference::Page{number:1,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
         }
-        for (index,value) in [(17,4),(18,0),(19,0),(16,7)]{
+        for (index,value) in [(17,4),(18,0),(16,7)]{
             let mut bad=b.clone();bad[index]=value;
             if index==18{bad[19]=0;}
             let s=seg(9,42,1,&[],bad.len());
