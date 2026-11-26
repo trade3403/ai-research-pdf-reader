@@ -275,3 +275,6 @@ pub use font_gsub_context_execute::{ShapeStageTrace,execute_staged_gsub_traced};
 
 pub mod font_gpos;
 pub use font_gpos::*;
+
+pub mod font_gpos_value;
+pub use font_gpos_value::*;
