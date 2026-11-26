@@ -261,3 +261,6 @@ pub use font_feature_masks::{FeatureMaskLimits,FeatureMaskOverride,ScalarFeature
 pub use font_gsub_context_execute::{MaskedGsubResult,execute_gsub_program_with_masks};
 
 pub use font_gsub_context_execute::execute_gsub_program_with_strict_masks;
+
+pub mod font_shape_stages;
+pub use font_shape_stages::{ShapeStageLimits,ShapeStageSpec,ShapeStage,ShapeStageSchedule,build_shape_stage_schedule};
