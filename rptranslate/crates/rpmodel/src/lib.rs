@@ -16,6 +16,7 @@ pub mod resume;
 pub mod safetensors;
 pub mod sha256;
 pub mod spm;
+pub mod task;
 pub mod tokenizer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

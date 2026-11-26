@@ -18,6 +18,7 @@ const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
 pub enum Error {
     Configuration,
     Transport,
+    TransientTransport(i32),
     HttpStatus,
     Framing,
     Io,
@@ -62,6 +63,15 @@ fn receive(mut input: impl Read, output: &mut impl Write, asset: &Asset) -> Resu
 }
 
 const MAX_RANGE_HEADER: usize = 64 * 1024;
+
+// Only explicitly recognized temporary connection failures are retryable.
+// HTTP status, TLS trust, size limits and unknown failures remain terminal.
+fn range_exit_error(code: Option<i32>) -> Error {
+    match code {
+        Some(code @ (6 | 7 | 18 | 28 | 52 | 55 | 56)) => Error::TransientTransport(code),
+        _ => Error::Transport,
+    }
+}
 
 /// curl --include returns HTTP headers followed by the decoded body.
 /// Reject ambiguous or unexpected framing before any staging write.
@@ -269,8 +279,9 @@ impl Downloader {
             let _ = child.wait();
             return Err(Error::Framing);
         }
-        if !child.wait().map_err(|_| Error::Transport)?.success() {
-            return Err(Error::Transport);
+        let status = child.wait().map_err(|_| Error::Transport)?;
+        if !status.success() {
+            return Err(range_exit_error(status.code()));
         }
         let (header, body) = range_response(&data, range)?;
         let progress = partial
@@ -369,6 +380,17 @@ mod tests {
             Downloader::new(Path::new("curl"), Origin::new("example.org").unwrap()),
             Err(Error::Configuration)
         ));
+    }
+
+    #[test]
+    fn range_exit_classifies_only_known_transient_codes() {
+        for code in [6, 7, 18, 28, 52, 55, 56] {
+            assert_eq!(range_exit_error(Some(code)), Error::TransientTransport(code));
+        }
+        for code in [1, 22, 23, 35, 51, 60, 63, 77] {
+            assert_eq!(range_exit_error(Some(code)), Error::Transport);
+        }
+        assert_eq!(range_exit_error(None), Error::Transport);
     }
 
     #[test]
