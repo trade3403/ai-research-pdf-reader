@@ -2597,3 +2597,43 @@ mod aggregation_candidate_tests{
         assert!(decode_arithmetic_aggregation(&p,&b,&[&s],limits).is_err());
     }
 }
+
+#[cfg(test)]
+mod aggregation_multi_vectors{
+    use super::*;
+    // Independent Annex E encoder: imported black 1x1, two direct
+    // instances at x=0 and x=1 in new 2x1 symbol. Fixed one-bit IAID.
+    const GOOD:&[u8]=&[147,166,142,126,109,112,255,172];
+    const FORWARD:&[u8]=&[147,166,137,255,172];
+    fn run(entropy:&[u8],limits:ArithmeticLimits,t:u8)->Result<ArithmeticDictionary>{
+        let mut b=vec![8|(t<<4),2,2,255];
+        if t==0{b.extend([255;4]);}
+        b.extend([0,0,0,2,0,0,0,1]);b.extend(entropy);
+        let (header,_)=parse(&b)?;let start=header.data_offset;
+        let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+        let src=Bitmap::from_packed(1,1,&[128])?;
+        decode_arithmetic_aggregation(&p,&b,&[&src],limits)
+    }
+    #[test]
+    fn aggregation_two_direct_instances_pixels(){
+        for t in [0,1]{
+            let d=run(GOOD,ArithmeticLimits::default(),t).unwrap();
+            assert_eq!(d.exported_indices,[0,1]);
+            assert_eq!((d.new_symbols[0].width(),d.new_symbols[0].height()),(2,1));
+            assert_eq!(d.new_symbols[0].packed(),[192]);
+        }
+    }
+    #[test]
+    fn aggregation_forward_reference_rejected(){
+        assert!(matches!(run(FORWARD,ArithmeticLimits::default(),1),
+            Err(Error::Invalid("JBIG2 IAID symbol index"))));
+    }
+    #[test]
+    fn aggregation_exact_decisions_and_work(){
+        let d=run(GOOD,ArithmeticLimits::default(),1).unwrap();
+        let l=ArithmeticLimits{decisions:54,work:d.work_used,..ArithmeticLimits::default()};
+        assert_eq!(run(GOOD,l,1).unwrap(),d);
+        assert!(run(GOOD,ArithmeticLimits{decisions:53,..l},1).is_err());
+        assert!(run(GOOD,ArithmeticLimits{work:d.work_used-1,..l},1).is_err());
+    }
+}
