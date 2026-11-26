@@ -242,3 +242,6 @@ pub use font_avar::{AvarLimits,AvarPair,AvarSegmentMap,Avar,parse_avar,normalize
 
 pub mod font_variable_gsub;
 pub use font_variable_gsub::{VariableGsubLimits,VariationUserCoordinates,VariableGsubRequest,VariableGsubResult,VariableGsubFace,parse_variable_gsub_face};
+
+pub mod font_source_run;
+pub use font_source_run::{SourceLimits,ScalarSource,GlyphSource,SourceRun,map_source_run};
