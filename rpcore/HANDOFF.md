@@ -1,5 +1,11 @@
 # RPCore B-line handoff — planned window transfer
 
+## CURRENT WINDOW HANDOFF — B5 (2026-11-26)
+
+Latest verified exact HEAD 12e2173c942d7f2f0bda38fb69d29d026eff1725, CI #402 run 45726535615, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45726535615, all 10 jobs, actual logs Windows 139597702955, Linux 139597702782, macOS 139597703127 each 504 passed, zero failed/ignored (1512 total), all seven B11.3d3c tests passed again.
+
+B11.3e1a candidate, core commits 303e63a0abdea088dd00f502c697abbd06a5a73e and 94d186e29ab02432806540423cb25c28e510fd2b. Native Annex B.3/B.4 canonical prefix tree and integer/OOB decoder in core/src/filters/jbig2/huffman.rs. Stable original row order, disabled zero-length rows, checked i64 arithmetic and signed i32 output validation, lower/upper 32-bit offsets, incomplete-tree invalid paths/truncation, cap 32 prefix bits/32 extra bits, 4096 rows, shared CCITT BitReader for bounded MSB input only. Seven additive tests target 511/platform (1533 total); official T.88 B.1 and B.3 explicit codewords independently packed using Python into 138/158-bit streams (15 symbols total), not Rust test results. Local cargo/rustc unavailable. CI pending. Standard table registry B.1–B.15 and type 53 parsing not yet implemented. If exact latest HEAD 10/10 jobs and all seven new tests pass on three platforms, next B11.3e1b standard tables and independent prefix/value coverage; if failed repair e1a; if queued/running stop. No production dependency or PDF JBIG2 rendering. All previous B4 limits and continuation protocol below remain applicable. Older candidate/checkpoint text is historical.
+
 ## CURRENT WINDOW HANDOFF — B4 → B5 (2026-11-26)
 
 **Authoritative resume point: B11.3d3c verified; next B11.3e1.** Older candidate/pending statements below are historical and must not be mistaken for current status.
