@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0d1 [#138 / 45773006669](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45773006669) Linux及Windows均在rustfmt失败：install.rs:314，符号链接拒绝测试的assert链需展开。[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45773006669/job/139749872927)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45773006669/job/139749873088)。严格按日志最小格式修复，不改变算法、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。全量CI成功后才进入D3.0d2。
+
 2026-11-26 D3.0c3 基线 e20c42b91c689ea3b3e454cbbccc8e81cbbb1f6b / [#137 / 45767811920](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45767811920) 全量 success；Linux/Windows各181 workspace+59 portable=240/240，共480/480；两平台HTTPS_PINNED_FIXTURE及HTTPS_RANGE_FIXTURE PASS，4/4网络执行。Windows映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、421.513664s、976.108461ms加载、122376KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0d1：install.rs受信目录离线导入与同目录暂存发布核心；先验证目录完整文件集及pin，受限逐文件复制/新建/sync_all，暂存目录再校验，目标不存在时同文件系统rename；按id/版本/精度区分路径，最低引擎约束，拒绝已有目标/已有暂存/非法目录/符号链接及Windows reparse，异常清理本次暂存，报告清理失败。调用者必须独占源及模型库及祖先目录，不承诺敌对并发或断电事务，不自动覆盖/激活/解压。新增7跨平台+1 Unix链接测试；目标Linux248、Windows247、4网络共499。未本地编译。D3.0d2实现FP32/INT8真实模型结构验收和明确暂存恢复；之后D3.0e升级/回滚/卸载及综合验收。

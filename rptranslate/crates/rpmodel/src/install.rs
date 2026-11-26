@@ -314,7 +314,9 @@ mod tests {
         fs::write(root.0.join("outside"), b"abc").unwrap();
         symlink(root.0.join("outside"), file).unwrap();
         let store = root.store();
-        assert!(store.import(&entry(Precision::Int8), &root.source()).is_err());
+        assert!(store
+            .import(&entry(Precision::Int8), &root.source())
+            .is_err());
         assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
     }
 }
