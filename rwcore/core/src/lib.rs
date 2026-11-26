@@ -293,3 +293,6 @@ pub use font_gpos_class_pair::*;
 
 pub mod font_gpos_cursive;
 pub use font_gpos_cursive::*;
+
+pub mod font_gpos_mark_base;
+pub use font_gpos_mark_base::*;

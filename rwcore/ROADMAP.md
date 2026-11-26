@@ -136,8 +136,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.5d2 | PairPos format 2 class matrix | Verified (#178) |
 | C4.5d3 | Independent native PairPos reference acceptance | Verified (#179) |
 | C4.5e1 | CursivePos entry/exit anchor parsing and nominal connection math | Verified (#180) |
-| C4.5e2 | Independent native CursivePos reference acceptance | Implemented; CI pending |
-| C4.5f1 | MarkToBase parsing and nominal attachment geometry | Planned |
+| C4.5e2 | Independent native CursivePos reference acceptance | Verified (#181) |
+| C4.5f1 | MarkToBase parsing and nominal attachment geometry | Implemented; CI pending |
+| C4.5f2 | Independent native MarkToBase reference acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
