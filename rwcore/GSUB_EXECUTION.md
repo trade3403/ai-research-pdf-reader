@@ -37,3 +37,6 @@ fn run_base_pass(
 ## Acceptance boundary
 CI #144 verified 1028 tests/platform on the exact preceding revision, including positive native Mongolian Type 8 and 127 synthetic wrapper masks. C4.4d9 adds eight native base-plan-to-execution regressions using bounded selected default-language schedules and independent raw root/output/counter references; not exhaustive rules or complete document layout. CI pending.
 Remaining: FeatureVariations condition/substitution evaluation, script-specific shaping stages, feature values/masks, Unicode normalization and cluster/ligature component propagation, GPOS, real point attachments, external shaper parity, performance/security and DOCX corpus.
+
+## CI #145 repair
+The generic fixture selection cap of 32 roots excluded the native Mongolian reverse-containing feature. The pinned font's default mong LangSys rclt has 74 distinct roots, including native Type 8 lookup 93. The repaired regression checks the complete real feature plan, with unchanged engine budgets and independent reference comparisons. Other seven fixtures retain their original selection cap. Final acceptance still pending CI.

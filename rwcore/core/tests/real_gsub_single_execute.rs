@@ -2280,23 +2280,33 @@ fn verify_full_plan_acceptance(font:&[u8],n:u32,require_reverse:bool){
     let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
     let ligs=ligature_roots(b,n as usize);let contexts=native_context_roots(b,n as usize);
     let chains=native_chain_roots(b,n as usize);let rev=raw_reverse_roots(b,n as usize);
-    let mut chosen=None;
-    // Select one bounded real default-LangSys feature schedule. Prefer
-    // a schedule with a native reverse root in the Mongolian fixture.
-    // Selection is deterministic and not a language-specific policy.
-    'script:for script in &layout.scripts{
-        let Some(lang)=&script.default_language else{continue;};
-        let mut tags:Vec<_>=lang.required_feature.into_iter().chain(lang.features.iter().copied())
-            .map(|id|layout.features[id as usize].tag).collect();
-        tags.sort_unstable();tags.dedup();
-        for tag in tags{
-            let roots=raw_default_plan_roots(b,script.tag,&[tag]);
-            if roots.is_empty()||roots.len()>32{continue;}
-            if require_reverse&&!roots.iter().any(|&id|native_kind(b,id)==8){continue;}
-            chosen=Some((script.tag,tag,roots));break 'script;
+    // The original generic 32-root sampling cap excluded the real
+    // Mongolian rclt feature (74 distinct default-LangSys roots).
+    // Pin that complete native schedule rather than truncate it or
+    // weaken the positive reverse requirement. Production limits
+    // remain unchanged; the other seven fixtures keep the old cap.
+    let (script,tag,roots)=if require_reverse{
+        let script=*b"mong";let tag=*b"rclt";
+        let roots=raw_default_plan_roots(b,script,&[tag]);
+        assert_eq!(roots.len(),74,"native Mongolian default rclt inventory");
+        assert!(roots.contains(&93));
+        assert_eq!(native_kind(b,93),8);
+        (script,tag,roots)
+    }else{
+        let mut chosen=None;
+        'script:for script in &layout.scripts{
+            let Some(lang)=&script.default_language else{continue;};
+            let mut tags:Vec<_>=lang.required_feature.into_iter().chain(lang.features.iter().copied())
+                .map(|id|layout.features[id as usize].tag).collect();
+            tags.sort_unstable();tags.dedup();
+            for tag in tags{
+                let roots=raw_default_plan_roots(b,script.tag,&[tag]);
+                if roots.is_empty()||roots.len()>32{continue;}
+                chosen=Some((script.tag,tag,roots));break 'script;
+            }
         }
-    }
-    let (script,tag,roots)=chosen.expect("bounded native base feature schedule");
+        chosen.expect("bounded native base feature schedule")
+    };
     let plan=build_gsub_base_plan(&layout,script,None,&[tag],Default::default()).unwrap().unwrap();
     assert_eq!(plan.lookups.iter().map(|l|l.index).collect::<Vec<_>>(),roots);
     let p=compile_gsub_plan_program(b,&plan,n,Some(&g),Default::default()).unwrap();

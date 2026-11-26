@@ -197,3 +197,5 @@ C4.4d8b pending CI: test-only raw reverse decoder, directional physical referenc
 C4.4d8c pending CI: native Noto Sans Mongolian fixture (unchanged upstream font and OFL 1.1, pinned provenance) includes two Type 8 subtables. Independent raw reference on positive witnesses, ignored marks, incomplete segments and full domain. All 127 nonempty wrapper combinations across seven legal effective kinds tested against direct program plus root/nested reverse parity. No production changes.
 
 C4.4d9 pending CI: stable source-compatible GsubProgramExecLimits/GsubProgramExecResult aliases for unified execution, eight native default-LangSys selected feature schedule regressions linking base planner, provenance validation, program compilation and raw execution reference. See GSUB_EXECUTION.md for scheduling, edit and budget contract. No full shaping claim.
+
+C4.4d9 repair: pinned native mong default rclt complete 74-root schedule including reverse lookup 93, independently decoded from fixture bytes. Generic 32-root cap remains for other fixtures. No execution-core change.

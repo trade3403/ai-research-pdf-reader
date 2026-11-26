@@ -172,3 +172,6 @@ C4.4d8c pending CI; #143 verified 1025/platform, 3075 total. New OFL Noto Sans M
 
 ## Latest checkpoint
 C4.4d9 pending CI; #144 verified 1028/platform, 3084 total. Eight end-to-end native plan regressions; 1036/platform expected. Read DEV_STATE.md and GSUB_EXECUTION.md. Next C4.4e1 FeatureVariations foundation only after CI passes.
+
+## C4.4d9 repair checkpoint
+#145 failed identically on all platforms; complete native mong/rclt plan has 74 roots including lookup 93, not <=32. Pinned schedule repair committed without changing production limits or dropping tests; 1036/platform target unchanged. Next verify repair CI; no FeatureVariations development before pass.
