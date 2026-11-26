@@ -204,3 +204,5 @@ pub use font_gsub_compile::{GsubProgramLimits,CompiledGsubProgram,compile_gsub_p
 
 pub mod font_gsub_execute;
 pub use font_gsub_execute::{GsubSingleExecLimits,GsubSingleExecResult,execute_gsub_single};
+
+pub use font_gsub_execute::{GsubMixedExecLimits,GsubMixedExecResult,execute_gsub_mixed};

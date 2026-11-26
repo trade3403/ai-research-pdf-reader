@@ -83,8 +83,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4c5a | Bounded dependency compilation integration | Verified (#122) |
 | C4.4c5b | Real-font dependency program reference | Verified (#123) |
 | C4.4d1a | Bounded actual single substitution execution with eligibility and root scheduling | Verified (#124) |
-| C4.4d1b | Independent real-font Type 1 execution reference | Source implemented; CI pending |
-| C4.4d2a | Bounded Type 2 multiple substitution and mixed Type 1/2 execution | Planned |
+| C4.4d1b | Independent real-font Type 1 execution reference | Verified (#125) |
+| C4.4d2a | Bounded Type 2 multiple substitution and mixed Type 1/2 execution | Source implemented; CI pending |
+| C4.4d2b | Independent real-font Type 2 and mixed Type 1/2 execution reference | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

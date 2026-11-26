@@ -112,3 +112,6 @@ C4.4d1a pending CI; #123 verified 848/platform, 2544 total. Ten new synthetic ex
 
 ## Latest checkpoint
 C4.4d1b pending CI; #124 verified 858/platform, 2574 total. Seven real-font execution regressions, 865/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next Type 2 multiple substitution after CI passes.
+
+## Latest checkpoint
+C4.4d2a pending CI; #125 verified 865/platform, 2595 total. Eleven mixed execution regressions, 876/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next real-font Type 2 reference only after CI passes.
