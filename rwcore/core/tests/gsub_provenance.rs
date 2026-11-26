@@ -271,3 +271,48 @@ fn strict_plan(bytes:&[u8])->GsubPlan{
     let (result,blocked)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
     assert_eq!(result.execution.expansion.execution.glyphs,vec![g[0],20,g[2]]);assert_eq!(blocked,0);
 }
+
+#[test]fn strict_shared_ligature_exhaustive_boolean_oracle(){
+    let (run,n)=run("ABAB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=masked_fixture(&[(4,4,ligature(a,b,20))],&[(b"liga",&[0]),(b"salt",&[0])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    for pattern in 0u16..256{
+        let mut edits=Vec::new();
+        let mut enabled=[[false;2];4];
+        for i in 0..4{for f in 0..2{
+            enabled[i][f]=pattern&(1<<(2*i+f))!=0;
+            edits.push(FeatureMaskOverride{feature:f as u16,start:i,end:i+1,enabled:enabled[i][f]});
+        }}
+        let masks=ScalarFeatureMasks::build(&plan,4,&edits,Default::default()).unwrap();
+        let (result,_)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+        let mut glyphs=Vec::new();let mut sources=Vec::new();let mut expected_masks=Vec::new();
+        for i in [0,2]{
+            let common:Vec<_>=(0..2).filter(|&f|enabled[i][f]&&enabled[i+1][f]).collect();
+            if !common.is_empty(){
+                glyphs.push(20);sources.push(vec![i,i+1]);expected_masks.push(common.iter().map(|&f|1u64<<f).sum());
+            }else{
+                for j in i..i+2{
+                    glyphs.push(if j%2==0{a}else{b});sources.push(vec![j]);
+                    expected_masks.push((0..2).filter(|&f|enabled[j][f]).map(|f|1u64<<f).sum());
+                }
+            }
+        }
+        assert_eq!(result.execution.expansion.execution.glyphs,glyphs);
+        assert_eq!(source_sets(&result.provenance),sources);
+        assert_eq!(result.glyph_masks,expected_masks);
+    }
+}
+#[test]fn strict_reverse_mask_barrier_reference(){
+    let (run,n)=run("AAAB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[3].glyph_id;
+    let bytes=masked_fixture(&[(8,8,reverse8(a,b,&[],&[b]))],&[(b"liga",&[0])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    for pattern in 0..16{
+        let edits:Vec<_>=(0..4).map(|i|FeatureMaskOverride{feature:0,start:i,end:i+1,enabled:pattern&(1<<i)!=0}).collect();
+        let masks=ScalarFeatureMasks::build(&plan,4,&edits,Default::default()).unwrap();
+        let (result,blocked)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+        let mut expected=vec![a,a,a,b];
+        for i in (0..3).rev(){if pattern&(1<<i)!=0&&expected[i+1]==b{expected[i]=b;}}
+        assert_eq!(result.execution.expansion.execution.glyphs,expected);assert_eq!(blocked,0);
+        assert_eq!(source_sets(&result.provenance),vec![vec![0],vec![1],vec![2],vec![3]]);
+    }
+}

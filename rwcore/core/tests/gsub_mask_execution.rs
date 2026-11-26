@@ -36,3 +36,32 @@ fn check(disable:bool){
     let masks=ScalarFeatureMasks::build(&plan.plan,run.scalars().len(),&[],Default::default()).unwrap();
     assert!(execute_gsub_program_with_masks(&p,&run,&[],&masks,Default::default(),Default::default(),100000).is_err());
 }
+
+#[test]fn strict_native_variable_api_and_budget(){
+    let (font,text)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();let run=map_source_run(text,&cmap,false,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let axis=f.fvar().axis(*b"wght").unwrap();
+    for weight in [axis.min,axis.default,axis.max]{
+        let tags=[(*b"wght",weight)];
+        let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&tags)};
+        let (plan,result,blocked)=f.execute_with_strict_masks(req,&run,&[],&[],Default::default(),Default::default(),100000).unwrap().unwrap();
+        let (old,ledger)=f.execute_with_provenance(req,&run,&[],Default::default()).unwrap().unwrap();
+        assert_eq!(plan,old.plan);assert_eq!(result.execution,old.execution);assert_eq!(result.provenance,ledger);assert_eq!(blocked,0);
+        assert_eq!(result.skipped_roots,0);
+        let exact=result.mask_work;
+        assert!(f.execute_with_strict_masks(req,&run,&[],&[],Default::default(),Default::default(),exact-1).is_err());
+        assert_eq!((plan,result,blocked),f.execute_with_strict_masks(req,&run,&[],&[],Default::default(),Default::default(),exact).unwrap().unwrap());
+    }
+}
+#[test]fn strict_native_disable_all_optional(){
+    let (font,text)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();let run=map_source_run(text,&cmap,false,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&[])};
+    let plan=f.build_plan(req).unwrap().unwrap();assert!(plan.plan.required_feature.is_none());
+    let edits:Vec<_>=plan.plan.features.iter().map(|&feature|FeatureMaskOverride{feature,start:0,end:run.scalars().len(),enabled:false}).collect();
+    let (_,result,blocked)=f.execute_with_strict_masks(req,&run,&[],&edits,Default::default(),Default::default(),100000).unwrap().unwrap();
+    assert_eq!(result.execution.expansion.execution.glyphs,run.glyphs().iter().map(|g|g.glyph_id).collect::<Vec<_>>());
+    assert!(result.skipped_roots>0);assert_eq!(blocked,0);assert!(result.glyph_masks.iter().all(|&x|x==0));
+}

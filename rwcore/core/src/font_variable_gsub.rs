@@ -1,5 +1,5 @@
 //! Same-face variable GSUB integration. No outline interpolation,
-//! Unicode shaping, feature masks, or GPOS positioning.
+//! complete Unicode shaping or GPOS positioning.
 use crate::{Error,FontFace,FontMetricLimits,Fvar,FvarLimits,Avar,AvarLimits,Gdef,GdefLimits,
     MarkGlyphSetLimits,GsubPlanLimits,GsubProgramLimits,FeatureVariationLimits,GsubVariationPlan,
     CompiledGsubProgram,GsubAlternateSelection,GsubProgramExecLimits,GsubProgramExecResult,
@@ -101,5 +101,23 @@ impl VariableGsubFace<'_>{
         let program=self.compile_selected(&plan)?;
         let (execution,ledger)=crate::execute_gsub_program_with_provenance(&program,run,choices,self.limits.execution,source_limits)?;
         Ok(Some((VariableGsubResult{plan,execution},ledger)))
+    }
+}
+
+impl VariableGsubFace<'_>{
+    /// Build the selected variation plan and masks together, then execute
+    /// the conservative strict input policy. Overrides use selected feature
+    /// IDs and scalar indices, not byte offsets. None means no language.
+    /// The caller must supply nominal seeds from this same face's cmap.
+    pub fn execute_with_strict_masks(&self,request:VariableGsubRequest<'_>,run:&crate::SourceRun,
+        choices:&[GsubAlternateSelection],overrides:&[crate::FeatureMaskOverride],
+        mask_limits:crate::FeatureMaskLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
+        ->Result<Option<(GsubVariationPlan,crate::MaskedGsubResult,usize)>,Error>{
+        let Some(plan)=self.build_plan(request)? else{return Ok(None);};
+        let masks=crate::ScalarFeatureMasks::build(&plan.plan,run.scalars().len(),overrides,mask_limits)?;
+        let program=self.compile_selected(&plan)?;
+        let (result,blocked)=crate::execute_gsub_program_with_strict_masks(&program,run,choices,&masks,
+            self.limits.execution,source_limits,max_mask_work)?;
+        Ok(Some((plan,result,blocked)))
     }
 }
