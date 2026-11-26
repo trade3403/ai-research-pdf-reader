@@ -502,3 +502,187 @@ fn verify_alternate(font:&[u8],glyphs:u32,expected:usize){
 #[test]fn padauk_alternate_execution(){verify_alternate(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,1);}
 #[test]fn devanagari_alternate_execution(){verify_alternate(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,0);}
 #[test]fn nastaliq_alternate_execution(){verify_alternate(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,0);}
+
+
+// C4.4d4b: raw LigatureSet oracle. Unlike the production eligible-index
+// pass, consume a queue of physical glyphs and retain ignored gaps.
+struct RawLigRule{output:u16,tail:Vec<u16>}
+struct RawLigRoot{index:u16,flags:usize,mark:Option<usize>,rules:Vec<BTreeMap<u16,Vec<RawLigRule>>>}
+fn ligature_roots(b:&[u8],n:usize)->Vec<RawLigRoot>{
+    let list=u(b,8);
+    let mut out=Vec::new();
+    for i in 0..u(b,list){
+        let p=list+u(b,list+2+2*i);
+        let declared=u(b,p);let flags=u(b,p+2);let count=u(b,p+4);
+        let mark=(flags&16!=0).then(||u(b,p+6+2*count));
+        let mut rules=Vec::new();
+        for j in 0..count{
+            let source=p+u(b,p+6+2*j);
+            let (kind,t)=if declared==7{assert_eq!(u(b,source),1);(u(b,source+2),source+d(b,source+4))}
+                else{(declared,source)};
+            if kind!=4{continue;}
+            assert_eq!(u(b,t),1);
+            let covered=coverage(b,t+u(b,t+2));
+            assert_eq!(covered.len(),u(b,t+4));
+            let mut map=BTreeMap::new();
+            for (g,k) in covered{
+                assert!(k<u(b,t+4)&&(g as usize)<n);
+                let set=t+u(b,t+6+2*k);
+                let mut entries=Vec::new();
+                for j in 0..u(b,set){
+                    let at=set+u(b,set+2+2*j);
+                    let output=u(b,at) as u16;let count=u(b,at+2);
+                    assert!(count>=2&&(output as usize)<n);
+                    let tail:Vec<u16>=(1..count).map(|k|u(b,at+2+2*k) as u16).collect();
+                    assert!(tail.iter().all(|&v|(v as usize)<n));
+                    entries.push(RawLigRule{output,tail});
+                }
+                assert!(!entries.is_empty());
+                assert!(map.insert(g,entries).is_none());
+            }
+            rules.push(map);
+        }
+        if !rules.is_empty(){
+            assert_eq!(rules.len(),count);
+            out.push(RawLigRoot{index:i as u16,flags,mark,rules});
+        }
+    }
+    out
+}
+fn lig_reference_pass(a:&mut GsubLigatureExecResult,root:&RawLigRoot,gd:&RawGdef){
+    use std::collections::VecDeque;
+    let e=&mut a.execution;
+    let mut queue:VecDeque<_>=e.glyphs.iter().copied()
+        .map(|g|(g,gd.eligible(g,root.flags,root.mark))).collect();
+    let mut left=queue.iter().filter(|p|p.1).count();
+    e.visits+=queue.len();
+    let mut next=Vec::new();
+    while let Some((first,eligible))=queue.pop_front(){
+        if !eligible{next.push(first);continue;}
+        left-=1;
+        let mut found=None;
+        'sub: for sub in &root.rules{
+            e.probes+=1;
+            if let Some(rules)=sub.get(&first){
+                for rule in rules{
+                    a.rule_attempts+=1;
+                    if rule.tail.len()>left{continue;}
+                    let mut good=true;
+                    for ((g,_),want) in queue.iter().filter(|p|p.1).zip(&rule.tail){
+                        a.component_checks+=1;
+                        if g!=want{good=false;break;}
+                    }
+                    if good{found=Some(rule);break 'sub;}
+                }
+            }
+        }
+        if let Some(rule)=found{
+            e.matches+=1;e.changes+=1;a.ligatures+=1;
+            a.removed_glyphs+=rule.tail.len();
+            next.push(rule.output);
+            let mut consumed=0;
+            while consumed<rule.tail.len(){
+                let (g,eligible)=queue.pop_front().unwrap();
+                if eligible{consumed+=1;left-=1;}else{next.push(g);}
+            }
+        }else{next.push(first);}
+    }
+    assert_eq!(left,0);
+    e.emitted+=next.len();e.glyphs=next;
+}
+fn lig_reference(input:&[u16],mixed:&[RawMixed],ligatures:&[RawLigRoot],
+    ids:&[u16],gd:&RawGdef,choices:&[GsubAlternateSelection])->(GsubLigatureExecResult,usize){
+    let mut a=GsubLigatureExecResult{execution:GsubMixedExecResult{glyphs:input.to_vec(),
+        visits:0,probes:0,matches:0,changes:0,emitted:0},ligatures:0,removed_glyphs:0,
+        rule_attempts:0,component_checks:0};
+    let mut peak=input.len();
+    for &id in ids{
+        if let Some(root)=ligatures.iter().find(|r|r.index==id){
+            lig_reference_pass(&mut a,root,gd);
+        }else{
+            let root=mixed.iter().find(|r|r.index==id).unwrap();
+            let step=alternate_reference(&a.execution.glyphs,&[root],gd,choices).unwrap();
+            a.execution.visits+=step.visits;a.execution.probes+=step.probes;
+            a.execution.matches+=step.matches;a.execution.changes+=step.changes;
+            a.execution.emitted+=step.emitted;a.execution.glyphs=step.glyphs;
+        }
+        peak=peak.max(a.execution.glyphs.len());
+    }
+    (a,peak)
+}
+fn verify_ligature(font:&[u8],glyphs:u32,expected:usize){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    let n=glyphs as usize;
+    assert_eq!(u(table(font,b"maxp"),4),n);
+    let rawgd=RawGdef::read(gd,n);
+    let g=parse_gdef(gd,glyphs,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n);mixed.extend(alternate_roots(b,n));mixed.sort_by_key(|r|r.index);
+    let raw=ligature_roots(b,n);
+    assert_eq!(raw.iter().map(|r|r.rules.len()).sum::<usize>(),expected);
+    let mut matched=0;
+    let mut sample=Vec::new();
+    for root in &raw{
+        let p=compile_gsub_program(b,&[root.index],glyphs,Some(&g),Default::default()).unwrap();
+        assert!(matches!(execute_gsub_with_alternates(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+        let ignored=(0..n as u16).find(|&id|!rawgd.eligible(id,root.flags,root.mark));
+        let mut samples=0;
+        for sub in &root.rules{
+            for (&first,rules) in sub{
+                for rule in rules{
+                    let input:Vec<_>=std::iter::once(first).chain(rule.tail.iter().copied()).collect();
+                    let (want,_)=lig_reference(&input,&mixed,&raw,&[root.index],&rawgd,&[]);
+                    assert_eq!(execute_gsub_with_ligatures(&p,&input,&[],Default::default()).unwrap(),want,
+                        "lookup {} input {:?}",root.index,input);
+                    matched+=want.ligatures;
+                    if let Some(mark)=ignored{
+                        let mut decorated=vec![mark,first];
+                        for &v in &rule.tail{decorated.extend([mark,v]);}
+                        decorated.push(mark);
+                        let (want,_)=lig_reference(&decorated,&mixed,&raw,&[root.index],&rawgd,&[]);
+                        assert_eq!(execute_gsub_with_ligatures(&p,&decorated,&[],Default::default()).unwrap(),want);
+                    }
+                    if samples<8{sample.extend_from_slice(&input);samples+=1;}
+                }
+            }
+        }
+    }
+    assert!(matched>0);
+    // Include every glyph in both directions and genuine rule sequences.
+    // For mixed execution record the peak, not only the final length:
+    // Type 2 may expand a stream before a later ligature shrinks it.
+    let input:Vec<u16>=(0..n as u16).chain((0..n as u16).rev())
+        .chain(sample.iter().copied()).collect();
+    let lig_ids:Vec<_>=raw.iter().map(|r|r.index).collect();
+    let mut all=lig_ids.clone();all.extend(mixed.iter().map(|r|r.index));all.sort_unstable();
+    assert!(all.windows(2).all(|w|w[0]<w[1]));
+    for ids in [&lig_ids[..],&all[..]]{
+        let choices:Vec<_>=mixed.iter().filter(|r|r.kind==3&&ids.binary_search(&r.index).is_ok())
+            .map(|r|alternate_choice(r.index,0)).collect();
+        let p=compile_gsub_program(b,ids,glyphs,Some(&g),Default::default()).unwrap();
+        assert_eq!(p.roots(),ids);assert!(p.dependencies().is_empty());
+        let (want,peak)=lig_reference(&input,&mixed,&raw,ids,&rawgd,&choices);
+        let e=&want.execution;
+        let l=GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_glyphs:peak,max_roots:ids.len(),
+            max_visits:e.visits,max_probes:e.probes,max_matches:e.matches,max_emitted:e.emitted},
+            max_rule_attempts:want.rule_attempts,max_component_checks:want.component_checks};
+        assert_eq!(execute_gsub_with_ligatures(&p,&input,&choices,l).unwrap(),want);
+        let mut bad=vec![GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_glyphs:peak-1,..l.mixed},..l},
+            GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_roots:ids.len()-1,..l.mixed},..l}];
+        if e.visits>0{bad.push(GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_visits:e.visits-1,..l.mixed},..l});}
+        if e.probes>0{bad.push(GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_probes:e.probes-1,..l.mixed},..l});}
+        if e.matches>0{bad.push(GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_matches:e.matches-1,..l.mixed},..l});}
+        if e.emitted>0{bad.push(GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_emitted:e.emitted-1,..l.mixed},..l});}
+        if want.rule_attempts>0{bad.push(GsubLigatureExecLimits{max_rule_attempts:want.rule_attempts-1,..l});}
+        if want.component_checks>0{bad.push(GsubLigatureExecLimits{max_component_checks:want.component_checks-1,..l});}
+        for limit in bad{
+            assert!(matches!(execute_gsub_with_ligatures(&p,&input,&choices,limit),Err(Error::Limit(_))));
+        }
+    }
+}
+#[test]fn abeezee_regular_ligature_execution(){verify_ligature(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,3);}
+#[test]fn abeezee_italic_ligature_execution(){verify_ligature(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,3);}
+#[test]fn alegreya_ligature_execution(){verify_ligature(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,11);}
+#[test]fn aref_ligature_execution(){verify_ligature(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,1);}
+#[test]fn padauk_ligature_execution(){verify_ligature(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,22);}
+#[test]fn devanagari_ligature_execution(){verify_ligature(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,35);}
+#[test]fn nastaliq_ligature_execution(){verify_ligature(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,5);}

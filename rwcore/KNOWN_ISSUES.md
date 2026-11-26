@@ -159,3 +159,5 @@
 - C4.4d3b: two existing real fixtures contain Type 3; five are controls. Tests cover explicit selected roots, not feature-value mapping or complete external shaper equivalence; direct/wrapped synthetic coverage retained. No ligature execution, cluster propagation, nested context, script staging, GPOS or corpus/security acceptance yet.
 
 - C4.4d4a: Type 4 glyph-ID-only execution retains ignored glyphs but does not propagate ligature component associations, clusters or mark attachments, so no full shaping claim. Static GDEF eligibility per root, no feature masks or nested execution. Type 4 visits count physical input positions including consumed glyphs; rule attempts and component comparisons have separate caps. Real-font Type 4 reference pending. Corpus and security/license acceptance outstanding.
+
+- C4.4d4b: seven fixture fonts, explicit selected root execution only. A stored rule may be shadowed by an earlier rule or blocked by filtering; rule-derived inputs do not prove every stored rule independently fires. No cluster or mark attachment propagation, nested context, script staging, GPOS, external shaping equivalence or corpus/security acceptance.
