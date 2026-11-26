@@ -239,3 +239,6 @@ pub use font_fvar::{VARIATION_FIXED_ONE,VARIATION_F2DOT14_ONE,FvarLimits,FvarAxi
 
 pub mod font_avar;
 pub use font_avar::{AvarLimits,AvarPair,AvarSegmentMap,Avar,parse_avar,normalize_variation_coordinates,normalize_tagged_variation_coordinates};
+
+pub mod font_variable_gsub;
+pub use font_variable_gsub::{VariableGsubLimits,VariationUserCoordinates,VariableGsubRequest,VariableGsubResult,VariableGsubFace,parse_variable_gsub_face};

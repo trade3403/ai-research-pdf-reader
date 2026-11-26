@@ -108,8 +108,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4e2 | Variation-aware feature plan and validated program compilation | Verified (#148) |
 | C4.4e3 | Native positive FeatureVariations reference and dynamic plan acceptance | Verified (#149) |
 | C4.4e4 | Bounded fvar axis parsing and normalized coordinate calculation | Verified (#150) |
-| C4.4e5 | Bounded avar 1.0 segment maps and non-linear coordinate remapping | Source implemented; CI pending |
-| C4.4e6 | Native user-coordinate normalization and dynamic GSUB execution integration | Planned |
+| C4.4e5 | Bounded avar 1.0 segment maps and non-linear coordinate remapping | Verified (#151) |
+| C4.4e6 | Native user-coordinate normalization and dynamic GSUB execution integration | Source implemented; CI pending |
+| C4.4e7 | Bounded variable GSUB scheduling acceptance and API contract | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

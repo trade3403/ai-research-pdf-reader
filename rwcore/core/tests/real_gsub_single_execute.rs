@@ -2478,3 +2478,160 @@ fn archivo_variation_execution(tags:&[[u8;4]],mixed_schedule:bool){
         assert_eq!(a.roots(),old.roots());assert_eq!(a.closure(),old.closure());
     }
 }
+
+
+// C4.4e6: raw design-space reference including both intermediate Fixed
+// operations. No production fvar/avar parsing or coordinate computation.
+fn raw_design_bounds(font:&[u8])->Vec<([u8;4],i32,i32,i32)>{
+    let b=table(font,b"fvar");let start=u(b,4);let stride=u(b,10);
+    let fixed=|p|i32::from_be_bytes(b[p..p+4].try_into().unwrap());
+    (0..u(b,8)).map(|i|{
+        let p=start+i*stride;
+        (b[p..p+4].try_into().unwrap(),fixed(p+4),fixed(p+8),fixed(p+12))
+    }).collect()
+}
+fn raw_design_normalize(font:&[u8],user:&[i32])->Vec<i16>{
+    let axes=raw_design_bounds(font);assert_eq!(axes.len(),user.len());
+    let av=table(font,b"avar");assert_eq!(u(av,6),axes.len());
+    let mut p=8;let mut out=Vec::new();
+    for ((_,min,def,max),&v) in axes.into_iter().zip(user){
+        let v=i64::from(v.clamp(min,max));let def=i64::from(def);
+        let x=if v==def{0}else{
+            let den=if v<def{def-i64::from(min)}else{i64::from(max)-def};
+            (v-def).signum()*((2*(v-def).abs()*65536+den)/(2*den))
+        };
+        let count=u(av,p);p+=2;
+        let pairs:Vec<_>=(0..count).map(|i|(i64::from(u(av,p+4*i) as i16)*4,
+            i64::from(u(av,p+4*i+2) as i16)*4)).collect();
+        p+=4*count;
+        let seg=pairs.windows(2).find(|s|s[0].0<=x&&x<=s[1].0).unwrap();
+        let (a,b)=(seg[0],seg[1]);let den=b.0-a.0;
+        let ratio=(2*(x-a.0)*65536+den)/(2*den);
+        let y=a.1+(2*ratio*(b.1-a.1)+65536)/131072;
+        out.push(((y+2)>>2) as i16);
+    }
+    assert_eq!(p,av.len());out
+}
+fn archivo_user_boundary()->i32{
+    let bounds=raw_design_bounds(ARCHIVO_NATIVE);
+    assert_eq!(bounds[0].0,*b"wght");assert_eq!(bounds[1].0,*b"wdth");
+    let (_,_,min,_,_,_)=archivo_raw_variation(table(ARCHIVO_NATIVE,b"GSUB"));
+    let mut lo=i64::from(bounds[0].1);let mut hi=i64::from(bounds[0].3);
+    while lo<hi{
+        let mid=(lo+hi)/2;
+        if raw_design_normalize(ARCHIVO_NATIVE,&[mid as i32,bounds[1].2])[0]>=min{hi=mid;}
+        else{lo=mid+1;}
+    }
+    assert!(lo>i64::from(bounds[0].1));
+    assert_eq!(raw_design_normalize(ARCHIVO_NATIVE,&[lo as i32,bounds[1].2])[0],min);
+    assert!(raw_design_normalize(ARCHIVO_NATIVE,&[lo as i32-1,bounds[1].2])[0]<min);
+    lo as i32
+}
+#[test]fn archivo_user_coordinate_boundary_full_execution(){
+    let font=ARCHIVO_NATIVE;
+    let container=parse_font(font,Default::default()).unwrap();
+    let face=parse_variable_gsub_face(container.face(0).unwrap(),Default::default()).unwrap();
+    let b=table(font,b"GSUB");let rawgd=RawGdef::read(table(font,b"GDEF"),834);
+    let mixed=mixed_roots(b,834);let (_,_,min,max,_,alternate)=archivo_raw_variation(b);
+    let bounds=raw_design_bounds(font);let threshold=archivo_user_boundary();
+    let input:Vec<_>=(0..834u16).chain((0..834u16).rev()).collect();
+    for weight in [i32::MIN,bounds[0].1,threshold-2,threshold-1,threshold,threshold+1,bounds[0].2,bounds[0].3,i32::MAX]{
+        for width in [bounds[1].1,bounds[1].2,bounds[1].3]{
+            let user=[weight,width];let expected=raw_design_normalize(font,&user);
+            let selected=expected[0]>=min&&expected[0]<=max;
+            let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"rvrn"],
+                coordinates:VariationUserCoordinates::Ordered(&user)};
+            let got=face.execute(req,&input,&[]).unwrap().unwrap();
+            assert_eq!(got.plan.coordinates,expected);
+            assert_eq!(got.plan.matched_record,selected.then_some(0));
+            let roots=if selected{alternate.as_slice()}else{&[]};
+            let (want,peak)=full_reference(&input,&rawgd,&mixed,&[],&[],&[],&[],roots);
+            assert_eq!(got.execution,want);
+            assert_eq!(got.execution.expansion.execution.matches,if selected{14}else{0});
+            let compiled=face.compile_plan(req,&got.plan).unwrap();exact_full(&compiled,&input,&[],&want,peak);
+        }
+    }
+}
+#[test]fn archivo_user_tagged_defaults_mixed_plan_and_forgery(){
+    let c=parse_font(ARCHIVO_NATIVE,Default::default()).unwrap();
+    let face=parse_variable_gsub_face(c.face(0).unwrap(),Default::default()).unwrap();
+    let bounds=raw_design_bounds(ARCHIVO_NATIVE);let user=[archivo_user_boundary(),bounds[1].2];
+    let tags=[(*b"wght",user[0])];
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],
+        coordinates:VariationUserCoordinates::Tagged(&tags)};
+    let p=face.build_plan(req).unwrap().unwrap();
+    let ordered=VariableGsubRequest{coordinates:VariationUserCoordinates::Ordered(&user),..req};
+    assert_eq!(face.build_plan(ordered).unwrap().unwrap(),p);
+    assert_eq!(p.plan.lookups.iter().map(|l|l.index).collect::<Vec<_>>(),vec![34,37]);
+    assert_eq!(p.coordinates,raw_design_normalize(ARCHIVO_NATIVE,&user));
+    let stale=[user[0]-1,user[1]];
+    assert!(matches!(face.compile_plan(VariableGsubRequest{coordinates:VariationUserCoordinates::Ordered(&stale),..req},&p),Err(Error::Invalid(_))));
+    let mut forged=p.clone();forged.plan.unavailable_tags.push(*b"zzzz");
+    assert!(matches!(face.compile_plan(req,&forged),Err(Error::Invalid(_))));
+    assert!(matches!(face.compile_plan(VariableGsubRequest{enabled:&[*b"case"],..req},&p),Err(Error::Invalid(_))));
+    let input:Vec<_>=(0..834u16).collect();let b=table(ARCHIVO_NATIVE,b"GSUB");
+    let rawgd=RawGdef::read(table(ARCHIVO_NATIVE,b"GDEF"),834);
+    let mixed=mixed_roots(b,834);
+    let (want,_)=full_reference(&input,&rawgd,&mixed,&[],&[],&[],&[],&[34,37]);
+    assert_eq!(face.execute(req,&input,&[]).unwrap().unwrap().execution,want);
+}
+#[test]fn variable_face_native_absent_variation_controls(){
+    for font in [
+        include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf").as_slice(),
+        include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf").as_slice()
+    ]{
+        let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+        let face=parse_variable_gsub_face(sf,Default::default()).unwrap();
+        let b=table(font,b"GSUB");let layout=parse_gsub_layout(b,Default::default()).unwrap();
+        let script=layout.scripts.iter().find(|s|s.default_language.is_some()).unwrap().tag;
+        let req=VariableGsubRequest{script,language:None,enabled:&[],coordinates:VariationUserCoordinates::Tagged(&[])};
+        let result=face.execute(req,&[0],&[]).unwrap().unwrap();
+        assert_eq!(result.plan.coordinates,vec![0;face.fvar().axes().len()]);
+        assert!(!result.plan.variations_present);
+        assert_eq!(face.avar().is_some(),sf.table(*b"avar").is_some());
+        let base=build_gsub_base_plan(&layout,script,None,&[],Default::default()).unwrap().unwrap();
+        assert_eq!(result.plan.plan,base);
+        let gd=parse_gdef(table(font,b"GDEF"),face.glyph_count(),Default::default()).unwrap();
+        let p=compile_gsub_plan_program(b,&base,face.glyph_count(),Some(&gd),Default::default()).unwrap();
+        assert_eq!(result.execution,execute_gsub_program(&p,&[0],&[],Default::default()).unwrap());
+    }
+}
+#[test]fn variable_face_missing_and_malformed_associated_tables(){
+    let c=parse_font(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),Default::default()).unwrap();
+    assert!(matches!(parse_variable_gsub_face(c.face(0).unwrap(),Default::default()),Err(Error::Invalid(_))));
+    // Mutate copies of the native fixture, never the retained source.
+    for tag in [*b"fvar",*b"GSUB",*b"maxp"]{
+        let mut font=ARCHIVO_NATIVE.to_vec();
+        let p=(0..u(&font,4)).map(|i|12+16*i).find(|&p|font[p..p+4]==tag).unwrap();
+        font[p..p+4].copy_from_slice(b"zzzz");
+        let c=parse_font(&font,Default::default()).unwrap();
+        assert!(parse_variable_gsub_face(c.face(0).unwrap(),Default::default()).is_err());
+    }
+    let mut font=ARCHIVO_NATIVE.to_vec();
+    let p=(0..u(&font,4)).map(|i|12+16*i).find(|&p|&font[p..p+4]==b"avar").unwrap();
+    let at=d(&font,p+8);font[at+6..at+8].copy_from_slice(&1u16.to_be_bytes());
+    let c=parse_font(&font,Default::default()).unwrap();
+    assert!(matches!(parse_variable_gsub_face(c.face(0).unwrap(),Default::default()),Err(Error::Invalid(_))));
+}
+#[test]fn variable_face_layer_budgets_and_invalid_requests(){
+    let c=parse_font(ARCHIVO_NATIVE,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    for l in [
+        VariableGsubLimits{metrics:FontMetricLimits{max_glyphs:833},..Default::default()},
+        VariableGsubLimits{fvar:FvarLimits{max_axes:1,..Default::default()},..Default::default()},
+        VariableGsubLimits{avar:AvarLimits{max_pairs:11,..Default::default()},..Default::default()},
+        VariableGsubLimits{gdef:GdefLimits{max_bytes:1,..Default::default()},..Default::default()}
+    ]{assert!(matches!(parse_variable_gsub_face(sf,l),Err(Error::Limit(_))));}
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&[])};
+    let face=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    assert!(face.execute(VariableGsubRequest{coordinates:VariationUserCoordinates::Ordered(&[0]),..req},&[0],&[]).is_err());
+    assert!(face.execute(VariableGsubRequest{coordinates:VariationUserCoordinates::Tagged(&[(*b"zzzz",0)]),..req},&[0],&[]).is_err());
+    assert!(face.execute(req,&[834],&[]).is_err());
+    let mut l=VariableGsubLimits::default();l.variations.max_records=0;
+    assert!(matches!(parse_variable_gsub_face(sf,l).unwrap().execute(req,&[0],&[]),Err(Error::Limit(_))));
+    let mut l=VariableGsubLimits::default();l.plan.max_lookup_refs=0;
+    assert!(matches!(parse_variable_gsub_face(sf,l).unwrap().execute(req,&[0],&[]),Err(Error::Limit(_))));
+    let mut l=VariableGsubLimits::default();l.program.compile.max_lookups=0;
+    assert!(matches!(parse_variable_gsub_face(sf,l).unwrap().execute(req,&[0],&[]),Err(Error::Limit(_))));
+    let mut l=VariableGsubLimits::default();l.execution.expansion.context.max_glyphs=0;
+    assert!(matches!(parse_variable_gsub_face(sf,l).unwrap().execute(req,&[0],&[]),Err(Error::Limit(_))));
+}

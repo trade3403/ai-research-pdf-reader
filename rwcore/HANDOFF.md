@@ -190,3 +190,6 @@ C4.4e4 pending CI; #149 verified 1062/platform, 3186 total. New fvar parser and 
 
 ## Latest checkpoint
 C4.4e5 pending CI; #150 verified 1074/platform, 3222 total. New avar 1.0 mapping and ordered/tagged normalization, 12 tests, 1086/platform expected. Next C4.4e6 native normalization-to-GSUB integration only after exact CI pass. Read DEV_STATE.md; no concurrent writers.
+
+## Latest checkpoint
+C4.4e6 pending CI; #151 verified 1086/platform, 3258 total. Same-face variable GSUB user-coordinate integration and five native/negative regressions, 1091/platform expected. Next C4.4e7 acceptance and API contract only after exact CI pass. Read DEV_STATE.md; no concurrent writers.
