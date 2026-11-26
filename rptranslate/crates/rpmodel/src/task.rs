@@ -228,8 +228,7 @@ mod tests {
         fn task(&self, retry_limit: u8) -> Task {
             let asset = Asset {
                 bytes: 3,
-                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-                    .into(),
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
             };
             let entry = Entry {
                 id: "fixture".into(),
@@ -367,9 +366,7 @@ mod tests {
         let root = Scratch::new();
         let mut task = root.task(5);
         let now = Instant::now();
-        let failed = task.step_with(now, |_, _, _, _| {
-            (Err(Error::HttpStatus), Duration::ZERO)
-        });
+        let failed = task.step_with(now, |_, _, _, _| (Err(Error::HttpStatus), Duration::ZERO));
         assert_eq!(failed.state, State::Failed);
         assert_eq!(failed.retries, 0);
         let root = Scratch::new();

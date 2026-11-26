@@ -385,7 +385,10 @@ mod tests {
     #[test]
     fn range_exit_classifies_only_known_transient_codes() {
         for code in [6, 7, 18, 28, 52, 55, 56] {
-            assert_eq!(range_exit_error(Some(code)), Error::TransientTransport(code));
+            assert_eq!(
+                range_exit_error(Some(code)),
+                Error::TransientTransport(code)
+            );
         }
         for code in [1, 22, 23, 35, 51, 60, 63, 77] {
             assert_eq!(range_exit_error(Some(code)), Error::Transport);
