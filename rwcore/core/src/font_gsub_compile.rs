@@ -166,6 +166,7 @@ pub struct GsubProgramLimits{
 pub struct CompiledGsubProgram<'a>{
     glyph_count:u32,
     roots:Vec<u16>,
+    validated_plan:Option<GsubPlan>,
     lookups:Vec<CompiledGsubLookup<'a>>,
     dependencies:Vec<GsubDependency>,
     closure:GsubDependencyClosure,
@@ -173,6 +174,7 @@ pub struct CompiledGsubProgram<'a>{
 impl<'a> CompiledGsubProgram<'a>{
     pub fn glyph_count(&self)->u32{self.glyph_count}
     pub fn roots(&self)->&[u16]{&self.roots}
+    pub fn validated_plan(&self)->Option<&GsubPlan>{self.validated_plan.as_ref()}
     pub fn lookups(&self)->&[CompiledGsubLookup<'a>]{&self.lookups}
     pub fn lookup(&self,id:u16)->Option<&CompiledGsubLookup<'a>>{
         self.lookups.binary_search_by_key(&id,|l|l.index()).ok().map(|i|&self.lookups[i])
@@ -229,7 +231,7 @@ fn compile_program<'a>(b:&[u8],layout:&GsubLayout,roots:&[u16],glyph_count:u32,
     edges.sort_by_key(|e|e.site.lookup_index);
     let closure=analyze_gsub_dependency_closure(n,&sources,&edges,roots,l.closure)?;
     if !closure.is_complete()||closure.reachable!=sources{return Err(Error::Invalid("gsub program incomplete"));}
-    Ok(CompiledGsubProgram{glyph_count,roots:roots.to_vec(),lookups:compiled.into_values().collect(),dependencies:edges,closure})
+    Ok(CompiledGsubProgram{glyph_count,roots:roots.to_vec(),validated_plan:None,lookups:compiled.into_values().collect(),dependencies:edges,closure})
 }
 pub fn compile_gsub_program<'a>(b:&[u8],roots:&[u16],glyph_count:u32,gdef:Option<&'a Gdef>,
     l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
@@ -240,7 +242,9 @@ pub fn compile_gsub_plan_program<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef
     l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
     let layout=parse_gsub_layout(b,l.compile.layout)?;
     let roots=validate_plan(&layout,plan,l.compile)?;
-    compile_program(b,&layout,&roots,glyph_count,gdef,l)
+    let mut program=compile_program(b,&layout,&roots,glyph_count,gdef,l)?;
+    program.validated_plan=Some(plan.clone());
+    Ok(program)
 }
 
 /// Re-read the original GSUB and select the variation record at the
@@ -268,5 +272,7 @@ pub fn compile_gsub_variation_plan_program<'a>(b:&[u8],plan:&crate::GsubVariatio
         .eq(plan.replaced_features.iter().copied()){
         return Err(Error::Invalid("gsub variation plan replacement provenance"));
     }
-    compile_program(b,&layout,&roots,glyph_count,gdef,l)
+    let mut program=compile_program(b,&layout,&roots,glyph_count,gdef,l)?;
+    program.validated_plan=Some(plan.plan.clone());
+    Ok(program)
 }

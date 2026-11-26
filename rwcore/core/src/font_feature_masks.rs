@@ -1,6 +1,6 @@
 //! Explicit binary feature masks in logical scalar order.
 //! A dense u64 bitset supports up to 64 selected feature IDs.
-//! This foundation does not gate the GSUB scheduler yet.
+//! Root scheduling integration is provided by execute_gsub_program_with_masks.
 use crate::{Error,GsubPlan,ProvenanceLedger};
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
