@@ -191,3 +191,5 @@
 - C4.4d9: bounded explicit/base-plan GSUB execution candidate only. Native plan integration uses selected default-LangSys feature schedules, not full language shaping or all rules. No FeatureVariations evaluation, cluster metadata, masks, GPOS, external shaper parity or measured memory/runtime/security acceptance.
 
 - #145 failure: test selection cap, not demonstrated substitution failure. Full Mongolian rclt plan repair pending CI; no gate waiver. Existing native Type 8 positive regression retained; full language shaping not claimed.
+
+- C4.4e1: only Format 1 condition interpretation, strict malformed-known-table rejection; unsupported condition/version and out-of-domain axis skip per selection policy. Coordinates must already include normalization/avar remapping; fvar axis count is caller-supplied. Alternate feature parameters opaque. No variation-aware compile integration or native positive FeatureVariations fixture yet; no script stages, masks or cluster propagation.

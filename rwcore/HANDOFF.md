@@ -175,3 +175,6 @@ C4.4d9 pending CI; #144 verified 1028/platform, 3084 total. Eight end-to-end nat
 
 ## C4.4d9 repair checkpoint
 #145 failed identically on all platforms; complete native mong/rclt plan has 74 roots including lookup 93, not <=32. Pinned schedule repair committed without changing production limits or dropping tests; 1036/platform target unchanged. Next verify repair CI; no FeatureVariations development before pass.
+
+## Latest checkpoint
+C4.4d9 accepted at #146, exact baseline 5c06c9b0638380a8d093d1adc6f9c20155ce3951, 1036/platform, 3108 total. C4.4e1 independent FeatureVariations parser and selector pending CI, 12 regressions, 1048/platform expected. Next variation-aware plan/program compilation only after pass. Read DEV_STATE.md and GSUB_EXECUTION.md.

@@ -1,6 +1,6 @@
 # GSUB bounded execution contract — C4.4d9
 
-Status: candidate for bounded execution acceptance; CI gate pending. This is not complete OpenType shaping.
+Status: bounded GSUB execution accepted at CI #146 (1036/platform, 3108 total; revision 5c06c9b0638380a8d093d1adc6f9c20155ce3951). This is not complete OpenType shaping.
 
 ## Stable API
 - parse_gsub_layout / build_gsub_base_plan: base script/language selection, required features, explicit optional tags, sorted unique roots and feature provenance.
@@ -40,3 +40,6 @@ Remaining: FeatureVariations condition/substitution evaluation, script-specific 
 
 ## CI #145 repair
 The generic fixture selection cap of 32 roots excluded the native Mongolian reverse-containing feature. The pinned font's default mong LangSys rclt has 74 distinct roots, including native Type 8 lookup 93. The repaired regression checks the complete real feature plan, with unchanged engine budgets and independent reference comparisons. Other seven fixtures retain their original selection cap. Final acceptance still pending CI.
+
+## Acceptance result
+CI #146 passed all three platforms, including the complete 74-root native mong/rclt regression. The bounded GSUB execution contract is accepted. C4.4e1 starts a separate FeatureVariations parser/selector; no change to the accepted execution semantics or base planner yet.
