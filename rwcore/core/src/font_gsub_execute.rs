@@ -118,22 +118,57 @@ fn emit(next:&mut Vec<u16>,seq:&[u16],emitted:&mut usize,
 /// propagation, nested context, or unsupported-root skipping.
 pub fn execute_gsub_mixed(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubMixedExecLimits)->Result<GsubMixedExecResult,Error>{
+    execute_mixed_inner(program,glyphs,None,limits)
+}
+/// Explicit zero-based candidate index for one scheduled effective Type 3
+/// lookup. Selections must be in ascending unique original lookup order.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct GsubAlternateSelection{
+    pub lookup_index:u16,
+    pub candidate_index:usize,
+}
+/// Execute effective Type 1/2/3 roots with an explicit selection for
+/// every Type 3 root (and no other selections). A covered, eligible
+/// glyph with an out-of-range candidate is an error, not a subtable miss.
+/// Coverage misses and filtered glyphs do not consult candidate bounds.
+/// No feature-value inference, per-glyph selection, or nested execution.
+pub fn execute_gsub_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    selections:&[GsubAlternateSelection],limits:GsubMixedExecLimits)->Result<GsubMixedExecResult,Error>{
+    execute_mixed_inner(program,glyphs,Some(selections),limits)
+}
+fn execute_mixed_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    selections:Option<&[GsubAlternateSelection]>,limits:GsubMixedExecLimits)->Result<GsubMixedExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots{
         return Err(Error::Limit("gsub mixed execution size"));
     }
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
         return Err(Error::Invalid("gsub mixed execution glyph"));
     }
+    let choices=selections.unwrap_or(&[]);
+    if choices.len()>limits.max_roots{return Err(Error::Limit("gsub alternate selections"));}
+    let mut choice_iter=choices.iter();
     for &id in program.roots(){
         let l=program.lookup(id).ok_or(Error::Invalid("gsub execution missing root"))?;
-        if !matches!(l.effective_kind(),1|2){return Err(Error::Unsupported("gsub mixed execution root kind"));}
+        match l.effective_kind(){
+            1|2=>{},
+            3 if selections.is_some()=>{
+                let choice=choice_iter.next().ok_or(Error::Invalid("gsub alternate selection missing"))?;
+                if choice.lookup_index!=id{return Err(Error::Invalid("gsub alternate selection order or root"));}
+            }
+            _=>return Err(Error::Unsupported("gsub mixed execution root kind")),
+        }
     }
+    if choice_iter.next().is_some(){return Err(Error::Invalid("gsub alternate extra selection"));}
     let mut out=GsubMixedExecResult{glyphs:Vec::new(),visits:0,probes:0,matches:0,changes:0,emitted:0};
     out.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub mixed allocation"))?;
     out.glyphs.extend_from_slice(glyphs);
     let mut next=Vec::new();
+    let mut choice_iter=choices.iter();
     for &id in program.roots(){
         let lookup=program.lookup(id).ok_or(Error::Invalid("gsub execution missing root"))?;
+        let candidate=if lookup.effective_kind()==3{
+            Some(choice_iter.next().ok_or(Error::Invalid("gsub alternate selection missing"))?.candidate_index)
+        }else{None};
         next.clear();
         for &glyph in &out.glyphs{
             tick(&mut out.visits,limits.max_visits,"gsub mixed visits")?;
@@ -148,6 +183,10 @@ pub fn execute_gsub_mixed(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
                         }
                         ExtensionTarget::Multiple(rule)=>{
                             if let Some(seq)=rule.substitute(glyph){multiple=Some(seq);break;}
+                        }
+                        ExtensionTarget::Alternate(rule)=>{
+                            let index=candidate.ok_or(Error::Invalid("gsub alternate selection missing"))?;
+                            if let Some(v)=rule.select(glyph,index)?{single=Some(v);break;}
                         }
                         _=>return Err(Error::Invalid("gsub mixed target kind")),
                     }

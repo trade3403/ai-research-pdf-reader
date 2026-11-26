@@ -153,3 +153,5 @@
 - C4.4d2a: no deletion (existing Type 2 parser rejects empty sequences), cluster propagation, contextual execution, feature masks, other root types or full shaping. Emission budget counts logical glyphs rather than allocator capacity or bytes; buffers may retain capacity between passes. Probe count is not individual coverage comparisons. Real Type 2 execution reference pending.
 
 - C4.4d2b: four fixtures contain Type 2 targets and three serve as Type 1-only controls. Reference checks explicitly selected Type 1/2 roots, not full feature scheduling or external shaping equivalence. No deletion, cluster propagation, nested execution, Type 3 execution, GPOS or corpus/security acceptance yet.
+
+- C4.4d3a: explicit uniform per-root zero-based candidate only; no per-glyph alternate choice, feature-value/mask inference, fallback to first candidate, script-specific scheduling, clusters or nested execution. An index is checked only on eligible covered glyphs; invalid selection errors return no output. Real Type 3 execution reference pending. Corpus and security/license gates outstanding.

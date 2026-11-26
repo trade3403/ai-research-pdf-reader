@@ -16,7 +16,7 @@ fn fixture(spec:&[Lookup<'_>])->Vec<u8>{
             if kind==7{w.extend([1,effective,0,8]);}
             match effective{
                 1=>{assert_eq!(seq.len(),1);w.extend([2,8,1,seq[0],1,1,input]);}
-                2=>{w.extend([1,8,1,14,1,1,input,seq.len() as u16]);w.extend_from_slice(seq);}
+                2|3=>{w.extend([1,8,1,14,1,1,input,seq.len() as u16]);w.extend_from_slice(seq);}
                 _=>panic!("fixture kind")
             }
         }
@@ -114,4 +114,89 @@ fn run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>)->GsubMixedExecResult{
     assert_eq!(a.glyphs,m.glyphs);
     assert_eq!((a.visits,a.probes,a.matches,a.changes),(m.visits,m.probes,m.matches,m.changes));
     assert_eq!(m.emitted,8);
+}
+
+
+fn choice(lookup_index:u16,candidate_index:usize)->GsubAlternateSelection{
+    GsubAlternateSelection{lookup_index,candidate_index}
+}
+fn alternate_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubMixedExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_with_alternates(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn alternate_explicit_candidate_order(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[13,11,12])])]);
+    for (i,v) in [13,11,12].into_iter().enumerate(){
+        let a=alternate_run(&b,&[0],&[10,9,10],None,&[choice(0,i)]);
+        assert_eq!(a.glyphs,vec![v,9,v]);
+        assert_eq!((a.visits,a.probes,a.matches,a.changes,a.emitted),(3,3,2,2,3));
+    }
+}
+#[test]fn alternate_first_match_identity_and_duplicate_candidates(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[11,10,10]),(10,&[12,13,14]),(11,&[15,16,17])])]);
+    let a=alternate_run(&b,&[0],&[10,11],None,&[choice(0,2)]);
+    assert_eq!(a.glyphs,vec![10,17]);
+    assert_eq!((a.probes,a.matches,a.changes),(4,2,1));
+}
+#[test]fn alternate_covered_invalid_does_not_fall_through(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[11]),(10,&[12,13])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    let input=[9,10];
+    assert!(matches!(execute_gsub_with_alternates(&p,&input,&[choice(0,1)],Default::default()),Err(Error::Invalid(_))));
+    assert_eq!(input,[9,10]);
+    assert_eq!(alternate_run(&b,&[0],&[9],None,&[choice(0,usize::MAX)]).glyphs,vec![9]);
+}
+#[test]fn alternate_wrapped_mixed_roots(){
+    let b=fixture(&[(2,2,0,None,&[(10,&[11,12])]),(7,3,0,None,&[(11,&[13,14]),(12,&[15,16])]),
+        (1,1,0,None,&[(14,&[17])]),(3,3,0,None,&[(16,&[18,19])])]);
+    let a=alternate_run(&b,&[0,1,2,3],&[10,9],None,&[choice(1,1),choice(3,0)]);
+    assert_eq!(a.glyphs,vec![17,18,9]);
+    assert_eq!((a.visits,a.matches,a.changes,a.emitted),(11,5,5,12));
+}
+#[test]fn alternate_current_glyph_filter_and_miss(){
+    let g=gdef();
+    let b=fixture(&[(2,2,0,None,&[(10,&[12,15])]),
+        (3,3,LOOKUP_IGNORE_MARK,None,&[(12,&[20]),(15,&[21,22])])]);
+    assert_eq!(alternate_run(&b,&[0,1],&[10],Some(&g),&[choice(1,1)]).glyphs,vec![12,22]);
+}
+#[test]fn alternate_mark_set_policy(){
+    let g=gdef();
+    let b=fixture(&[(3,3,LOOKUP_USE_MARK_SET|0x0100,Some(0),&[(12,&[20]),(13,&[21,22])])]);
+    assert_eq!(alternate_run(&b,&[0],&[12,13,14],Some(&g),&[choice(0,1)]).glyphs,vec![12,22,14]);
+}
+#[test]fn alternate_requires_exact_sorted_root_selections(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[11])]),(1,1,0,None,&[(11,&[12])]),
+        (3,3,0,None,&[(12,&[13])]),(3,3,0,None,&[(13,&[14])])]);
+    let p=compile_gsub_program(&b,&[0,1,2],32,None,Default::default()).unwrap();
+    for bad in [vec![],vec![choice(0,0)],vec![choice(2,0),choice(0,0)],
+        vec![choice(0,0),choice(0,0)],vec![choice(0,0),choice(1,0)],
+        vec![choice(0,0),choice(3,0)],vec![choice(0,0),choice(2,0),choice(3,0)]]{
+        assert!(matches!(execute_gsub_with_alternates(&p,&[],&bad,Default::default()),Err(Error::Invalid(_))));
+    }
+    assert!(execute_gsub_with_alternates(&p,&[],&[choice(0,0),choice(2,0)],Default::default()).unwrap().glyphs.is_empty());
+    assert!(matches!(execute_gsub_mixed(&p,&[],Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn alternate_exact_work_limits(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[11,12])]),(3,3,0,None,&[(12,&[13])])]);
+    let p=compile_gsub_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let choices=[choice(0,1),choice(1,0)];
+    let l=GsubMixedExecLimits{max_glyphs:2,max_roots:2,max_visits:4,max_probes:4,max_matches:2,max_emitted:4};
+    assert_eq!(execute_gsub_with_alternates(&p,&[10,9],&choices,l).unwrap().glyphs,vec![13,9]);
+    for bad in [GsubMixedExecLimits{max_glyphs:1,..l},GsubMixedExecLimits{max_roots:1,..l},
+        GsubMixedExecLimits{max_visits:3,..l},GsubMixedExecLimits{max_probes:3,..l},
+        GsubMixedExecLimits{max_matches:1,..l},GsubMixedExecLimits{max_emitted:3,..l}]{
+        assert!(matches!(execute_gsub_with_alternates(&p,&[10,9],&choices,bad),Err(Error::Limit(_))));
+    }
+}
+#[test]fn alternate_no_same_root_cascade(){
+    let b=fixture(&[(3,3,0,None,&[(10,&[11]),(11,&[12])])]);
+    assert_eq!(alternate_run(&b,&[0],&[10,11],None,&[choice(0,0)]).glyphs,vec![11,12]);
+}
+#[test]fn alternate_empty_policy_preserves_mixed_legacy(){
+    let b=fixture(&[(2,2,0,None,&[(10,&[11,12])]),(1,1,0,None,&[(11,&[13])])]);
+    let p=compile_gsub_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    assert_eq!(execute_gsub_with_alternates(&p,&[10,9],&[],Default::default()).unwrap(),
+        execute_gsub_mixed(&p,&[10,9],Default::default()).unwrap());
+    assert!(matches!(execute_gsub_with_alternates(&p,&[10],&[choice(0,0)],Default::default()),Err(Error::Invalid(_))));
+    assert!(execute_gsub_with_alternates(&p,&[32],&[],Default::default()).is_err());
 }
