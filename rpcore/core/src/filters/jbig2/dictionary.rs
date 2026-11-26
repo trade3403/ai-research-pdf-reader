@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Direct dictionaries, direct context reuse and scoped arithmetic single-symbol refinement.
+//! Direct dictionaries, direct context reuse and arithmetic single-symbol refinement execution.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -1047,7 +1047,8 @@ pub struct ExecutionLimits{
     pub work:u64,
     pub export_runs_per_dictionary:u32,
     pub decisions_per_dictionary:usize,
-    /// Total retained GB entries plus one active bank (not RSS).
+    /// Retained GB entries plus active GB for direct arithmetic, or active
+    /// GR/IAID/IAx entries for single refinement (not RSS).
     pub context_entries:usize,
 }
 impl Default for ExecutionLimits{
@@ -1067,6 +1068,7 @@ pub struct ExecutionStats{
     pub dictionaries:u32,
     pub huffman:u32,
     pub arithmetic:u32,
+    pub single_refinement:u32,
     pub new_symbols:u32,
     pub symbol_slots:usize,
     pub pixels:u64,
@@ -1138,10 +1140,14 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
             .ok_or(Error::Limit("JBIG2 executed symbols"))?;
         if new_count>limits.new_symbols{return Err(Error::Limit("JBIG2 executed symbols"));}
         let total=plan.imported.checked_add(plan.header.new_symbols).ok_or(Error::Limit("JBIG2 dictionary namespace"))? as usize;
+        // Single refinement needs an additional temporary borrowed-bitmap
+        // slice. Account for those pointer slots before allocating.
+        let borrow_slots=if !plan.header.huffman&&plan.header.refine_aggregate{plan.imported as usize}else{0};
         let slots=set.stats.symbol_slots.checked_add(total).and_then(|n|n.checked_add(plan.header.exported as usize))
+            .and_then(|n|n.checked_add(borrow_slots))
             .ok_or(Error::Limit("JBIG2 dictionary symbol slots"))?;
         if slots>limits.symbol_slots{return Err(Error::Limit("JBIG2 dictionary symbol slots"));}
-        charge_work(&mut left,total as u64+u64::from(plan.header.exported))?;
+        charge_work(&mut left,total as u64+u64::from(plan.header.exported)+borrow_slots as u64)?;
         let mut namespace=Vec::new();
         namespace.try_reserve_exact(total).map_err(|_|Error::Limit("JBIG2 dictionary namespace allocation"))?;
         for &(id,declared) in &plan.dictionaries{
@@ -1155,6 +1161,26 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
         let (images,indices,bytes,work)=if plan.header.huffman{
             let d=decode_huffman_direct(&plan,original,HuffmanLimits{pixels,packed_bytes,work:left,
                 export_runs:limits.export_runs_per_dictionary})?;
+            (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
+        }else if plan.header.refine_aggregate{
+            if plan.header.context_used||plan.header.context_retained||plan.context_source.is_some(){
+                return Err(Error::Unsupported("JBIG2 retained refinement dictionary contexts"));
+            }
+            let active=retained_entries.checked_add(refinement_context_entries(&plan.header,plan.imported)?)
+                .ok_or(Error::Limit("JBIG2 context entries"))?;
+            if active>limits.context_entries{return Err(Error::Limit("JBIG2 context entries"));}
+            let mut imports=Vec::new();
+            imports.try_reserve_exact(borrow_slots).map_err(|_|Error::Limit("JBIG2 refinement import allocation"))?;
+            for &id in &namespace{
+                imports.push(set.bitmap(id).ok_or(Error::Invalid("JBIG2 refinement missing bitmap identity"))?);
+            }
+            let d=decode_arithmetic_single_refinement(&plan,original,&imports,ArithmeticLimits{
+                pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
+                decisions:limits.decisions_per_dictionary})?;
+            // Borrow ends before the arena grows. Only newly decoded
+            // bitmaps are moved into it by the common commit path below.
+            set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
+            set.stats.single_refinement+=1;
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else{
             let active=retained_entries.checked_add(plan.header.template.context_count())
@@ -1630,5 +1656,112 @@ mod single_refinement_tests{
         assert_eq!(refinement_context_entries(&p.header,1).unwrap(),1024+4+3072);
         let b=body(0,T0);let p=plan_for(&b);
         assert_eq!(refinement_context_entries(&p.header,1).unwrap(),8192+4+3072);
+    }
+}
+
+
+#[cfg(test)]
+mod refinement_executor_tests{
+    use super::*;
+    // T.88 B.4 DH=6, B.2 DW=7, OOB, B.1 BMSIZE=0, then raw
+    // 7x6 rows and B.1 EX runs 0,1. Independently packed 25 header bits.
+    const SOURCE:&[u8]=&[0,1,0,0,0,1,0,0,0,1,229,211,240,0,0,124,124,124,0,0,0,64];
+    const T0:&[u8]=&[124,227,105,204,198,86,197,71,223,255,172];
+    const T1:&[u8]=&[124,227,105,204,198,86,191,231,207,255,172];
+    const RETAINED:&[u8]=&[10,0,2,255,0,0,0,2,0,0,0,2,0x4f,0xe7,0x8c,0x20,0x0e,0x1d,0xc7,0xcf,1,0x11,0xc4,0xb2,0x6f,255,172];
+    fn body(t:u8,entropy:&[u8])->Vec<u8>{
+        let mut v=vec![8|(t<<4),2,2,255];if t==0{v.extend([255;4]);}
+        v.extend([0,0,0,3,0,0,0,2]);v.extend(entropy);v
+    }
+    fn seg(id:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,id,kind,(refs.len()as u8)<<5];v.extend(refs);
+        v.push(page);v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn info(id:u8)->Vec<u8>{
+        let mut d=vec![];for n in [20u32,20,300,300]{d.extend(n.to_be_bytes());}
+        d.extend([0,0,0]);seg(id,48,1,&[],&d)
+    }
+    fn reexport(n:u8)->Vec<u8>{vec![0,1,0,0,0,n,0,0,0,0,n>>2,n<<6]}
+    fn fixture(t:u8)->(Vec<u8>,Vec<u8>){
+        let g=seg(1,0,0,&[],SOURCE);let mut p=info(2);
+        p.extend(seg(3,0,1,&[1],&body(t,if t==0{T0}else{T1})));
+        p.extend(seg(4,0,1,&[3,1],&reexport(4)));(g,p)
+    }
+    fn ids(d:&DictionarySet,n:u32)->Vec<usize>{
+        d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()
+    }
+    #[test]
+    fn refinement_executor_mixed_templates(){
+        for t in [0,1]{
+            let (g,p)=fixture(t);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let s=d.stats();
+            assert_eq!((s.dictionaries,s.huffman,s.arithmetic,s.single_refinement),(3,2,1,1));
+            assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(3,56,10,17));
+            assert_eq!(s.peak_context_entries,if t==0{8192+4+3072}else{1024+4+3072});
+            assert_eq!(d.symbol(1,0).unwrap().packed(),[0,124,124,124,0,0]);
+            assert_eq!(d.symbol(3,1).unwrap().packed(),[160,64]);
+            assert_eq!(d.symbol(3,2).unwrap().packed(),[192,48]);
+        }
+    }
+    #[test]
+    fn refinement_executor_reexport_identity(){
+        let (g,p)=fixture(1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(ids(&d,1),[0]);assert_eq!(ids(&d,3),[0,1,2]);assert_eq!(ids(&d,4),[0,1,2,0]);
+        for i in 0..3{assert!(std::ptr::eq(d.symbol(3,i).unwrap(),d.symbol(4,i).unwrap()));}
+        assert!(std::ptr::eq(d.symbol(1,0).unwrap(),d.symbol(4,3).unwrap()));
+    }
+    #[test]
+    fn refinement_executor_global_chain(){
+        let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&body(1,T1)));
+        let mut p=info(3);p.extend(seg(4,0,1,&[2,1],&reexport(4)));
+        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(ids(&d,2),[0,1,2]);assert_eq!(ids(&d,4),[0,1,2,0]);
+        assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
+    }
+    #[test]
+    fn refinement_executor_exact_cumulative_limits(){
+        let (g,p)=fixture(1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        // 12-byte cap covers source raw collective plus split output peak.
+        let l=ExecutionLimits{dictionaries:3,new_symbols:3,symbol_slots:17,pixels:56,
+            packed_bytes:12,work:d.stats().work_used,context_entries:4100,
+            export_runs_per_dictionary:2,decisions_per_dictionary:66};
+        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        for l in [
+            ExecutionLimits{dictionaries:2,..l},ExecutionLimits{new_symbols:2,..l},
+            ExecutionLimits{symbol_slots:16,..l},ExecutionLimits{pixels:55,..l},
+            ExecutionLimits{packed_bytes:11,..l},ExecutionLimits{work:l.work-1,..l},
+            ExecutionLimits{context_entries:4099,..l},ExecutionLimits{decisions_per_dictionary:65,..l},
+            ExecutionLimits{export_runs_per_dictionary:1,..l},
+        ]{assert!(execute_pdf_dictionaries(&g,&p,l).is_err());}
+    }
+    #[test]
+    fn refinement_executor_retained_gb_coexistence(){
+        let g=seg(1,0,0,&[],SOURCE);let mut p=info(2);
+        p.extend(seg(3,0,1,&[],RETAINED));p.extend(seg(4,0,1,&[1],&body(1,T1)));
+        let l=ExecutionLimits{context_entries:5124,..ExecutionLimits::default()};
+        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts,d.stats().peak_context_entries),(1,0,5124));
+        assert_eq!(ids(&d,4),[0,3,4]);assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
+    }
+    #[test]
+    fn refinement_executor_unsupported_modes_fail_closed(){
+        let g=seg(1,0,0,&[],SOURCE);
+        let mut retained=body(1,T1);retained[0]|=2;
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&retained));
+        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&body(1,&[124,191,255,172])));
+        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        // Huffman refinement header: SDRTEMPLATE=1, no AT bytes.
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&[16,3,0,0,0,1,0,0,0,0,0,64]));
+        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+    }
+    #[test]
+    fn refinement_executor_bad_dependency_or_entropy(){
+        let g=seg(1,0,0,&[],SOURCE);
+        for (refs,entropy) in [(&[9][..],T1),(&[][..],T1),(&[1][..],&[124,219,255,172][..]),(&[1][..],&T1[..T1.len()-1]) ]{
+            let mut p=info(2);p.extend(seg(3,0,1,refs,&body(1,entropy)));
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        }
     }
 }
