@@ -35,3 +35,8 @@
 
 ## 资源目标
 优先零额外预算：公开仓库标准托管 Runner 做有限 CI、本地电脑承担小规模语料生成及训练。免费资源可用性、显卡兼容性及训练耗时不保证；不购买服务、不使用收费 Runner 或自动外部训练，除非用户另行批准。
+
+## D1实际验收及D3.0约束
+2026-11-26 D1.13b / D1 工程封版：`92e928d799500fd1f57c4670c0247a717e3294e6` / [#125 / 45722557574](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574) completed/success，HEAD一致。Linux/Windows各149 workspace+59 portable，共416/416；四实际任务全部成功，两条件任务跳过。Windows [日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139596519826)：97量化矩阵、159辅助张量、77320704 codes、1208136 scales、687593 floats逐位相等；普通578.847ms/映射576.226ms（单次观察），损坏INT8与FP32拒绝并恢复；FP32 payload 312033188 bytes、INT8 84903620 bytes，auto/portable均通过真实model-check及术语翻译；中文空格路径、EXE静态PE依赖检查、针对两个EXE的出站阻断通过。Linux [真实模型日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139584198996)：INT8全文242/269接受、27拒译、5221/6036词、245/317数字串、251内部段、484.149854s、811.439720ms加载、122244KiB RSS；FP32样本4/8。仅词面工程验收，人工语义质量未测；不等于干净Windows安装、内核隔离或产品发布批准。D2训练蒸馏归独立RPDistill，不重复。用户授权进入D3.0。
+
+D3.0按独立模型包管理推进；必须区分可信目录来源、下载字节哈希、模型架构兼容和人工质量。不可用或未验收模型不得标为可发布。

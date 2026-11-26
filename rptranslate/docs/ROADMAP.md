@@ -53,3 +53,8 @@ D1.1→D1.8 是可运行模型关键路径；D1.9 量化以正确 FP32 基线为
 
 ## 当前路线补充（2026-11-26）
 D1.11 首批新增文档级覆盖审计，具体门槛见 PROGRESS 与 HANDOFF。用户明确 D2 教师训练/蒸馏为独立 RPDistill 项目，不纳入本分支剩余阶段；D1.12 只保留固定CPU toy数学及断点恢复验证，不承担真实模型训练或蒸馏；正式训练由独立RPDistill项目承担。D1.11 自动词面与工程验收不代替人工双语语义审核，不作为直接发布依据。
+
+## D1封版与D3.0实施拆分（2026-11-26）
+2026-11-26 D1.13b / D1 工程封版：`92e928d799500fd1f57c4670c0247a717e3294e6` / [#125 / 45722557574](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574) completed/success，HEAD一致。Linux/Windows各149 workspace+59 portable，共416/416；四实际任务全部成功，两条件任务跳过。Windows [日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139596519826)：97量化矩阵、159辅助张量、77320704 codes、1208136 scales、687593 floats逐位相等；普通578.847ms/映射576.226ms（单次观察），损坏INT8与FP32拒绝并恢复；FP32 payload 312033188 bytes、INT8 84903620 bytes，auto/portable均通过真实model-check及术语翻译；中文空格路径、EXE静态PE依赖检查、针对两个EXE的出站阻断通过。Linux [真实模型日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139584198996)：INT8全文242/269接受、27拒译、5221/6036词、245/317数字串、251内部段、484.149854s、811.439720ms加载、122244KiB RSS；FP32样本4/8。仅词面工程验收，人工语义质量未测；不等于干净Windows安装、内核隔离或产品发布批准。D2训练蒸馏归独立RPDistill，不重复。用户授权进入D3.0。
+
+D3.0a：新增无依赖 Rust 型化目录、数字版本比较、精度精确选择、最低引擎版本约束、重复键/路径/大小预算拒绝、流式SHA256及受控目录完整性验证。5项新增单测；尚未CI验收。目录输入须受信，哈希不是签名；不支持敌对并发修改，不替代已存在模型结构加载器。后续D3.0b可信在线目录解析与HTTPS传输，D3.0c暂停/Range/恢复，D3.0d暂存校验及安装/导入，D3.0e升级/回滚/卸载及真实模型端到端。子阶段为本窗口工程拆分，未全部完成。
