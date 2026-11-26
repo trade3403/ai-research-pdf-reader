@@ -130,8 +130,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.5a | Bounded GPOS header and directory foundation | Verified (#172) |
 | C4.5b1 | GPOS ValueRecord and Device/VariationIndex foundation | Verified (#173) |
 | C4.5b2 | GPOS Anchor and shared adjustment primitives | Verified (#174) |
-| C4.5c1 | SinglePos formats 1/2 parsing and application | Implemented; CI pending |
-| C4.5c2 | Independent native SinglePos reference acceptance | Planned |
+| C4.5c1 | SinglePos formats 1/2 parsing and application | Verified (#175) |
+| C4.5c2 | Independent native SinglePos reference acceptance | Implemented; CI pending |
+| C4.5d1 | PairPos format 1 glyph-pair decoding and adjustment | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
