@@ -61,7 +61,6 @@ fn receive(mut input: impl Read, output: &mut impl Write, asset: &Asset) -> Resu
     Ok(())
 }
 
-
 const MAX_RANGE_HEADER: usize = 64 * 1024;
 
 /// curl --include returns HTTP headers followed by the decoded body.
@@ -86,9 +85,7 @@ fn range_response(data: &[u8], range: Range) -> Result<(&str, &[u8]), Error> {
     for line in lines {
         let (name, value) = line.split_once(':').ok_or(Error::Framing)?;
         if name.is_empty()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             || value.bytes().any(|b| b < 32 && b != b'\t')
         {
             return Err(Error::Framing);
@@ -102,7 +99,8 @@ fn range_response(data: &[u8], range: Range) -> Result<(&str, &[u8]), Error> {
             if length.replace(value).is_some() {
                 return Err(Error::Framing);
             }
-        } else if name.eq_ignore_ascii_case("content-encoding") && encoding.replace(value).is_some() {
+        } else if name.eq_ignore_ascii_case("content-encoding") && encoding.replace(value).is_some()
+        {
             return Err(Error::Framing);
         }
     }
@@ -190,7 +188,6 @@ impl Downloader {
         }
         Ok(())
     }
-
 
     /// Perform one bounded range request. Stop between chunks to pause.
     /// The caller owns the partial file and must keep the same trusted pin.
@@ -373,7 +370,6 @@ mod tests {
             Err(Error::Configuration)
         ));
     }
-
 
     #[test]
     fn range_headers_and_binary_body() {

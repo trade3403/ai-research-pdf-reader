@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0c2 [#134 / 45758249970](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45758249970) Linux及Windows均在rustfmt失败：download.rs:61/86/102/191/373，三处空行和两处条件表达式换行。[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45758249970/job/139701882972)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45758249970/job/139701883185)。严格按日志最小格式修复，不改变算法、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。全量CI成功后才进入D3.0c3。
+
 2026-11-26 D3.0c1 基线 27e075489ce514a1552e383f0fd6de99e6def7a3 / [#133 / 45753573296](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45753573296) 全量 success；Linux/Windows各170 workspace+59 portable=229/229，共458/458；2/2真实HTTPS小文件验收。Windows映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、236.417474s、625.160543ms加载、122304KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0c2：在download.rs接入单段HTTPS Range fetch_next，匹配目录资产pin，HTTP/1.1 206与唯一精确Content-Range、长度、编码检查，限制响应头64KiB及段4MiB，curl单段120秒，失败不追加、跨进程重开、末段整文件SHA256。新增3项离线单测及两平台显式真实Range小文件探针（固定77字节公开仓库文件，32+32+13字节，跨关闭重开）；预计464基础+4真实网络执行。源站必须支持Range；拒绝200，不自动回退。未本地编译，真实服务器支持和格式待CI确认。仍仅分段间暂停，不支持请求中途取消、速度统计、自动重试或真实模型发布；D3.0c3实现进度速度及有限重试控制，再进入d安全安装。
