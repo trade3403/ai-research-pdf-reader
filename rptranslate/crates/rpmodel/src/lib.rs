@@ -1,6 +1,7 @@
 //! Model metadata and bounded local weight-file reader.
 pub mod catalog;
 pub mod config;
+pub mod download;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod mapped;
 #[cfg(all(target_os = "windows", target_pointer_width = "64"))]

@@ -4,6 +4,10 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0b1 基线 eeb648d70e871805a0b45f7d8236c5890c6c9b21 / [#129 / 45739907242](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242) 全量 success；Linux/Windows各160 workspace+59 portable=219/219，共438/438。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242/job/139647366518) INT8 242/269、27拒译、5221/6036词、245/317数字串、317.227274s、829.240588ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
+
+D3.0b2：Rust自主下载管理与成熟curl HTTPS适配器，显式可信绝对EXE路径（不搜索PATH），禁用配置文件/代理/重定向，HTTPS协议限定、系统TLS证书验证、连接15s/总600s、流式限制及SHA256核对、HTTP200及进程退出验证；可信目录读取及单文件新建暂存，失败清理（报告清理失败）、不覆盖。新增4项离线单测及1项显式真实HTTPS探针（两平台对公开仓库固定commit 77字节Cargo.toml正负例，非真实模型在线发布验证）；预计446基础通过+2显式网络探针。无新增Rust依赖，但在线下载需要可信curl及证书环境，不自研TLS；环境、源站及暂存目录须可信，不支持代理、重定向、并发敌对修改或DNS/IP策略。实际模型目录尚未部署，未发布模型；暂停/续传/失败恢复、安装事务、升级仍待后续。未本地编译，等待CI。
+
 2026-11-26 D3.0b1 [#128 / 45739660406](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406) Linux及Windows均在rustfmt失败：online_catalog.rs:32 DNS label校验闭包链式换行；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406/job/139641241283)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406/job/139641241225)。严格按日志最小格式修复，不改变逻辑、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。未全量验收不进入D3.0b2。
 
 2026-11-26 D3.0a 基线 bd7f0c3eff91ffd992f9816080c6f5b3a1234ae4 / [#127 / 45729380679](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679) 全量 success；Linux/Windows各154 workspace+59 portable=213/213，共426/426。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679/job/139611612794) INT8 242/269、27拒译、5221/6036词、245/317数字串、235.066981s、698.359469ms加载、122448KiB RSS；FP32 4/8，人工语义未测。

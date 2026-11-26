@@ -35,6 +35,10 @@ jobs:
         run: cargo clippy --locked --offline --workspace --all-targets -- -D warnings
       - name: Unit tests
         run: cargo test --locked --offline --workspace
+      - name: Actual pinned HTTPS fixture
+        run: |
+          export RP_CURL="$(command -v curl)"
+          cargo test --locked --offline -p rpmodel download::tests::actual_https_pinned_fixture -- --ignored --nocapture
       - name: Release CPU build
         run: cargo build --locked --offline --release -p rptranslate
       - name: Smoke test
@@ -414,6 +418,11 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cargo test --locked --offline --workspace
           cargo test --locked --offline -p rpinfer --features portable-only
+      - name: Windows actual pinned HTTPS fixture
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:RP_CURL = (Get-Command curl.exe -CommandType Application).Source
+          cargo test --locked --offline -p rpmodel download::tests::actual_https_pinned_fixture -- --ignored --nocapture
       - name: Native release executable and independent training reference
         run: |
           $PSNativeCommandUseErrorActionPreference = $true

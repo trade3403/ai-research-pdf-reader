@@ -75,7 +75,7 @@ fn asset_name(name: &str) -> bool {
 }
 
 impl Asset {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.bytes > 0
             && self.bytes <= MAX_PACKAGE_BYTES
             && self.sha256.len() == 64
