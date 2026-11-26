@@ -80,6 +80,8 @@ struct RootMaskState<'a>{
     masks:&'a crate::ScalarFeatureMasks,
     left:usize,
     skipped:usize,
+    strict:bool,
+    blocked:usize,
 }
 struct State<'a>{
     provenance:Option<crate::ProvenanceLedger>,
@@ -240,7 +242,7 @@ impl State<'_>{
 }
 struct Matched<'a>{positions:Vec<usize>,actions:&'a [ContextAction]}
 fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
-    state:&mut State<'_>,p:usize)->Result<Option<Matched<'a>>,Error>{
+    state:&mut State<'_>,p:usize,masking:&mut Option<&mut RootMaskState<'_>>,bits:u64)->Result<Option<Matched<'a>>,Error>{
     let g=state.result.glyphs[p];
     let filter=lookup.filter();
     match sub{
@@ -249,6 +251,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                 for r in rules{
                     state.rule()?;
                     if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|v==r.remaining[i])?{
+                        if common_input_bits(state,&positions,bits,masking)?==0{continue;}
                         return Ok(Some(Matched{positions,actions:&r.actions}));
                     }
                 }
@@ -321,7 +324,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
 }
 // Return exclusive physical end of a match, or None. Nested callers
 // ignore this end; they execute only at the designated action position.
-fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>)
+fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>,masking:&mut Option<&mut RootMaskState<'_>>,bits:u64)
     ->Result<Option<usize>,Error>{
     tick(&mut state.result.calls,state.limits.max_calls,"gsub context calls")?;
     if state.active.len()>=state.limits.max_depth.min(GSUB_CONTEXT_MAX_DEPTH){
@@ -331,11 +334,11 @@ fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>
     state.active.try_reserve(1).map_err(|_|Error::Limit("gsub context stack"))?;
     state.active.push(Frame{id,start:p,positions:Vec::new(),end:p+1});
     state.result.peak_depth=state.result.peak_depth.max(state.active.len());
-    let result=apply_inner(program,id,p,state);
+    let result=apply_inner(program,id,p,state,masking,bits);
     state.active.pop();
     result
 }
-fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>)
+fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>,masking:&mut Option<&mut RootMaskState<'_>>,bits:u64)
     ->Result<Option<usize>,Error>{
     let lookup=program.lookup(id).ok_or(Error::Invalid("gsub context missing lookup"))?;
     if !state.eligible(lookup.filter(),p)?{return Ok(None);}
@@ -375,6 +378,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                     state.rule()?;
                     if let Some(positions)=state.match_tail(lookup.filter(),p,rule.remaining.len(),
                         |i,v|v==rule.remaining[i])?{
+                        if common_input_bits(state,&positions,bits,masking)?==0{continue;}
                         return state.contract(&positions,rule.output).map(Some);
                     }
                 }
@@ -392,7 +396,8 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                 state.replace_one(p,v)?;
                 return Ok(Some(p+1));
             }
-        }else if let Some(m)=context_match(sub.target(),lookup,state,p)?{
+        }else if let Some(m)=context_match(sub.target(),lookup,state,p,masking,bits)?{
+            let inherited=common_input_bits(state,&m.positions,bits,masking)?;
             state.matched()?;
             // Active frames own their captured positions. All expanding
             // descendants rebase them before the next action is dispatched.
@@ -404,7 +409,9 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                 let at=*state.active[frame].positions.get(action.sequence_index as usize)
                     .ok_or(Error::Invalid("gsub context action position"))?;
                 if at==CONSUMED{state.shrink.skipped+=1;continue;}
-                apply_at(program,action.lookup_index,at,state)?;
+                let live=common_input_bits(state,&[at],inherited,masking)?;
+                if live==0{continue;}
+                apply_at(program,action.lookup_index,at,state,masking,live)?;
             }
             return Ok(Some(state.active[frame].end));
         }
@@ -536,7 +543,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
             // A reverse lookup can only replace one glyph at a time;
             // the run length stays fixed throughout this root.
             for p in (0..state.result.glyphs.len()).rev(){
-                if root_allowed(&state,p,root_mask,masking.as_deref_mut())?{apply_at(program,id,p,&mut state)?;}
+                if root_allowed(&state,p,root_mask,masking.as_deref_mut())?{apply_at(program,id,p,&mut state,&mut masking,if root_mask==0{u64::MAX}else{root_mask})?;}
             }
         }else{
             let mut p=0;
@@ -600,11 +607,7 @@ pub fn execute_gsub_program_with_provenance(program:&CompiledGsubProgram<'_>,run
 
 fn root_allowed(state:&State<'_>,p:usize,root_mask:u64,masking:Option<&mut RootMaskState<'_>>)->Result<bool,Error>{
     let Some(m)=masking else{return Ok(true);};
-    let ledger=state.provenance.as_ref().ok_or(Error::Invalid("gsub mask missing provenance"))?;
-    let g=ledger.glyphs().get(p).ok_or(Error::Invalid("gsub mask position"))?;
-    m.left=m.left.checked_sub(1).and_then(|v|v.checked_sub(g.sources().len())).ok_or(Error::Limit("gsub mask work"))?;
-    let mut bits=u64::MAX;
-    for &i in g.sources(){bits&=*m.masks.scalar_masks().get(i).ok_or(Error::Invalid("gsub mask scalar"))?;}
+    let bits=live_bits(state,p,m)?;
     let allowed=bits&root_mask!=0;
     if !allowed{m.skipped+=1;}
     Ok(allowed)
@@ -625,6 +628,20 @@ pub fn execute_gsub_program_with_masks(program:&CompiledGsubProgram<'_>,run:&cra
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<MaskedGsubResult,Error>{
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,false).map(|r|r.0)
+}
+/// Strict shared-feature input and nested action policy. Returns the
+/// legacy masked result plus number of rejected input/action checks.
+pub fn execute_gsub_program_with_strict_masks(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
+    ->Result<(MaskedGsubResult,usize),Error>{
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true)
+}
+fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,strict:bool)
+    ->Result<(MaskedGsubResult,usize),Error>{
     let plan=program.validated_plan().ok_or(Error::Invalid("gsub masks missing plan"))?;
     if masks.features()!=plan.features.as_slice()||masks.required_feature()!=plan.required_feature||
         masks.scalar_masks().len()!=run.scalars().len(){
@@ -636,7 +653,7 @@ pub fn execute_gsub_program_with_masks(program:&CompiledGsubProgram<'_>,run:&cra
     let mut provenance=Some(crate::ProvenanceLedger::from_run(run,program.glyph_count(),source_limits)?);
     let mut glyphs=Vec::new();glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub mask allocation"))?;
     glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
-    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0};
+    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0,strict,blocked:0};
     let execution=execute_context_inner(program,&glyphs,Some(choices),limits.expansion.context,
         Some(limits.expansion),Some(limits),true,true,&mut provenance,Some(&mut m))?;
     let ledger=provenance.ok_or(Error::Invalid("gsub mask missing ledger"))?;
@@ -645,5 +662,27 @@ pub fn execute_gsub_program_with_masks(program:&CompiledGsubProgram<'_>,run:&cra
     }
     let glyph_masks=masks.project(&ledger,m.left)?;
     m.left=m.left.checked_sub(ledger.glyphs().len()).and_then(|v|v.checked_sub(ledger.reference_count())).ok_or(Error::Limit("gsub mask work"))?;
-    Ok(MaskedGsubResult{execution,provenance:ledger,glyph_masks,skipped_roots:m.skipped,mask_work:max_mask_work-m.left})
+    Ok((MaskedGsubResult{execution,provenance:ledger,glyph_masks,skipped_roots:m.skipped,mask_work:max_mask_work-m.left},m.blocked))
+}
+
+fn live_bits(state:&State<'_>,p:usize,m:&mut RootMaskState<'_>)->Result<u64,Error>{
+    let ledger=state.provenance.as_ref().ok_or(Error::Invalid("gsub mask missing provenance"))?;
+    let g=ledger.glyphs().get(p).ok_or(Error::Invalid("gsub mask position"))?;
+    m.left=m.left.checked_sub(1).and_then(|v|v.checked_sub(g.sources().len())).ok_or(Error::Limit("gsub mask work"))?;
+    let mut bits=u64::MAX;
+    for &i in g.sources(){bits&=*m.masks.scalar_masks().get(i).ok_or(Error::Invalid("gsub mask scalar"))?;}
+    Ok(bits)
+}
+// For strict mode, at least one common contributing feature must remain
+// enabled across every matched input. Mask-disabled glyphs are barriers,
+// not GDEF-ignored gaps. Backtrack/lookahead are conditions only.
+fn common_input_bits(state:&State<'_>,positions:&[usize],mut bits:u64,
+    masking:&mut Option<&mut RootMaskState<'_>>)->Result<u64,Error>{
+    let Some(m)=masking.as_deref_mut() else{return Ok(bits);};
+    if !m.strict{return Ok(bits);}
+    for &p in positions{
+        bits&=live_bits(state,p,m)?;
+        if bits==0{m.blocked=m.blocked.checked_add(1).ok_or(Error::Limit("gsub mask blocked"))?;break;}
+    }
+    Ok(bits)
 }

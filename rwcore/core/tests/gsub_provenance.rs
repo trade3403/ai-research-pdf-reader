@@ -221,3 +221,53 @@ fn source_sets(l:&ProvenanceLedger)->Vec<Vec<usize>>{l.glyphs().iter().map(|g|g.
     assert!(matches!(execute_gsub_program_with_provenance(&p,&run,&[],Default::default(),ProvenanceLimits{max_refs:2,..Default::default()}),Err(Error::Limit(_))));
     assert_eq!(run,before);
 }
+
+fn masked_fixture(spec:&[(u16,u16,Vec<u16>)],features:&[(&[u8;4],&[u16])])->Vec<u8>{
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,65535,features.len() as u16]{w(&mut b,v);}
+    for i in 0..features.len(){w(&mut b,i as u16);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,features.len() as u16);
+    let mut slots=Vec::new();
+    for (tag,_) in features{b.extend(*tag);slots.push(b.len());w(&mut b,0);}
+    for ((_,ids),slot) in features.iter().zip(slots){let rel=b.len()-at;set(&mut b,slot,rel);w(&mut b,0);w(&mut b,ids.len() as u16);for &id in *ids{w(&mut b,id);}}
+    let at=b.len();set(&mut b,8,at);let old=fixture(spec);b.extend_from_slice(&old[14..]);b
+}
+fn strict_plan(bytes:&[u8])->GsubPlan{
+    let layout=parse_gsub_layout(bytes,Default::default()).unwrap();
+    build_gsub_base_plan(&layout,*b"DFLT",None,&[*b"liga",*b"salt"],Default::default()).unwrap().unwrap()
+}
+#[test]fn strict_ligature_requires_common_feature(){
+    let (run,n)=run("AB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=masked_fixture(&[(4,4,ligature(a,b,20))],&[(b"liga",&[0]),(b"salt",&[0])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let edits=[FeatureMaskOverride{feature:0,start:1,end:2,enabled:false},FeatureMaskOverride{feature:1,start:0,end:1,enabled:false}];
+    let masks=ScalarFeatureMasks::build(&plan,2,&edits,Default::default()).unwrap();
+    let (result,blocked)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(result.execution.expansion.execution.glyphs,vec![a,b]);assert!(blocked>0);
+    let legacy=execute_gsub_program_with_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(legacy.execution.expansion.execution.glyphs,vec![20]);
+}
+#[test]fn strict_nested_input_and_live_expansion(){
+    let (run,n)=run("AB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=masked_fixture(&[(2,2,multiple(a)),(1,1,single(b,20)),(5,5,context3(&[a,b],&[(0,0),(1,1)]))],&[(b"liga",&[2])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    for enabled in [false,true]{
+        let edits=[FeatureMaskOverride{feature:0,start:1,end:2,enabled}];
+        let masks=ScalarFeatureMasks::build(&plan,2,&edits,Default::default()).unwrap();
+        let (result,blocked)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+        assert_eq!(result.execution.expansion.execution.glyphs,if enabled{vec![11,12,20]}else{vec![a,b]});
+        assert_eq!(blocked>0,!enabled);
+        assert!(execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),result.mask_work-1).is_err());
+    }
+}
+#[test]fn strict_chain_conditions_not_gated(){
+    let (run,n)=run("ABC");let g:Vec<_>=run.glyphs().iter().map(|g|g.glyph_id).collect();
+    let bytes=masked_fixture(&[(1,1,single(g[1],20)),(6,6,chain3(&g[..1],&g[1..2],&g[2..],&[(0,0)]))],&[(b"liga",&[1])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(&plan,3,&[FeatureMaskOverride{feature:0,start:0,end:1,enabled:false},FeatureMaskOverride{feature:0,start:2,end:3,enabled:false}],Default::default()).unwrap();
+    let (result,blocked)=execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(result.execution.expansion.execution.glyphs,vec![g[0],20,g[2]]);assert_eq!(blocked,0);
+}

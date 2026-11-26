@@ -259,3 +259,5 @@ pub mod font_feature_masks;
 pub use font_feature_masks::{FeatureMaskLimits,FeatureMaskOverride,ScalarFeatureMasks};
 
 pub use font_gsub_context_execute::{MaskedGsubResult,execute_gsub_program_with_masks};
+
+pub use font_gsub_context_execute::execute_gsub_program_with_strict_masks;
