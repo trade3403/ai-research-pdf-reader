@@ -2249,3 +2249,100 @@ fn empty_raw_gdef(n:usize)->RawGdef{RawGdef{class:vec![0;n],attachment:vec![0;n]
         assert_eq!(a.expansion.execution.glyphs,if roots.contains(&0){vec![9,20,20,20,20,20]}else{vec![9,20,20,10,10,20]});
     }
 }
+
+
+// C4.4d9: end-to-end base feature plan -> dependency compilation ->
+// full execution. Independent raw Script/Feature records supply roots;
+// the existing raw lookup oracle supplies output and exact counters.
+fn raw_default_plan_roots(b:&[u8],script:[u8;4],enabled:&[[u8;4]])->Vec<u16>{
+    let sl=u(b,4);let fl=u(b,6);
+    let rec=(0..u(b,sl)).map(|i|sl+2+6*i).find(|&p|b[p..p+4]==script).unwrap();
+    let script_at=sl+u(b,rec+4);
+    let lang=script_at+u(b,script_at);
+    assert_ne!(lang,script_at);assert_eq!(u(b,lang),0);
+    let required=u(b,lang+2);
+    let features=(0..u(b,lang+4)).map(|i|u(b,lang+6+2*i))
+        .chain((required!=65535).then_some(required));
+    let mut roots=std::collections::BTreeSet::new();
+    for id in features{
+        let rec=fl+2+6*id;
+        let tag:[u8;4]=b[rec..rec+4].try_into().unwrap();
+        if id!=required&&!enabled.contains(&tag){continue;}
+        let f=fl+u(b,rec+4);
+        for j in 0..u(b,f+2){roots.insert(u(b,f+4+2*j) as u16);}
+    }
+    roots.into_iter().collect()
+}
+fn verify_full_plan_acceptance(font:&[u8],n:u32,require_reverse:bool){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    let layout=parse_gsub_layout(b,Default::default()).unwrap();
+    let rawgd=RawGdef::read(gd,n as usize);let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
+    let ligs=ligature_roots(b,n as usize);let contexts=native_context_roots(b,n as usize);
+    let chains=native_chain_roots(b,n as usize);let rev=raw_reverse_roots(b,n as usize);
+    let mut chosen=None;
+    // Select one bounded real default-LangSys feature schedule. Prefer
+    // a schedule with a native reverse root in the Mongolian fixture.
+    // Selection is deterministic and not a language-specific policy.
+    'script:for script in &layout.scripts{
+        let Some(lang)=&script.default_language else{continue;};
+        let mut tags:Vec<_>=lang.required_feature.into_iter().chain(lang.features.iter().copied())
+            .map(|id|layout.features[id as usize].tag).collect();
+        tags.sort_unstable();tags.dedup();
+        for tag in tags{
+            let roots=raw_default_plan_roots(b,script.tag,&[tag]);
+            if roots.is_empty()||roots.len()>32{continue;}
+            if require_reverse&&!roots.iter().any(|&id|native_kind(b,id)==8){continue;}
+            chosen=Some((script.tag,tag,roots));break 'script;
+        }
+    }
+    let (script,tag,roots)=chosen.expect("bounded native base feature schedule");
+    let plan=build_gsub_base_plan(&layout,script,None,&[tag],Default::default()).unwrap().unwrap();
+    assert_eq!(plan.lookups.iter().map(|l|l.index).collect::<Vec<_>>(),roots);
+    let p=compile_gsub_plan_program(b,&plan,n,Some(&g),Default::default()).unwrap();
+    let direct=compile_gsub_program(b,&roots,n,Some(&g),Default::default()).unwrap();
+    let closure=full_closure(b,&roots,&contexts,&chains);
+    assert_eq!(p.roots(),roots.as_slice());
+    assert_eq!(p.closure().reachable,closure);
+    assert_eq!(p.dependencies(),direct.dependencies());
+    assert!(p.closure().is_proven_acyclic());
+    let choices:Vec<_>=closure.iter().copied().filter(|&id|native_kind(b,id)==3)
+        .map(|id|alternate_choice(id,0)).collect();
+    let mut run:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+    for &id in &roots{
+        if let Some(root)=chains.iter().find(|r|r.index==id){
+            run.extend(chain_witnesses(root,&rawgd).into_iter().take(4).flatten());
+        }
+        if let Some(root)=contexts.iter().find(|r|r.index==id){
+            run.extend(native_witnesses(root,&rawgd).into_iter().take(4).flatten());
+        }
+        if let Some(root)=rev.iter().find(|r|r.index==id){
+            for sub in &root.subs{
+                let select=|c:&Vec<bool>|(0..n as u16).find(|&id|c[id as usize]&&rawgd.eligible(id,root.flags,root.mark)).unwrap();
+                for &first in sub.replacements.keys(){
+                    run.extend(sub.back.iter().rev().map(select));
+                    run.push(first);
+                    run.extend(sub.ahead.iter().map(select));
+                }
+            }
+        }
+    }
+    let (want,peak)=full_reference(&run,&rawgd,&mixed,&ligs,&contexts,&chains,&rev,&roots);
+    exact_full(&p,&run,&choices,&want,peak);
+    let limits:GsubProgramExecLimits=Default::default();
+    let actual:GsubProgramExecResult=execute_gsub_program(&direct,&run,&choices,limits).unwrap();
+    assert_eq!(actual,want);
+    // Base feature plan provenance is a checked boundary, not trusted
+    // caller input. Removing a contributing feature must fail closed.
+    let mut forged=plan.clone();forged.lookups[0].features.clear();
+    assert!(matches!(compile_gsub_plan_program(b,&forged,n,Some(&g),Default::default()),Err(Error::Invalid(_))));
+    if require_reverse{assert!(roots.iter().any(|&id|native_kind(b,id)==8));}
+}
+#[test]fn abeezee_regular_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,false);}
+#[test]fn abeezee_italic_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,false);}
+#[test]fn alegreya_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,false);}
+#[test]fn aref_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,false);}
+#[test]fn padauk_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,false);}
+#[test]fn devanagari_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,false);}
+#[test]fn nastaliq_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,false);}
+#[test]fn mongolian_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notosansmongolian/NotoSansMongolian-Regular.ttf"),3715,true);}

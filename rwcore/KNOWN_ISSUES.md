@@ -187,3 +187,5 @@
 - C4.4d8b: zero native Type 8 in current seven-font corpus; positive Type 8 tests are synthetic, native positive fixture still required. Native mixed dispatch uses selected roots, not language shaping or exhaustive native rules. No external engine equivalence, cluster/mark metadata, masks, FeatureVariations, GPOS, benchmark or full corpus/security acceptance.
 
 - C4.4d8c: previous native Type 8 absence addressed by original Noto Sans Mongolian fixture (2 native subtables, 3715 glyphs), pending positive execution CI. Only selected reverse lookup tested in that new font, not complete Mongolian shaping. All wrapper combinations are constructed test data, not native font schedules. No external equivalence, clusters, masks, FeatureVariations, GPOS, benchmark or corpus/security acceptance.
+
+- C4.4d9: bounded explicit/base-plan GSUB execution candidate only. Native plan integration uses selected default-LangSys feature schedules, not full language shaping or all rules. No FeatureVariations evaluation, cluster metadata, masks, GPOS, external shaper parity or measured memory/runtime/security acceptance.

@@ -1,0 +1,39 @@
+# GSUB bounded execution contract — C4.4d9
+
+Status: candidate for bounded execution acceptance; CI gate pending. This is not complete OpenType shaping.
+
+## Stable API
+- parse_gsub_layout / build_gsub_base_plan: base script/language selection, required features, explicit optional tags, sorted unique roots and feature provenance.
+- compile_gsub_plan_program / compile_gsub_program: validate provenance or explicit roots, compile reachable targets with static closure and cycle diagnostics.
+- execute_gsub_program: unified effective types 1–6 and 8, including Type 7 wrappers. GsubProgramExecLimits and GsubProgramExecResult are source-compatible aliases, not new budget schemes. Legacy subset entry points retain their original rejection behavior.
+- Explicit GsubAlternateSelection choices for every reachable Type 3 lookup, sorted by original index. Candidate index is zero-based and checked on eligible covered input. No implicit choice or feature-value inference.
+- Output is a glyph-ID buffer and counters. Inputs remain immutable; errors return no partial output.
+
+## Scheduling and edit policy
+Roots in ascending LookupList order, one pass each; effective Type 8 scans descending physical indices, other roots advance forward. First matching subtable/rule wins. Nested actions run only at captured input anchors in stored order. Backtrack nearest-first, lookahead forward, current lookup GDEF filtering across all segments. Expansion keeps first output anchor; contraction retains first component, preserves ignored gaps and tombstones consumed anchors. Descendants can inspect/edit beyond ancestor input; exclusive input boundary is rebased. This policy is not a guarantee of external shaper equivalence.
+
+## Budget contract
+Input/program sizes, peak glyph length, depth (hard ceiling 32), calls, probes, filter checks, rules, symbols, actions and matches; inserted/removed glyphs and shared edit work. Bounds on logical glyph counts/work, not measured allocator RSS or wall-clock guarantees. Static cycles permitted when not recurrent at runtime; active same lookup/position cycle fails closed.
+
+## Example
+```rust
+use rwcore::*;
+
+fn run_base_pass(
+    gsub: &[u8], glyph_count: u32, gdef: Option<&Gdef>,
+    script: [u8;4], language: Option<[u8;4]>, enabled: &[[u8;4]],
+    glyphs: &[u16], choices: &[GsubAlternateSelection],
+) -> Result<Option<GsubProgramExecResult>, Error> {
+    let layout = parse_gsub_layout(gsub, Default::default())?;
+    let Some(plan) = build_gsub_base_plan(&layout, script, language,
+        enabled, Default::default())? else { return Ok(None); };
+    let program = compile_gsub_plan_program(gsub, &plan, glyph_count,
+        gdef, Default::default())?;
+    execute_gsub_program(&program, glyphs, choices,
+        GsubProgramExecLimits::default()).map(Some)
+}
+```
+
+## Acceptance boundary
+CI #144 verified 1028 tests/platform on the exact preceding revision, including positive native Mongolian Type 8 and 127 synthetic wrapper masks. C4.4d9 adds eight native base-plan-to-execution regressions using bounded selected default-language schedules and independent raw root/output/counter references; not exhaustive rules or complete document layout. CI pending.
+Remaining: FeatureVariations condition/substitution evaluation, script-specific shaping stages, feature values/masks, Unicode normalization and cluster/ligature component propagation, GPOS, real point attachments, external shaper parity, performance/security and DOCX corpus.

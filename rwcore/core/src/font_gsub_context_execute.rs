@@ -460,6 +460,14 @@ pub fn execute_gsub_chained_context_with_edits(program:&CompiledGsubProgram<'_>,
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
     execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,false)
 }
+/// Stable name for the full-program execution budget. This is the
+/// existing contraction/context/expansion budget, not an independent
+/// second set of limits.
+pub type GsubProgramExecLimits=GsubContractionExecLimits;
+/// Stable name for the full-program execution result. All existing
+/// counters and nested fields are retained for source compatibility.
+pub type GsubProgramExecResult=GsubContractionExecResult;
+
 /// Execute all effective GSUB substitution kinds (1–6 and 8), including
 /// Type 7 wrappers. Root order is unchanged, but each effective Type 8
 /// root visits current physical positions from end to start; other
@@ -469,7 +477,7 @@ pub fn execute_gsub_chained_context_with_edits(program:&CompiledGsubProgram<'_>,
 /// All existing context and edit budgets and explicit alternate
 /// selections apply. No cluster metadata, feature masks or script stages.
 pub fn execute_gsub_program(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
-    choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
+    choices:&[GsubAlternateSelection],limits:GsubProgramExecLimits)->Result<GsubProgramExecResult,Error>{
     execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,true)
 }
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],

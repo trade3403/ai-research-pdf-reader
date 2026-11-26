@@ -169,3 +169,6 @@ C4.4d8b pending CI; #142 verified 1015/platform, 3045 total. Ten full dispatch/r
 
 ## Latest checkpoint
 C4.4d8c pending CI; #143 verified 1025/platform, 3075 total. New OFL Noto Sans Mongolian native Type 8 fixture and all-wrapper regressions, 1028/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next bounded full GSUB execution acceptance/API consolidation only after CI passes.
+
+## Latest checkpoint
+C4.4d9 pending CI; #144 verified 1028/platform, 3084 total. Eight end-to-end native plan regressions; 1036/platform expected. Read DEV_STATE.md and GSUB_EXECUTION.md. Next C4.4e1 FeatureVariations foundation only after CI passes.
