@@ -136,3 +136,6 @@ C4.4d5a pending CI; #131 verified 917/platform, 2751 total. Ten synthetic contex
 
 ## Latest checkpoint
 C4.4d5b pending CI; #132 verified 927/platform, 2781 total. Ten context/alternate regressions, 937/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next independent native Type 5 length-preserving closure reference after CI passes.
+
+## Latest checkpoint
+C4.4d5c pending CI; #133 verified 937/platform, 2811 total. Seven native contextual reference/control regressions, 944/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next nested Type 2 expansion and position tracking after CI passes.

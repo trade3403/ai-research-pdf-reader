@@ -742,3 +742,308 @@ fn verify_native_alternate_context(font:&[u8],n:u32){
 }
 #[test]fn alegreya_native_alternate_nested_reference(){verify_native_alternate_context(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109);}
 #[test]fn padauk_native_alternate_nested_reference(){verify_native_alternate_context(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782);}
+
+
+// C4.4d5c: native Type 5 Format 1/2/3, independent raw rule decoding.
+// The oracle uses raw coverage/class arrays and physical iterators, not
+// production matchers, lookup filters, compiled actions or closure.
+#[derive(Clone)]
+struct NativeContextRule{tail:Vec<u16>,actions:Vec<(usize,u16)>}
+enum NativeContextBody{
+    Glyph{sets:Vec<Option<Vec<NativeContextRule>>>},
+    Class{classes:Vec<usize>,sets:Vec<Option<Vec<NativeContextRule>>>},
+    Coverage{sets:Vec<Vec<bool>>,actions:Vec<(usize,u16)>},
+}
+struct NativeContextSub{first:Vec<Option<usize>>,body:NativeContextBody}
+struct NativeContextRoot{index:u16,flags:usize,mark:Option<usize>,subs:Vec<NativeContextSub>}
+fn native_actions(b:&[u8],p:usize,count:usize,input:usize,n:usize)->Vec<(usize,u16)>{
+    (0..count).map(|i|{
+        let pos=u(b,p+4*i);let id=u(b,p+4*i+2);
+        assert!(pos<input&&id<n);
+        (pos,id as u16)
+    }).collect()
+}
+fn native_context_sets(b:&[u8],t:usize,base:usize,n:usize)->Vec<Option<Vec<NativeContextRule>>>{
+    (0..u(b,base)).map(|i|{
+        let off=u(b,base+2+2*i);
+        if off==0{return None;}
+        let set=t+off;
+        Some((0..u(b,set)).map(|j|{
+            let at=set+u(b,set+2+2*j);
+            let input=u(b,at);assert!(input>0);
+            let tail=(1..input).map(|k|u(b,at+2+2*k) as u16).collect();
+            let actions=native_actions(b,at+4+2*(input-1),u(b,at+2),input,n);
+            NativeContextRule{tail,actions}
+        }).collect())
+    }).collect()
+}
+fn native_context_roots(b:&[u8],n:usize)->Vec<NativeContextRoot>{
+    let list=u(b,8);let count=u(b,list);
+    let mut out=Vec::new();
+    for i in 0..count{
+        let p=list+u(b,list+2+2*i);
+        let declared=u(b,p);let flags=u(b,p+2);let subcount=u(b,p+4);
+        let mark=(flags&16!=0).then(||u(b,p+6+2*subcount));
+        let mut subs=Vec::new();
+        for j in 0..subcount{
+            let s=p+u(b,p+6+2*j);
+            let (kind,t)=if declared==7{(u(b,s+2),s+d(b,s+4))}else{(declared,s)};
+            if kind!=5{continue;}
+            let mut first=vec![None;n];
+            let body=match u(b,t){
+                1=>{
+                    for (g,k) in coverage(b,t+u(b,t+2)){first[g as usize]=Some(k);}
+                    NativeContextBody::Glyph{sets:native_context_sets(b,t,t+4,count)}
+                }
+                2=>{
+                    for (g,k) in coverage(b,t+u(b,t+2)){first[g as usize]=Some(k);}
+                    NativeContextBody::Class{classes:classes(b,t+u(b,t+4),n),
+                        sets:native_context_sets(b,t,t+6,count)}
+                }
+                3=>{
+                    let len=u(b,t+2);assert!(len>0);
+                    let sets:Vec<Vec<bool>>=(0..len).map(|k|{
+                        let mut set=vec![false;n];
+                        for (g,_) in coverage(b,t+u(b,t+6+2*k)){set[g as usize]=true;}
+                        set
+                    }).collect();
+                    NativeContextBody::Coverage{sets,actions:native_actions(b,t+6+2*len,u(b,t+4),len,count)}
+                }
+                _=>panic!("context format"),
+            };
+            subs.push(NativeContextSub{first,body});
+        }
+        if !subs.is_empty(){assert_eq!(subs.len(),subcount);out.push(NativeContextRoot{index:i as u16,flags,mark,subs});}
+    }
+    out
+}
+fn native_edges(root:&NativeContextRoot)->Vec<u16>{
+    let mut out=Vec::new();
+    for sub in &root.subs{
+        match &sub.body{
+            NativeContextBody::Glyph{sets}|NativeContextBody::Class{sets,..}=>{
+                for rules in sets.iter().flatten(){for rule in rules{out.extend(rule.actions.iter().map(|a|a.1));}}
+            }
+            NativeContextBody::Coverage{actions,..}=>out.extend(actions.iter().map(|a|a.1)),
+        }
+    }
+    out
+}
+fn native_kind(b:&[u8],id:u16)->usize{
+    let list=u(b,8);let p=list+u(b,list+2+2*id as usize);
+    if u(b,p)==7{u(b,p+u(b,p+6)+2)}else{u(b,p)}
+}
+fn native_supported_closure(b:&[u8],root:u16,contexts:&[NativeContextRoot])->Option<Vec<u16>>{
+    let mut seen=std::collections::BTreeSet::new();
+    let mut pending=vec![root];
+    while let Some(id)=pending.pop(){
+        if !seen.insert(id){continue;}
+        match native_kind(b,id){
+            1|3=>{},
+            5=>pending.extend(native_edges(contexts.iter().find(|r|r.index==id).unwrap())),
+            _=>return None,
+        }
+    }
+    Some(seen.into_iter().collect())
+}
+fn native_tail<F:FnMut(usize,u16)->bool>(a:&mut GsubContextExecResult,gd:&RawGdef,
+    root:&NativeContextRoot,p:usize,len:usize,mut eq:F)->Option<Vec<usize>>{
+    let mut positions=vec![p];
+    // Scan physical positions once for this attempted rule. Stop on the
+    // first mismatch or after collecting all requested symbols.
+    if len==0{return Some(positions);}
+    for i in p+1..a.glyphs.len(){
+        a.filter_checks+=1;
+        let g=a.glyphs[i];
+        if !gd.eligible(g,root.flags,root.mark){continue;}
+        a.symbols+=1;
+        if !eq(positions.len()-1,g){return None;}
+        positions.push(i);
+        if positions.len()==len+1{return Some(positions);}
+    }
+    None
+}
+fn native_match<'a>(a:&mut GsubContextExecResult,gd:&RawGdef,root:&NativeContextRoot,
+    sub:&'a NativeContextSub,p:usize)->Option<(Vec<usize>,&'a [(usize,u16)])>{
+    let g=a.glyphs[p] as usize;
+    match &sub.body{
+        NativeContextBody::Glyph{sets}=>{
+            let rules=sets.get(sub.first[g]?)?.as_ref()?;
+            for rule in rules{
+                a.rules+=1;
+                if let Some(pos)=native_tail(a,gd,root,p,rule.tail.len(),|i,v|v==rule.tail[i]){
+                    return Some((pos,&rule.actions));
+                }
+            }
+        }
+        NativeContextBody::Class{classes,sets}=>{
+            sub.first[g]?;
+            let rules=sets.get(classes[g])?.as_ref()?;
+            for rule in rules{
+                a.rules+=1;
+                if let Some(pos)=native_tail(a,gd,root,p,rule.tail.len(),|i,v|classes[v as usize]==rule.tail[i] as usize){
+                    return Some((pos,&rule.actions));
+                }
+            }
+        }
+        NativeContextBody::Coverage{sets,actions}=>{
+            a.rules+=1;a.symbols+=1;
+            if sets[0][g]{
+                if let Some(pos)=native_tail(a,gd,root,p,sets.len()-1,|i,v|sets[i+1][v as usize]){
+                    return Some((pos,actions));
+                }
+            }
+        }
+    }
+    None
+}
+fn native_apply(a:&mut GsubContextExecResult,gd:&RawGdef,mixed:&[RawMixed],
+    contexts:&[NativeContextRoot],id:u16,p:usize,depth:usize)->Option<usize>{
+    // All existing native fixtures have acyclic static dependencies.
+    assert!(depth<=32);
+    a.calls+=1;a.peak_depth=a.peak_depth.max(depth);a.filter_checks+=1;
+    if let Some(root)=mixed.iter().find(|r|r.index==id){
+        let g=a.glyphs[p];
+        if !gd.eligible(g,root.flags,root.mark){return None;}
+        for sub in &root.rules{
+            a.probes+=1;
+            if let Some(v)=sub.get(&g){
+                assert!(root.kind==1||root.kind==3);
+                a.matches+=1;a.changes+=usize::from(v[0]!=g);a.glyphs[p]=v[0];
+                return Some(p+1);
+            }
+        }
+        return None;
+    }
+    let root=contexts.iter().find(|r|r.index==id).unwrap();
+    if !gd.eligible(a.glyphs[p],root.flags,root.mark){return None;}
+    for sub in &root.subs{
+        a.probes+=1;
+        if let Some((pos,actions))=native_match(a,gd,root,sub,p){
+            a.matches+=1;
+            for &(sequence,target) in actions{
+                a.actions+=1;
+                native_apply(a,gd,mixed,contexts,target,pos[sequence],depth+1);
+            }
+            return Some(pos.last().unwrap()+1);
+        }
+    }
+    None
+}
+fn native_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],contexts:&[NativeContextRoot],root:u16)
+    ->GsubContextExecResult{
+    let mut a=GsubContextExecResult{glyphs:input.to_vec(),..Default::default()};
+    let mut p=0;
+    while p<input.len(){p=native_apply(&mut a,gd,mixed,contexts,root,p,1).unwrap_or(p+1);}
+    a
+}
+// Build deterministic rule witnesses without using production coverage or
+// class matchers. Limit the number per subtable to keep CI bounded.
+fn native_witnesses(root:&NativeContextRoot,gd:&RawGdef)->Vec<Vec<u16>>{
+    let eligible:Vec<_>=(0..gd.class.len()).map(|g|g as u16)
+        .filter(|&g|gd.eligible(g,root.flags,root.mark)).collect();
+    let ignored=(0..gd.class.len()).map(|g|g as u16).find(|&g|!gd.eligible(g,root.flags,root.mark));
+    let mut all=Vec::new();
+    for sub in &root.subs{
+        let mut samples=Vec::new();
+        match &sub.body{
+            NativeContextBody::Glyph{sets}|NativeContextBody::Class{sets,..}=>{
+                let class=if let NativeContextBody::Class{classes,..}=&sub.body{Some(classes)}else{None};
+                'first: for &g in &eligible{
+                    let Some(index)=sub.first[g as usize] else{continue};
+                    let set=class.map_or(index,|c|c[g as usize]);
+                    if let Some(Some(rules))=sets.get(set){
+                        for r in rules{
+                            let tail:Option<Vec<u16>>=r.tail.iter().map(|&symbol|{
+                                if let Some(c)=class{eligible.iter().copied().find(|&v|c[v as usize]==symbol as usize)}
+                                else{eligible.binary_search(&symbol).ok().map(|_|symbol)}
+                            }).collect();
+                            if let Some(tail)=tail{
+                                let mut v=vec![g];v.extend(tail);samples.push(v);
+                                if samples.len()>=8{break 'first;}
+                            }
+                        }
+                    }
+                }
+            }
+            NativeContextBody::Coverage{sets,..}=>{
+                let v:Option<Vec<u16>>=sets.iter().map(|s|eligible.iter().copied().find(|&g|s[g as usize])).collect();
+                if let Some(v)=v{samples.push(v);}
+            }
+        }
+        for v in samples{
+            if let Some(mark)=ignored{
+                let mut decorated=vec![mark];
+                for &g in &v{decorated.extend([g,mark]);}
+                all.push(decorated);
+            }
+            all.push(v);
+        }
+    }
+    all
+}
+fn verify_native_context(font:&[u8],n:u32,expected:usize)->(usize,usize){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    assert_eq!(u(table(font,b"maxp"),4),n as usize);
+    let rawgd=RawGdef::read(gd,n as usize);
+    let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
+    mixed.retain(|r|r.kind==1||r.kind==3);
+    let contexts=native_context_roots(b,n as usize);
+    assert_eq!(contexts.iter().map(|r|r.subs.len()).sum::<usize>(),expected);
+    let mut supported=0;let mut actions=0;
+    for root in &contexts{
+        let p=compile_gsub_program(b,&[root.index],n,Some(&g),Default::default()).unwrap();
+        let Some(ids)=native_supported_closure(b,root.index,&contexts) else{
+            // Supply all reachable alternate choices to isolate unsupported
+            // kind rejection from the policy's missing-choice validation.
+            let choices:Vec<_>=p.lookups().iter().filter(|l|l.effective_kind()==3)
+                .map(|l|alternate_choice(l.index(),0)).collect();
+            assert!(matches!(execute_gsub_context_with_alternates(&p,&[],&choices,Default::default()),Err(Error::Unsupported(_))));
+            continue;
+        };
+        supported+=1;
+        assert_eq!(p.closure().reachable,ids);
+        assert!(p.closure().is_proven_acyclic());
+        let choices:Vec<_>=ids.iter().copied().filter(|&id|native_kind(b,id)==3).map(|id|alternate_choice(id,0)).collect();
+        let witnesses=native_witnesses(root,&rawgd);
+        // Verify each bounded witness independently, so neighbouring
+        // samples cannot accidentally suppress its context.
+        for input in &witnesses{
+            let want=native_reference(input,&rawgd,&mixed,&contexts,root.index);
+            actions+=want.actions;
+            assert_eq!(execute_gsub_context_with_alternates(&p,input,&choices,Default::default()).unwrap(),want);
+        }
+        let input:Vec<_>=(0..n as u16).chain((0..n as u16).rev())
+            .chain(witnesses.iter().take(16).flatten().copied()).collect();
+        let want=native_reference(&input,&rawgd,&mixed,&contexts,root.index);
+        actions+=want.actions;
+        let l=GsubContextExecLimits{max_glyphs:input.len(),max_roots:1,max_lookups:ids.len(),
+            max_depth:want.peak_depth,max_calls:want.calls,max_probes:want.probes,
+            max_filter_checks:want.filter_checks,max_rules:want.rules,max_symbols:want.symbols,
+            max_actions:want.actions,max_matches:want.matches};
+        assert_eq!(execute_gsub_context_with_alternates(&p,&input,&choices,l).unwrap(),want);
+        if choices.is_empty(){assert_eq!(execute_gsub_context(&p,&input,l).unwrap(),want);}
+        let mut bad=vec![GsubContextExecLimits{max_glyphs:l.max_glyphs-1,..l},
+            GsubContextExecLimits{max_roots:0,..l},GsubContextExecLimits{max_lookups:l.max_lookups-1,..l}];
+        for (count,limit) in [
+            (l.max_depth,GsubContextExecLimits{max_depth:l.max_depth.saturating_sub(1),..l}),
+            (l.max_calls,GsubContextExecLimits{max_calls:l.max_calls.saturating_sub(1),..l}),
+            (l.max_probes,GsubContextExecLimits{max_probes:l.max_probes.saturating_sub(1),..l}),
+            (l.max_filter_checks,GsubContextExecLimits{max_filter_checks:l.max_filter_checks.saturating_sub(1),..l}),
+            (l.max_rules,GsubContextExecLimits{max_rules:l.max_rules.saturating_sub(1),..l}),
+            (l.max_symbols,GsubContextExecLimits{max_symbols:l.max_symbols.saturating_sub(1),..l}),
+            (l.max_actions,GsubContextExecLimits{max_actions:l.max_actions.saturating_sub(1),..l}),
+            (l.max_matches,GsubContextExecLimits{max_matches:l.max_matches.saturating_sub(1),..l}),
+        ]{if count>0{bad.push(limit);}}
+        for limit in bad{assert!(matches!(execute_gsub_context_with_alternates(&p,&input,&choices,limit),Err(Error::Limit(_))));}
+    }
+    (supported,actions)
+}
+#[test]fn abeezee_regular_native_context(){assert_eq!(verify_native_context(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,0),(0,0));}
+#[test]fn abeezee_italic_native_context(){assert_eq!(verify_native_context(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,0),(0,0));}
+#[test]fn alegreya_native_context(){assert_eq!(verify_native_context(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,0),(0,0));}
+#[test]fn aref_native_context(){assert_eq!(verify_native_context(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,0),(0,0));}
+#[test]fn padauk_native_context(){let _=verify_native_context(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,6);}
+#[test]fn devanagari_native_context(){let _=verify_native_context(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,85);}
+#[test]fn nastaliq_native_context(){let _=verify_native_context(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,1341);}
