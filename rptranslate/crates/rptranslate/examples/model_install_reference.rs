@@ -2,8 +2,9 @@
 //! Production imports instead require a separately trusted catalog.
 use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, matmul::Kernel, mixed_model::PAYLOAD_BYTES};
 use rpmodel::{
-    catalog::{Asset, Entry, Precision, Version},
+    catalog::{Asset, Catalog, Entry, Precision, Version},
     install::Store,
+    lifecycle,
     sha256::digest_reader,
 };
 use rptranslate::{model_install, offline::OfflineTranslator};
@@ -51,6 +52,46 @@ fn probe(source: &Path, store: &Store, precision: Precision) -> Result<(), Strin
     println!(
         "MODEL_INSTALL PASS precision={precision:?} payload_bytes={} translation_nonempty=true",
         translator.payload_bytes()
+    );
+    lifecycle_probe(source, store, &entry)
+}
+
+fn lifecycle_probe(source: &Path, store: &Store, entry: &Entry) -> Result<(), String> {
+    let mut next = entry.clone();
+    // Same audited weights, different version identifiers: lifecycle test,
+    // not a claim of a newly trained or independently released model.
+    next.version = Version(2, 0, 0);
+    let catalog =
+        Catalog::new(vec![entry.clone(), next.clone()]).map_err(|e| format!("{e:?}"))?;
+    model_install::activate(store, entry).map_err(|e| format!("{e:?}"))?;
+    model_install::import(store, &next, source).map_err(|e| format!("{e:?}"))?;
+    model_install::activate(store, &next).map_err(|e| format!("{e:?}"))?;
+    if lifecycle::active(store, &catalog, entry).map_err(|e| format!("{e:?}"))? != Some(&next)
+        || lifecycle::uninstall(store, entry) != Err(lifecycle::Error::ProtectedVersion)
+    {
+        return Err("upgrade or rollback protection".into());
+    }
+    model_install::rollback(store, &catalog, entry).map_err(|e| format!("{e:?}"))?;
+    if lifecycle::active(store, &catalog, entry).map_err(|e| format!("{e:?}"))? != Some(entry) {
+        return Err("rollback selection".into());
+    }
+    lifecycle::forget_previous(store, entry).map_err(|e| format!("{e:?}"))?;
+    lifecycle::uninstall(store, &next).map_err(|e| format!("{e:?}"))?;
+    let next_path = store.installed_path(&next).map_err(|e| format!("{e:?}"))?;
+    if next_path.exists() {
+        return Err("uninstalled version still present".into());
+    }
+    lifecycle::deactivate(store, entry).map_err(|e| format!("{e:?}"))?;
+    lifecycle::uninstall(store, entry).map_err(|e| format!("{e:?}"))?;
+    if lifecycle::selection(store, entry)
+        .map_err(|e| format!("{e:?}"))?
+        .is_some()
+    {
+        return Err("selection remains after deactivation".into());
+    }
+    println!(
+        "MODEL_LIFECYCLE PASS precision={:?} upgrade=true rollback=true uninstall=true same_weights=true",
+        entry.precision
     );
     Ok(())
 }

@@ -4,6 +4,10 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0e1 基线 f1efe245b7c5ca76beba13e6dee3389b10517d1c / [#143 / 45794098803](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45794098803) completed/success；Linux198 workspace+59 portable=257，Windows197+59=256，共513基础+4网络=517；4/4真实安装推理探针通过；Windows映射逐位一致、出站阻断与坏模型恢复通过。Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、468.545173s、932.887494ms加载、122308KiB RSS；FP32 4/8，人工语义未测。
+
+D3.0e2：lifecycle.rs新增显式discard_pending（拒绝链接及超限、不触碰正式记录）、forget_previous、deactivate、uninstall、purge_removed；当前/回滚版本及未提交激活事务保护，先验证完整目录再rename到非模型tombstone，清理中断后仅对可信文件子集再次校验并清理，拒绝未知文件、链接、已重新安装目标；保留独占库及无打开模型会话前提，不自动删除损坏包、不承诺断电/并发安全。新增5跨平台单测，目标523基础+4网络=527（Linux262、Windows261）；既有真实模型安装探针增加同一可信权重不同版本编号的激活/升级/回滚/卸载验证，每平台FP32/INT8，目标4个MODEL_LIFECYCLE PASS并保留4个MODEL_INSTALL PASS。不等于真实新训练版本或正式在线发布。未本地编译。CI全绿后D3.0工程封版，进入D3.1。
+
 2026-11-26 D3.0e1 [#142 / 45790964743](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45790964743) Linux及Windows均在rustfmt失败：lifecycle.rs:52 encode的format!需展开。[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45790964743/job/139809584377)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45790964743/job/139809584350)。严格按日志最小格式修复，不改变算法、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。全量CI成功后才进入D3.0e2。
 
 2026-11-26 D3.0d2 基线 055c430a67e334629ade2f793ba982602e65517a / [#141 / 45784405553](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45784405553) completed/success；Linux192 workspace+59 portable=251，Windows191+59=250，共501基础+4网络=505；Linux及Windows真实MODEL_INSTALL PASS FP32 312033188/INT8 84903620 payload bytes，均有非空译文；4/4真实安装推理探针成功。Windows映射逐位一致、出站阻断与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、355.331104s、770.541804ms加载、122836KiB RSS；FP32 4/8，人工语义未测。

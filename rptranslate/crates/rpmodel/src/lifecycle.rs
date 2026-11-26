@@ -28,6 +28,8 @@ pub enum Error {
     Pending,
     MissingVersion,
     NoRollback,
+    ProtectedVersion,
+    RemovalPending,
     Cleanup,
 }
 
@@ -222,6 +224,109 @@ pub fn rollback(
     Ok(selected)
 }
 
+/// Explicitly discard an interrupted, uncommitted activation record.
+/// Never follows a link or changes the last committed selection.
+pub fn discard_pending(store: &Store, family: &Entry) -> Result<(), Error> {
+    let path = record_path(store, family)?;
+    let pending = path.with_extension("pending");
+    let meta = fs::symlink_metadata(&pending).map_err(|_| Error::Io)?;
+    if !meta.is_file() || catalog::is_link(&meta) || meta.len() > MAX_RECORD {
+        return Err(Error::Record);
+    }
+    fs::remove_file(pending).map_err(|_| Error::Io)
+}
+
+/// Clear the previous version reference while retaining the current model.
+pub fn forget_previous(store: &Store, family: &Entry) -> Result<(), Error> {
+    let path = record_path(store, family)?;
+    let old = read_record(&path)?.ok_or(Error::NoRollback)?;
+    if old.previous.is_some() {
+        write_record(
+            &path,
+            Selection {
+                current: old.current,
+                previous: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Explicitly deactivate the family; installed packages remain untouched.
+pub fn deactivate(store: &Store, family: &Entry) -> Result<(), Error> {
+    let path = record_path(store, family)?;
+    if present(&path.with_extension("pending"))? {
+        return Err(Error::Pending);
+    }
+    if read_record(&path)?.is_some() {
+        fs::remove_file(path).map_err(|_| Error::Io)?;
+    }
+    Ok(())
+}
+
+fn removable(store: &Store, entry: &Entry) -> Result<PathBuf, Error> {
+    let record = record_path(store, entry)?;
+    if present(&record.with_extension("pending"))? {
+        return Err(Error::Pending);
+    }
+    if read_record(&record)?
+        .is_some_and(|s| s.current == entry.version || s.previous == Some(entry.version))
+    {
+        return Err(Error::ProtectedVersion);
+    }
+    store.installed_path(entry).map_err(Error::Store)
+}
+
+fn removal_path(target: &Path) -> Result<PathBuf, Error> {
+    let name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or(Error::Record)?;
+    Ok(target.with_file_name(format!(".remove-{name}")))
+}
+
+/// Uninstall only an unreferenced, verified package. First rename into a
+/// non-model tombstone; deletion is explicit and retryable if interrupted.
+/// Caller must ensure no open model sessions and exclusive store ownership.
+pub fn uninstall(store: &Store, entry: &Entry) -> Result<(), Error> {
+    let target = removable(store, entry)?;
+    let tomb = removal_path(&target)?;
+    if present(&tomb)? {
+        return Err(Error::RemovalPending);
+    }
+    store.verify_installed(entry).map_err(Error::Store)?;
+    fs::rename(target, &tomb).map_err(|_| Error::Io)?;
+    purge_removed(store, entry)
+}
+
+/// Finish deletion of a tombstone after an interrupted uninstall.
+/// Remaining files must be a subset of the trusted package and hash-match;
+/// unexpected files, links, and a reinstalled target are never removed.
+pub fn purge_removed(store: &Store, entry: &Entry) -> Result<(), Error> {
+    let target = removable(store, entry)?;
+    if present(&target)? {
+        return Err(Error::RemovalPending);
+    }
+    let tomb = removal_path(&target)?;
+    let meta = fs::symlink_metadata(&tomb).map_err(|_| Error::Io)?;
+    if !meta.is_dir() || catalog::is_link(&meta) {
+        return Err(Error::Record);
+    }
+    for item in fs::read_dir(&tomb).map_err(|_| Error::Io)? {
+        let item = item.map_err(|_| Error::Io)?;
+        let name = item.file_name().into_string().map_err(|_| Error::Record)?;
+        let asset = entry.files.get(&name).ok_or(Error::Record)?;
+        let meta = fs::symlink_metadata(item.path()).map_err(|_| Error::Io)?;
+        if !meta.is_file() || catalog::is_link(&meta) || meta.len() != asset.bytes {
+            return Err(Error::Record);
+        }
+        asset
+            .verify(File::open(item.path()).map_err(|_| Error::Io)?)
+            .map_err(|e| Error::Store(install::Error::Catalog(e)))?;
+    }
+    fs::remove_dir_all(tomb).map_err(|_| Error::Cleanup)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +488,88 @@ mod tests {
         assert_eq!(activate(&store, &b, |_| Ok(())), Err(Error::Pending));
         assert_eq!(fs::read(pending).unwrap(), b"interrupted");
         assert_eq!(selection(&store, &a), Ok(Some(old)));
+    }
+
+    #[test]
+    fn uninstall_protects_active_and_rollback_versions() {
+        let root = Scratch::new();
+        let store = root.store();
+        let a = root.install(&store, 1, Precision::Int8);
+        let b = root.install(&store, 2, Precision::Int8);
+        activate(&store, &a, |_| Ok(())).unwrap();
+        activate(&store, &b, |_| Ok(())).unwrap();
+        assert_eq!(uninstall(&store, &a), Err(Error::ProtectedVersion));
+        assert_eq!(uninstall(&store, &b), Err(Error::ProtectedVersion));
+        forget_previous(&store, &b).unwrap();
+        uninstall(&store, &a).unwrap();
+        assert!(!store.installed_path(&a).unwrap().exists());
+        assert_eq!(store.verify_installed(&b), Ok(()));
+        deactivate(&store, &b).unwrap();
+        uninstall(&store, &b).unwrap();
+        assert_eq!(selection(&store, &b), Ok(None));
+        assert!(!store.installed_path(&b).unwrap().exists());
+    }
+
+    #[test]
+    fn interrupted_activation_can_be_discarded_explicitly() {
+        let root = Scratch::new();
+        let store = root.store();
+        let a = root.install(&store, 1, Precision::Int8);
+        let b = root.install(&store, 2, Precision::Int8);
+        let old = activate(&store, &a, |_| Ok(())).unwrap();
+        let pending = record_path(&store, &a).unwrap().with_extension("pending");
+        fs::write(&pending, b"partial").unwrap();
+        assert_eq!(deactivate(&store, &a), Err(Error::Pending));
+        assert_eq!(uninstall(&store, &b), Err(Error::Pending));
+        discard_pending(&store, &a).unwrap();
+        assert_eq!(selection(&store, &a), Ok(Some(old)));
+        assert!(!pending.exists());
+        activate(&store, &b, |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn purge_rejects_unknown_files_and_resumes_partial_removal() {
+        let root = Scratch::new();
+        let store = root.store();
+        let a = root.install(&store, 1, Precision::Int8);
+        let path = store.installed_path(&a).unwrap();
+        let tomb = removal_path(&path).unwrap();
+        fs::rename(&path, &tomb).unwrap();
+        fs::write(tomb.join("extra.bin"), b"x").unwrap();
+        assert_eq!(uninstall(&store, &a), Err(Error::RemovalPending));
+        assert_eq!(purge_removed(&store, &a), Err(Error::Record));
+        assert!(tomb.join("data.bin").exists());
+        fs::remove_file(tomb.join("extra.bin")).unwrap();
+        fs::remove_file(tomb.join("data.bin")).unwrap();
+        purge_removed(&store, &a).unwrap();
+        assert!(!tomb.exists());
+    }
+
+    #[test]
+    fn removal_fails_closed_for_corrupt_record_or_package() {
+        let root = Scratch::new();
+        let store = root.store();
+        let a = root.install(&store, 1, Precision::Int8);
+        let path = store.installed_path(&a).unwrap();
+        fs::write(path.join("data.bin"), b"abd").unwrap();
+        assert!(uninstall(&store, &a).is_err());
+        assert!(path.exists());
+        fs::write(path.join("data.bin"), b"abc").unwrap();
+        fs::write(record_path(&store, &a).unwrap(), b"bad").unwrap();
+        assert_eq!(uninstall(&store, &a), Err(Error::Record));
+        assert_eq!(store.verify_installed(&a), Ok(()));
+    }
+
+    #[test]
+    fn tombstone_cannot_purge_reinstalled_target() {
+        let root = Scratch::new();
+        let store = root.store();
+        let a = root.install(&store, 1, Precision::Int8);
+        let path = store.installed_path(&a).unwrap();
+        let tomb = removal_path(&path).unwrap();
+        fs::create_dir(&tomb).unwrap();
+        assert_eq!(purge_removed(&store, &a), Err(Error::RemovalPending));
+        assert_eq!(store.verify_installed(&a), Ok(()));
+        assert!(tomb.exists());
     }
 }
