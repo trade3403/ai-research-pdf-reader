@@ -112,8 +112,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4e6 | Native user-coordinate normalization and dynamic GSUB execution integration | Verified (#152) |
 | C4.4e7 | Bounded variable GSUB scheduling acceptance and API contract | Verified (#153) |
 | C4.4f1 | Unicode cluster and glyph provenance foundation | Verified (#154) |
-| C4.4f2 | Bounded source-set union and expansion/contraction ledger | Implemented; CI pending |
-| C4.4f3 | GSUB single/multiple substitution provenance integration | Planned |
+| C4.4f2 | Bounded source-set union and expansion/contraction ledger | Verified (#155) |
+| C4.4f3 | GSUB single/multiple substitution provenance integration | Implemented; CI pending |
+| C4.4f4 | GSUB alternate and ligature provenance integration | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

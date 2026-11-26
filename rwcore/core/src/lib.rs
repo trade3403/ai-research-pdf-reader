@@ -248,3 +248,5 @@ pub use font_source_run::{SourceLimits,ScalarSource,GlyphSource,SourceRun,map_so
 
 pub mod font_provenance;
 pub use font_provenance::{ProvenanceLimits,TrackedGlyph,ProvenanceLedger};
+
+pub use font_gsub_context_execute::execute_gsub_with_provenance;

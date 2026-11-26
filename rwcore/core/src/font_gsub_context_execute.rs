@@ -77,6 +77,7 @@ fn charge(n:&mut usize,amount:usize,cap:usize,label:&'static str)->Result<(),Err
     *n=total;Ok(())
 }
 struct State<'a>{
+    provenance:Option<crate::ProvenanceLedger>,
     choices:&'a [GsubAlternateSelection],
     result:GsubContextExecResult,
     active:Vec<Frame>,
@@ -113,6 +114,7 @@ impl State<'_>{
         self.matched()?;
         self.work.matches+=1;
         self.result.changes+=usize::from(seq!=[self.result.glyphs[p]]);
+        if let Some(ledger)=self.provenance.as_mut(){ledger.expand(p,seq)?;}
         self.result.glyphs.splice(p..p+1,seq.iter().copied());
         Ok(p+seq.len())
     }
@@ -331,6 +333,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
             if let Some(v)=rule.substitute(g){
                 state.matched()?;
                 state.result.changes+=usize::from(g!=v);
+                if let Some(ledger)=state.provenance.as_mut(){ledger.expand(p,&[v])?;}
                 state.result.glyphs[p]=v;
                 return Ok(Some(p+1));
             }
@@ -407,7 +410,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
 /// No output is returned on error; no variable-length or cluster edits.
 pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,None,limits,None,None,false,false).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,None,limits,None,None,false,false,&mut None).map(|r|r.expansion.execution)
 }
 /// Length-preserving Type 1/3/5 execution. Require exactly one explicit
 /// zero-based choice for every reachable effective Type 3 lookup,
@@ -416,7 +419,7 @@ pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
 /// choice fails atomically rather than falling through to later subtables.
 pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None,None,false,false).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,false,false,&mut None).map(|r|r.expansion.execution)
 }
 /// Execute Type 1/2/3/5 roots and reachable targets, including Type 7
 /// wrappers. Nonempty expansion preserves the first replacement as the
@@ -425,7 +428,7 @@ pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,gly
 /// No deletion, ligature contraction, cluster or feature-mask propagation.
 pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubExpansionExecLimits)->Result<GsubExpansionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None,false,false).map(|r|r.expansion)
+    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None,false,false,&mut None).map(|r|r.expansion)
 }
 /// Execute Type 1/2/3/4/5 (direct or wrapped) roots and dependencies.
 /// A ligature retains its first anchor and tombstones consumed trailing
@@ -434,7 +437,7 @@ pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyp
 /// No cluster/mark component metadata or feature-mask propagation.
 pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),false,false)
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),false,false,&mut None)
 }
 /// Length-preserving Type 1/3/5/6 roots and reachable dependencies,
 /// including Type 7 wrappers. Backtrack is nearest-first; input and
@@ -445,7 +448,7 @@ pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,gl
 /// choices apply. Other reachable kinds are rejected at preflight.
 pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None,None,true,false).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,true,false,&mut None).map(|r|r.expansion.execution)
 }
 /// Execute effective Type 1 through 6, including Type 7 wrappers.
 /// Uses the same input-anchor and exclusive-boundary policy as the
@@ -458,7 +461,7 @@ pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u1
 /// Type 8, cluster metadata and feature masks remain unsupported.
 pub fn execute_gsub_chained_context_with_edits(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,false)
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,false,&mut None)
 }
 /// Stable name for the full-program execution budget. This is the
 /// existing contraction/context/expansion budget, not an independent
@@ -478,11 +481,11 @@ pub type GsubProgramExecResult=GsubContractionExecResult;
 /// selections apply. No cluster metadata, feature masks or script stages.
 pub fn execute_gsub_program(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubProgramExecLimits)->Result<GsubProgramExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,true)
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,true,&mut None)
 }
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits,
-    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool,reverse:bool)->Result<GsubContractionExecResult,Error>{
+    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool,reverse:bool,provenance:&mut Option<crate::ProvenanceLedger>)->Result<GsubContractionExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
         ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
@@ -506,7 +509,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
         }
     }
     if iter.next().is_some(){return Err(Error::Invalid("gsub context alternate extra"));}
-    let mut state=State{choices,result:Default::default(),active:Vec::new(),limits,expansion,work:Default::default(),contraction,shrink:Default::default()};
+    let mut state=State{provenance:provenance.take(),choices,result:Default::default(),active:Vec::new(),limits,expansion,work:Default::default(),contraction,shrink:Default::default()};
     state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
     state.result.glyphs.extend_from_slice(glyphs);
     for &id in program.roots(){
@@ -524,7 +527,33 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
             }
         }
     }
+    *provenance=state.provenance.take();
     Ok(GsubContractionExecResult{expansion:GsubExpansionExecResult{execution:state.result,
         multiple_matches:state.work.matches,inserted_glyphs:state.work.inserted,edit_work:state.work.edits},
         ligatures:state.shrink.ligatures,removed_glyphs:state.shrink.removed,skipped_actions:state.shrink.skipped})
+}
+
+/// Atomic provenance-aware execution for effective types 1 and 2
+/// (including extension wrappers). Reject other reachable kinds before
+/// execution. The existing scheduler and counters remain authoritative.
+pub fn execute_gsub_with_provenance(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits)
+    ->Result<(GsubProgramExecResult,crate::ProvenanceLedger),Error>{
+    if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1|2)){
+        return Err(Error::Unsupported("gsub provenance reachable kind"));
+    }
+    if run.glyphs().len()>limits.expansion.context.max_glyphs{
+        return Err(Error::Limit("gsub provenance input"));
+    }
+    let mut provenance=Some(crate::ProvenanceLedger::from_run(run,program.glyph_count(),source_limits)?);
+    let mut glyphs=Vec::new();
+    glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub provenance allocation"))?;
+    glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
+    let result=execute_context_inner(program,&glyphs,Some(&[]),limits.expansion.context,
+        Some(limits.expansion),Some(limits),true,true,&mut provenance)?;
+    let ledger=provenance.ok_or(Error::Invalid("gsub provenance missing"))?;
+    if !ledger.glyphs().iter().map(|g|g.glyph_id).eq(result.expansion.execution.glyphs.iter().copied()){
+        return Err(Error::Invalid("gsub provenance divergence"));
+    }
+    Ok((result,ledger))
 }
