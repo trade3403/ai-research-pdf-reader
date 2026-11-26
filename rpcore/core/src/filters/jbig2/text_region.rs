@@ -1,5 +1,5 @@
 //! Native text-region placement and composition, T.88 (2000) 6.4.5–9.
-//! Consumes already decoded signed deltas and symbol bitmaps, not entropy.
+//! Placement and bounded arithmetic entropy decoding with optional refinement.
 //! Transposition changes coordinate axes, never the source pixel orientation.
 use crate::{Error,Result};
 use super::bitmap::{self,Bitmap,ComposeBudget,ComposeOp};
@@ -275,7 +275,20 @@ mod text_refinement_geometry_tests{
 /// text payload. Symbols are borrowed in stream identifier order.
 pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
     decision_limit:usize,work_limit:u64)->Result<DecodedText>{
+    decode_arithmetic_inner(data,options,symbols,decision_limit,work_limit,None)
+}
+/// Standalone arithmetic text with refinement enabled. The same QM stream
+/// and persistent GR bank are used for every refined instance.
+pub fn decode_arithmetic_refined(data:&[u8],options:Options,symbols:&[&Bitmap],
+    neighborhood:&super::refinement::Neighborhood,decision_limit:usize,
+    work_limit:u64)->Result<DecodedText>{
+    decode_arithmetic_inner(data,options,symbols,decision_limit,work_limit,Some(neighborhood))
+}
+fn decode_arithmetic_inner(data:&[u8],options:Options,symbols:&[&Bitmap],
+    decision_limit:usize,work_limit:u64,
+    neighborhood:Option<&super::refinement::Neighborhood>)->Result<DecodedText>{
     use super::integer::{Integer,IntegerDecoder,IaidDecoder};
+    use super::refinement::{self,ContextBank};
     if decision_limit>MAX_TEXT_DECISIONS||symbols.len()>MAX_INSTANCES as usize{
         return Err(Error::Limit("JBIG2 text arithmetic limits"));
     }
@@ -284,6 +297,14 @@ pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
     }
     let count=symbols.len() as u32;
     let width=if count<=1{0}else{(32-(count-1).leading_zeros()) as u8};
+    let context_work=if let Some(n)=neighborhood{
+        (1u64<<width)+9*512+n.template().context_count() as u64
+    }else{0};
+    let available=work_limit.checked_sub(context_work).ok_or(Error::Limit("JBIG2 text context work"))?;
+    if work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text region limits"));}
+    let mut gr=match neighborhood{Some(n)=>Some(ContextBank::new(n.template())?),None=>None};
+    let mut extra=neighborhood.map(|_|[IntegerDecoder::new(),IntegerDecoder::new(),
+        IntegerDecoder::new(),IntegerDecoder::new(),IntegerDecoder::new()]);
     let mut decoder=super::qm::Decoder::new(data,decision_limit)?;
     let mut dt=IntegerDecoder::new();
     let mut fs=IntegerDecoder::new();
@@ -294,7 +315,7 @@ pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
         match v{Integer::Value(n)=>Ok(n),Integer::Oob=>Err(Error::Invalid("JBIG2 text unexpected OOB"))}
     }
     let initial=required(dt.decode(&mut decoder)?)?;
-    let mut region=Region::new(options,initial,work_limit)?;
+    let mut region=Region::new(options,initial,available)?;
     while region.remaining_instances()!=0{
         let delta=required(dt.decode(&mut decoder)?)?;
         let first=required(fs.decode(&mut decoder)?)?;
@@ -307,7 +328,28 @@ pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
             };
             if curt>=options.strips{return Err(Error::Invalid("JBIG2 text CURT"));}
             let id=ids.decode_for_count(&mut decoder,count)?;
-            region.place(offset,curt,symbols[id as usize])?;
+            let src=symbols[id as usize];
+            let mut refined=None;
+            if let (Some(n),Some(bank),Some(fields))=(neighborhood,gr.as_mut(),extra.as_mut()){
+                match required(fields[0].decode(&mut decoder)?)?{
+                    0=>{},
+                    1=>{
+                        let dw=required(fields[1].decode(&mut decoder)?)?;
+                        let dh=required(fields[2].decode(&mut decoder)?)?;
+                        let dx=required(fields[3].decode(&mut decoder)?)?;
+                        let dy=required(fields[4].decode(&mut decoder)?)?;
+                        let opt=refinement_geometry(src,dw,dh,dx,dy)?;
+                        let cost=refinement::work_bound(n.template(),opt)?;
+                        let left=region.left.checked_sub(cost).ok_or(Error::Limit("JBIG2 text refinement work"))?;
+                        let decoded=refinement::decode_bitmap(src,n,opt,bank,&mut decoder,cost)?;
+                        region.left=left;
+                        region.stats.work_used+=cost;
+                        refined=Some(decoded.bitmap);
+                    },
+                    _=>return Err(Error::Invalid("JBIG2 text refinement indicator")),
+                }
+            }
+            region.place(offset,curt,refined.as_ref().unwrap_or(src))?;
             match ds.decode(&mut decoder)?{
                 Integer::Oob=>{region.end_strip()?;break;}
                 Integer::Value(n)=>{
@@ -319,7 +361,9 @@ pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
             }
         }
     }
-    region.finish()
+    let mut result=region.finish()?;
+    result.stats.work_used+=context_work;
+    Ok(result)
 }
 #[cfg(test)]
 mod arithmetic_text_tests{
@@ -397,5 +441,38 @@ mod arithmetic_text_vectors {
     fn arithmetic_text_reject_initial_oob(){
         assert!(matches!(decode_arithmetic(OOB,options(0),&[],100,100),
             Err(Error::Invalid("JBIG2 text unexpected OOB"))));
+    }
+}
+
+#[cfg(test)]
+mod refined_text_integration_tests{
+    use super::*;
+    use super::super::refinement::{Neighborhood,Template};
+    const EMPTY:&[u8]=&[0xaa,0xf2,0x8c,0x65,0xc5,0x81,0x19,0xc3,0xf5,0xdd,0x6b,0x58,0x2e,0x73,0xf2,
+        0xa3,0x73,0x46,0x0a,0x8e,0x90,0xf7,0x7a,0x76,0x20,0xf8,0x7f,0xff,0xac];
+    fn options()->Options{Options{width:8,height:2,default_black:false,
+        op:ComposeOp::Or,strips:1,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:0}}
+    #[test]
+    fn refined_text_empty_context_budget(){
+        for t in [Template::T0,Template::T1]{
+            let n=Neighborhood::nominal(t);
+            let cost=1+9*512+t.context_count() as u64+16;
+            let d=decode_arithmetic_refined(EMPTY,options(),&[],&n,4,cost).unwrap();
+            assert_eq!(d.bitmap.packed(),[0,0]);
+            assert_eq!(d.stats.work_used,cost);
+            assert!(decode_arithmetic_refined(EMPTY,options(),&[],&n,4,cost-1).is_err());
+        }
+    }
+    #[test]
+    fn refined_text_empty_initial_decision_required(){
+        let n=Neighborhood::nominal(Template::T1);
+        assert!(decode_arithmetic_refined(EMPTY,options(),&[],&n,3,20000).is_err());
+    }
+    #[test]
+    fn refined_text_input_limits(){
+        let n=Neighborhood::nominal(Template::T1);
+        assert!(decode_arithmetic_refined(&[0],options(),&[],&n,100,20000).is_err());
+        assert!(decode_arithmetic_refined(EMPTY,options(),&[],&n,MAX_TEXT_DECISIONS+1,20000).is_err());
+        assert!(decode_arithmetic_refined(EMPTY,options(),&[],&n,100,bitmap::MAX_COMPOSE_WORK+1).is_err());
     }
 }
