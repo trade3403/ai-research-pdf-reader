@@ -1661,8 +1661,9 @@ fn decode_arithmetic_refinement_impl(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
                             let options=text_region::Options{width:s.width,height:s.height,default_black:false,
                                 op:bitmap::ComposeOp::Or,strips:1,corner:text_region::Corner::TopLeft,
                                 transposed:false,ds_offset:0,instances};
-                            let decoded=text_region::decode_arithmetic_shared(options,&refs,&mut decoder,&mut id,
-                                contexts,Some(&neighborhood),Some(&mut gr),left.min(bitmap::MAX_COMPOSE_WORK))?;
+                            let decoded=text_region::decode_arithmetic_shared_bounded(options,&refs,&mut decoder,&mut id,
+                                contexts,Some(&neighborhood),Some(&mut gr),left.min(bitmap::MAX_COMPOSE_WORK),
+                                limits.packed_bytes-next)?;
                             charge_work(&mut left,decoded.stats.work_used)?;
                             out.push(decoded.bitmap);packed=next;
                             continue;
@@ -2674,4 +2675,16 @@ mod aggregation_mixed_vectors{
             assert!(run(t,ArithmeticLimits{work:d.work_used-1,..l}).is_err());
         }
     }
+    #[test]
+    fn mixed_aggregation_peak_packed_budget(){
+        for t in [0,1]{
+            let l=ArithmeticLimits{packed_bytes:3,..ArithmeticLimits::default()};
+            let d=run(t,l).unwrap();
+            assert_eq!(d.packed_bytes,2);
+            assert!(matches!(run(t,ArithmeticLimits{packed_bytes:2,..l}),
+                Err(Error::Limit("JBIG2 text temporary packed budget"))));
+            assert!(run(t,ArithmeticLimits{packed_bytes:1,..l}).is_err());
+        }
+    }
+
 }
