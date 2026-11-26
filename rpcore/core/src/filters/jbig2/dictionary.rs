@@ -2719,6 +2719,23 @@ mod aggregation_displaced_vectors{
             }
         }
     }
+    // Vertical and diagonal displacements, same GR context across each
+    // pair of refinement calls. T1 omits upper diagonal neighbours.
+    const AXES:[&[u8];4]=[&[149,20,51,107,79,170,125,186,152,236,191,255,172],&[149,20,8,106,207,170,125,186,152,236,191,255,172],&[149,19,221,106,79,170,125,186,152,236,191,255,172],&[149,17,2,97,207,170,125,186,152,236,191,255,172]];
+    #[test]
+    fn mixed_vertical_diagonal_displacement(){
+        for t in [0,1]{
+            for data in AXES{
+                let d=run(t,data,ArithmeticLimits{decisions:92,..ArithmeticLimits::default()}).unwrap();
+                assert_eq!(d.exported_indices,[0,1,2]);
+                assert_eq!(d.new_symbols.len(),2);
+                assert_eq!(d.new_symbols[0].packed(),[128]);
+                assert_eq!(d.new_symbols[1].packed(),[128]);
+                assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(2,1));
+                assert!(run(t,data,ArithmeticLimits{decisions:91,..ArithmeticLimits::default()}).is_err());
+            }
+        }
+    }
     #[test]
     fn mixed_displaced_exact_decision_budget(){
         for t in [0,1]{
