@@ -145,3 +145,6 @@ C4.4d5d pending CI; #134 verified 944/platform, 2832 total. Ten contextual expan
 
 ## Latest checkpoint
 C4.4d5e pending CI; #135 verified 954/platform, 2862 total. Seven native expansion reference/control regressions, 961/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next bounded nested Type 4 contraction after CI passes.
+
+## Latest checkpoint
+C4.4d5f pending CI; #136 verified 961/platform, 2883 total. Ten contextual contraction regressions, 971/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next native contraction reference only after CI passes.

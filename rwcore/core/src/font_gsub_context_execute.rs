@@ -1,4 +1,4 @@
-//! Bounded contextual execution with optional Type 2 expansion.
+//! Bounded contextual execution with optional Type 2 expansion and Type 4 contraction.
 //! Explicit roots; dependency-only lookups run only at action positions.
 use crate::{CompiledGsubProgram,CompiledGsubLookup,ContextAction,Error,ExtensionTarget,LookupFilter,GsubAlternateSelection};
 
@@ -45,6 +45,27 @@ pub struct GsubExpansionExecResult{
     pub inserted_glyphs:usize,
     pub edit_work:usize,
 }
+/// Additional limits for nested ligature contraction. Contraction work
+/// shares the expansion edit budget; removal and skipped actions are
+/// independently reported and bounded.
+#[derive(Debug,Clone,Copy)]
+pub struct GsubContractionExecLimits{
+    pub expansion:GsubExpansionExecLimits,
+    pub max_removed:usize,
+}
+impl Default for GsubContractionExecLimits{
+    fn default()->Self{Self{expansion:Default::default(),max_removed:4*1024*1024}}
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubContractionExecResult{
+    pub expansion:GsubExpansionExecResult,
+    pub ligatures:usize,
+    pub removed_glyphs:usize,
+    pub skipped_actions:usize,
+}
+const CONSUMED:usize=usize::MAX;
+#[derive(Default)]
+struct ContractionWork{ligatures:usize,removed:usize,skipped:usize}
 #[derive(Default)]
 struct ExpansionWork{matches:usize,inserted:usize,edits:usize}
 struct Frame{
@@ -61,6 +82,8 @@ struct State<'a>{
     active:Vec<Frame>,
     expansion:Option<GsubExpansionExecLimits>,
     work:ExpansionWork,
+    contraction:Option<GsubContractionExecLimits>,
+    shrink:ContractionWork,
     limits:GsubContextExecLimits,
 }
 impl State<'_>{
@@ -84,7 +107,7 @@ impl State<'_>{
             for frame in &mut self.active{
                 if frame.start>p{frame.start+=delta;}
                 if frame.end>p{frame.end+=delta;}
-                for at in &mut frame.positions{if *at>p{*at+=delta;}}
+                for at in &mut frame.positions{if *at!=CONSUMED&&*at>p{*at+=delta;}}
             }
         }
         self.matched()?;
@@ -92,6 +115,49 @@ impl State<'_>{
         self.result.changes+=usize::from(seq!=[self.result.glyphs[p]]);
         self.result.glyphs.splice(p..p+1,seq.iter().copied());
         Ok(p+seq.len())
+    }
+    // Positions are sorted matched physical indices, including the first.
+    // Compact once; preserve every ignored glyph in its original order.
+    fn contract(&mut self,positions:&[usize],output:u16)->Result<usize,Error>{
+        let l=self.contraction.ok_or(Error::Unsupported("gsub contextual contraction"))?;
+        let p=positions[0];
+        let removed=&positions[1..];
+        let last=*positions.last().unwrap();
+        charge(&mut self.shrink.removed,removed.len(),l.max_removed,"gsub contraction removed")?;
+        // Charge one ligature write, the full scanned suffix, and
+        // each removal/anchor comparison (conservative linear bound).
+        let cap=l.expansion.max_edit_work;
+        charge(&mut self.work.edits,self.result.glyphs.len()-p,cap,"gsub contraction edit work")?;
+        for frame in &self.active{
+            let cost=(frame.positions.len()+2).checked_mul(removed.len())
+                .ok_or(Error::Limit("gsub contraction edit work"))?;
+            charge(&mut self.work.edits,cost,cap,"gsub contraction edit work")?;
+        }
+        self.matched()?;
+        self.shrink.ligatures+=1;
+        self.result.changes+=1;
+        for frame in &mut self.active{
+            let before=|at:usize|removed.partition_point(|&v|v<at);
+            // An active start is normally at or before this edit. If
+            // consumed, conservatively associate it with the ligature.
+            frame.start=if removed.binary_search(&frame.start).is_ok(){p}
+                else{frame.start-before(frame.start)};
+            frame.end-=before(frame.end);
+            for at in &mut frame.positions{
+                if *at==CONSUMED{continue;}
+                if removed.binary_search(at).is_ok(){*at=CONSUMED;}
+                else{*at-=before(*at);}
+            }
+        }
+        self.result.glyphs[p]=output;
+        let mut write=p+1;
+        let mut k=0;
+        for read in p+1..self.result.glyphs.len(){
+            if removed.get(k)==Some(&read){k+=1;}
+            else{self.result.glyphs[write]=self.result.glyphs[read];write+=1;}
+        }
+        self.result.glyphs.truncate(write);
+        Ok(last+1-removed.len())
     }
     fn eligible(&mut self,filter:&LookupFilter<'_>,p:usize)->Result<bool,Error>{
         tick(&mut self.result.filter_checks,self.limits.max_filter_checks,"gsub context filters")?;
@@ -197,6 +263,17 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                 state.result.glyphs[p]=v;
                 return Ok(Some(p+1));
             }
+        }else if let ExtensionTarget::Ligature(rule)=sub.target(){
+            let g=state.result.glyphs[p];
+            if let Some(rules)=rule.rules(g){
+                for rule in rules{
+                    state.rule()?;
+                    if let Some(positions)=state.match_tail(lookup.filter(),p,rule.remaining.len(),
+                        |i,v|v==rule.remaining[i])?{
+                        return state.contract(&positions,rule.output).map(Some);
+                    }
+                }
+            }
         }else if let ExtensionTarget::Multiple(rule)=sub.target(){
             let g=state.result.glyphs[p];
             if let Some(seq)=rule.substitute(g){return state.expand(p,seq).map(Some);}
@@ -221,6 +298,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                 tick(&mut state.result.actions,state.limits.max_actions,"gsub context actions")?;
                 let at=*state.active[frame].positions.get(action.sequence_index as usize)
                     .ok_or(Error::Invalid("gsub context action position"))?;
+                if at==CONSUMED{state.shrink.skipped+=1;continue;}
                 apply_at(program,action.lookup_index,at,state)?;
             }
             return Ok(Some(state.active[frame].end));
@@ -239,7 +317,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
 /// No output is returned on error; no variable-length or cluster edits.
 pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,None,limits,None).map(|r|r.execution)
+    execute_context_inner(program,glyphs,None,limits,None,None).map(|r|r.expansion.execution)
 }
 /// Length-preserving Type 1/3/5 execution. Require exactly one explicit
 /// zero-based choice for every reachable effective Type 3 lookup,
@@ -248,7 +326,7 @@ pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
 /// choice fails atomically rather than falling through to later subtables.
 pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None).map(|r|r.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None).map(|r|r.expansion.execution)
 }
 /// Execute Type 1/2/3/5 roots and reachable targets, including Type 7
 /// wrappers. Nonempty expansion preserves the first replacement as the
@@ -257,11 +335,20 @@ pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,gly
 /// No deletion, ligature contraction, cluster or feature-mask propagation.
 pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubExpansionExecLimits)->Result<GsubExpansionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits))
+    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None).map(|r|r.expansion)
+}
+/// Execute Type 1/2/3/4/5 (direct or wrapped) roots and dependencies.
+/// A ligature retains its first anchor and tombstones consumed trailing
+/// anchors; actions referencing tombstones count as actions but do not
+/// call their targets. Other positions and exclusive boundaries rebase.
+/// No cluster/mark component metadata or feature-mask propagation.
+pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits))
 }
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits,
-    expansion:Option<GsubExpansionExecLimits>)->Result<GsubExpansionExecResult,Error>{
+    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>)->Result<GsubContractionExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
         ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
@@ -274,6 +361,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
         match lookup.effective_kind(){
             1|5=>{},
             2 if expansion.is_some()=>{},
+            4 if contraction.is_some()=>{},
             3 if selections.is_some()=>{
                 let choice=iter.next().ok_or(Error::Invalid("gsub context alternate missing"))?;
                 if choice.lookup_index!=lookup.index(){return Err(Error::Invalid("gsub context alternate order or lookup"));}
@@ -282,7 +370,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
         }
     }
     if iter.next().is_some(){return Err(Error::Invalid("gsub context alternate extra"));}
-    let mut state=State{choices,result:Default::default(),active:Vec::new(),limits,expansion,work:Default::default()};
+    let mut state=State{choices,result:Default::default(),active:Vec::new(),limits,expansion,work:Default::default(),contraction,shrink:Default::default()};
     state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
     state.result.glyphs.extend_from_slice(glyphs);
     for &id in program.roots(){
@@ -291,6 +379,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
             p=apply_at(program,id,p,&mut state)?.unwrap_or(p+1);
         }
     }
-    Ok(GsubExpansionExecResult{execution:state.result,multiple_matches:state.work.matches,
-        inserted_glyphs:state.work.inserted,edit_work:state.work.edits})
+    Ok(GsubContractionExecResult{expansion:GsubExpansionExecResult{execution:state.result,
+        multiple_matches:state.work.matches,inserted_glyphs:state.work.inserted,edit_work:state.work.edits},
+        ligatures:state.shrink.ligatures,removed_glyphs:state.shrink.removed,skipped_actions:state.shrink.skipped})
 }

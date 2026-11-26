@@ -327,3 +327,101 @@ fn expansion_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[Gsu
     assert_eq!(a.execution,execute_gsub_context(&p,&[10,9],Default::default()).unwrap());
     assert_eq!((a.multiple_matches,a.inserted_glyphs,a.edit_work),(0,0,0));
 }
+
+
+fn lig(g:u16,out:u16,tail:&[u16])->Vec<u16>{
+    let mut w=vec![1,8,1,14,1,1,g,1,4,out,tail.len() as u16+1];
+    w.extend_from_slice(tail);w
+}
+fn contraction_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubContractionExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_context_with_contraction(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn context_contraction_consumed_anchor_skips_later_action(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11])]),(1,1,0,vec![single(15,21),single(20,22)]),
+        (5,5,0,vec![ctx3(&[10,11,15],&[(0,0),(1,1),(2,1),(0,1)])])]);
+    let a=contraction_run(&b,&[2],&[10,11,15,9],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![22,21,9]);
+    assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions),(1,1,1));
+    assert_eq!((a.expansion.execution.actions,a.expansion.execution.matches,a.expansion.execution.changes),(4,4,3));
+}
+#[test]fn context_contraction_all_formats_and_wrappers(){
+    for sub in [ctx1(10,&[11],&[(0,0)]),ctx2(&[(0,0)]),ctx3(&[10,11],&[(0,0)])]{
+        let b=fixture(&[(7,4,0,vec![lig(10,20,&[11])]),(7,5,0,vec![sub])]);
+        assert_eq!(contraction_run(&b,&[1],&[10,11,10,11],None,&[]).expansion.execution.glyphs,vec![20,20]);
+    }
+}
+#[test]fn context_contraction_filtered_gaps_preserve_surviving_anchors(){
+    let g=gdef();
+    let b=fixture(&[(4,4,LOOKUP_IGNORE_MARK,vec![lig(10,20,&[11,15])]),
+        (1,1,0,vec![single(13,21),single(9,22)]),
+        (5,5,0,vec![ctx3(&[10,13,11,12,15,9],&[(0,0),(1,1),(2,1),(4,1),(5,1)])])]);
+    let a=contraction_run(&b,&[2],&[10,13,11,12,15,9],Some(&g),&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![20,21,12,22]);
+    assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions),(1,2,2));
+}
+#[test]fn context_contraction_rebases_every_frame(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11])]),(1,1,0,vec![single(15,21)]),
+        (5,5,0,vec![ctx3(&[10,11,15],&[(0,0),(2,1)])]),
+        (5,5,0,vec![ctx3(&[9,10,11,15],&[(1,2),(2,1),(3,1)])])]);
+    let a=contraction_run(&b,&[3],&[9,10,11,15,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,15]);
+    assert_eq!((a.expansion.execution.peak_depth,a.skipped_actions,a.removed_glyphs),(3,1,1));
+}
+#[test]fn context_contraction_then_expansion_preserves_tombstones(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11])]),(2,2,0,vec![alt(20,&[21,22])]),
+        (3,3,0,vec![alt(15,&[23,24])]),
+        (5,5,0,vec![ctx3(&[10,11,15],&[(0,0),(0,1),(1,2),(2,2)])])]);
+    let a=contraction_run(&b,&[3],&[10,11,15],None,&[choice(2,1)]);
+    assert_eq!(a.expansion.execution.glyphs,vec![21,22,24]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.skipped_actions),(1,1,1));
+}
+#[test]fn context_expansion_then_contraction_preserves_later_anchor(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(4,4,0,vec![lig(20,22,&[21,11])]),
+        (1,1,0,vec![single(15,23)]),(5,5,0,vec![ctx3(&[10,11,15],&[(0,0),(0,1),(1,2),(2,2)])])]);
+    let a=contraction_run(&b,&[3],&[10,11,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![22,23]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.skipped_actions),(1,2,1));
+}
+#[test]fn context_contraction_root_order_and_no_cascade(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11]),lig(20,21,&[15])]),
+        (1,1,0,vec![single(20,22)])]);
+    let a=contraction_run(&b,&[0,1],&[10,11,15,20,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![22,15,21]);assert_eq!(a.ligatures,2);
+}
+#[test]fn context_contraction_crosses_parent_end(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11,15])]),(1,1,0,vec![single(9,22)]),
+        (5,5,0,vec![ctx1(10,&[],&[(0,0)]),ctx1(9,&[],&[(0,1)])])]);
+    let a=contraction_run(&b,&[2],&[10,11,15,9],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![20,22]);
+    assert_eq!((a.ligatures,a.removed_glyphs),(1,2));
+}
+#[test]fn context_contraction_exact_limits(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11])]),(5,5,0,vec![ctx3(&[10,11],&[(0,0),(1,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let input=[10,11];
+    let l=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{
+        context:GsubContextExecLimits{max_glyphs:2,max_roots:1,max_lookups:2,max_depth:2,
+            max_calls:2,max_probes:2,max_filter_checks:4,max_rules:2,max_symbols:3,max_actions:2,max_matches:2},
+        max_inserted:0,max_edit_work:8},max_removed:1};
+    let a=execute_gsub_context_with_contraction(&p,&input,&[],l).unwrap();
+    assert_eq!(a.expansion.execution.glyphs,vec![20]);
+    assert_eq!((a.expansion.edit_work,a.skipped_actions),(8,1));
+    for bad in [GsubContractionExecLimits{max_removed:0,..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_edit_work:7,..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_actions:1,..l.expansion.context},..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_symbols:2,..l.expansion.context},..l.expansion},..l}]{
+        assert!(matches!(execute_gsub_context_with_contraction(&p,&input,&[],bad),Err(Error::Limit(_))));
+        assert_eq!(input,[10,11]);
+    }
+}
+#[test]fn context_contraction_legacy_rejection_and_expansion_parity(){
+    let b=fixture(&[(4,4,0,vec![lig(10,20,&[11])]),(5,5,0,vec![ctx1(10,&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_context_with_expansion(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(5,5,0,vec![ctx1(10,&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let a=execute_gsub_context_with_contraction(&p,&[10,9],&[],Default::default()).unwrap();
+    assert_eq!(a.expansion,execute_gsub_context_with_expansion(&p,&[10,9],&[],Default::default()).unwrap());
+    assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions),(0,0,0));
+}
