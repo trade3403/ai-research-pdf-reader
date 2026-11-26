@@ -139,3 +139,85 @@ fn alternate(a:u16)->Vec<u16>{vec![1,8,1,14,1,1,a,2,11,12]}
     assert_eq!(l.work(),4);
     assert!(matches!(execute_gsub_with_direct_provenance(&p,&run,&choices,Default::default(),ProvenanceLimits{max_work:3,..exact}),Err(Error::Limit(_))));
 }
+
+fn context3(input:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![3,input.len() as u16,actions.len() as u16];
+    w.resize(3+input.len(),0);
+    for &(p,l) in actions{w.extend([p,l]);}
+    for (i,&g) in input.iter().enumerate(){w[3+i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn chain3(back:&[u16],input:&[u16],ahead:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![3];let mut slots=Vec::new();
+    for seq in [back,input,ahead]{w.push(seq.len() as u16);for &g in seq{slots.push((w.len(),g));w.push(0);}}
+    w.push(actions.len() as u16);
+    for &(p,l) in actions{w.extend([p,l]);}
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn reverse8(g:u16,out:u16,back:&[u16],ahead:&[u16])->Vec<u16>{
+    let mut w=vec![1,0,back.len() as u16];let mut slots=Vec::new();
+    for &g in back{slots.push((w.len(),g));w.push(0);}
+    w.push(ahead.len() as u16);
+    for &g in ahead{slots.push((w.len(),g));w.push(0);}
+    w.extend([1,out]);w[1]=(w.len()*2) as u16;w.extend([1,1,g]);
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn full_tracked(p:&CompiledGsubProgram<'_>,run:&SourceRun)->(GsubProgramExecResult,ProvenanceLedger){
+    let (result,l)=execute_gsub_program_with_provenance(p,run,&[],Default::default(),Default::default()).unwrap();
+    let input:Vec<_>=run.glyphs().iter().map(|g|g.glyph_id).collect();
+    assert_eq!(result,execute_gsub_program(p,&input,&[],Default::default()).unwrap());
+    (result,l)
+}
+fn source_sets(l:&ProvenanceLedger)->Vec<Vec<usize>>{l.glyphs().iter().map(|g|g.sources().to_vec()).collect()}
+#[test]fn nested_growth_rebases_sources(){
+    let (run,n)=run("AB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=fixture(&[(2,2,multiple(a)),(1,1,single(b,20)),(5,5,context3(&[a,b],&[(0,0),(1,1)]))]);
+    let p=compile_gsub_program(&bytes,&[2],n,None,Default::default()).unwrap();
+    let (result,l)=full_tracked(&p,&run);
+    assert_eq!(result.expansion.execution.glyphs,vec![11,12,20]);
+    assert_eq!(source_sets(&l),vec![vec![0],vec![0],vec![1]]);
+    assert!(execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),Default::default()).is_err());
+}
+#[test]fn nested_contraction_skips_consumed_sources(){
+    let (run,n)=run("ABC");let g:Vec<_>=run.glyphs().iter().map(|g|g.glyph_id).collect();
+    let bytes=fixture(&[(4,4,ligature(g[0],g[1],20)),(1,1,single(g[2],21)),(5,5,context3(&g,&[(0,0),(1,1),(2,1)]))]);
+    let p=compile_gsub_program(&bytes,&[2],n,None,Default::default()).unwrap();
+    let (result,l)=full_tracked(&p,&run);
+    assert_eq!(result.expansion.execution.glyphs,vec![20,21]);assert_eq!(result.skipped_actions,1);
+    assert_eq!(source_sets(&l),vec![vec![0,1],vec![2]]);
+}
+#[test]fn chained_conditions_do_not_contribute_sources(){
+    let (run,n)=run("ABC");let g:Vec<_>=run.glyphs().iter().map(|g|g.glyph_id).collect();
+    let bytes=fixture(&[(2,2,multiple(g[1])),(7,6,chain3(&g[..1],&g[1..2],&g[2..],&[(0,0)]))]);
+    let p=compile_gsub_program(&bytes,&[1],n,None,Default::default()).unwrap();
+    let (result,l)=full_tracked(&p,&run);
+    assert_eq!(result.expansion.execution.glyphs,vec![g[0],11,12,g[2]]);
+    assert_eq!(source_sets(&l),vec![vec![0],vec![1],vec![1],vec![2]]);
+}
+#[test]fn reverse_root_cascade_keeps_each_source(){
+    let (run,n)=run("AAAB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[3].glyph_id;
+    for kind in [8,7]{
+        let bytes=fixture(&[(kind,8,reverse8(a,b,&[],&[b]))]);
+        let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+        let (result,l)=full_tracked(&p,&run);
+        assert_eq!(result.expansion.execution.glyphs,vec![b,b,b,b]);
+        assert_eq!(source_sets(&l),vec![vec![0],vec![1],vec![2],vec![3]]);
+    }
+}
+#[test]fn reverse_nested_action_after_growth(){
+    let (run,n)=run("ABC");let g:Vec<_>=run.glyphs().iter().map(|g|g.glyph_id).collect();
+    let bytes=fixture(&[(2,2,multiple(g[0])),(8,8,reverse8(g[1],20,&[12],&[g[2]])),(5,5,context3(&g,&[(0,0),(1,1)]))]);
+    let p=compile_gsub_program(&bytes,&[2],n,None,Default::default()).unwrap();
+    let (result,l)=full_tracked(&p,&run);
+    assert_eq!(result.expansion.execution.glyphs,vec![11,12,20,g[2]]);
+    assert_eq!(source_sets(&l),vec![vec![0],vec![0],vec![1],vec![2]]);
+}
+#[test]fn nested_provenance_budget_atomic(){
+    let (run,n)=run("AB");let before=run.clone();let a=run.glyphs()[0].glyph_id;
+    let bytes=fixture(&[(2,2,multiple(a)),(5,5,context3(&[a],&[(0,0)]))]);
+    let p=compile_gsub_program(&bytes,&[1],n,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_program_with_provenance(&p,&run,&[],Default::default(),ProvenanceLimits{max_refs:2,..Default::default()}),Err(Error::Limit(_))));
+    assert_eq!(run,before);
+}

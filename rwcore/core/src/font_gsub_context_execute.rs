@@ -359,7 +359,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                         .ok_or(Error::Invalid("gsub reverse replacement index"))?;
                     state.matched()?;
                     state.result.changes+=usize::from(output!=g);
-                    state.result.glyphs[p]=output;
+                    state.replace_one(p,output)?;
                     return Ok(Some(p+1));
                 }
             }
@@ -561,6 +561,16 @@ pub fn execute_gsub_with_direct_provenance(program:&CompiledGsubProgram<'_>,run:
     if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1..=4)){
         return Err(Error::Unsupported("gsub provenance reachable kind"));
     }
+    execute_gsub_program_with_provenance(program,run,choices,limits,source_limits)
+}
+
+/// Execute all supported GSUB effective kinds with exact scalar source
+/// sets. Context conditions do not contribute sources; only actual
+/// replacement components do. Nested actions use live physical positions.
+/// The same scheduler, counters and limits apply as the untracked API.
+pub fn execute_gsub_program_with_provenance(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits)
+    ->Result<(GsubProgramExecResult,crate::ProvenanceLedger),Error>{
     if run.glyphs().len()>limits.expansion.context.max_glyphs{
         return Err(Error::Limit("gsub provenance input"));
     }
