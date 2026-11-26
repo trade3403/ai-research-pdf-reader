@@ -309,7 +309,7 @@ mod tests {
         ));
         fs::create_dir(&root).unwrap();
         let a = entry(Version(1, 0, 0), Precision::Fp32);
-                    assert_eq!(a.verify_directory(&root), Err(Error::Integrity));
+        assert_eq!(a.verify_directory(&root), Err(Error::Integrity));
         fs::write(root.join("weights.bin"), b"abc").unwrap();
         assert_eq!(a.verify_directory(&root), Ok(()));
         fs::write(root.join("extra.bin"), b"abc").unwrap();
