@@ -81,8 +81,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4c4c | Bounded static dependency closure and cycle diagnostics | Verified |
 | C4.4c4d | Real-font dependency closure references | Verified |
 | C4.4c5a | Bounded dependency compilation integration | Verified (#122) |
-| C4.4c5b | Real-font dependency program reference | Source implemented; CI pending |
-| C4.4d1a | Bounded actual single substitution execution with eligibility and root scheduling | Planned |
+| C4.4c5b | Real-font dependency program reference | Verified (#123) |
+| C4.4d1a | Bounded actual single substitution execution with eligibility and root scheduling | Source implemented; CI pending |
+| C4.4d1b | Independent real-font Type 1 execution reference | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

@@ -145,3 +145,5 @@
 - C4.4c5a: static program retains cycles, does not execute. Conservative suffix byte accounting, not memory measurement. Closure stack depth is not runtime recursion bound. Real program reference pending.
 
 - C4.4c5b: reference tests use seven existing fixtures, representative root selections and at most one default and explicit language plan per font. Typed payload equality is not independent shaping semantics. Exact budgets tested for all seven; one-less aggregate limits checked on small fixtures. Static reachability is not runtime execution safety; native Type 8, real point attachment, actual filtered substitution, GPOS, corpus and security/license gates remain outstanding.
+
+- C4.4d1a: single substitution only; input is a caller-provided logical glyph stream, no Unicode mapping, clusters, script-specific staging, masks, mixed-type roots or nested execution. Probe counts are subtable queries, not individual coverage comparisons; no independent real-font execution reference yet. No full shaping or Word compatibility claim.

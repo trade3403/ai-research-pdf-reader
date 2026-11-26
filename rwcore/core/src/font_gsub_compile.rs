@@ -159,12 +159,14 @@ pub struct GsubProgramLimits{
 /// Dependency-only targets are available by original LookupList index.
 #[derive(Debug,Clone)]
 pub struct CompiledGsubProgram<'a>{
+    glyph_count:u32,
     roots:Vec<u16>,
     lookups:Vec<CompiledGsubLookup<'a>>,
     dependencies:Vec<GsubDependency>,
     closure:GsubDependencyClosure,
 }
 impl<'a> CompiledGsubProgram<'a>{
+    pub fn glyph_count(&self)->u32{self.glyph_count}
     pub fn roots(&self)->&[u16]{&self.roots}
     pub fn lookups(&self)->&[CompiledGsubLookup<'a>]{&self.lookups}
     pub fn lookup(&self,id:u16)->Option<&CompiledGsubLookup<'a>>{
@@ -222,7 +224,7 @@ fn compile_program<'a>(b:&[u8],layout:&GsubLayout,roots:&[u16],glyph_count:u32,
     edges.sort_by_key(|e|e.site.lookup_index);
     let closure=analyze_gsub_dependency_closure(n,&sources,&edges,roots,l.closure)?;
     if !closure.is_complete()||closure.reachable!=sources{return Err(Error::Invalid("gsub program incomplete"));}
-    Ok(CompiledGsubProgram{roots:roots.to_vec(),lookups:compiled.into_values().collect(),dependencies:edges,closure})
+    Ok(CompiledGsubProgram{glyph_count,roots:roots.to_vec(),lookups:compiled.into_values().collect(),dependencies:edges,closure})
 }
 pub fn compile_gsub_program<'a>(b:&[u8],roots:&[u16],glyph_count:u32,gdef:Option<&'a Gdef>,
     l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
