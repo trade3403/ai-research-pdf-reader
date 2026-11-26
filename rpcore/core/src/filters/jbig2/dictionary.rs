@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Includes direct Huffman/arithmetic symbols and bounded PDF dictionary execution; refinement and cross-dictionary context reuse pending.
+//! Includes direct Huffman/arithmetic symbols, bounded dictionary execution and direct arithmetic context reuse; refinement pending.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -130,7 +130,11 @@ pub fn plan(segment:&Segment,stream:&[u8],dependencies:&[(&Segment,&[u8])])->Res
     let context_source=if header.context_used{
         let d=last_header.ok_or(Error::Invalid("JBIG2 dictionary missing context source"))?;
         if !d.context_retained{return Err(Error::Invalid("JBIG2 dictionary context not retained"));}
-        // Context shape/availability is checked when actual reuse is implemented.
+        if d.huffman!=header.huffman||d.refine_aggregate!=header.refine_aggregate||d.template!=header.template||
+            d.refinement_template!=header.refinement_template||d.adaptive!=header.adaptive||
+            d.refinement_adaptive!=header.refinement_adaptive{
+            return Err(Error::Invalid("JBIG2 dictionary context parameters mismatch"));
+        }
         Some(dictionaries.last().unwrap().0)
     }else{None};
     let mut next=0usize;
@@ -775,7 +779,7 @@ mod collective_tests{
 
 /// Direct arithmetic dictionary: shared QM stream, separate IAx banks and
 /// a persistent generic pixel bank across all new symbols (T.88 6.5.8.1).
-/// Retained contexts from a different dictionary are not yet supported.
+/// Direct arithmetic GB context retention is scoped below; GR refinement pending.
 pub const MAX_ARITHMETIC_DECISIONS:usize=16_777_216;
 #[derive(Debug,Clone,Copy)]
 pub struct ArithmeticLimits{
@@ -823,9 +827,36 @@ pub fn decode_direct_symbol(width:u32,height:u32,neighborhood:&Neighborhood,
     Ok(image)
 }
 
+/// Immutable snapshot of GB statistics only. A direct dictionary never
+/// modifies GR statistics; refinement/aggregate modes remain unsupported.
+#[derive(Debug,PartialEq,Eq)]
+pub struct BitmapContextSnapshot{
+    neighborhood:Neighborhood,
+    contexts:Vec<super::qm::Context>,
+}
+impl BitmapContextSnapshot{
+    pub fn template(&self)->Template{self.neighborhood.template()}
+    pub fn entries(&self)->usize{self.contexts.len()}
+    pub fn nonzero_entries(&self)->usize{
+        self.contexts.iter().filter(|&&v|v!=super::qm::Context::default()).count()
+    }
+}
 pub fn decode_arithmetic_direct(plan:&Plan,stream:&[u8],limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
-    if plan.header.huffman||plan.header.refine_aggregate||plan.header.context_used||plan.header.context_retained{
+    if plan.header.context_used||plan.header.context_retained{
+        return Err(Error::Unsupported("JBIG2 direct dictionary requires context-aware entry"));
+    }
+    Ok(decode_arithmetic_with_context(plan,stream,limits,None)?.0)
+}
+/// Caller supplies the last referred dictionary's snapshot if and only if
+/// the context-used flag is set. Executor enforces provenance by segment ID.
+/// A new QM stream and all IAx banks start fresh even when GB is inherited.
+pub fn decode_arithmetic_with_context(plan:&Plan,stream:&[u8],limits:ArithmeticLimits,
+    initial:Option<&BitmapContextSnapshot>)->Result<(ArithmeticDictionary,Option<BitmapContextSnapshot>)>{
+    if plan.header.huffman||plan.header.refine_aggregate{
         return Err(Error::Unsupported("JBIG2 non-direct arithmetic dictionary"));
+    }
+    if plan.header.context_used!=initial.is_some(){
+        return Err(Error::Invalid("JBIG2 dictionary context presence"));
     }
     if plan.tables.is_some()||plan.header.selections.is_some(){
         return Err(Error::Invalid("JBIG2 arithmetic dictionary Huffman tables"));
@@ -845,11 +876,20 @@ pub fn decode_arithmetic_direct(plan:&Plan,stream:&[u8],limits:ArithmeticLimits)
     // Charge full input scan and context initialization before decoder creation.
     charge_work(&mut left,data.len() as u64)?;
     let count=plan.header.template.context_count();
+    if let Some(snapshot)=initial{
+        if snapshot.neighborhood!=neighborhood||snapshot.contexts.len()!=count{
+            return Err(Error::Invalid("JBIG2 bitmap snapshot parameters"));
+        }
+    }
     charge_work(&mut left,count as u64)?;
     let mut decoder=super::qm::Decoder::new(data,limits.decisions)?;
     let mut contexts=Vec::new();
     contexts.try_reserve_exact(count).map_err(|_|Error::Limit("JBIG2 symbol context allocation"))?;
-    contexts.resize(count,super::qm::Context::default());
+    if let Some(snapshot)=initial{
+        contexts.extend_from_slice(&snapshot.contexts);
+    }else{
+        contexts.resize(count,super::qm::Context::default());
+    }
     let mut banks=ArithmeticIntegers::default();
     let mut out=Vec::new();
     out.try_reserve_exact(plan.header.new_symbols as usize).map_err(|_|Error::Limit("JBIG2 dictionary symbols allocation"))?;
@@ -883,8 +923,9 @@ pub fn decode_arithmetic_direct(plan:&Plan,stream:&[u8],limits:ArithmeticLimits)
     })?;
     // Explicit FF AC was required on initialization; marker fill is not an
     // authentication mechanism or proof of all intended encoded decisions.
-    Ok(ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
-        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()})
+    let snapshot=if plan.header.context_retained{Some(BitmapContextSnapshot{neighborhood,contexts})}else{None};
+    Ok((ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
+        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()},snapshot))
 }
 
 #[cfg(test)]
@@ -993,6 +1034,7 @@ use std::collections::BTreeMap;
 
 pub const MAX_EXEC_DICTIONARIES:u32=4096;
 pub const MAX_EXEC_SLOTS:usize=2*MAX_SYMBOLS as usize;
+pub const MAX_EXEC_CONTEXT_ENTRIES:usize=1_048_576;
 #[derive(Debug,Clone,Copy)]
 pub struct ExecutionLimits{
     pub dictionaries:u32,
@@ -1005,12 +1047,14 @@ pub struct ExecutionLimits{
     pub work:u64,
     pub export_runs_per_dictionary:u32,
     pub decisions_per_dictionary:usize,
+    /// Total retained GB entries plus one active bank (not RSS).
+    pub context_entries:usize,
 }
 impl Default for ExecutionLimits{
     fn default()->Self{Self{dictionaries:MAX_EXEC_DICTIONARIES,new_symbols:MAX_SYMBOLS,
         symbol_slots:MAX_EXEC_SLOTS,pixels:bitmap::MAX_PIXELS,packed_bytes:bitmap::MAX_PACKED_BYTES,
         work:MAX_DICTIONARY_WORK,export_runs_per_dictionary:MAX_EXPORT_RUNS,
-        decisions_per_dictionary:MAX_ARITHMETIC_DECISIONS}}
+        decisions_per_dictionary:MAX_ARITHMETIC_DECISIONS,context_entries:MAX_EXEC_CONTEXT_ENTRIES}}
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct SymbolId(usize);
@@ -1028,6 +1072,9 @@ pub struct ExecutionStats{
     pub pixels:u64,
     pub packed_bytes:usize,
     pub work_used:u64,
+    pub retained_contexts:u32,
+    pub reused_contexts:u32,
+    pub peak_context_entries:usize,
 }
 #[derive(Debug,PartialEq,Eq)]
 pub struct DictionarySet{
@@ -1058,7 +1105,7 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
         limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
         limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
         limits.export_runs_per_dictionary>MAX_EXPORT_RUNS||
-        limits.decisions_per_dictionary>MAX_ARITHMETIC_DECISIONS{
+        limits.decisions_per_dictionary>MAX_ARITHMETIC_DECISIONS||limits.context_entries>MAX_EXEC_CONTEXT_ENTRIES{
         return Err(Error::Limit("JBIG2 dictionary execution limits"));
     }
     let mut left=limits.work;
@@ -1067,6 +1114,8 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
     let inspected=super::inspect_pdf_streams(globals,page)?;
     let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
     let mut set=DictionarySet{arena:Vec::new(),exports:BTreeMap::new(),stats:ExecutionStats::default()};
+    let mut snapshots:BTreeMap<u32,BitmapContextSnapshot>=BTreeMap::new();
+    let mut retained_entries=0usize;
     for node in &inspected.graph{
         charge_work(&mut left,1)?;
         let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 dictionary graph node"))?;
@@ -1108,8 +1157,24 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
                 export_runs:limits.export_runs_per_dictionary})?;
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else{
-            let d=decode_arithmetic_direct(&plan,original,ArithmeticLimits{pixels,packed_bytes,work:left,
-                export_runs:limits.export_runs_per_dictionary,decisions:limits.decisions_per_dictionary})?;
+            let active=retained_entries.checked_add(plan.header.template.context_count())
+                .ok_or(Error::Limit("JBIG2 context entries"))?;
+            if active>limits.context_entries{return Err(Error::Limit("JBIG2 context entries"));}
+            let initial=match plan.context_source{
+                Some(id)=>Some(snapshots.get(&id).ok_or(Error::Invalid("JBIG2 missing retained context"))?),
+                None=>None,
+            };
+            let (d,snapshot)=decode_arithmetic_with_context(&plan,original,ArithmeticLimits{pixels,packed_bytes,work:left,
+                export_runs:limits.export_runs_per_dictionary,decisions:limits.decisions_per_dictionary},initial)?;
+            set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
+            if initial.is_some(){set.stats.reused_contexts+=1;}
+            if let Some(snapshot)=snapshot{
+                retained_entries=active;
+                if snapshots.insert(segment.number,snapshot).is_some(){
+                    return Err(Error::Invalid("JBIG2 duplicate context snapshot"));
+                }
+                set.stats.retained_contexts+=1;
+            }
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         };
         charge_work(&mut left,work)?;
@@ -1255,9 +1320,9 @@ mod executor_tests{
         let mut bad=TWO.to_vec();bad.pop();
         let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
         assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
-        let mut bad=TWO.to_vec();bad[0]|=2; // context retention unsupported
+        let mut bad=TWO.to_vec();bad[0]|=1; // reuse without a referred dictionary
         let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
-        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn executor_empty_and_non_dictionary_scope(){
@@ -1270,5 +1335,117 @@ mod executor_tests{
         let d=execute_pdf_dictionaries(&[],&p,ExecutionLimits::default()).unwrap();
         assert_eq!(d.dictionary(2),Some(&[][..]));assert!(d.dictionary(3).is_none());
         assert_eq!(d.stats().packed_bytes,0);
+    }
+}
+
+
+#[cfg(test)]
+mod retained_context_tests{
+    use super::*;
+    // Official H.1 segment 9, with retained flag set. The entropy is
+    // unchanged: retaining statistics cannot change decoding.
+    const SOURCE:&[u8]=&[10,0,2,255,0,0,0,2,0,0,0,2,0x4f,0xe7,0x8c,0x20,0x0e,0x1d,0xc7,0xcf,1,0x11,0xc4,0xb2,0x6f,255,172];
+    // Offline JS Annex E decoder/readback searched deterministic short
+    // entropy vectors against source statistics; this is a synthetic
+    // decode vector, not an independently encoded conformance file.
+    // DH=1, DW=3, pixels 110, OOB, export runs 0,3.
+    const CHILD:&[u8]=&[9,0,2,255,0,0,0,3,0,0,0,1,145,79,6,25,255,172];
+    fn make_plan(data:&[u8],imported:u32)->Plan{
+        let (header,_)=parse(data).unwrap();
+        let start=header.data_offset;
+        Plan{header,imported,dictionaries:vec![],tables:None,context_source:None,encoded:start..data.len()}
+    }
+    fn seg(id:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,id,kind,(refs.len()as u8)<<5];
+        v.extend(refs);v.push(page);v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn info(id:u8)->Vec<u8>{
+        let mut data=Vec::new();for n in [20u32,20,300,300]{data.extend(n.to_be_bytes());}
+        data.extend([0,0,0]);seg(id,48,1,&[],&data)
+    }
+    fn fixture()->(Vec<u8>,Vec<u8>){
+        let g=seg(1,0,0,&[],SOURCE);
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],CHILD));(g,p)
+    }
+    #[test]
+    fn retained_official_source_snapshot(){
+        let (d,s)=decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),None).unwrap();
+        let s=s.unwrap();assert_eq!(s.template(),Template::T2);
+        assert_eq!((s.entries(),s.nonzero_entries()),(1024,38));
+        assert_eq!(d.new_symbols[0].packed(),[120,132,128,128,132,120]);
+        assert_eq!(d.new_symbols[1].packed(),[120,4,124,132,132,124]);
+        let mut fresh=SOURCE.to_vec();fresh[0]&=!2;
+        let (other,s)=decode_arithmetic_with_context(&make_plan(&fresh,0),&fresh,ArithmeticLimits::default(),None).unwrap();
+        assert_eq!(other,d);assert!(s.is_none());
+    }
+    #[test]
+    fn retained_nonzero_context_reference(){
+        let (_,s)=decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),None).unwrap();
+        let s=s.unwrap();
+        let p=make_plan(CHILD,2);
+        let (d,none)=decode_arithmetic_with_context(&p,CHILD,ArithmeticLimits::default(),Some(&s)).unwrap();
+        assert!(none.is_none());assert_eq!(d.exported_indices,[0,1,2]);
+        let b=&d.new_symbols[0];assert_eq!((b.width(),b.height()),(3,1));
+        assert_eq!(b.packed(),[192]);
+        assert_eq!(s.nonzero_entries(),38);
+        let mut fresh=CHILD.to_vec();fresh[0]&=!1;
+        assert!(decode_arithmetic_direct(&make_plan(&fresh,2),&fresh,ArithmeticLimits::default()).is_err());
+    }
+    #[test]
+    fn retained_reuse_and_retain_chain(){
+        let (g,_)=fixture();
+        let mut child=CHILD.to_vec();child[0]|=2;
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&child));
+        // Branch from the original source rather than mutating its snapshot.
+        p.extend(seg(4,0,1,&[1],CHILD));
+        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(d.stats().retained_contexts,2);assert_eq!(d.stats().reused_contexts,2);
+        assert_eq!(d.stats().peak_context_entries,3072);
+        assert_eq!(d.symbol(3,2).unwrap().packed(),[192]);
+        assert_eq!(d.symbol(4,2).unwrap().packed(),[192]);
+        assert!(std::ptr::eq(d.symbol(3,0).unwrap(),d.symbol(4,0).unwrap()));
+    }
+    #[test]
+    fn retained_executor_budget(){
+        let (g,p)=fixture();
+        let l=ExecutionLimits{context_entries:2048,..ExecutionLimits::default()};
+        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts,d.stats().peak_context_entries),(1,1,2048));
+        assert_eq!(d.stats().new_symbols,3);assert_eq!(d.stats().pixels,75);
+        assert_eq!(d.symbol(3,2).unwrap().packed(),[192]);
+        for n in [0,1023,2047,MAX_EXEC_CONTEXT_ENTRIES+1]{
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:n,..l}).is_err());
+        }
+    }
+    #[test]
+    fn retained_missing_and_mismatched_parameters(){
+        let (g,p)=fixture();
+        let mut source=SOURCE.to_vec();source[0]&=!2;
+        assert!(execute_pdf_dictionaries(&seg(1,0,0,&[],&source),&p,ExecutionLimits::default()).is_err());
+        for (index,byte) in [(0,13),(2,1)]{
+            let mut child=CHILD.to_vec();child[index]=byte;
+            let mut p=info(2);p.extend(seg(3,0,1,&[1],&child));
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        }
+        let (_,s)=decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),None).unwrap();
+        let s=s.unwrap();
+        let mut p=make_plan(CHILD,2);p.header.adaptive[0].x=1;
+        assert!(decode_arithmetic_with_context(&p,CHILD,ArithmeticLimits::default(),Some(&s)).is_err());
+    }
+    #[test]
+    fn retained_last_reference_not_any_reference(){
+        let mut g=seg(1,0,0,&[],SOURCE);
+        let mut no=SOURCE.to_vec();no[0]&=!2;
+        g.extend(seg(2,0,0,&[],&no));
+        let mut p=info(3);p.extend(seg(4,0,1,&[1,2],CHILD));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+    }
+    #[test]
+    fn retained_context_flag_and_snapshot_presence(){
+        let (_,s)=decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),None).unwrap();
+        let s=s.unwrap();
+        assert!(decode_arithmetic_with_context(&make_plan(CHILD,2),CHILD,ArithmeticLimits::default(),None).is_err());
+        assert!(decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),Some(&s)).is_err());
+        assert!(decode_arithmetic_direct(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default()).is_err());
     }
 }
