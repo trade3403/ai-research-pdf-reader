@@ -157,3 +157,6 @@ C4.4d6a pending CI; #138 verified 978/platform, 2934 total. Ten chained context 
 
 ## Latest checkpoint
 C4.4d6b pending CI; #139 verified 988/platform, 2964 total. Ten variable-length chained regressions, 998/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next native Type 6 execution reference only after CI passes.
+
+## Latest checkpoint
+C4.4d6c pending CI; #140 verified 998/platform, 2994 total. Seven native chained reference regressions, 1005/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next Type 8 reverse chained execution only after CI passes.

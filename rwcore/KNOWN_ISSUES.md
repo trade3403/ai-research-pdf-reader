@@ -179,3 +179,5 @@
 - C4.4d6a: length-preserving subset only, rejects reachable Type 2/4/8 even on empty input. Native Type 6 execution reference, variable-length integration, script staging, masks, clusters and full shaping equivalence outstanding. No external shaper comparison or performance benchmark.
 
 - C4.4d6b: explicit opt-in variable-length Type 6 execution using existing consumed-anchor skip policy and ancestor input boundaries. Descendants can inspect/edit outside ancestor input, so this is not a claim of external shaper equivalence. Native Type 6 execution reference, Type 8, cluster/mark-component metadata, feature masks, full script stages, performance and corpus/security acceptance outstanding.
+
+- C4.4d6c: native Type 6 inventory 9/9/35/52/103/218/1023 subtables (1449 total). Only closures within Type 1–6 execute; first candidate per Type 3, at most 64 individual witnesses per root, 16 concatenated witnesses, eight ordered roots. Static inventory is not actual matched-rule count; diagnostic execution counts not yet measured. No external shaper equivalence, Type 8 execution, clusters/masks or full shaping acceptance.
