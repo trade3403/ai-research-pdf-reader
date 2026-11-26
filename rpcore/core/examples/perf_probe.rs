@@ -42,7 +42,13 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
             let v=black_box(doc.page_text(p,MAX_CONTENT_BYTES)?);
             // Complete UTF-8 result construction is part of the operation.
             let mut output=String::new();
-            for g in &v.glyphs{output.push_str(g.unicode.as_deref().ok_or("unmapped glyph")?);}
+            for g in &v.glyphs{
+                let s=g.unicode.as_deref().ok_or("unmapped glyph")?;
+                for ch in s.chars().filter(|c|!c.is_whitespace()){
+                    use std::fmt::Write;
+                    writeln!(&mut output,"{}\t{}\t{}",u32::from(ch),g.origin[0],g.origin[1])?;
+                }
+            }
             let ns=t.elapsed().as_nanos();
             if !v.warnings.is_empty(){return Err("text warnings".into());}
             std::fs::write(&a[4],output)?;
