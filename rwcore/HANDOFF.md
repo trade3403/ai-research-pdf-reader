@@ -166,3 +166,6 @@ C4.4d8a pending CI; #141 verified 1005/platform, 3015 total. Ten reverse executi
 
 ## Latest checkpoint
 C4.4d8b pending CI; #142 verified 1015/platform, 3045 total. Ten full dispatch/reverse reference regressions, 1025/platform expected. Native positive Type 8 fixture absent. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next C4.4d8c native fixture/wrapper acceptance only after CI passes.
+
+## Latest checkpoint
+C4.4d8c pending CI; #143 verified 1025/platform, 3075 total. New OFL Noto Sans Mongolian native Type 8 fixture and all-wrapper regressions, 1028/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next bounded full GSUB execution acceptance/API consolidation only after CI passes.

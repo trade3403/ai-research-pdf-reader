@@ -2151,3 +2151,101 @@ fn empty_raw_gdef(n:usize)->RawGdef{RawGdef{class:vec![0;n],attachment:vec![0;n]
         assert_eq!(a.expansion.execution.glyphs,want);
     }
 }
+
+
+// C4.4d8c: native positive reverse fixture, unmodified upstream font.
+// Glyph IDs are obtained from the real Coverage and replacement tables.
+#[test]fn mongolian_native_reverse_positive(){
+    let font=include_bytes!("fixtures/notosansmongolian/NotoSansMongolian-Regular.ttf");
+    let n=u(table(font,b"maxp"),4);
+    assert_eq!(n,3715);assert_eq!(font.len(),388172);
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    let rawgd=RawGdef::read(gd,n);let g=parse_gdef(gd,n as u32,Default::default()).unwrap();
+    let rev=raw_reverse_roots(b,n);
+    assert_eq!(rev.len(),1);
+    let root=&rev[0];
+    assert_eq!((root.index,root.flags,root.subs.len()),(93,8,2));
+    assert_eq!(root.subs.iter().map(|s|(s.back.len(),s.ahead.len(),s.replacements.len())).collect::<Vec<_>>(),
+        vec![(0,2,1),(0,3,1)]);
+    let p=compile_gsub_program(b,&[root.index],n as u32,Some(&g),Default::default()).unwrap();
+    assert_eq!(p.closure().reachable,vec![93]);assert!(p.dependencies().is_empty());
+    let eligible:Vec<_>=(0..n as u16).filter(|&id|rawgd.eligible(id,root.flags,root.mark)).collect();
+    let ignored=(0..n as u16).find(|&id|!rawgd.eligible(id,root.flags,root.mark)).unwrap();
+    let mut combined:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+    let mut positive=0;
+    for sub in &root.subs{
+        for (&first,_) in &sub.replacements{
+            let mut witness:Vec<_>=sub.back.iter().rev().map(|c|eligible.iter().copied()
+                .find(|&id|c[id as usize]).expect("eligible backtrack")).collect();
+            assert!(rawgd.eligible(first,root.flags,root.mark));
+            witness.push(first);
+            witness.extend(sub.ahead.iter().map(|c|eligible.iter().copied()
+                .find(|&id|c[id as usize]).expect("eligible lookahead")));
+            let decorated:Vec<_>=witness.iter().flat_map(|&id|[ignored,id]).chain([ignored]).collect();
+            for input in [&witness,&decorated]{
+                let (want,peak)=full_reference(input,&rawgd,&[],&[],&[],&[],&rev,&[93]);
+                assert!(want.expansion.execution.matches>0,"native reverse witness must execute");
+                positive+=want.expansion.execution.matches;
+                exact_full(&p,input,&[],&want,peak);
+                combined.extend_from_slice(input);
+            }
+            // Every incomplete prefix and suffix is independently checked.
+            for i in 0..witness.len(){
+                for input in [&witness[..i],&witness[i+1..]]{
+                    let (want,peak)=full_reference(input,&rawgd,&[],&[],&[],&[],&rev,&[93]);
+                    exact_full(&p,input,&[],&want,peak);
+                }
+            }
+        }
+    }
+    assert!(positive>=4);
+    let (want,peak)=full_reference(&combined,&rawgd,&[],&[],&[],&[],&rev,&[93]);
+    assert!(want.expansion.execution.matches>0);
+    exact_full(&p,&combined,&[],&want,peak);
+    assert!(matches!(execute_gsub_chained_context_with_edits(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn all_extension_target_kinds_direct_wrapped_parity(){
+    // All seven legal effective kinds: same target bytes and flags,
+    // direct vs extension wrapper. Both nested and root invocations.
+    // A separate root Type 8 is included so the raw full oracle is used.
+    let specs=[
+        (1,1,0,vec![vec![2,8,1,20,1,1,10]]),
+        (2,2,0,vec![full_fixture_alt(20,&[21,22])]),
+        (3,3,0,vec![full_fixture_alt(21,&[23,24])]),
+        (4,4,0,vec![full_fixture_lig(23,25,&[22])]),
+        (5,5,0,vec![full_fixture_ctx3(&[10],&[(0,0),(0,1),(0,2),(0,3)])]),
+        (6,6,0,vec![full_fixture_chain3(&[9],&[10],&[15],&[(0,4)])]),
+        (8,8,0,vec![full_fixture_reverse8(&[(25,26)],&[9],&[15])]),
+    ];
+    let direct=full_fixture_fixture(&specs);
+    let gd=empty_raw_gdef(32);
+    let roots=[5,6];
+    let input=[9,10,15,9,10,15];
+    let expected=synthetic_full_compare(&direct,&gd,None,&roots,&input);
+    assert_eq!(expected.expansion.execution.glyphs,vec![9,26,15,9,26,15]);
+    assert_eq!((expected.expansion.inserted_glyphs,expected.removed_glyphs,expected.ligatures),(2,2,2));
+    // Every nonempty subset of seven wrappers, including the fully
+    // wrapped program and mixed direct/wrapped nested dependencies.
+    for mask in 1usize..128{
+        let mut wrapped=specs.clone();
+        for (i,spec) in wrapped.iter_mut().enumerate(){if mask&(1<<i)!=0{spec.0=7;}}
+        let bytes=full_fixture_fixture(&wrapped);
+        let actual=synthetic_full_compare(&bytes,&gd,None,&roots,&input);
+        assert_eq!(actual,expected,"wrapper mask {mask}");
+    }
+}
+#[test]fn wrapped_reverse_nested_point_and_root_parity(){
+    let direct=[
+        (8,8,0,vec![full_fixture_reverse8(&[(10,20)],&[],&[20])]),
+        (5,5,0,vec![full_fixture_ctx3(&[9,10],&[(1,0)])]),
+        (6,6,0,vec![full_fixture_chain3(&[9],&[10],&[20],&[(0,0)])]),
+    ];
+    let mut wrapped=direct.clone();for s in &mut wrapped{s.0=7;}
+    let gd=empty_raw_gdef(32);let input=[9,10,20,10,10,20];
+    for roots in [vec![0],vec![1],vec![2],vec![0,1,2]]{
+        let a=synthetic_full_compare(&full_fixture_fixture(&direct),&gd,None,&roots,&input);
+        let b=synthetic_full_compare(&full_fixture_fixture(&wrapped),&gd,None,&roots,&input);
+        assert_eq!(a,b);
+        assert_eq!(a.expansion.execution.glyphs,if roots.contains(&0){vec![9,20,20,20,20,20]}else{vec![9,20,20,10,10,20]});
+    }
+}

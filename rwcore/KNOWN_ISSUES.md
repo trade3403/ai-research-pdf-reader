@@ -185,3 +185,5 @@
 - C4.4d8a: reverse root and nested point invocation policy verified only by pending synthetic tests; native Type 8 reference and external shaper equivalence outstanding. Full lookup-type dispatch is not full shaping: no clusters, masks, script stages, feature variations or GPOS integration. No benchmark/corpus/security acceptance.
 
 - C4.4d8b: zero native Type 8 in current seven-font corpus; positive Type 8 tests are synthetic, native positive fixture still required. Native mixed dispatch uses selected roots, not language shaping or exhaustive native rules. No external engine equivalence, cluster/mark metadata, masks, FeatureVariations, GPOS, benchmark or full corpus/security acceptance.
+
+- C4.4d8c: previous native Type 8 absence addressed by original Noto Sans Mongolian fixture (2 native subtables, 3715 glyphs), pending positive execution CI. Only selected reverse lookup tested in that new font, not complete Mongolian shaping. All wrapper combinations are constructed test data, not native font schedules. No external equivalence, clusters, masks, FeatureVariations, GPOS, benchmark or corpus/security acceptance.

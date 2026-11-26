@@ -101,8 +101,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4d6b | Bounded Type 6 variable-length nested integration | Verified (#140) |
 | C4.4d6c | Independent native Type 6 mixed execution reference | Verified (#141) |
 | C4.4d8a | Bounded Type 8 reverse chained substitution execution | Verified (#142) |
-| C4.4d8b | Independent reverse execution and native mixed program reference (synthetic positive Type 8) | Source implemented; CI pending |
-| C4.4d8c | Licensed native Type 8 positive fixture and wrapper acceptance | Planned |
+| C4.4d8b | Independent reverse execution and native mixed program reference (synthetic positive Type 8) | Verified (#143) |
+| C4.4d8c | Licensed native Type 8 positive fixture and wrapper acceptance | Source implemented; CI pending |
+| C4.4d9 | Bounded full GSUB execution acceptance and API consolidation | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
