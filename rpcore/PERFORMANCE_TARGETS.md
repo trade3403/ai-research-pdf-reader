@@ -20,3 +20,17 @@ PDFium 仅限隔离 benchmark/test 工具，固定来源/版本并审计许可�
 - 新增原生 release `core/examples/perf_probe.rs`、独立 `corpus/pdfium_performance.py` 和 Linux `perf-pdfium` job。固定 pypdfium2 5.8.0（本地参考 PDFium 149.0.7825.0）及 Pillow 12.3.0，仅测试 venv；记录版本、库 SHA256 和许可声明/notice 哈希，不进入生产依赖。来源 https://pypi.org/project/pypdfium2/5.8.0/ 和 https://pypi.org/project/pillow/12.3.0/ 。
 - 原始合成矢量、TrueType、JPEG 三份 PDF；29 个场景：3 个打开及页信息、24 个四 DPI 冷/热文档渲染、2 个文本/字符原点。每场景 1 对预热 + 10 对测量，交替引擎；输出 report.json、trials.csv、report.md、代表性 PNG、构建/硬件/输入和库哈希。暂用 RGB MAE <=12、最大通道误差 >32 的像素比例 <=8%、同尺寸非全白，文本 ODo 与字符原点 <=1pt；任何失败、不稳定输出或未通过质量门槛的场景不产生比率。
 - 口径：输入已在内存，fresh document 非冷 OS 缓存；计时不含进程启动、磁盘 I/O、RGB 归一化；PDFium 含 Python/ctypes 包装开销，RSS 含整个进程，内部线程未单独测量。是探索基线而非原生同接口最终性能结论。暂未测真实论文、多页吞吐、索引搜索、Windows 实机；无已测 RPCore/PDFium 性能比率。需新 HEAD CI 全绿并阅读 perf-pdfium 结果后如实记录，必要时修复测量协议，之后回到 B11.3e3f。现有生产核心和 560/平台历史测试不变。
+
+## B-P0a 实测记录（CI #472，正式完成限定基准）
+HEAD 56946d71c9a1f6ebeabc7b60dbc246cdeeddc512，Run 45750135349，perf-pdfium job 139675648079；11/11 jobs、560/平台、1680 项通过，0 失败/忽略。29 场景中 25 合格，4 排除。原始报告/CSV/PNG artifact 15085626678：https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45750135349/artifacts/15085626678 ，165108 字节，SHA256 8db9338ab1adaa13331b6163a6d282bcea898a1d4fd6399f8a2ade2a2c078cfc。
+
+相对吞吐（PDFium=100%，实际 CI 日志四舍五入；每格 fresh/warm）：
+
+| DPI | 矢量 | TrueType | JPEG |
+|---|---:|---:|---:|
+| 96 | 5.47 / 3.95 | 14.30 / 5.98 | 排除 / 排除 |
+| 150 | 4.86 / 3.87 | 10.13 / 5.93 | 排除 / 排除 |
+| 200 | 4.89 / 3.80 | 7.98 / 4.99 | 26.86 / 12.66 |
+| 300 | 4.74 / 3.64 | 6.46 / 4.48 | 15.61 / 8.25 |
+
+打开及页信息：矢量 484.29%、文本 583.27%、图像 435.97%；文本及原点 fresh/warm 214.17/217.34%。渲染有效场景全未达 50% 基础目标。日志确认四个排除场景但未读取 ZIP 内报告，故不推断具体质量失败项，不声称核验绝对延迟/RSS。微型合成样本、Python 包装、不同实现成本等限制仍适用；这些数字不构成整体引擎领先结论。后续继续以同机配对、质量优先原则，先回归 B11.3e3f；B-P1 定位光栅热点、修复 JPEG 低 DPI 差异，之后再做 SIMD/并行/GPU 优化。保留原始基准及门槛。
