@@ -1,5 +1,5 @@
 //! T.88 (2000) 6.3.5.2–6.3.5.6, Figures 12–16.
-//! Generic refinement context geometry only. No arithmetic decisions yet.
+//! Generic refinement geometry and bounded native QM pixel reconstruction.
 use crate::{Error,Result};
 use super::{bitmap::Bitmap,generic::Offset};
 
@@ -202,5 +202,204 @@ mod tests{
                 assert_eq!(n.context(&dst,&src,1,1,dx,dy).unwrap(),4096|2048|512);
             }
         }
+    }
+}
+
+
+/// T.88 6.3.5.6: GR statistics are independent of GB and integer banks.
+/// A caller may reuse this bank and a QM stream across multiple bitmaps.
+/// Each bitmap resets LTP; moving AT slots does not change their identities.
+use super::{bitmap, qm::{Context,Decoder}};
+pub const MAX_REFINEMENT_WORK:u64=200_000_000;
+pub const MAX_REFINEMENT_DECISIONS:usize=16_777_216;
+
+#[derive(Debug,PartialEq,Eq)]
+pub struct ContextBank{template:Template,entries:Vec<Context>}
+impl ContextBank{
+    pub fn new(template:Template)->Result<Self>{
+        let mut entries=Vec::new();
+        entries.try_reserve_exact(template.context_count()).map_err(|_|Error::Limit("JBIG2 GR context allocation"))?;
+        entries.resize(template.context_count(),Context::default());
+        Ok(Self{template,entries})
+    }
+    pub fn template(&self)->Template{self.template}
+    pub fn entries(&self)->&[Context]{&self.entries}
+    pub fn reset(&mut self){self.entries.fill(Context::default());}
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct RefinementOptions{
+    pub width:u32,pub height:u32,pub dx:i64,pub dy:i64,pub typical_prediction:bool,
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct RefinementStats{
+    pub explicit_pixels:u64,pub implicit_pixels:u64,pub typical_rows:u32,
+    pub decisions:usize,pub work_bound:u64,
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedRefinement{pub bitmap:Bitmap,pub stats:RefinementStats}
+
+/// Conservative upper bound: every pixel could require full context sampling,
+/// a write and (with TPGR) ten reference samples; each row may decode SLTP.
+/// This is an algorithmic work unit, not elapsed time or RSS.
+pub fn work_bound(template:Template,opt:RefinementOptions)->Result<u64>{
+    let area=u64::from(opt.width)*u64::from(opt.height);
+    if opt.width==0||opt.height==0{return Err(Error::Invalid("JBIG2 refinement dimensions"));}
+    if opt.width>bitmap::MAX_SIDE||opt.height>bitmap::MAX_SIDE||area>bitmap::MAX_PIXELS{
+        return Err(Error::Limit("JBIG2 refinement dimensions"));
+    }
+    let bytes=u64::from(opt.width).div_ceil(8)*u64::from(opt.height);
+    if bytes>bitmap::MAX_PACKED_BYTES as u64{return Err(Error::Limit("JBIG2 refinement packed bytes"));}
+    let per=template.bits()as u64+1+if opt.typical_prediction{10}else{0};
+    area.checked_mul(per).and_then(|v|v.checked_add(if opt.typical_prediction{u64::from(opt.height)}else{0}))
+        .ok_or(Error::Limit("JBIG2 refinement work"))
+}
+
+/// Decode one bitmap on a shared arithmetic stream. Dimension/template/work
+/// checks precede mutation; errors during decoding may advance bank and stream.
+/// Implicit pixels do not consume decisions or update GR statistics. The SLTP
+/// bit shares the GR bank with explicit pixels. No row copying.
+pub fn decode_bitmap(src:&Bitmap,neighborhood:&Neighborhood,opt:RefinementOptions,
+    bank:&mut ContextBank,decoder:&mut Decoder<'_>,work_limit:u64)->Result<DecodedRefinement>{
+    let template=neighborhood.template();
+    if bank.template!=template{return Err(Error::Invalid("JBIG2 GR context template"));}
+    let work=work_bound(template,opt)?;
+    if work>work_limit.min(MAX_REFINEMENT_WORK){return Err(Error::Limit("JBIG2 refinement work"));}
+    let mut image=Bitmap::new(opt.width,opt.height,false)?;
+    let mut stats=RefinementStats{explicit_pixels:0,implicit_pixels:0,typical_rows:0,decisions:0,work_bound:work};
+    let mut ltp=false;
+    for y in 0..opt.height{
+        if opt.typical_prediction{
+            let sltp=decoder.decode(&mut bank.entries[template.sltp_context()])?!=0;
+            stats.decisions+=1;
+            ltp^=sltp;
+            if ltp{stats.typical_rows+=1;}
+        }
+        for x in 0..opt.width{
+            let predicted=if ltp{typical_pixel(src,x,y,opt.dx,opt.dy)}else{None};
+            let bit=if let Some(v)=predicted{
+                stats.implicit_pixels+=1;v
+            }else{
+                let cx=neighborhood.context(&image,src,x,y,opt.dx,opt.dy)?;
+                let v=decoder.decode(&mut bank.entries[cx])?!=0;
+                stats.explicit_pixels+=1;
+                stats.decisions+=1;v
+            };
+            image.set(x,y,bit)?;
+        }
+    }
+    Ok(DecodedRefinement{bitmap:image,stats})
+}
+
+/// Fresh standalone entropy payload (explicit final FF AC marker required).
+/// The shared-stream entry above does not create or finish a QM decoder.
+/// Neither entry validates segment headers, reference selection or integrity.
+pub fn decode_arithmetic(data:&[u8],src:&Bitmap,neighborhood:&Neighborhood,opt:RefinementOptions,
+    work_limit:u64,decision_limit:usize)->Result<DecodedRefinement>{
+    let work=work_bound(neighborhood.template(),opt)?;
+    // Include input scanning and fresh context initialization in this wrapper.
+    let overhead=(data.len() as u64).checked_add(neighborhood.template().context_count()as u64)
+        .ok_or(Error::Limit("JBIG2 refinement work"))?;
+    let remaining=work_limit.min(MAX_REFINEMENT_WORK).checked_sub(overhead)
+        .ok_or(Error::Limit("JBIG2 refinement work"))?;
+    if work>remaining||decision_limit>MAX_REFINEMENT_DECISIONS{return Err(Error::Limit("JBIG2 refinement budget"));}
+    let mut decoder=Decoder::new(data,decision_limit)?;
+    let mut bank=ContextBank::new(neighborhood.template())?;
+    let mut result=decode_bitmap(src,neighborhood,opt,&mut bank,&mut decoder,remaining)?;
+    result.stats.work_bound+=overhead;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod decode_tests{
+    use super::*;
+    // Offline JS Annex E interval encoder, independent of Rust decode
+    // equations, verified with a JS reference reader. Original synthetic
+    // target/source pixels and row SLTP sequences, no production dependency.
+    const REF:[u8;6]=[0,124,124,124,0,0];
+    const A:[u8;7]=[192,34,140,221,147,255,172];
+    const B:[u8;7]=[56,108,187,186,43,255,172];
+    const C:[u8;7]=[62,159,39,101,31,255,172];
+    const SHARED:[u8;12]=[192,34,140,221,148,194,215,177,162,223,255,172];
+    fn src()->Bitmap{Bitmap::from_packed(7,6,&REF).unwrap()}
+    fn opts(width:u32,dx:i64,dy:i64,tp:bool)->RefinementOptions{
+        RefinementOptions{width,height:6,dx,dy,typical_prediction:tp}
+    }
+    fn relocated()->Neighborhood{Neighborhood::new(Template::T0,&[at(-1,0),at(0,0)]).unwrap()}
+    fn check(d:&DecodedRefinement,pixels:&[u8],explicit:u64,implicit:u64,rows:u32,decisions:usize){
+        assert_eq!(d.bitmap.packed(),pixels);
+        assert_eq!((d.stats.explicit_pixels,d.stats.implicit_pixels,d.stats.typical_rows,d.stats.decisions),(explicit,implicit,rows,decisions));
+    }
+    #[test]
+    fn refinement_decode_t0_explicit(){
+        let d=decode_arithmetic(&A,&src(),&Neighborhood::nominal(Template::T0),opts(7,0,0,false),MAX_REFINEMENT_WORK,42).unwrap();
+        check(&d,&[170,56,56,198,170,84],42,0,0,42);
+        assert_eq!((d.bitmap.width(),d.bitmap.height()),(7,6));
+    }
+    #[test]
+    fn refinement_decode_t1_shifted_typical(){
+        // SLTP 001110 -> LTP 001011.
+        let d=decode_arithmetic(&B,&src(),&Neighborhood::nominal(Template::T1),opts(8,1,-1,true),MAX_REFINEMENT_WORK,37).unwrap();
+        check(&d,&[170,56,42,85,0,0],31,17,3,37);
+    }
+    #[test]
+    fn refinement_decode_t0_relocated_typical(){
+        // SLTP 010101, LTP 011001: mix implicit black, implicit white
+        // and explicitly decoded pixels even on typical rows.
+        let d=decode_arithmetic(&C,&src(),&relocated(),opts(7,0,0,true),MAX_REFINEMENT_WORK,38).unwrap();
+        check(&d,&[170,170,254,170,84,0],32,10,3,38);
+    }
+    #[test]
+    fn refinement_decode_shared_stream_and_bank(){
+        let s=src();let n=Neighborhood::nominal(Template::T0);
+        let mut bank=ContextBank::new(Template::T0).unwrap();
+        let mut qm=Decoder::new(&SHARED,80).unwrap();
+        let a=decode_bitmap(&s,&n,opts(7,0,0,false),&mut bank,&mut qm,MAX_REFINEMENT_WORK).unwrap();
+        check(&a,&[170,56,56,198,170,84],42,0,0,42);
+        assert_eq!(bank.entries().iter().filter(|&&v|v!=Context::default()).count(),36);
+        let c=decode_bitmap(&s,&relocated(),opts(7,0,0,true),&mut bank,&mut qm,MAX_REFINEMENT_WORK).unwrap();
+        check(&c,&[170,170,254,170,84,0],32,10,3,38);
+        assert_eq!(bank.entries().iter().filter(|&&v|v!=Context::default()).count(),56);
+        assert!(qm.decode(&mut Context::default()).is_err());
+        bank.reset();assert!(bank.entries().iter().all(|&v|v==Context::default()));
+    }
+    #[test]
+    fn refinement_decode_exact_budgets(){
+        let s=src();let n=Neighborhood::nominal(Template::T1);let o=opts(8,1,-1,true);
+        let d=decode_arithmetic(&B,&s,&n,o,MAX_REFINEMENT_WORK,37).unwrap();
+        assert_eq!(d.stats.work_bound,48*21+6+1024+7);
+        assert_eq!(decode_arithmetic(&B,&s,&n,o,d.stats.work_bound,37).unwrap(),d);
+        assert!(decode_arithmetic(&B,&s,&n,o,d.stats.work_bound-1,37).is_err());
+        assert!(decode_arithmetic(&B,&s,&n,o,d.stats.work_bound,36).is_err());
+        assert!(decode_arithmetic(&B,&s,&n,o,d.stats.work_bound,MAX_REFINEMENT_DECISIONS+1).is_err());
+    }
+    #[test]
+    fn refinement_decode_marker_and_preflight(){
+        let s=src();let n=Neighborhood::nominal(Template::T0);let o=opts(7,0,0,false);
+        for i in 0..A.len(){assert!(decode_arithmetic(&A[..i],&s,&n,o,MAX_REFINEMENT_WORK,42).is_err());}
+        let mut bad=A.to_vec();bad.push(0);
+        assert!(decode_arithmetic(&bad,&s,&n,o,MAX_REFINEMENT_WORK,42).is_err());
+        let mut bank=ContextBank::new(Template::T1).unwrap();let mut qm=Decoder::new(&A,42).unwrap();
+        assert!(decode_bitmap(&s,&n,o,&mut bank,&mut qm,MAX_REFINEMENT_WORK).is_err());
+        let mut bank=ContextBank::new(Template::T0).unwrap();
+        for opt in [RefinementOptions{width:0,..o},RefinementOptions{height:0,..o},
+            RefinementOptions{width:u32::MAX,..o},RefinementOptions{width:bitmap::MAX_SIDE,height:bitmap::MAX_SIDE,..o}]{
+            assert!(decode_bitmap(&s,&n,opt,&mut bank,&mut qm,MAX_REFINEMENT_WORK).is_err());
+        }
+        assert!(decode_bitmap(&s,&n,o,&mut bank,&mut qm,0).is_err());
+        assert!(bank.entries().iter().all(|&v|v==Context::default()));
+        check(&decode_bitmap(&s,&n,o,&mut bank,&mut qm,MAX_REFINEMENT_WORK).unwrap(),&[170,56,56,198,170,84],42,0,0,42);
+    }
+    #[test]
+    fn refinement_decode_prediction_only(){
+        // A fresh zero reference far away, FF AC yields first SLTP=1
+        // with initial context. Single typical row needs no pixel decisions.
+        let s=Bitmap::new(1,1,false).unwrap();let n=Neighborhood::nominal(Template::T1);
+        let o=RefinementOptions{width:9,height:1,dx:i64::MAX,dy:i64::MIN,typical_prediction:true};
+        // Explicit independent short encoding for SLTP=1.
+        let mut bank=ContextBank::new(Template::T1).unwrap();
+        let mut qm=Decoder::new(&[255,172],1).unwrap();
+        let d=decode_bitmap(&s,&n,o,&mut bank,&mut qm,MAX_REFINEMENT_WORK).unwrap();
+        check(&d,&[0,0],0,9,1,1);
+        assert_eq!(bank.entries().iter().filter(|&&v|v!=Context::default()).count(),1);
     }
 }
