@@ -284,3 +284,6 @@ pub use font_gpos_anchor::*;
 
 pub mod font_gpos_single;
 pub use font_gpos_single::*;
+
+pub mod font_gpos_pair;
+pub use font_gpos_pair::*;
