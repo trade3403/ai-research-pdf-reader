@@ -8,6 +8,7 @@ pub mod bitmap;
 pub mod generic;
 pub mod huffman;
 pub mod dictionary;
+pub mod refinement;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
