@@ -287,8 +287,8 @@ pub fn decode_arithmetic_refined(data:&[u8],options:Options,symbols:&[&Bitmap],
 fn decode_arithmetic_inner(data:&[u8],options:Options,symbols:&[&Bitmap],
     decision_limit:usize,work_limit:u64,
     neighborhood:Option<&super::refinement::Neighborhood>)->Result<DecodedText>{
-    use super::integer::{Integer,IntegerDecoder,IaidDecoder};
-    use super::refinement::{self,ContextBank};
+    use super::integer::IaidDecoder;
+    use super::refinement::ContextBank;
     if decision_limit>MAX_TEXT_DECISIONS||symbols.len()>MAX_INSTANCES as usize{
         return Err(Error::Limit("JBIG2 text arithmetic limits"));
     }
@@ -303,45 +303,83 @@ fn decode_arithmetic_inner(data:&[u8],options:Options,symbols:&[&Bitmap],
     let available=work_limit.checked_sub(context_work).ok_or(Error::Limit("JBIG2 text context work"))?;
     if work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text region limits"));}
     let mut gr=match neighborhood{Some(n)=>Some(ContextBank::new(n.template())?),None=>None};
-    let mut extra=neighborhood.map(|_|[IntegerDecoder::new(),IntegerDecoder::new(),
-        IntegerDecoder::new(),IntegerDecoder::new(),IntegerDecoder::new()]);
+    let mut contexts=ArithmeticTextContexts::new() ;
     let mut decoder=super::qm::Decoder::new(data,decision_limit)?;
-    let mut dt=IntegerDecoder::new();
-    let mut fs=IntegerDecoder::new();
-    let mut ds=IntegerDecoder::new();
-    let mut it=IntegerDecoder::new();
     let mut ids=IaidDecoder::new(width)?;
+    let mut result=decode_arithmetic_shared(options,symbols,&mut decoder,&mut ids,&mut contexts,
+        neighborhood,gr.as_mut(),available)?;
+    result.stats.work_used+=context_work;
+    Ok(result)
+}
+
+/// Persistent text syntax banks, independent of the QM registers and IAID/GR.
+/// A caller sharing a dictionary stream must keep these alive across regions.
+pub(crate) struct ArithmeticTextContexts{
+    dt:super::integer::IntegerDecoder,fs:super::integer::IntegerDecoder,
+    ds:super::integer::IntegerDecoder,it:super::integer::IntegerDecoder,
+    extra:[super::integer::IntegerDecoder;5],
+}
+impl ArithmeticTextContexts{
+    pub(crate) fn new()->Self{
+        use super::integer::IntegerDecoder;
+        Self{dt:IntegerDecoder::new(),fs:IntegerDecoder::new(),ds:IntegerDecoder::new(),
+            it:IntegerDecoder::new(),extra:std::array::from_fn(|_|IntegerDecoder::new())}
+    }
+}
+
+/// Decode one text region on caller-owned QM, IAID and GR banks.
+/// The available symbol slice may grow, while IAID width remains fixed.
+/// The caller accounts for context initialization and cumulative entropy budget.
+/// Abort the enclosing stream on error; probability states are not rolled back.
+pub(crate) fn decode_arithmetic_shared(options:Options,symbols:&[&Bitmap],
+    decoder:&mut super::qm::Decoder<'_>,ids:&mut super::integer::IaidDecoder,
+    contexts:&mut ArithmeticTextContexts,neighborhood:Option<&super::refinement::Neighborhood>,
+    mut gr:Option<&mut super::refinement::ContextBank>,available:u64)->Result<DecodedText>{
+    use super::integer::Integer;
+    use super::refinement;
+    if symbols.len()>MAX_INSTANCES as usize||symbols.len()>(1usize<<ids.width()){
+        return Err(Error::Limit("JBIG2 text shared namespace"));
+    }
+    if options.instances!=0&&symbols.is_empty(){
+        return Err(Error::Invalid("JBIG2 text empty symbol namespace"));
+    }
+    if neighborhood.map(|n|n.template())!=gr.as_ref().map(|g|g.template()){
+        return Err(Error::Invalid("JBIG2 text shared GR template"));
+    }
+    let count=symbols.len() as u32;
+    let ArithmeticTextContexts{dt,fs,ds,it,extra}=contexts;
+    let mut extra=Some(extra);
     fn required(v:Integer)->Result<i64>{
         match v{Integer::Value(n)=>Ok(n),Integer::Oob=>Err(Error::Invalid("JBIG2 text unexpected OOB"))}
     }
-    let initial=required(dt.decode(&mut decoder)?)?;
+    let initial=required(dt.decode(decoder)?)?;
     let mut region=Region::new(options,initial,available)?;
     while region.remaining_instances()!=0{
-        let delta=required(dt.decode(&mut decoder)?)?;
-        let first=required(fs.decode(&mut decoder)?)?;
+        let delta=required(dt.decode(decoder)?)?;
+        let first=required(fs.decode(decoder)?)?;
         region.begin_strip(delta,first)?;
         let mut offset=None;
         loop{
             let curt=if options.strips==1{0}else{
-                u8::try_from(required(it.decode(&mut decoder)?)?)
+                u8::try_from(required(it.decode(decoder)?)?)
                     .map_err(|_|Error::Invalid("JBIG2 text CURT"))?
             };
             if curt>=options.strips{return Err(Error::Invalid("JBIG2 text CURT"));}
-            let id=ids.decode_for_count(&mut decoder,count)?;
+            let id=ids.decode_for_count(decoder,count)?;
             let src=symbols[id as usize];
             let mut refined=None;
-            if let (Some(n),Some(bank),Some(fields))=(neighborhood,gr.as_mut(),extra.as_mut()){
-                match required(fields[0].decode(&mut decoder)?)?{
+            if let (Some(n),Some(bank),Some(fields))=(neighborhood,gr.as_deref_mut(),extra.as_deref_mut()){
+                match required(fields[0].decode(decoder)?)?{
                     0=>{},
                     1=>{
-                        let dw=required(fields[1].decode(&mut decoder)?)?;
-                        let dh=required(fields[2].decode(&mut decoder)?)?;
-                        let dx=required(fields[3].decode(&mut decoder)?)?;
-                        let dy=required(fields[4].decode(&mut decoder)?)?;
+                        let dw=required(fields[1].decode(decoder)?)?;
+                        let dh=required(fields[2].decode(decoder)?)?;
+                        let dx=required(fields[3].decode(decoder)?)?;
+                        let dy=required(fields[4].decode(decoder)?)?;
                         let opt=refinement_geometry(src,dw,dh,dx,dy)?;
                         let cost=refinement::work_bound(n.template(),opt)?;
                         let left=region.left.checked_sub(cost).ok_or(Error::Limit("JBIG2 text refinement work"))?;
-                        let decoded=refinement::decode_bitmap(src,n,opt,bank,&mut decoder,cost)?;
+                        let decoded=refinement::decode_bitmap(src,n,opt,bank,decoder,cost)?;
                         region.left=left;
                         region.stats.work_used+=cost;
                         refined=Some(decoded.bitmap);
@@ -350,7 +388,7 @@ fn decode_arithmetic_inner(data:&[u8],options:Options,symbols:&[&Bitmap],
                 }
             }
             region.place(offset,curt,refined.as_ref().unwrap_or(src))?;
-            match ds.decode(&mut decoder)?{
+            match ds.decode(decoder)?{
                 Integer::Oob=>{region.end_strip()?;break;}
                 Integer::Value(n)=>{
                     if region.remaining_instances()==0{
@@ -361,9 +399,7 @@ fn decode_arithmetic_inner(data:&[u8],options:Options,symbols:&[&Bitmap],
             }
         }
     }
-    let mut result=region.finish()?;
-    result.stats.work_used+=context_work;
-    Ok(result)
+    region.finish()
 }
 #[cfg(test)]
 mod arithmetic_text_tests{
@@ -518,5 +554,38 @@ mod refined_text_vectors{
     fn refined_text_reject_zero_dimension(){
         assert!(matches!(run(Template::T1,BAD_DIM,1,100,20000),
             Err(Error::Invalid("JBIG2 text refinement dimension"))));
+    }
+}
+
+#[cfg(test)]
+mod shared_text_tests{
+    use super::*;
+    use super::super::{integer::IaidDecoder,qm::Decoder,refinement::{ContextBank,Neighborhood,Template}};
+    fn opts()->Options{Options{width:8,height:1,default_black:false,op:ComposeOp::Or,
+        strips:2,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:0}}
+    #[test]
+    fn shared_text_fixed_namespace_preflight(){
+        let mut d=Decoder::new(&[255,172],0).unwrap();
+        let mut id=IaidDecoder::new(0).unwrap();let mut c=ArithmeticTextContexts::new();
+        let b=Bitmap::new(1,1,false).unwrap();
+        assert!(matches!(decode_arithmetic_shared(opts(),&[&b,&b],&mut d,&mut id,&mut c,None,None,100),
+            Err(Error::Limit("JBIG2 text shared namespace"))));
+    }
+    #[test]
+    fn shared_text_gr_template_preflight(){
+        let mut d=Decoder::new(&[255,172],0).unwrap();
+        let mut id=IaidDecoder::new(0).unwrap();let mut c=ArithmeticTextContexts::new();
+        let n=Neighborhood::nominal(Template::T0);let mut g=ContextBank::new(Template::T1).unwrap();
+        assert!(matches!(decode_arithmetic_shared(opts(),&[],&mut d,&mut id,&mut c,Some(&n),Some(&mut g),100),
+            Err(Error::Invalid("JBIG2 text shared GR template"))));
+    }
+    #[test]
+    fn shared_text_existing_reference_vector(){
+        let data=[147,150,68,103,175,63,255,172];
+        let mut d=Decoder::new(&data,50).unwrap();let mut id=IaidDecoder::new(2).unwrap();
+        let mut c=ArithmeticTextContexts::new();let b=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let o=Options{height:4,instances:3,..opts()};
+        let out=decode_arithmetic_shared(o,&[&b,&b,&b],&mut d,&mut id,&mut c,None,None,100).unwrap();
+        assert_eq!(out.bitmap.packed(),[16,64,128,0]);
     }
 }
