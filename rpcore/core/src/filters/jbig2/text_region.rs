@@ -215,6 +215,62 @@ mod tests{
 }
 
 pub const MAX_TEXT_DECISIONS:usize=16_777_216;
+
+/// T.88 text refinement geometry: target dimensions are signed deltas
+/// from the source; reference displacement uses floor(delta/2).
+pub fn refinement_geometry(src:&Bitmap,dw:i64,dh:i64,dx:i64,dy:i64)
+    ->Result<super::refinement::RefinementOptions>{
+    fn dimension(base:u32,delta:i64)->Result<u32>{
+        let n=i64::from(base).checked_add(delta).ok_or(Error::Limit("JBIG2 text refinement dimension"))?;
+        if n<=0{return Err(Error::Invalid("JBIG2 text refinement dimension"));}
+        if n>i64::from(bitmap::MAX_SIDE){return Err(Error::Limit("JBIG2 text refinement dimension"));}
+        Ok(n as u32)
+    }
+    let width=dimension(src.width(),dw)?;
+    let height=dimension(src.height(),dh)?;
+    let dx=dw.div_euclid(2).checked_add(dx).ok_or(Error::Limit("JBIG2 text refinement offset"))?;
+    let dy=dh.div_euclid(2).checked_add(dy).ok_or(Error::Limit("JBIG2 text refinement offset"))?;
+    if i32::try_from(dx).is_err()||i32::try_from(dy).is_err(){
+        return Err(Error::Limit("JBIG2 text refinement offset"));
+    }
+    if u64::from(width)*u64::from(height)>bitmap::MAX_PIXELS||
+        u64::from(width).div_ceil(8)*u64::from(height)>bitmap::MAX_PACKED_BYTES as u64{
+        return Err(Error::Limit("JBIG2 text refinement bitmap"));
+    }
+    Ok(super::refinement::RefinementOptions{width,height,dx,dy,typical_prediction:false})
+}
+#[cfg(test)]
+mod text_refinement_geometry_tests{
+    use super::*;
+    #[test]
+    fn refinement_geometry_signed_floor(){
+        let b=Bitmap::new(10,10,false).unwrap();
+        for (d,half) in [(-5,-3),(-3,-2),(-2,-1),(-1,-1),(0,0),(1,0),(2,1),(3,1),(5,2)]{
+            let o=refinement_geometry(&b,d,d,4,-4).unwrap();
+            assert_eq!((o.width,o.height,o.dx,o.dy),( (10+d) as u32,(10+d) as u32,half+4,half-4));
+            assert!(!o.typical_prediction);
+        }
+    }
+    #[test]
+    fn refinement_geometry_limits(){
+        let b=Bitmap::new(2,2,false).unwrap();
+        for (dw,dh,dx,dy) in [(-2,0,0,0),(0,-2,0,0),(i64::MAX,0,0,0),
+            (0,i64::MAX,0,0),(2,0,i64::MAX,0),(0,2,0,i64::MAX),
+            (0,0,i64::MIN,0),(1000000,1000000,0,0)]{
+            assert!(refinement_geometry(&b,dw,dh,dx,dy).is_err());
+        }
+    }
+    #[test]
+    fn refinement_geometry_uses_target_dimensions(){
+        let b=Bitmap::new(3,5,false).unwrap();
+        let o=refinement_geometry(&b,2,-3,-1,2).unwrap();
+        assert_eq!((o.width,o.height,o.dx,o.dy),(5,2,0,0));
+        let p=placement(Corner::BottomRight,false,2,3,o.width,o.height).unwrap();
+        assert_eq!(p.next_s,6);
+        assert_eq!((p.x,p.y),(2,2));
+    }
+}
+
 /// Decode a known-length, explicitly terminated, non-refinement arithmetic
 /// text payload. Symbols are borrowed in stream identifier order.
 pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
