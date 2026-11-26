@@ -245,3 +245,6 @@ pub use font_variable_gsub::{VariableGsubLimits,VariationUserCoordinates,Variabl
 
 pub mod font_source_run;
 pub use font_source_run::{SourceLimits,ScalarSource,GlyphSource,SourceRun,map_source_run};
+
+pub mod font_provenance;
+pub use font_provenance::{ProvenanceLimits,TrackedGlyph,ProvenanceLedger};
