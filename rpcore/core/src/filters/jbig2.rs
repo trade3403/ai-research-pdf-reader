@@ -9,6 +9,7 @@ pub mod generic;
 pub mod huffman;
 pub mod dictionary;
 pub mod refinement;
+pub mod text_region;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
