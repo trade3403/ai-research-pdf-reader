@@ -122,8 +122,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4g3 | Component and contextual mask policy | Verified (#164) |
 | C4.4g4 | Strict mask native and independent reference acceptance | Verified (#165) |
 | C4.4h1 | Explicit bounded script-stage scheduling foundation | Verified (#166) |
-| C4.4h2 | Staged execution on persistent provenance and masks | Implemented; CI pending |
-| C4.4h3 | Native staged acceptance and explicit script feature ordering policy | Planned |
+| C4.4h2 | Staged execution on persistent provenance and masks | Verified (#167) |
+| C4.4h3 | Native staged acceptance and explicit script feature ordering policy | Implemented; CI pending |
+| C4.4h4 | Explicit script policy profiles and positive native stage acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

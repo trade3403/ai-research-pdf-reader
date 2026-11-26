@@ -63,3 +63,22 @@ fn program(b:&[u8])->CompiledGsubProgram<'_>{
         }
     }
 }
+
+fn tags(values:&[[u8;4]])->ShapeTagStage{ShapeTagStage{tags:values.to_vec()}}
+#[test]fn tag_stage_order_missing_and_tail(){
+    let b=fixture();let p=program(&b);let layout=parse_gsub_layout(&b,Default::default()).unwrap();
+    let specs=shape_stage_specs_from_tags(&layout,&p,&[tags(&[*b"salt"]),tags(&[*b"xxxx"]),tags(&[*b"ccmp"])],Default::default()).unwrap();
+    assert_eq!(specs,vec![spec(&[2]),spec(&[0]),spec(&[1])]);
+    let schedule=build_shape_stage_schedule(&p,&specs,Default::default()).unwrap();
+    assert_eq!(schedule.reference_count(),6);
+}
+#[test]fn tag_stage_invalid_and_bounded(){
+    let b=fixture();let p=program(&b);let layout=parse_gsub_layout(&b,Default::default()).unwrap();
+    for groups in [vec![tags(&[])],vec![tags(&[*b"liga",*b"liga"])],vec![tags(&[*b"liga"]),tags(&[*b"liga"])]]{
+        assert!(shape_stage_specs_from_tags(&layout,&p,&groups,Default::default()).is_err());
+    }
+    let groups=[tags(&[*b"liga"])];
+    assert!(shape_stage_specs_from_tags(&layout,&p,&groups,ShapeStageLimits{max_stages:1,..Default::default()}).is_err());
+    assert!(shape_stage_specs_from_tags(&layout,&p,&groups,ShapeStageLimits{max_work:1,..Default::default()}).is_err());
+    assert_eq!(shape_stage_specs_from_tags(&layout,&p,&[],Default::default()).unwrap(),vec![spec(&[0,1,2])]);
+}

@@ -121,3 +121,22 @@ impl VariableGsubFace<'_>{
         Ok(Some((plan,result,blocked)))
     }
 }
+
+impl VariableGsubFace<'_>{
+    /// Same-face tag-stage mapping and execution. Each budget is explicit;
+    /// stage mapping and schedule construction have separate work caps.
+    pub fn execute_tag_stages(&self,request:VariableGsubRequest<'_>,run:&crate::SourceRun,
+        choices:&[GsubAlternateSelection],groups:&[crate::ShapeTagStage],
+        overrides:&[crate::FeatureMaskOverride],mask_limits:crate::FeatureMaskLimits,
+        stage_limits:crate::ShapeStageLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
+        ->Result<Option<(GsubVariationPlan,crate::ShapeStageSchedule,crate::MaskedGsubResult,usize)>,Error>{
+        let Some(plan)=self.build_plan(request)? else{return Ok(None);};
+        let program=self.compile_selected(&plan)?;
+        let layout=crate::parse_gsub_layout(self.gsub,self.limits.program.compile.layout)?;
+        let specs=crate::shape_stage_specs_from_tags(&layout,&program,groups,stage_limits)?;
+        let masks=crate::ScalarFeatureMasks::build(&plan.plan,run.scalars().len(),overrides,mask_limits)?;
+        let (schedule,result,blocked)=crate::execute_staged_gsub(&program,run,choices,&masks,&specs,stage_limits,
+            self.limits.execution,source_limits,max_mask_work)?;
+        Ok(Some((plan,schedule,result,blocked)))
+    }
+}

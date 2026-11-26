@@ -65,3 +65,32 @@ fn check(disable:bool){
     assert_eq!(result.execution.expansion.execution.glyphs,run.glyphs().iter().map(|g|g.glyph_id).collect::<Vec<_>>());
     assert!(result.skipped_roots>0);assert_eq!(blocked,0);assert!(result.glyph_masks.iter().all(|&x|x==0));
 }
+
+#[test]fn native_tag_stage_single_group_parity(){
+    let (font,text)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();let run=map_source_run(text,&cmap,false,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let axis=f.fvar().axis(*b"wght").unwrap();
+    for weight in [axis.min,axis.default,axis.max]{
+        let coords=[(*b"wght",weight)];
+        let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&coords)};
+        let groups=[ShapeTagStage{tags:vec![*b"case",*b"rvrn"]}];
+        let (plan,schedule,result,blocked)=f.execute_tag_stages(req,&run,&[],&groups,&[],Default::default(),Default::default(),Default::default(),100000).unwrap().unwrap();
+        let (old,expected,k)=f.execute_with_strict_masks(req,&run,&[],&[],Default::default(),Default::default(),100000).unwrap().unwrap();
+        assert_eq!(plan,old);assert_eq!(result,expected);assert_eq!(blocked,k);
+        assert_eq!(schedule.stages().len(),1);
+    }
+}
+#[test]fn native_tag_stage_multiple_groups_disable(){
+    let (font,text)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();let run=map_source_run(text,&cmap,false,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&[])};
+    let plan=f.build_plan(req).unwrap().unwrap();
+    let groups=[ShapeTagStage{tags:vec![*b"rvrn"]},ShapeTagStage{tags:vec![*b"case"]}];
+    let edits:Vec<_>=plan.plan.features.iter().map(|&feature|FeatureMaskOverride{feature,start:0,end:run.scalars().len(),enabled:false}).collect();
+    let (_,schedule,result,blocked)=f.execute_tag_stages(req,&run,&[],&groups,&edits,Default::default(),Default::default(),Default::default(),100000).unwrap().unwrap();
+    assert_eq!(result.execution.expansion.execution.glyphs,run.glyphs().iter().map(|g|g.glyph_id).collect::<Vec<_>>());
+    assert_eq!(result.skipped_roots,schedule.root_count()*run.glyphs().len());assert_eq!(blocked,0);
+    assert!(result.glyph_masks.iter().all(|&x|x==0));
+}

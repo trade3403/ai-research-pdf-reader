@@ -266,3 +266,5 @@ pub mod font_shape_stages;
 pub use font_shape_stages::{ShapeStageLimits,ShapeStageSpec,ShapeStage,ShapeStageSchedule,build_shape_stage_schedule};
 
 pub use font_gsub_context_execute::execute_staged_gsub;
+
+pub use font_shape_stages::{ShapeTagStage,shape_stage_specs_from_tags};

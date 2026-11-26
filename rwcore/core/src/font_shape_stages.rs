@@ -92,3 +92,46 @@ pub fn build_shape_stage_schedule(program:&CompiledGsubProgram<'_>,specs:&[Shape
     }
     Ok(ShapeStageSchedule{stages,root_count,reference_count,work:limits.max_work-left})
 }
+
+/// Explicit tag groups in caller order. Missing tags are harmless, but
+/// duplicate tags are rejected. All records sharing a selected tag
+/// enter the same stage. Unlisted selected features enter a final stage.
+/// The required feature is not moved implicitly.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ShapeTagStage{pub tags:Vec<[u8;4]>}
+/// Layout must describe the same GSUB FeatureList as the validated plan.
+/// This helper only assigns stages, never changes feature selection.
+pub fn shape_stage_specs_from_tags(layout:&crate::GsubLayout,program:&CompiledGsubProgram<'_>,
+    groups:&[ShapeTagStage],limits:ShapeStageLimits)->Result<Vec<ShapeStageSpec>,Error>{
+    let plan=program.validated_plan().ok_or(Error::Invalid("shape tag unvalidated plan"))?;
+    if groups.len()>limits.max_stages||plan.features.len()>limits.max_features{
+        return Err(Error::Limit("shape tag size"));
+    }
+    let mut left=limits.max_work;
+    charge(&mut left,groups.len(),"shape tag work")?;
+    let mut tags=Vec::new();
+    for (i,group) in groups.iter().enumerate(){
+        if group.tags.is_empty(){return Err(Error::Invalid("shape tag empty group"));}
+        charge(&mut left,group.tags.len(),"shape tag work")?;
+        tags.try_reserve(group.tags.len()).map_err(|_|Error::Limit("shape tag allocation"))?;
+        for &tag in &group.tags{tags.push((tag,i));}
+    }
+    // Charge a conservative comparison bound before sorting.
+    let factor=(usize::BITS-tags.len().leading_zeros()) as usize;
+    charge(&mut left,tags.len().checked_mul(factor+1).ok_or(Error::Limit("shape tag work"))?,"shape tag work")?;
+    tags.sort_unstable();
+    if tags.windows(2).any(|w|w[0].0==w[1].0){return Err(Error::Invalid("shape tag duplicate"));}
+    let count=groups.len().checked_add(1).ok_or(Error::Limit("shape tag size"))?;
+    let mut out=Vec::new();reserve(&mut out,count)?;
+    out.resize_with(count,||ShapeStageSpec{features:Vec::new()});
+    for &id in &plan.features{
+        charge(&mut left,factor+1,"shape tag work")?;
+        let tag=layout.features.get(id as usize).ok_or(Error::Invalid("shape tag feature index"))?.tag;
+        let at=tags.binary_search_by_key(&tag,|x|x.0).ok().map_or(groups.len(),|j|tags[j].1);
+        out[at].features.try_reserve(1).map_err(|_|Error::Limit("shape tag allocation"))?;
+        out[at].features.push(id);
+    }
+    out.retain(|s|!s.features.is_empty());
+    if out.len()>limits.max_stages{return Err(Error::Limit("shape tag stages"));}
+    Ok(out)
+}
