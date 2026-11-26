@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod config;
 pub mod download;
 pub mod install;
+pub mod lifecycle;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod mapped;
 #[cfg(all(target_os = "windows", target_pointer_width = "64"))]

@@ -2,8 +2,9 @@
 use crate::offline::OfflineTranslator;
 use rpinfer::{marian_model::MODEL_PAYLOAD_BYTES, mixed_model::PAYLOAD_BYTES};
 use rpmodel::{
-    catalog::{Entry, Precision},
+    catalog::{Catalog, Entry, Precision},
     install::{Error, Store},
+    lifecycle::{self, Selection},
 };
 use std::path::{Path, PathBuf};
 
@@ -32,4 +33,20 @@ pub fn import(store: &Store, entry: &Entry, source: &Path) -> Result<PathBuf, Er
 /// Recheck a previously interrupted stage before allowing publication.
 pub fn recover(store: &Store, entry: &Entry) -> Result<PathBuf, Error> {
     store.recover_checked(entry, |stage| validate(entry.precision, stage))
+}
+
+/// Activate a verified installed model only after the real loader succeeds.
+pub fn activate(store: &Store, entry: &Entry) -> Result<Selection, lifecycle::Error> {
+    lifecycle::activate(store, entry, |root| validate(entry.precision, root))
+}
+
+/// Explicit rollback to the previous version of the same model and precision.
+pub fn rollback(
+    store: &Store,
+    catalog: &Catalog,
+    family: &Entry,
+) -> Result<Selection, lifecycle::Error> {
+    lifecycle::rollback(store, catalog, family, |root| {
+        validate(family.precision, root)
+    })
 }

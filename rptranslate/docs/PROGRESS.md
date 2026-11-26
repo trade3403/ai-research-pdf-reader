@@ -4,6 +4,10 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0d2 基线 055c430a67e334629ade2f793ba982602e65517a / [#141 / 45784405553](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45784405553) completed/success；Linux192 workspace+59 portable=251，Windows191+59=250，共501基础+4网络=505；Linux及Windows真实MODEL_INSTALL PASS FP32 312033188/INT8 84903620 payload bytes，均有非空译文；4/4真实安装推理探针成功。Windows映射逐位一致、出站阻断与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、355.331104s、770.541804ms加载、122836KiB RSS；FP32 4/8，人工语义未测。
+
+D3.0e1：lifecycle.rs按模型id及精度独立持久化激活记录（严格规范RPActive1、128字节限制、当前/上一版本）；可信目录精确解析及校验、真实模型加载器回调先验证再提交同目录sync_all+rename，旧版本保留，显式回滚仅指向记录中的上一版本，失败保持原记录，拒绝非法、链接、残留pending，禁止隐式跨精度/版本回退。新增6跨平台测试，目标513基础+4网络=517（Linux257、Windows256），保留4真实安装探针。调用者独占库，不保证并发及断电耐久，不自动清理pending。D3.0e2再做卸载/显式残留恢复与真实模型完整生命周期验收，再进入D3.1。未本地编译。
+
 2026-11-26 D3.0d2 [#140 / 45781419745](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745) completed/failure：Linux及Windows均在rustfmt失败，model_install_reference.rs:30 verify_installed 链需展开；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777547128)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777546865)。Linux真实模型任务成功，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777547309)：MODEL_INSTALL PASS precision=Fp32 payload_bytes=312033188 translation_nonempty=true；Int8 payload_bytes=84903620 translation_nonempty=true；全文242/269接受、27拒译，语义未测。Windows真实模型因前置失败跳过。严格按日志最小格式修复，不改变算法、测试及历史专项。全量CI成功后才进入D3.0e。
 
 2026-11-26 D3.0d1 基线 55a7ef708b7c9974c30a60b4157775cb44878976 / [#139 / 45775645771](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45775645771) 全量 success；Linux189 workspace+59 portable=248/248，Windows188+59=247/247，共495基础+4网络=499。Windows映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、415.338061s、982.664964ms加载、122480KiB RSS；FP32 4/8，人工语义未测。

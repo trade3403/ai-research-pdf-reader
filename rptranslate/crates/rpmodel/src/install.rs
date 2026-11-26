@@ -50,6 +50,10 @@ impl Store {
         })
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn key(&self, entry: &Entry) -> Result<String, Error> {
         entry.validate().map_err(Error::Catalog)?;
         if entry.min_engine > self.engine {
