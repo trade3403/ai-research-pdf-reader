@@ -213,3 +213,86 @@ mod tests{
         assert_eq!((d.stats.work_used,d.stats.composed_pixels),(51,0));
     }
 }
+
+pub const MAX_TEXT_DECISIONS:usize=16_777_216;
+/// Decode a known-length, explicitly terminated, non-refinement arithmetic
+/// text payload. Symbols are borrowed in stream identifier order.
+pub fn decode_arithmetic(data:&[u8],options:Options,symbols:&[&Bitmap],
+    decision_limit:usize,work_limit:u64)->Result<DecodedText>{
+    use super::integer::{Integer,IntegerDecoder,IaidDecoder};
+    if decision_limit>MAX_TEXT_DECISIONS||symbols.len()>MAX_INSTANCES as usize{
+        return Err(Error::Limit("JBIG2 text arithmetic limits"));
+    }
+    if options.instances!=0&&symbols.is_empty(){
+        return Err(Error::Invalid("JBIG2 text empty symbol namespace"));
+    }
+    let count=symbols.len() as u32;
+    let width=if count<=1{0}else{(32-(count-1).leading_zeros()) as u8};
+    let mut decoder=super::qm::Decoder::new(data,decision_limit)?;
+    let mut dt=IntegerDecoder::new();
+    let mut fs=IntegerDecoder::new();
+    let mut ds=IntegerDecoder::new();
+    let mut it=IntegerDecoder::new();
+    let mut ids=IaidDecoder::new(width)?;
+    fn required(v:Integer)->Result<i64>{
+        match v{Integer::Value(n)=>Ok(n),Integer::Oob=>Err(Error::Invalid("JBIG2 text unexpected OOB"))}
+    }
+    let initial=required(dt.decode(&mut decoder)?)?;
+    let mut region=Region::new(options,initial,work_limit)?;
+    while region.remaining_instances()!=0{
+        let delta=required(dt.decode(&mut decoder)?)?;
+        let first=required(fs.decode(&mut decoder)?)?;
+        region.begin_strip(delta,first)?;
+        let mut offset=None;
+        loop{
+            let curt=if options.strips==1{0}else{
+                u8::try_from(required(it.decode(&mut decoder)?)?)
+                    .map_err(|_|Error::Invalid("JBIG2 text CURT"))?
+            };
+            if curt>=options.strips{return Err(Error::Invalid("JBIG2 text CURT"));}
+            let id=ids.decode_for_count(&mut decoder,count)?;
+            region.place(offset,curt,symbols[id as usize])?;
+            match ds.decode(&mut decoder)?{
+                Integer::Oob=>{region.end_strip()?;break;}
+                Integer::Value(n)=>{
+                    if region.remaining_instances()==0{
+                        return Err(Error::Invalid("JBIG2 text excess instances"));
+                    }
+                    offset=Some(n);
+                }
+            }
+        }
+    }
+    region.finish()
+}
+#[cfg(test)]
+mod arithmetic_text_tests{
+    use super::*;
+    fn options()->Options{Options{width:8,height:2,default_black:false,
+        op:ComposeOp::Or,strips:1,corner:Corner::TopLeft,transposed:false,
+        ds_offset:0,instances:0}}
+    #[test]
+    fn arithmetic_text_empty_initial_dt(){
+        // Existing independently encoded Annex E integer vector begins with zero.
+        let data=[0xaa,0xf2,0x8c,0x65,0xc5,0x81,0x19,0xc3,0xf5,0xdd,0x6b,0x58,0x2e,0x73,0xf2,
+        0xa3,0x73,0x46,0x0a,0x8e,0x90,0xf7,0x7a,0x76,0x20,0xf8,0x7f,0xff,0xac];
+        let out=decode_arithmetic(&data,options(),&[],4,16).unwrap();
+        assert_eq!(out.bitmap.packed(),[0,0]);
+        assert_eq!(out.stats.instances,0);
+        assert!(decode_arithmetic(&data,options(),&[],3,16).is_err());
+        assert!(decode_arithmetic(&data,options(),&[],4,15).is_err());
+    }
+    #[test]
+    fn arithmetic_text_invalid_namespace(){
+        let mut o=options();o.instances=1;
+        assert!(decode_arithmetic(&[255,172],o,&[],100,100).is_err());
+    }
+    #[test]
+    fn arithmetic_text_missing_marker(){
+        assert!(decode_arithmetic(&[0,0],options(),&[],100,100).is_err());
+    }
+    #[test]
+    fn arithmetic_text_decision_cap(){
+        assert!(decode_arithmetic(&[255,172],options(),&[],MAX_TEXT_DECISIONS+1,100).is_err());
+    }
+}
