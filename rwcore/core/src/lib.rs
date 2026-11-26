@@ -233,3 +233,6 @@ pub use font_feature_variations::{FeatureVariationLimits,VariationAxisRange,Feat
 
 pub use font_feature_variations::{GsubVariationPlan,build_gsub_variation_plan};
 pub use font_gsub_compile::compile_gsub_variation_plan_program;
+
+pub mod font_fvar;
+pub use font_fvar::{VARIATION_FIXED_ONE,VARIATION_F2DOT14_ONE,FvarLimits,FvarAxis,FvarInstance,Fvar,parse_fvar,normalized_fixed_to_f2dot14};

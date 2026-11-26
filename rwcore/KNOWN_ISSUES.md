@@ -197,3 +197,5 @@
 - C4.4e2: normalized F2DOT14 coordinates and fvar axis count remain caller-supplied, no cryptographic font identity guarantee; selected Feature membership and effective lookup provenance revalidated. No native positive variation reference, fvar/avar normalization, feature parameter interpretation, full shaping, masks, clusters or GPOS yet.
 
 - C4.4e3: native positive Archivo covers one Format 1 condition, one alternate Feature and seven Type 1 mappings, not all real variation table structures. Inputs are normalized F2DOT14; fvar/avar conversion and outline interpolation not implemented by this milestone. Full shaping, GPOS, clusters/masks, external parity and security/performance acceptance remain open.
+
+- C4.4e4: strict fvar 1.0 subset, zero-axis rejected as unsupported, reserved fields and malformed ranges rejected; no full tag registry, name/STAT cross-validation or named-instance semantic deduplication. Input already Fixed 16.16. Pre-avar normalization only; normalize_f2dot14 must not be used as final coordinate when avar applies. No avar, gvar/HVAR/MVAR, outline interpolation, script staging or full shaping yet.

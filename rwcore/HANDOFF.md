@@ -184,3 +184,6 @@ C4.4e2 pending CI; #147 verified 1048/platform, 3144 total. Ten synthetic dynami
 
 ## Latest checkpoint
 C4.4e3 pending CI; #148 verified 1058/platform, 3174 total. OFL Archivo positive native fixture and four regressions, 1062/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next C4.4e4 fvar normalization only after CI passes.
+
+## Latest checkpoint
+C4.4e4 pending CI; #149 verified 1062/platform, 3186 total. New fvar parser and pre-avar Fixed normalization, 12 tests, 1074/platform expected. Next C4.4e5 avar 1.0 only after exact CI pass. Read DEV_STATE.md; no concurrent writers.
