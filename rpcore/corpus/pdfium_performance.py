@@ -98,8 +98,10 @@ def quality(op, a, b, aa, bb):
         if sa != "ODo" or sb != "ODo" or len(xa) != len(xb):
             return {"pass":False,"reason":"expected complete ODo text","rpcore_text":sa,"pdfium_text":sb}
         diffs = [abs(x-y) for a,b in zip(xa,xb) for x,y in zip(a,b)]
+        if not all(math.isfinite(d) for d in diffs):
+            return {"pass":False,"reason":"nonfinite character origin"}
         delta = max(diffs)
-        return {"pass":all(math.isfinite(d) for d in diffs) and delta<=ORIGIN_TOL,
+        return {"pass":delta<=ORIGIN_TOL,
                 "reason":"character origins in PDF points","max_origin_error_pt":delta}
     from PIL import Image, ImageChops
     w,h = int(a["width"]),int(a["height"])
@@ -161,7 +163,21 @@ def benchmark(args):
         if kind=="text":
             for mode in ("cold","warm"):
                 cases.append((kind,file,"text",96,mode))
+    # Record installed reference binary and packaged license notice fingerprints.
+    import pypdfium2_raw
+    rawdir=Path(pypdfium2_raw.__file__).parent
+    binaries={p.name:sha(p.read_bytes()) for p in rawdir.iterdir() if p.is_file() and (".so" in p.name or p.suffix in (".dll",".dylib"))}
+    if not binaries:
+        raise ValueError("PDFium shared library not found in pinned wheel")
+    notices={}
+    for name in ("pypdfium2","Pillow"):
+        dist=metadata.distribution(name)
+        notices[name]={"license":dist.metadata.get("License-Expression") or dist.metadata.get("License"),
+                       "files":{str(p):sha(dist.locate_file(p).read_bytes()) for p in dist.files or []
+                                if "license" in str(p).lower() and dist.locate_file(p).is_file()}}
     report={"protocol":"B-P0a process probes; observational only",
+            "reference_binary_sha256":binaries,"reference_license_metadata":notices,
+            "command":sys.argv,
             "rpcore_commit":args.commit,"rpcore_probe_sha256":sha(Path(args.probe).read_bytes()),
             "pdfium_binding":metadata.version("pypdfium2"),"pdfium_version":str(pdfium.PDFIUM_INFO),
             "pillow":metadata.version("Pillow"),"python":sys.version,"os":platform.platform(),
@@ -188,7 +204,10 @@ def benchmark(args):
                     cmd=[args.probe,*base] if engine=="rpcore" else [sys.executable,__file__,"--worker",*base]
                     results[engine],buffers[engine]=invoke(cmd,dest,rss)
                 both=all(r["status"]=="ok" for r in results.values())
-                q=quality(op,results["rpcore"],results["pdfium"],buffers["rpcore"],buffers["pdfium"]) if both else {"pass":False,"reason":"failed operation"}
+                try:
+                    q=quality(op,results["rpcore"],results["pdfium"],buffers["rpcore"],buffers["pdfium"]) if both else {"pass":False,"reason":"failed operation"}
+                except (ValueError, KeyError, OSError, OverflowError, IndexError) as e:
+                    q={"pass":False,"reason":"invalid quality output: "+str(e)}
                 trial={"trial":i,"warmup":i==0,"order":order,"results":results,"quality":q}
                 case["trials"].append(trial)
                 if i==0:
