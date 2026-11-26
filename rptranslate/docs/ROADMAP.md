@@ -85,3 +85,8 @@ D3.0e1：lifecycle.rs按模型id及精度独立持久化激活记录（严格规
 
 ## D3.0e2 实施门槛
 D3.0e2：lifecycle.rs新增显式discard_pending（拒绝链接及超限、不触碰正式记录）、forget_previous、deactivate、uninstall、purge_removed；当前/回滚版本及未提交激活事务保护，先验证完整目录再rename到非模型tombstone，清理中断后仅对可信文件子集再次校验并清理，拒绝未知文件、链接、已重新安装目标；保留独占库及无打开模型会话前提，不自动删除损坏包、不承诺断电/并发安全。新增5跨平台单测，目标523基础+4网络=527（Linux262、Windows261）；既有真实模型安装探针增加同一可信权重不同版本编号的激活/升级/回滚/卸载验证，每平台FP32/INT8，目标4个MODEL_LIFECYCLE PASS并保留4个MODEL_INSTALL PASS。不等于真实新训练版本或正式在线发布。未本地编译。CI全绿后D3.0工程封版，进入D3.1。
+
+## D3.0 工程封版与 D3.1 实施门槛
+2026-11-26 D3.0e2 / D3.0 工程封版：698e927107256a8f9c185b08ac18ba4e2ab11fb1 / [#145 / 45804420184](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45804420184) completed/success；Linux 203 workspace+59 portable，Windows 202+59，共523基础+4真实HTTPS/Range=527/527；四实际Job成功，两条件Job跳过。Linux/Windows FP32 312033188、INT8 84903620 payload bytes，4/4 MODEL_INSTALL PASS、4/4 MODEL_LIFECYCLE PASS（同权重不同版本标识）；Windows 97量化张量/159浮点辅助、77320704 codes/1208136 scales/687593 floats逐位一致。Linux INT8 242/269接受、27拒译、5221/6036词、245/317数字串、251段、227.729716s、618.352030ms加载、122500KiB RSS；FP32 样本4/8，人工语义未测。77字节可信HTTPS探针非生产模型分发；curl是TLS适配器，不是自主TLS；独占模型库且卸载前关闭会话，不承诺敌对并发、断电耐久、请求中途暂停或生产签名及DNS/IP策略。
+
+D3.1a：新增 selection.rs 版本化Rust进程内协议，PDF/Word统一文档ID/修订号、零基页/块/段位置、单块单选区、严格递增稳定ID、半开UTF-8字节范围、固定英译简中与模型版本/精度（ID/版本由可信调用方提供，精度与实际驻留模型核对）；整块2MiB/单块64KiB/1024块预算、重复位置及非法Unicode边界拒绝；复用Plan检测保护跨度，拒绝切断跨度，传递宿主结构提示（实际翻译时含宿主提示的选区显式拒绝，待D3.1b实现，不假装已保护）；复用OfflineTranslator及document::translate现有覆盖/拒译逻辑，双语结果保留原文、位置、拒译及绝对块内段范围；8项新增跨平台单测，预计539基础+4网络=543，Linux270基础、Windows269基础。当前无本地Rust工具链，新增测试及真实模型回归待CI；尚未真实PDF/Word适配、IPC、宿主提示执行、取消或GUI。D3.1b全绿后实现选段保护与双语对照并增加真实模型选段测试；D3.1c任务会话及合作式取消，D3.1d对照A/B/C接口与跨平台综合验收。

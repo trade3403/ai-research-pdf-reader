@@ -8,6 +8,7 @@ pub mod offline;
 pub mod paragraph;
 pub mod protection;
 pub mod scientific;
+pub mod selection;
 use rpdata::{deduplicate, SentencePair};
 use rpmodel::ModelSpec;
 
