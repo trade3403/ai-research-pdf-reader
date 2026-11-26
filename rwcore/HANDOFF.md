@@ -163,3 +163,6 @@ C4.4d6c pending CI; #140 verified 998/platform, 2994 total. Seven native chained
 
 ## Latest checkpoint
 C4.4d8a pending CI; #141 verified 1005/platform, 3015 total. Ten reverse execution regressions, 1015/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next native Type 8 independent reference only after CI passes.
+
+## Latest checkpoint
+C4.4d8b pending CI; #142 verified 1015/platform, 3045 total. Ten full dispatch/reverse reference regressions, 1025/platform expected. Native positive Type 8 fixture absent. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next C4.4d8c native fixture/wrapper acceptance only after CI passes.

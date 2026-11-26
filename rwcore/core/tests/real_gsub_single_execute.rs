@@ -1330,19 +1330,33 @@ impl ContractionOracle{
         self.boundary(after)
     }
     fn apply(&mut self,gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
-        contexts:&[NativeContextRoot],chains:&[NativeChainRoot],id:u16,p:usize)->Option<usize>{
+        contexts:&[NativeContextRoot],chains:&[NativeChainRoot],reverse:&[RawReverseRoot],id:u16,p:usize)->Option<usize>{
         self.base.frame_sizes.push(0);
         assert!(self.base.frame_sizes.len()<=32);
-        let result=self.inner(gd,mixed,ligs,contexts,chains,id,p);
+        let result=self.inner(gd,mixed,ligs,contexts,chains,reverse,id,p);
         self.base.frame_sizes.pop();
         result
     }
     fn inner(&mut self,gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
-        contexts:&[NativeContextRoot],chains:&[NativeChainRoot],id:u16,p:usize)->Option<usize>{
+        contexts:&[NativeContextRoot],chains:&[NativeChainRoot],reverse:&[RawReverseRoot],id:u16,p:usize)->Option<usize>{
         let a=&mut self.base.a.execution;
         a.calls+=1;a.filter_checks+=1;
         a.peak_depth=a.peak_depth.max(self.base.frame_sizes.len());
         let glyph=a.glyphs[p];
+        if let Some(root)=reverse.iter().find(|r|r.index==id){
+            if !gd.eligible(glyph,root.flags,root.mark){return None;}
+            for sub in &root.subs{
+                a.probes+=1;a.rules+=1;a.symbols+=1;
+                let Some(&v)=sub.replacements.get(&glyph) else{continue};
+                let n=a.glyphs.len();
+                if reverse_segment(a,gd,root,(0..p).rev(),&sub.back)&&
+                    reverse_segment(a,gd,root,p+1..n,&sub.ahead){
+                    a.matches+=1;a.changes+=usize::from(v!=glyph);a.glyphs[p]=v;
+                    return Some(p+1);
+                }
+            }
+            return None;
+        }
         if let Some(root)=mixed.iter().find(|r|r.index==id){
             if !gd.eligible(glyph,root.flags,root.mark){return None;}
             for sub in &root.rules{
@@ -1417,7 +1431,7 @@ impl ContractionOracle{
                 let token=anchors[sequence];
                 if !self.alive[token]{self.skipped+=1;continue;}
                 let at=self.base.position(token);
-                self.apply(gd,mixed,ligs,contexts,chains,target,at);
+                self.apply(gd,mixed,ligs,contexts,chains,reverse,target,at);
             }
             return Some(self.boundary(after));
         }
@@ -1430,10 +1444,19 @@ fn contraction_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLi
 }
 fn chained_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
     contexts:&[NativeContextRoot],chains:&[NativeChainRoot],roots:&[u16])->(GsubContractionExecResult,usize){
+    full_reference(input,gd,mixed,ligs,contexts,chains,&[],roots)
+}
+fn full_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
+    contexts:&[NativeContextRoot],chains:&[NativeChainRoot],reverse:&[RawReverseRoot],roots:&[u16])->(GsubContractionExecResult,usize){
     let mut o=ContractionOracle::new(input);
     for &root in roots{
-        let mut p=0;
-        while p<o.base.tokens.len(){p=o.apply(gd,mixed,ligs,contexts,chains,root,p).unwrap_or(p+1);}
+        if reverse.iter().any(|r|r.index==root){
+            let positions:Vec<_>=(0..o.base.tokens.len()).collect();
+            for &p in positions.iter().rev(){o.apply(gd,mixed,ligs,contexts,chains,reverse,root,p);}
+        }else{
+            let mut p=0;
+            while p<o.base.tokens.len(){p=o.apply(gd,mixed,ligs,contexts,chains,reverse,root,p).unwrap_or(p+1);}
+        }
     }
     assert_eq!(o.base.tokens.len(),input.len()+o.base.a.inserted_glyphs-o.removed);
     assert_eq!(o.base.tokens,o.ledger.iter().copied().filter(|&t|o.alive[t]).collect::<Vec<_>>());
@@ -1888,3 +1911,243 @@ fn verify_native_chained(font:&[u8],n:u32,expected:usize){
 #[test]fn padauk_native_chained(){verify_native_chained(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,103);}
 #[test]fn devanagari_native_chained(){verify_native_chained(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,218);}
 #[test]fn nastaliq_native_chained(){verify_native_chained(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,1023);}
+
+
+// C4.4d8b: independent raw reverse decoder and reference. The seven
+// retained native fonts have zero Type 8 subtables. Positive Type 8
+// checks below use explicitly synthetic GSUB tables, not native fonts.
+struct RawReverseSub{replacements:BTreeMap<u16,u16>,back:Vec<Vec<bool>>,ahead:Vec<Vec<bool>>}
+struct RawReverseRoot{index:u16,flags:usize,mark:Option<usize>,subs:Vec<RawReverseSub>}
+fn raw_reverse_roots(b:&[u8],n:usize)->Vec<RawReverseRoot>{
+    let list=u(b,8);let mut out=Vec::new();
+    for i in 0..u(b,list){
+        let p=list+u(b,list+2+2*i);let kind=u(b,p);let flags=u(b,p+2);let count=u(b,p+4);
+        let mark=(flags&16!=0).then(||u(b,p+6+2*count));
+        let mut subs=Vec::new();
+        for j in 0..count{
+            let at=p+u(b,p+6+2*j);
+            let (k,t)=if kind==7{(u(b,at+2),at+d(b,at+4))}else{(kind,at)};
+            if k!=8{continue;}
+            assert_eq!(u(b,t),1);
+            let mut cursor=t+4;
+            let back=raw_chain_coverage(b,t,&mut cursor,n);
+            let ahead=raw_chain_coverage(b,t,&mut cursor,n);
+            let c=coverage(b,t+u(b,t+2));let count=u(b,cursor);
+            assert_eq!(c.len(),count);
+            let replacements=c.into_iter().map(|(g,i)|{
+                assert!(i<count);let v=u(b,cursor+2+2*i) as u16;
+                assert!((g as usize)<n&&(v as usize)<n);(g,v)
+            }).collect();
+            subs.push(RawReverseSub{replacements,back,ahead});
+        }
+        if !subs.is_empty(){assert_eq!(subs.len(),count);out.push(RawReverseRoot{index:i as u16,flags,mark,subs});}
+    }
+    out
+}
+fn reverse_segment<I:Iterator<Item=usize>>(a:&mut GsubContextExecResult,gd:&RawGdef,
+    root:&RawReverseRoot,positions:I,sets:&[Vec<bool>])->bool{
+    if sets.is_empty(){return true;}
+    let mut slot=0;
+    for p in positions{
+        a.filter_checks+=1;
+        let g=a.glyphs[p];
+        if !gd.eligible(g,root.flags,root.mark){continue;}
+        a.symbols+=1;
+        if !sets[slot][g as usize]{return false;}
+        slot+=1;
+        if slot==sets.len(){return true;}
+    }
+    false
+}
+fn full_closure(b:&[u8],roots:&[u16],contexts:&[NativeContextRoot],chains:&[NativeChainRoot])->Vec<u16>{
+    let mut pending=roots.to_vec();let mut seen=std::collections::BTreeSet::new();
+    while let Some(id)=pending.pop(){
+        if !seen.insert(id){continue;}
+        match native_kind(b,id){
+            1..=4|8=>{},
+            5=>pending.extend(native_edges(contexts.iter().find(|r|r.index==id).unwrap())),
+            6=>pending.extend(raw_chain_edges(chains.iter().find(|r|r.index==id).unwrap())),
+            _=>panic!("unknown effective kind"),
+        }
+    }
+    seen.into_iter().collect()
+}
+fn verify_native_full(font:&[u8],n:u32){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    assert_eq!(u(table(font,b"maxp"),4),n as usize);
+    let rawgd=RawGdef::read(gd,n as usize);let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
+    let ligs=ligature_roots(b,n as usize);let contexts=native_context_roots(b,n as usize);
+    let chains=native_chain_roots(b,n as usize);let rev=raw_reverse_roots(b,n as usize);
+    assert!(rev.is_empty(),"new native reverse inventory requires positive witness coverage");
+    // Select first/last native roots of each present effective kind, plus
+    // first extension root if present. Order is original LookupList order.
+    let list=u(b,8);let ids:Vec<_>=(0..u(b,list) as u16).collect();
+    let mut roots=Vec::new();
+    for kind in 1..=6{
+        let mut found=ids.iter().copied().filter(|&id|native_kind(b,id)==kind);
+        if let Some(first)=found.next(){roots.push(first);if let Some(last)=found.last(){roots.push(last);}}
+    }
+    if let Some(&id)=ids.iter().find(|&&id|u(b,list+u(b,list+2+2*id as usize))==7){roots.push(id);}
+    roots.sort_unstable();roots.dedup();assert!(!roots.is_empty());
+    let closure=full_closure(b,&roots,&contexts,&chains);
+    let p=compile_gsub_program(b,&roots,n,Some(&g),Default::default()).unwrap();
+    assert_eq!(p.closure().reachable,closure);assert!(p.closure().is_proven_acyclic());
+    let choices:Vec<_>=closure.iter().copied().filter(|&id|native_kind(b,id)==3).map(|id|alternate_choice(id,0)).collect();
+    let mut run:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+    for &id in &roots{
+        if let Some(root)=chains.iter().find(|r|r.index==id){
+            run.extend(chain_witnesses(root,&rawgd).into_iter().take(4).flatten());
+        }
+        if let Some(root)=contexts.iter().find(|r|r.index==id){
+            run.extend(native_witnesses(root,&rawgd).into_iter().take(4).flatten());
+        }
+    }
+    let (want,peak)=full_reference(&run,&rawgd,&mixed,&ligs,&contexts,&chains,&rev,&roots);
+    exact_full(&p,&run,&choices,&want,peak);
+    assert_eq!(execute_gsub_chained_context_with_edits(&p,&run,&choices,Default::default()).unwrap(),want);
+    assert!(want.expansion.execution.matches>0);
+}
+#[test]fn abeezee_regular_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268);}
+#[test]fn abeezee_italic_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268);}
+#[test]fn alegreya_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109);}
+#[test]fn aref_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739);}
+#[test]fn padauk_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782);}
+#[test]fn devanagari_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117);}
+#[test]fn nastaliq_full_dispatch_native(){verify_native_full(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723);}
+fn exact_full(p:&CompiledGsubProgram<'_>,input:&[u16],choices:&[GsubAlternateSelection],
+    want:&GsubContractionExecResult,peak:usize){
+    let e=&want.expansion.execution;
+    let l=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{
+        max_glyphs:peak,max_roots:p.roots().len(),max_lookups:p.lookups().len(),
+        max_depth:e.peak_depth,max_calls:e.calls,max_probes:e.probes,max_filter_checks:e.filter_checks,
+        max_rules:e.rules,max_symbols:e.symbols,max_actions:e.actions,max_matches:e.matches},
+        max_inserted:want.expansion.inserted_glyphs,max_edit_work:want.expansion.edit_work},
+        max_removed:want.removed_glyphs};
+    assert_eq!(execute_gsub_program(p,input,choices,l).unwrap(),*want);
+    let mut bad=Vec::new();
+    if peak>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_glyphs:peak-1,..l.expansion.context},..l.expansion},..l});}
+    if l.max_removed>0{bad.push(GsubContractionExecLimits{max_removed:l.max_removed-1,..l});}
+    if l.expansion.max_inserted>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_inserted:l.expansion.max_inserted-1,..l.expansion},..l});}
+    if l.expansion.max_edit_work>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_edit_work:l.expansion.max_edit_work-1,..l.expansion},..l});}
+    if e.actions>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_actions:e.actions-1,..l.expansion.context},..l.expansion},..l});}
+    for cap in bad{assert!(matches!(execute_gsub_program(p,input,choices,cap),Err(Error::Limit(_))));}
+}
+
+
+
+// These binary fixtures are authored test data, not borrowed fonts.
+fn full_fixture_fixture(spec:&[(u16,u16,u16,Vec<Vec<u16>>)]) -> Vec<u8>{
+    let mut w=vec![1,0,10,12,14,0,0,spec.len() as u16];
+    w.resize(8+spec.len(),0);
+    for (i,(kind,effective,flags,subs)) in spec.iter().enumerate(){
+        let at=w.len();w[8+i]=((at-7)*2) as u16;
+        w.extend([*kind,*flags,subs.len() as u16]);w.resize(at+3+subs.len(),0);
+        for (j,sub) in subs.iter().enumerate(){
+            w[at+3+j]=((w.len()-at)*2) as u16;
+            if *kind==7{w.extend([1,*effective,0,8]);}
+            w.extend_from_slice(sub);
+        }
+    }
+    w.iter().flat_map(|v|v.to_be_bytes()).collect()
+}
+fn full_fixture_alt(g:u16,seq:&[u16])->Vec<u16>{
+    let mut w=vec![1,8,1,14,1,1,g,seq.len() as u16];w.extend_from_slice(seq);w
+}
+fn full_fixture_lig(g:u16,out:u16,tail:&[u16])->Vec<u16>{
+    let mut w=vec![1,8,1,14,1,1,g,1,4,out,tail.len() as u16+1];
+    w.extend_from_slice(tail);w
+}
+fn full_fixture_ctx3(input:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![3,input.len() as u16,actions.len() as u16];
+    w.resize(3+input.len(),0);
+    for &(p,l) in actions{w.extend([p,l]);}
+    for (i,&g) in input.iter().enumerate(){w[3+i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn full_fixture_chain3(back:&[u16],input:&[u16],ahead:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![3];
+    let mut slots=Vec::new();
+    for seq in [back,input,ahead]{
+        w.push(seq.len() as u16);
+        for &g in seq{slots.push((w.len(),g));w.push(0);}
+    }
+    w.push(actions.len() as u16);
+    for &(p,l) in actions{w.extend([p,l]);}
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn full_fixture_reverse8(input:&[(u16,u16)],back:&[u16],ahead:&[u16])->Vec<u16>{
+    assert!(input.windows(2).all(|w|w[0].0<w[1].0));
+    let mut w=vec![1,0,back.len() as u16];
+    let mut slots=Vec::new();
+    for &g in back{slots.push((w.len(),g));w.push(0);}
+    w.push(ahead.len() as u16);
+    for &g in ahead{slots.push((w.len(),g));w.push(0);}
+    w.push(input.len() as u16);
+    w.extend(input.iter().map(|&(_,v)|v));
+    w[1]=(w.len()*2) as u16;
+    w.extend([1,input.len() as u16]);w.extend(input.iter().map(|&(g,_)|g));
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn synthetic_full_compare(b:&[u8],gd:&RawGdef,g:Option<&Gdef>,roots:&[u16],input:&[u16])->GsubContractionExecResult{
+    let n=gd.class.len();let mut mixed=mixed_roots(b,n);mixed.extend(alternate_roots(b,n));
+    let ligs=ligature_roots(b,n);let contexts=native_context_roots(b,n);let chains=native_chain_roots(b,n);
+    let rev=raw_reverse_roots(b,n);assert!(!rev.is_empty());
+    let closure=full_closure(b,roots,&contexts,&chains);
+    let choices:Vec<_>=closure.iter().copied().filter(|&id|native_kind(b,id)==3).map(|id|alternate_choice(id,0)).collect();
+    let p=compile_gsub_program(b,roots,n as u32,g,Default::default()).unwrap();
+    assert_eq!(p.closure().reachable,closure);assert!(p.closure().is_proven_acyclic());
+    let (want,peak)=full_reference(input,gd,&mixed,&ligs,&contexts,&chains,&rev,roots);
+    exact_full(&p,input,&choices,&want,peak);want
+}
+fn empty_raw_gdef(n:usize)->RawGdef{RawGdef{class:vec![0;n],attachment:vec![0;n],sets:vec![]}}
+#[test]fn synthetic_all_effective_kinds_mixed_reverse_reference(){
+    let b=full_fixture_fixture(&[
+        (2,2,0,vec![full_fixture_alt(9,&[10,20])]),
+        (8,8,0,vec![full_fixture_reverse8(&[(10,20)],&[],&[20])]),
+        (4,4,0,vec![full_fixture_lig(20,21,&[20])]),
+        (3,3,0,vec![full_fixture_alt(21,&[22,23])]),
+        (1,1,0,vec![vec![2,8,1,24,1,1,22]]),
+        (7,8,0,vec![full_fixture_reverse8(&[(24,25)],&[],&[24])]),
+        (5,5,0,vec![full_fixture_ctx3(&[25,24],&[(1,7)])]),
+        (8,8,0,vec![full_fixture_reverse8(&[(24,26)],&[25],&[])]),
+        (6,6,0,vec![full_fixture_chain3(&[25],&[26],&[],&[(0,9)])]),
+        (7,8,0,vec![full_fixture_reverse8(&[(26,27)],&[25],&[])])
+    ]);
+    let a=synthetic_full_compare(&b,&empty_raw_gdef(32),None,&[0,1,2,3,4,5,6,8],&[9,9]);
+    assert_eq!(a.expansion.execution.glyphs,vec![25,27]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.ligatures,a.expansion.execution.actions),(2,2,2,2));
+}
+#[test]fn synthetic_reverse_filtered_direction_reference(){
+    let w=[1u16,2,14,0,0,34,48,1,10,7,1,2,3,3,3,4,0,
+        1,12,4,1,2,0,0,1,2,0,12,0,20,1,2,10,13,1,2,12,14];
+    let gd:Vec<_>=w.iter().flat_map(|v|v.to_be_bytes()).collect();
+    let raw=RawGdef::read(&gd,32);let g=parse_gdef(&gd,32,Default::default()).unwrap();
+    let b=full_fixture_fixture(&[(7,8,LOOKUP_IGNORE_MARK,vec![
+        full_fixture_reverse8(&[(10,20)],&[9],&[15]),
+        full_fixture_reverse8(&[(10,21)],&[],&[20])])]);
+    let a=synthetic_full_compare(&b,&raw,Some(&g),&[0],&[9,13,10,12,15,10,14,20]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,13,20,12,15,21,14,20]);
+}
+#[test]fn synthetic_reverse_format2_coverage_finite_reference(){
+    // Coverage Format 2 for input 10..11, two replacement indices.
+    // Lookahead uses a format 1 coverage for 20. Input offset 16,
+    // lookahead offset 26, followed by replacement-range coverage.
+    let sub=vec![1,16,0,1,26,2,20,21,2,1,10,11,0,1,1,20];
+    let b=full_fixture_fixture(&[(8,8,0,vec![sub])]);
+    let gd=empty_raw_gdef(32);
+    for code in 0usize..256{
+        let alphabet=[9,10,11,20];
+        let input:Vec<_>=(0..4).map(|i|alphabet[(code/4usize.pow(i))%4]).collect();
+        let a=synthetic_full_compare(&b,&gd,None,&[0],&input);
+        let mut want=input.clone();
+        // Independent direct mathematical reference: the next non-10
+        // decides if a run of 10 cascades; 11 changes only next to 20.
+        for i in (0..input.len()-1).rev(){
+            if want[i+1]==20{if input[i]==10{want[i]=20;}else if input[i]==11{want[i]=21;}}
+        }
+        assert_eq!(a.expansion.execution.glyphs,want);
+    }
+}
