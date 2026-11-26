@@ -17,6 +17,7 @@ fn fixture(spec:&[Lookup<'_>])->Vec<u8>{
             match effective{
                 1=>{assert_eq!(seq.len(),1);w.extend([2,8,1,seq[0],1,1,input]);}
                 2|3=>{w.extend([1,8,1,14,1,1,input,seq.len() as u16]);w.extend_from_slice(seq);}
+                4=>{assert!(seq.len()>=2);w.extend([1,8,1,14,1,1,input,1,4,seq[0],seq.len() as u16]);w.extend_from_slice(&seq[1..]);}
                 _=>panic!("fixture kind")
             }
         }
@@ -199,4 +200,102 @@ fn alternate_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[Gsu
         execute_gsub_mixed(&p,&[10,9],Default::default()).unwrap());
     assert!(matches!(execute_gsub_with_alternates(&p,&[10],&[choice(0,0)],Default::default()),Err(Error::Invalid(_))));
     assert!(execute_gsub_with_alternates(&p,&[32],&[],Default::default()).is_err());
+}
+
+
+fn ligature_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubLigatureExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_with_ligatures(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn ligature_contiguous_and_no_same_root_cascade(){
+    let b=fixture(&[(4,4,0,None,&[(10,&[20,11]),(20,&[21,15])])]);
+    let a=ligature_run(&b,&[0],&[10,11,15,20,15,9],None,&[]);
+    assert_eq!(a.execution.glyphs,vec![20,15,21,9]);
+    assert_eq!((a.execution.visits,a.execution.probes,a.execution.matches,a.execution.changes,a.execution.emitted),(6,7,2,2,4));
+    assert_eq!((a.ligatures,a.removed_glyphs,a.rule_attempts,a.component_checks),(2,2,2,2));
+}
+#[test]fn ligature_preserves_ignored_marks_and_gaps(){
+    let g=gdef();
+    let b=fixture(&[(4,4,LOOKUP_IGNORE_MARK,None,&[(10,&[20,11,15])])]);
+    let a=ligature_run(&b,&[0],&[12,10,13,14,11,12,15,13,9],Some(&g),&[]);
+    assert_eq!(a.execution.glyphs,vec![12,20,13,14,12,13,9]);
+    assert_eq!((a.ligatures,a.removed_glyphs,a.component_checks),(1,2,2));
+    assert_eq!(a.execution.visits,9);
+    assert_eq!(ligature_run(&b,&[0],&[10,12,11,15],None,&[]).execution.glyphs,vec![10,12,11,15]);
+}
+#[test]fn ligature_eligible_mismatch_is_not_skipped(){
+    let g=gdef();
+    let b=fixture(&[(4,4,LOOKUP_IGNORE_MARK,None,&[(10,&[20,11])])]);
+    let a=ligature_run(&b,&[0],&[10,12,9,11,10,12],Some(&g),&[]);
+    assert_eq!(a.execution.glyphs,vec![10,12,9,11,10,12]);
+    assert_eq!((a.ligatures,a.rule_attempts,a.component_checks),(0,2,1));
+}
+#[test]fn ligature_font_order_over_longest_and_subtable_fallback(){
+    // One LigatureSet containing two rules, short first.
+    let b=words(&[1,0,10,12,14,0,0,1,4,4,0,1,8,
+        1,8,1,14,1,1,10,2,6,12,20,2,11,21,3,11,15]);
+    assert_eq!(ligature_run(&b,&[0],&[10,11,15],None,&[]).execution.glyphs,vec![20,15]);
+    let b=fixture(&[(4,4,0,None,&[(10,&[20,12]),(10,&[21,11,15])])]);
+    let a=ligature_run(&b,&[0],&[10,11,15],None,&[]);
+    assert_eq!(a.execution.glyphs,vec![21]);
+    assert_eq!((a.execution.probes,a.rule_attempts,a.component_checks),(2,2,3));
+}
+#[test]fn ligature_wrapped_mixed_expansion_alternate_and_later_single(){
+    let b=fixture(&[(2,2,0,None,&[(10,&[11,15])]),(3,3,0,None,&[(11,&[12,13])]),
+        (7,4,0,None,&[(13,&[20,15])]),(1,1,0,None,&[(20,&[21])])]);
+    let a=ligature_run(&b,&[0,1,2,3],&[10,9],None,&[choice(1,1)]);
+    assert_eq!(a.execution.glyphs,vec![21,9]);
+    assert_eq!((a.execution.visits,a.execution.matches,a.execution.emitted),(10,4,10));
+    assert_eq!((a.ligatures,a.removed_glyphs),(1,1));
+}
+#[test]fn ligature_recomputes_filter_between_roots(){
+    let g=gdef();
+    let b=fixture(&[(4,4,0,None,&[(9,&[12,16])]),(1,1,LOOKUP_IGNORE_MARK,None,&[(12,&[20])])]);
+    assert_eq!(ligature_run(&b,&[0,1],&[9,16],Some(&g),&[]).execution.glyphs,vec![12]);
+}
+#[test]fn ligature_mark_set_preserves_only_filtered_marks(){
+    let g=gdef();
+    let b=fixture(&[(4,4,LOOKUP_USE_MARK_SET|0x0100,Some(0),&[(10,&[20,11])])]);
+    assert_eq!(ligature_run(&b,&[0],&[10,12,11],Some(&g),&[]).execution.glyphs,vec![20,12]);
+    assert_eq!(ligature_run(&b,&[0],&[10,13,11],Some(&g),&[]).execution.glyphs,vec![10,13,11]);
+}
+#[test]fn ligature_exact_limits_and_atomic_failure(){
+    let b=fixture(&[(4,4,0,None,&[(10,&[20,12]),(10,&[21,11])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    let input=[10,11,9];
+    let l=GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_glyphs:3,max_roots:1,
+        max_visits:3,max_probes:4,max_matches:1,max_emitted:2},max_rule_attempts:2,max_component_checks:2};
+    assert_eq!(execute_gsub_with_ligatures(&p,&input,&[],l).unwrap().execution.glyphs,vec![21,9]);
+    for bad in [GsubLigatureExecLimits{max_rule_attempts:1,..l},GsubLigatureExecLimits{max_component_checks:1,..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_glyphs:2,..l.mixed},..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_roots:0,..l.mixed},..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_visits:2,..l.mixed},..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_probes:3,..l.mixed},..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_matches:0,..l.mixed},..l},
+        GsubLigatureExecLimits{mixed:GsubMixedExecLimits{max_emitted:1,..l.mixed},..l}]{
+        assert!(matches!(execute_gsub_with_ligatures(&p,&input,&[],bad),Err(Error::Limit(_))));
+        assert_eq!(input,[10,11,9]);
+    }
+}
+#[test]fn ligature_empty_invalid_and_legacy_contract(){
+    let b=fixture(&[(4,4,0,None,&[(10,&[20,11])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    assert!(execute_gsub_with_ligatures(&p,&[],&[],Default::default()).unwrap().execution.glyphs.is_empty());
+    assert!(execute_gsub_with_ligatures(&p,&[32],&[],Default::default()).is_err());
+    assert!(execute_gsub_with_ligatures(&p,&[],&[choice(0,0)],Default::default()).is_err());
+    assert!(matches!(execute_gsub_mixed(&p,&[],Default::default()),Err(Error::Unsupported(_))));
+    assert!(matches!(execute_gsub_with_alternates(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn ligature_legacy_mixed_equivalence_and_unsupported_context(){
+    let b=fixture(&[(2,2,0,None,&[(10,&[11,12])]),(3,3,0,None,&[(11,&[13,14])])]);
+    let p=compile_gsub_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let choices=[choice(1,1)];
+    let a=execute_gsub_with_ligatures(&p,&[10,9],&choices,Default::default()).unwrap();
+    assert_eq!(a.execution,execute_gsub_with_alternates(&p,&[10,9],&choices,Default::default()).unwrap());
+    assert_eq!((a.ligatures,a.removed_glyphs,a.rule_attempts,a.component_checks),(0,0,0,0));
+    let b=words(&[1,0,10,12,14,0,0,2,6,26,
+        1,0,1,8,1,6,1,1,1,10,
+        5,0,1,8,3,1,1,12,0,0,1,1,10]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_with_ligatures(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
 }

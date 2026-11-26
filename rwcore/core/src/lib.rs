@@ -208,3 +208,5 @@ pub use font_gsub_execute::{GsubSingleExecLimits,GsubSingleExecResult,execute_gs
 pub use font_gsub_execute::{GsubMixedExecLimits,GsubMixedExecResult,execute_gsub_mixed};
 
 pub use font_gsub_execute::{GsubAlternateSelection,execute_gsub_with_alternates};
+
+pub use font_gsub_execute::{GsubLigatureExecLimits,GsubLigatureExecResult,execute_gsub_with_ligatures};
