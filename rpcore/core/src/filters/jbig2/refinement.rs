@@ -225,6 +225,15 @@ impl ContextBank{
     pub fn template(&self)->Template{self.template}
     pub fn entries(&self)->&[Context]{&self.entries}
     pub fn reset(&mut self){self.entries.fill(Context::default());}
+    /// Restore probabilities only; the caller owns a fresh arithmetic
+    /// stream and checks neighborhood/AT compatibility separately.
+    pub(crate) fn restore_from(&mut self,source:&Self)->Result<()>{
+        if self.template!=source.template||self.entries.len()!=source.entries.len(){
+            return Err(Error::Invalid("JBIG2 GR snapshot template"));
+        }
+        self.entries.copy_from_slice(&source.entries);
+        Ok(())
+    }
 }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct RefinementOptions{
