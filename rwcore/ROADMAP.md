@@ -86,8 +86,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4d1b | Independent real-font Type 1 execution reference | Verified (#125) |
 | C4.4d2a | Bounded Type 2 multiple substitution and mixed Type 1/2 execution | Verified (#126) |
 | C4.4d2b | Independent real-font Type 2 and mixed Type 1/2 execution reference | Verified (#127) |
-| C4.4d3a | Bounded Type 3 alternate selection and mixed root execution | Source implemented; CI pending |
-| C4.4d3b | Independent real-font Type 3 and mixed Type 1/2/3 execution reference | Planned |
+| C4.4d3a | Bounded Type 3 alternate selection and mixed root execution | Verified (#128) |
+| C4.4d3b | Independent real-font Type 3 and mixed Type 1/2/3 execution reference | Source implemented; CI pending |
+| C4.4d4a | Bounded Type 4 ligature execution with filtered positions and mixed roots | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

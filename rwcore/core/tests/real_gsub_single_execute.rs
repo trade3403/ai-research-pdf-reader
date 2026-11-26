@@ -337,3 +337,168 @@ fn verify_mixed(font:&[u8],glyphs:u32,counts:[usize;2]){
 #[test]fn padauk_mixed_execution(){verify_mixed(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,[46,19]);}
 #[test]fn devanagari_mixed_execution(){verify_mixed(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,[104,3]);}
 #[test]fn nastaliq_mixed_execution(){verify_mixed(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,[82,59]);}
+
+
+// C4.4d3b: raw AlternateSet decoding and independent candidate selection.
+// Unlike the Type 2 decoder, a set is a list of choices, not an output run.
+fn alternate_roots(b:&[u8],n:usize)->Vec<RawMixed>{
+    let list=u(b,8);
+    let mut out=Vec::new();
+    for i in 0..u(b,list){
+        let p=list+u(b,list+2+2*i);
+        let declared=u(b,p);let flags=u(b,p+2);let count=u(b,p+4);
+        let mark=(flags&16!=0).then(||u(b,p+6+2*count));
+        let mut rules=Vec::new();
+        for j in 0..count{
+            let source=p+u(b,p+6+2*j);
+            let (kind,t)=if declared==7{
+                assert_eq!(u(b,source),1);
+                (u(b,source+2),source+d(b,source+4))
+            }else{(declared,source)};
+            if kind!=3{continue;}
+            assert_eq!(u(b,t),1);
+            let covered=coverage(b,t+u(b,t+2));
+            assert_eq!(covered.len(),u(b,t+4));
+            let mut map=BTreeMap::new();
+            for (g,k) in covered{
+                assert!(k<u(b,t+4));
+                let at=t+u(b,t+6+2*k);
+                let count=u(b,at);assert!(count>0);
+                let candidates:Vec<u16>=(0..count).map(|j|u(b,at+2+2*j) as u16).collect();
+                assert!((g as usize)<n && candidates.iter().all(|&v|(v as usize)<n));
+                assert!(map.insert(g,candidates).is_none());
+            }
+            rules.push(map);
+        }
+        if !rules.is_empty(){
+            assert_eq!(rules.len(),count);
+            out.push(RawMixed{index:i as u16,kind:3,flags,mark,rules});
+        }
+    }
+    out
+}
+fn alternate_reference(input:&[u16],roots:&[&RawMixed],gd:&RawGdef,
+    choices:&[GsubAlternateSelection])->Option<GsubMixedExecResult>{
+    let mut a=GsubMixedExecResult{glyphs:input.to_vec(),visits:0,probes:0,matches:0,changes:0,emitted:0};
+    for root in roots{
+        let table=decisions(root,gd);
+        let choice=choices.iter().find(|c|c.lookup_index==root.index);
+        let mut next=Vec::new();
+        for &g in &a.glyphs{
+            let d=&table[g as usize];
+            a.visits+=1;a.probes+=d.probes;
+            match d.replacement{
+                None=>next.push(g),
+                Some(seq)=>{
+                    a.matches+=1;
+                    if root.kind==3{
+                        let v=*seq.get(choice?.candidate_index)?;
+                        a.changes+=usize::from(v!=g);
+                        next.push(v);
+                    }else{
+                        a.changes+=usize::from(seq!=[g]);
+                        next.extend_from_slice(seq);
+                    }
+                }
+            }
+        }
+        a.emitted+=next.len();a.glyphs=next;
+    }
+    Some(a)
+}
+fn alternate_choice(lookup_index:u16,candidate_index:usize)->GsubAlternateSelection{
+    GsubAlternateSelection{lookup_index,candidate_index}
+}
+fn verify_alternate(font:&[u8],glyphs:u32,expected:usize){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    let n=glyphs as usize;
+    assert_eq!(u(table(font,b"maxp"),4),n);
+    let rawgd=RawGdef::read(gd,n);
+    let g=parse_gdef(gd,glyphs,Default::default()).unwrap();
+    let mut raw=mixed_roots(b,n);
+    let alternates=alternate_roots(b,n);
+    assert_eq!(alternates.iter().map(|r|r.rules.len()).sum::<usize>(),expected);
+    let input:Vec<u16>=(0..n).map(|i|i as u16).collect();
+    let mut matched=0;
+    for root in &alternates{
+        let p=compile_gsub_program(b,&[root.index],glyphs,Some(&g),Default::default()).unwrap();
+        let table=decisions(root,&rawgd);
+        let max=table.iter().filter_map(|d|d.replacement.map(|s|s.len())).max().unwrap_or(0);
+        for index in 0..max{
+            // All eligible first-match sets supporting this candidate;
+            // also include every miss and filtered glyph.
+            let valid:Vec<_>=input.iter().copied().filter(|&id|
+                table[id as usize].replacement.map_or(true,|s|index<s.len())).collect();
+            let choices=[alternate_choice(root.index,index)];
+            let want=alternate_reference(&valid,&[root],&rawgd,&choices).unwrap();
+            let got=execute_gsub_with_alternates(&p,&valid,&choices,Default::default()).unwrap();
+            assert_eq!(got,want,"lookup {} candidate {}",root.index,index);
+            assert_eq!(got.glyphs.len(),valid.len());
+            matched+=want.matches;
+            if let Some(&id)=input.iter().find(|&&id|table[id as usize].replacement.is_some_and(|s|index>=s.len())){
+                assert!(alternate_reference(&[id],&[root],&rawgd,&choices).is_none());
+                assert!(matches!(execute_gsub_with_alternates(&p,&[id],&choices,Default::default()),Err(Error::Invalid(_))));
+            }
+        }
+        let invalid=[alternate_choice(root.index,usize::MAX)];
+        let misses:Vec<_>=input.iter().copied().filter(|&id|table[id as usize].replacement.is_none()).collect();
+        assert_eq!(execute_gsub_with_alternates(&p,&misses,&invalid,Default::default()).unwrap().glyphs,misses);
+        // Check one-past-end for every eligible covered glyph, without
+        // treating a valid later subtable as a fallback.
+        for &id in &input{
+            if let Some(seq)=table[id as usize].replacement{
+                let bad=[alternate_choice(root.index,seq.len())];
+                assert!(matches!(execute_gsub_with_alternates(&p,&[id],&bad,Default::default()),Err(Error::Invalid(_))));
+            }
+        }
+        assert!(matches!(execute_gsub_with_alternates(&p,&[],&[],Default::default()),Err(Error::Invalid(_))));
+        assert!(matches!(execute_gsub_mixed(&p,&[],Default::default()),Err(Error::Unsupported(_))));
+    }
+    assert_eq!(matched>0,expected>0);
+    raw.extend(alternates);raw.sort_by_key(|r|r.index);
+    assert!(raw.windows(2).all(|w|w[0].index<w[1].index));
+    let mixed:Vec<_>=input.iter().copied().chain(input.iter().rev().copied())
+        .chain(input.iter().step_by(3).copied()).collect();
+    let all:Vec<_>=raw.iter().collect();
+    let only_alt:Vec<_>=raw.iter().filter(|r|r.kind==3).collect();
+    for selected in [&all[..],&only_alt[..]]{
+        let ids:Vec<_>=selected.iter().map(|r|r.index).collect();
+        let p=compile_gsub_program(b,&ids,glyphs,Some(&g),Default::default()).unwrap();
+        assert_eq!(p.roots(),ids.as_slice());
+        assert!(p.dependencies().is_empty());
+        // Candidate 0, plus the highest candidate that is valid for every
+        // eligible covered glyph in each selected root.
+        for highest in [false,true]{
+            let choices:Vec<_>=selected.iter().filter(|r|r.kind==3).map(|r|{
+                let index=if highest{
+                    decisions(r,&rawgd).iter().filter_map(|d|d.replacement.map(|s|s.len()))
+                        .min().unwrap_or(1)-1
+                }else{0};
+                alternate_choice(r.index,index)
+            }).collect();
+            let want=alternate_reference(&mixed,selected,&rawgd,&choices).unwrap();
+            let l=GsubMixedExecLimits{max_glyphs:want.glyphs.len(),max_roots:ids.len(),
+                max_visits:want.visits,max_probes:want.probes,max_matches:want.matches,max_emitted:want.emitted};
+            assert_eq!(execute_gsub_with_alternates(&p,&mixed,&choices,l).unwrap(),want);
+            if choices.is_empty(){
+                assert_eq!(execute_gsub_mixed(&p,&mixed,l).unwrap(),want);
+            }
+            let mut bad=vec![GsubMixedExecLimits{max_glyphs:l.max_glyphs-1,..l}];
+            if l.max_roots>0{bad.push(GsubMixedExecLimits{max_roots:l.max_roots-1,..l});}
+            if l.max_visits>0{bad.push(GsubMixedExecLimits{max_visits:l.max_visits-1,..l});}
+            if l.max_probes>0{bad.push(GsubMixedExecLimits{max_probes:l.max_probes-1,..l});}
+            if l.max_matches>0{bad.push(GsubMixedExecLimits{max_matches:l.max_matches-1,..l});}
+            if l.max_emitted>0{bad.push(GsubMixedExecLimits{max_emitted:l.max_emitted-1,..l});}
+            for limit in bad{
+                assert!(matches!(execute_gsub_with_alternates(&p,&mixed,&choices,limit),Err(Error::Limit(_))));
+            }
+        }
+    }
+}
+#[test]fn abeezee_regular_alternate_execution(){verify_alternate(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,0);}
+#[test]fn abeezee_italic_alternate_execution(){verify_alternate(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,0);}
+#[test]fn alegreya_alternate_execution(){verify_alternate(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,1);}
+#[test]fn aref_alternate_execution(){verify_alternate(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,0);}
+#[test]fn padauk_alternate_execution(){verify_alternate(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,1);}
+#[test]fn devanagari_alternate_execution(){verify_alternate(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,0);}
+#[test]fn nastaliq_alternate_execution(){verify_alternate(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,0);}

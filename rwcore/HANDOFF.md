@@ -121,3 +121,6 @@ C4.4d2b pending CI; #126 verified 876/platform, 2628 total. Seven real-font mixe
 
 ## Latest checkpoint
 C4.4d3a pending CI; #127 verified 883/platform, 2649 total. Ten alternate/mixed execution regressions, 893/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next real-font Type 3 reference only after CI passes.
+
+## Latest checkpoint
+C4.4d3b pending CI; #128 verified 893/platform, 2679 total. Seven real-font alternate execution regressions, 900/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next Type 4 ligature execution only after CI passes.
