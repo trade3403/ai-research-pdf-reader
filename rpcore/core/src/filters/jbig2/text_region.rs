@@ -343,7 +343,17 @@ impl ArithmeticTextContexts{
 pub(crate) fn decode_arithmetic_shared(options:Options,symbols:&[&Bitmap],
     decoder:&mut super::qm::Decoder<'_>,ids:&mut super::integer::IaidDecoder,
     contexts:&mut ArithmeticTextContexts,neighborhood:Option<&super::refinement::Neighborhood>,
-    mut gr:Option<&mut super::refinement::ContextBank>,available:u64)->Result<DecodedText>{
+    gr:Option<&mut super::refinement::ContextBank>,available:u64)->Result<DecodedText>{
+    decode_arithmetic_shared_bounded(options,symbols,decoder,ids,contexts,neighborhood,gr,available,bitmap::MAX_PACKED_BYTES)
+}
+
+/// Caller supplies remaining packed bytes after reserving persistent output
+/// and the region canvas. Only one temporary refinement bitmap is live.
+pub(crate) fn decode_arithmetic_shared_bounded(options:Options,symbols:&[&Bitmap],
+    decoder:&mut super::qm::Decoder<'_>,ids:&mut super::integer::IaidDecoder,
+    contexts:&mut ArithmeticTextContexts,neighborhood:Option<&super::refinement::Neighborhood>,
+    mut gr:Option<&mut super::refinement::ContextBank>,available:u64,
+    temporary_packed:usize)->Result<DecodedText>{
     use super::integer::Integer;
     use super::refinement;
     if symbols.len()>MAX_INSTANCES as usize||symbols.len()>(1usize<<ids.width()){
@@ -387,6 +397,10 @@ pub(crate) fn decode_arithmetic_shared(options:Options,symbols:&[&Bitmap],
                         let dy=required(fields[4].decode(decoder)?)?;
                         let opt=refinement_geometry(src,dw,dh,dx,dy)?;
                         let cost=refinement::work_bound(n.template(),opt)?;
+                        let bytes=u64::from(opt.width).div_ceil(8)*u64::from(opt.height);
+                        if bytes>temporary_packed as u64{
+                            return Err(Error::Limit("JBIG2 text temporary packed budget"));
+                        }
                         let left=region.left.checked_sub(cost).ok_or(Error::Limit("JBIG2 text refinement work"))?;
                         let decoded=refinement::decode_bitmap(src,n,opt,bank,decoder,cost)?;
                         region.left=left;
