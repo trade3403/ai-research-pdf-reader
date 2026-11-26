@@ -103,3 +103,6 @@ C4.4c4d source pending CI; parent CI #120 verified 827 tests per platform. Read 
 
 ## Latest checkpoint
 C4.4c5a pending CI; #121 verified 834/platform. Read DEV_STATE.md and exact HEAD. No concurrent writers. Program is static, not execution. New window recommended.
+
+## Latest checkpoint
+C4.4c5b pending CI; #122 verified 841/platform, 2523 total. Seven real-font program reference regressions, 848/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next actual single substitution execution only after CI passes.

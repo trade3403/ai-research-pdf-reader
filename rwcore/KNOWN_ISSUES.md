@@ -143,3 +143,5 @@
 - C4.4c4d: matrix reference checks static reachability only; seven fixtures have no static cycles (synthetic cycles retained). Partial source coverage remains explicitly incomplete. No runtime cycle guard or actual filtered execution yet. Native Type 8 and real point attachment fixtures remain outstanding.
 
 - C4.4c5a: static program retains cycles, does not execute. Conservative suffix byte accounting, not memory measurement. Closure stack depth is not runtime recursion bound. Real program reference pending.
+
+- C4.4c5b: reference tests use seven existing fixtures, representative root selections and at most one default and explicit language plan per font. Typed payload equality is not independent shaping semantics. Exact budgets tested for all seven; one-less aggregate limits checked on small fixtures. Static reachability is not runtime execution safety; native Type 8, real point attachment, actual filtered substitution, GPOS, corpus and security/license gates remain outstanding.
