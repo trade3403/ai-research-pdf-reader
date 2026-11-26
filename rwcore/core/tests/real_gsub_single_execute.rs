@@ -1047,3 +1047,233 @@ fn verify_native_context(font:&[u8],n:u32,expected:usize)->(usize,usize){
 #[test]fn padauk_native_context(){let _=verify_native_context(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,6);}
 #[test]fn devanagari_native_context(){let _=verify_native_context(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,85);}
 #[test]fn nastaliq_native_context(){let _=verify_native_context(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,1341);}
+
+
+// C4.4d5e: independent identity-token oracle. Each original glyph has a
+// unique immutable token. Growth retains the first token and creates new
+// tokens for the rest. The oracle resolves anchors by searching tokens;
+// it never rebases an integer position in any active context.
+struct ExpansionOracle{
+    a:GsubExpansionExecResult,
+    tokens:Vec<usize>,
+    next_token:usize,
+    frame_sizes:Vec<usize>,
+}
+impl ExpansionOracle{
+    fn new(input:&[u16])->Self{
+        Self{a:GsubExpansionExecResult{execution:GsubContextExecResult{glyphs:input.to_vec(),..Default::default()},
+            multiple_matches:0,inserted_glyphs:0,edit_work:0},
+            tokens:(0..input.len()).collect(),next_token:input.len(),frame_sizes:Vec::new()}
+    }
+    fn position(&self,token:usize)->usize{self.tokens.iter().position(|&v|v==token).unwrap()}
+    fn boundary(&self,token:Option<usize>)->usize{
+        token.map_or(self.tokens.len(),|v|self.position(v))
+    }
+    fn replace(&mut self,p:usize,seq:&[u16]){
+        let delta=seq.len()-1;
+        self.a.multiple_matches+=1;
+        self.a.inserted_glyphs+=delta;
+        self.a.edit_work+=seq.len();
+        if delta>0{
+            self.a.edit_work+=self.tokens.len()-p-1;
+            self.a.edit_work+=self.frame_sizes.iter().map(|&n|n+2).sum::<usize>();
+            self.tokens.splice(p+1..p+1,self.next_token..self.next_token+delta);
+            self.next_token+=delta;
+        }
+        self.a.execution.changes+=usize::from(seq!=[self.a.execution.glyphs[p]]);
+        self.a.execution.glyphs.splice(p..p+1,seq.iter().copied());
+    }
+    fn apply(&mut self,gd:&RawGdef,mixed:&[RawMixed],contexts:&[NativeContextRoot],
+        id:u16,p:usize)->Option<usize>{
+        self.frame_sizes.push(0);
+        let result=self.inner(gd,mixed,contexts,id,p);
+        self.frame_sizes.pop();
+        result
+    }
+    fn inner(&mut self,gd:&RawGdef,mixed:&[RawMixed],contexts:&[NativeContextRoot],
+        id:u16,p:usize)->Option<usize>{
+        assert!(self.frame_sizes.len()<=32);
+        self.a.execution.calls+=1;
+        self.a.execution.peak_depth=self.a.execution.peak_depth.max(self.frame_sizes.len());
+        self.a.execution.filter_checks+=1;
+        let glyph=self.a.execution.glyphs[p];
+        if let Some(root)=mixed.iter().find(|r|r.index==id){
+            if !gd.eligible(glyph,root.flags,root.mark){return None;}
+            for sub in &root.rules{
+                self.a.execution.probes+=1;
+                if let Some(seq)=sub.get(&glyph){
+                    self.a.execution.matches+=1;
+                    if root.kind==2{
+                        self.replace(p,seq);
+                        return Some(p+seq.len());
+                    }
+                    assert!(matches!(root.kind,1|3));
+                    self.a.execution.changes+=usize::from(glyph!=seq[0]);
+                    self.a.execution.glyphs[p]=seq[0];
+                    return Some(p+1);
+                }
+            }
+            return None;
+        }
+        let root=contexts.iter().find(|r|r.index==id).unwrap();
+        if !gd.eligible(glyph,root.flags,root.mark){return None;}
+        for sub in &root.subs{
+            self.a.execution.probes+=1;
+            if let Some((pos,actions))=native_match(&mut self.a.execution,gd,root,sub,p){
+                self.a.execution.matches+=1;
+                // Boundary is the original successor token, or end of
+                // stream. An edit at that successor does not extend span.
+                let after=self.tokens.get(pos.last().unwrap()+1).copied();
+                let anchors:Vec<_>=pos.iter().map(|&i|self.tokens[i]).collect();
+                *self.frame_sizes.last_mut().unwrap()=anchors.len();
+                for &(sequence,target) in actions{
+                    self.a.execution.actions+=1;
+                    let at=self.position(anchors[sequence]);
+                    self.apply(gd,mixed,contexts,target,at);
+                }
+                return Some(self.boundary(after));
+            }
+        }
+        None
+    }
+}
+fn native_expansion_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],
+    contexts:&[NativeContextRoot],roots:&[u16])->GsubExpansionExecResult{
+    let mut oracle=ExpansionOracle::new(input);
+    for &root in roots{
+        let mut p=0;
+        while p<oracle.tokens.len(){p=oracle.apply(gd,mixed,contexts,root,p).unwrap_or(p+1);}
+    }
+    assert_eq!(oracle.tokens.len(),oracle.a.execution.glyphs.len());
+    assert_eq!(oracle.tokens.len(),input.len()+oracle.a.inserted_glyphs);
+    oracle.a
+}
+fn expansion_closure(b:&[u8],root:u16,contexts:&[NativeContextRoot])->Option<Vec<u16>>{
+    let mut pending=vec![root];
+    let mut seen=std::collections::BTreeSet::new();
+    while let Some(id)=pending.pop(){
+        if !seen.insert(id){continue;}
+        match native_kind(b,id){
+            1|2|3=>{},
+            5=>pending.extend(native_edges(contexts.iter().find(|r|r.index==id).unwrap())),
+            _=>return None,
+        }
+    }
+    Some(seen.into_iter().collect())
+}
+fn exact_expansion(p:&CompiledGsubProgram<'_>,input:&[u16],choices:&[GsubAlternateSelection],
+    want:&GsubExpansionExecResult){
+    let e=&want.execution;
+    // Growth is monotonic in this subset, so final length is the peak.
+    let l=GsubExpansionExecLimits{context:GsubContextExecLimits{
+        max_glyphs:e.glyphs.len(),max_roots:p.roots().len(),max_lookups:p.lookups().len(),
+        max_depth:e.peak_depth,max_calls:e.calls,max_probes:e.probes,max_filter_checks:e.filter_checks,
+        max_rules:e.rules,max_symbols:e.symbols,max_actions:e.actions,max_matches:e.matches},
+        max_inserted:want.inserted_glyphs,max_edit_work:want.edit_work};
+    assert_eq!(execute_gsub_context_with_expansion(p,input,choices,l).unwrap(),*want);
+    let mut bad=Vec::new();
+    if l.context.max_glyphs>0{bad.push(GsubExpansionExecLimits{context:GsubContextExecLimits{max_glyphs:l.context.max_glyphs-1,..l.context},..l});}
+    if l.max_inserted>0{bad.push(GsubExpansionExecLimits{max_inserted:l.max_inserted-1,..l});}
+    if l.max_edit_work>0{bad.push(GsubExpansionExecLimits{max_edit_work:l.max_edit_work-1,..l});}
+    if e.actions>0{bad.push(GsubExpansionExecLimits{context:GsubContextExecLimits{max_actions:e.actions-1,..l.context},..l});}
+    if e.calls>0{bad.push(GsubExpansionExecLimits{context:GsubContextExecLimits{max_calls:e.calls-1,..l.context},..l});}
+    for cap in bad{assert!(matches!(execute_gsub_context_with_expansion(p,input,choices,cap),Err(Error::Limit(_))));}
+}
+fn native_multiple_parent(target:&[u8],glyph:u16)->Vec<u8>{
+    // Two actions on distinct occurrences of the same original glyph.
+    let mut b:Vec<u8>=[1u16,0,10,12,14,0,0,2,6,0,2,0,1,8]
+        .iter().flat_map(|v|v.to_be_bytes()).collect();
+    b.extend_from_slice(target);
+    if b.len()%2!=0{b.push(0);}
+    let off=u16::try_from(b.len()-14).unwrap();
+    b[18..20].copy_from_slice(&off.to_be_bytes());
+    b.extend([5u16,0,1,8,3,2,2,18,24,0,0,1,0,1,1,glyph,1,1,glyph]
+        .iter().flat_map(|v|v.to_be_bytes()));
+    b
+}
+fn verify_native_expansion(font:&[u8],n:u32,expected_multiple:usize,expected_context:usize){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    assert_eq!(u(table(font,b"maxp"),4),n as usize);
+    let rawgd=RawGdef::read(gd,n as usize);
+    let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
+    let contexts=native_context_roots(b,n as usize);
+    assert_eq!(contexts.iter().map(|r|r.subs.len()).sum::<usize>(),expected_context);
+    let multiple:Vec<_>=mixed.iter().filter(|r|r.kind==2).collect();
+    assert_eq!(multiple.iter().map(|r|r.rules.len()).sum::<usize>(),expected_multiple);
+    let list=u(b,8);
+    let mut nested_growth=0;
+    for root in multiple{
+        let p=compile_gsub_program(b,&[root.index],n,Some(&g),Default::default()).unwrap();
+        let input:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+        let want=native_expansion_reference(&input,&rawgd,&mixed,&contexts,&[root.index]);
+        exact_expansion(&p,&input,&[],&want);
+        assert!(matches!(execute_gsub_context_with_alternates(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+        // Native raw Type 2 data under a constructed parent: this is
+        // explicitly not a native context schedule. Sample each subtable.
+        let at=list+u(b,list+2+2*root.index as usize);
+        for (j,map) in root.rules.iter().enumerate(){
+            let s=at+u(b,at+6+2*j);
+            let t=if u(b,at)==7{s+d(b,s+4)}else{s};
+            let c=t+u(b,t+2);
+            let mut end=(c+4+u(b,c+2)*if u(b,c)==1{2}else{6}).max(t+6+2*u(b,t+4));
+            for i in 0..u(b,t+4){
+                let seq=t+u(b,t+6+2*i);
+                end=end.max(seq+2+2*u(b,seq));
+            }
+            // Prefer a growing rule to ensure the second anchor shifts.
+            let growing=map.iter().find(|(_,seq)|seq.len()>1);
+            if let Some((&glyph,seq))=growing.or_else(||map.iter().next()){
+                let bytes=native_multiple_parent(&b[t..end],glyph);
+                let q=compile_gsub_program(&bytes,&[1],n,None,Default::default()).unwrap();
+                let input=[glyph,glyph];
+                let mut want=seq.clone();want.extend_from_slice(seq);
+                let a=execute_gsub_context_with_expansion(&q,&input,&[],Default::default()).unwrap();
+                assert_eq!(a.execution.glyphs,want);
+                assert_eq!((a.execution.actions,a.execution.matches,a.multiple_matches,a.inserted_glyphs),
+                    (2,3,2,2*(seq.len()-1)));
+                nested_growth+=a.inserted_glyphs;
+                let delta=seq.len()-1;
+                let expected=GsubExpansionExecResult{execution:GsubContextExecResult{
+                    glyphs:want,calls:3,probes:3,filter_checks:4,rules:1,symbols:2,
+                    actions:2,matches:3,changes:2*usize::from(seq.as_slice()!=[glyph]),peak_depth:2},
+                    multiple_matches:2,inserted_glyphs:2*delta,
+                    edit_work:2*seq.len()+if delta>0{13}else{0}};
+                assert_eq!(a,expected);
+                exact_expansion(&q,&input,&[],&expected);
+            }
+        }
+    }
+    assert_eq!(nested_growth>0,expected_multiple>0);
+    for root in &contexts{
+        let p=compile_gsub_program(b,&[root.index],n,Some(&g),Default::default()).unwrap();
+        let choices:Vec<_>=p.lookups().iter().filter(|l|l.effective_kind()==3)
+            .map(|l|alternate_choice(l.index(),0)).collect();
+        let Some(ids)=expansion_closure(b,root.index,&contexts) else{
+            assert!(matches!(execute_gsub_context_with_expansion(&p,&[],&choices,Default::default()),Err(Error::Unsupported(_))));
+            continue;
+        };
+        assert_eq!(p.closure().reachable,ids);
+        assert!(p.closure().is_proven_acyclic());
+        if !ids.iter().any(|&id|native_kind(b,id)==2){continue;}
+        let witnesses=native_witnesses(root,&rawgd);
+        for input in &witnesses{
+            let want=native_expansion_reference(input,&rawgd,&mixed,&contexts,&[root.index]);
+            assert_eq!(execute_gsub_context_with_expansion(&p,input,&choices,Default::default()).unwrap(),want);
+        }
+        let input:Vec<_>=(0..n as u16).chain((0..n as u16).rev())
+            .chain(witnesses.iter().take(16).flatten().copied()).collect();
+        let want=native_expansion_reference(&input,&rawgd,&mixed,&contexts,&[root.index]);
+        exact_expansion(&p,&input,&choices,&want);
+    }
+    // No native Type 2 is a negative inventory control, not proof of
+    // native contextual growth. Constructed parents guarantee actual
+    // nested expansion independently of the native closure mix.
+}
+#[test]fn abeezee_regular_native_expansion(){verify_native_expansion(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,0,0);}
+#[test]fn abeezee_italic_native_expansion(){verify_native_expansion(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,0,0);}
+#[test]fn alegreya_native_expansion(){verify_native_expansion(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,0,0);}
+#[test]fn aref_native_expansion(){verify_native_expansion(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,6,0);}
+#[test]fn padauk_native_expansion(){verify_native_expansion(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,19,6);}
+#[test]fn devanagari_native_expansion(){verify_native_expansion(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,3,85);}
+#[test]fn nastaliq_native_expansion(){verify_native_expansion(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,59,1341);}
