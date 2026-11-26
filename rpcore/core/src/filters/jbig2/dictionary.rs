@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! No entropy execution, bitmap reconstruction or retained context reuse yet.
+//! Includes bounded integer state and export runs; no bitmap reconstruction or retained context reuse yet.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -293,5 +293,219 @@ mod tests{
         assert_eq!(t[1].table.decode(&mut reader).unwrap(),Integer::Oob);
         assert_eq!(t[2].table.decode(&mut reader).unwrap(),Integer::Value(8));
         assert_eq!(reader.remaining(),0);
+    }
+}
+
+
+/// Incremental height-class state (T.88 6.5.5–6.5.7).
+/// A caller must decode the bitmap for each returned symbol, or the collective
+/// bitmap after OOB, before advancing the entropy stream. No pixel execution.
+pub const MAX_CLASSES:u32=MAX_SYMBOLS;
+pub const MAX_EXPORT_RUNS:u32=2*MAX_SYMBOLS+2;
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct SymbolSize{pub index:u32,pub width:u32,pub height:u32,pub x:u32}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HeightClass{pub first:u32,pub count:u32,pub height:u32,pub width:u32}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum WidthEvent{Symbol(SymbolSize),End(HeightClass)}
+pub struct DimensionState{
+    expected:u32,decoded:u32,classes:u32,height:u32,width:u32,
+    total_width:u32,first:u32,active:bool,pixels:u64,work_limit:u64,
+}
+impl DimensionState{
+    pub fn new(expected:u32,work_limit:u64)->Result<Self>{
+        if expected>MAX_SYMBOLS||work_limit>super::bitmap::MAX_PIXELS{
+            return Err(Error::Limit("JBIG2 dictionary dimensions budget"));
+        }
+        Ok(Self{expected,decoded:0,classes:0,height:0,width:0,total_width:0,
+            first:0,active:false,pixels:0,work_limit})
+    }
+    pub fn decoded(&self)->u32{self.decoded}
+    pub fn pixels(&self)->u64{self.pixels}
+    pub fn complete(&self)->bool{self.decoded==self.expected&&!self.active}
+    pub fn begin(&mut self,delta:super::integer::Integer)->Result<u32>{
+        if self.active||self.complete(){return Err(Error::Invalid("JBIG2 dictionary height state"));}
+        if self.classes>=MAX_CLASSES{return Err(Error::Limit("JBIG2 dictionary height classes"));}
+        let h=dimension(self.height,delta)?;
+        self.height=h;self.width=0;self.total_width=0;self.first=self.decoded;
+        self.active=true;self.classes+=1;Ok(h)
+    }
+    pub fn width(&mut self,delta:super::integer::Integer)->Result<WidthEvent>{
+        use super::integer::Integer;
+        if !self.active{return Err(Error::Invalid("JBIG2 dictionary width state"));}
+        if delta==Integer::Oob{
+            self.active=false;
+            return Ok(WidthEvent::End(HeightClass{first:self.first,count:self.decoded-self.first,
+                height:self.height,width:self.total_width}));
+        }
+        if self.decoded>=self.expected{return Err(Error::Invalid("JBIG2 excess dictionary symbols"));}
+        let width=dimension(self.width,delta)?;
+        let total_width=self.total_width.checked_add(width).ok_or(Error::Limit("JBIG2 collective width"))?;
+        if total_width>super::bitmap::MAX_SIDE{return Err(Error::Limit("JBIG2 collective width"));}
+        let pixels=self.pixels.checked_add(u64::from(width)*u64::from(self.height))
+            .ok_or(Error::Limit("JBIG2 dictionary pixels"))?;
+        if pixels>self.work_limit{return Err(Error::Limit("JBIG2 dictionary pixels"));}
+        let result=SymbolSize{index:self.decoded,width,height:self.height,x:self.total_width};
+        self.width=width;self.total_width=total_width;self.pixels=pixels;self.decoded+=1;
+        Ok(WidthEvent::Symbol(result))
+    }
+}
+fn dimension(previous:u32,delta:super::integer::Integer)->Result<u32>{
+    use super::integer::Integer;
+    let Integer::Value(delta)=delta else{return Err(Error::Invalid("JBIG2 unexpected dimension OOB"));};
+    let v=i64::from(previous).checked_add(delta).ok_or(Error::Limit("JBIG2 dictionary dimension"))?;
+    // Zero-size symbols are outside the current positive-dimension bitmap core.
+    if v<=0{return Err(Error::Invalid("JBIG2 nonpositive symbol dimension"));}
+    if v>i64::from(super::bitmap::MAX_SIDE){return Err(Error::Limit("JBIG2 dictionary dimension"));}
+    Ok(v as u32)
+}
+
+/// Imported indices precede newly decoded indices (T.88 6.5.10).
+/// The alternating run decoder permits zero-length runs, but charges each
+/// run against a caller budget. The returned indices are monotonically ordered.
+pub fn export_indices(imported:u32,new:u32,expected:u32,run_limit:u32,
+    mut next:impl FnMut()->Result<super::integer::Integer>)->Result<Vec<u32>>{
+    use super::integer::Integer;
+    let total=imported.checked_add(new).ok_or(Error::Limit("JBIG2 export symbols"))?;
+    if total>MAX_SYMBOLS||run_limit>MAX_EXPORT_RUNS{return Err(Error::Limit("JBIG2 export budget"));}
+    if expected>total{return Err(Error::Invalid("JBIG2 export count"));}
+    let mut out=Vec::new();
+    out.try_reserve_exact(expected as usize).map_err(|_|Error::Limit("JBIG2 export allocation"))?;
+    let mut pos=0u32;let mut flag=false;let mut runs=0;
+    while pos<total{
+        if runs>=run_limit{return Err(Error::Limit("JBIG2 export runs"));}
+        runs+=1;
+        let Integer::Value(v)=next()? else{return Err(Error::Invalid("JBIG2 export OOB"));};
+        let n=u32::try_from(v).map_err(|_|Error::Invalid("JBIG2 export run length"))?;
+        let end=pos.checked_add(n).ok_or(Error::Limit("JBIG2 export run end"))?;
+        if end>total{return Err(Error::Invalid("JBIG2 export run exceeds symbols"));}
+        if flag{
+            if out.len()+n as usize>expected as usize{return Err(Error::Invalid("JBIG2 too many exports"));}
+            out.extend(pos..end);
+        }
+        pos=end;flag=!flag;
+    }
+    if out.len()!=expected as usize{return Err(Error::Invalid("JBIG2 export count mismatch"));}
+    Ok(out)
+}
+
+pub fn huffman_exports(reader:&mut crate::filters::ccitt::BitReader<'_>,imported:u32,new:u32,
+    expected:u32,run_limit:u32)->Result<Vec<u32>>{
+    let table=huffman::standard::table(1)?;
+    export_indices(imported,new,expected,run_limit,||table.decode(reader))
+}
+
+/// Independent persistent IADH, IADW and IAEX banks, sharing one arithmetic
+/// stream. Callers interleave symbol pixel decisions on that same stream.
+#[derive(Default)]
+pub struct ArithmeticIntegers{
+    dh:super::integer::IntegerDecoder,dw:super::integer::IntegerDecoder,
+    ex:super::integer::IntegerDecoder,
+}
+impl ArithmeticIntegers{
+    pub fn height(&mut self,decoder:&mut super::qm::Decoder<'_>)->Result<super::integer::Integer>{self.dh.decode(decoder)}
+    pub fn width(&mut self,decoder:&mut super::qm::Decoder<'_>)->Result<super::integer::Integer>{self.dw.decode(decoder)}
+    pub fn exports(&mut self,decoder:&mut super::qm::Decoder<'_>,imported:u32,new:u32,
+        expected:u32,run_limit:u32)->Result<Vec<u32>>{
+        export_indices(imported,new,expected,run_limit,||self.ex.decode(decoder))
+    }
+}
+
+#[cfg(test)]
+mod dimension_tests{
+    use super::*;
+    use super::super::integer::Integer::{self,Value,Oob};
+    use crate::filters::ccitt::BitReader;
+    #[test]
+    fn dimensions_signed_classes_reference(){
+        // Explicit T.88 B.5/B.3 prefixes packed offline, no pixel fields.
+        let bytes=[225,195,127,127,125,251,251,127,127,253,251,254,124];
+        let mut reader=BitReader::new(&bytes,103).unwrap();
+        let dh=huffman::standard::table(5).unwrap();
+        let dw=huffman::standard::table(3).unwrap();
+        let mut state=DimensionState::new(7,1000).unwrap();
+        let mut sizes=Vec::new();let mut classes=Vec::new();
+        while !state.complete(){
+            state.begin(dh.decode(&mut reader).unwrap()).unwrap();
+            loop{match state.width(dw.decode(&mut reader).unwrap()).unwrap(){
+                WidthEvent::Symbol(s)=>sizes.push((s.width,s.height,s.x)),
+                WidthEvent::End(c)=>{classes.push(c);break;}
+            }}
+        }
+        assert_eq!(sizes,vec![(3,4,0),(5,4,3),(3,4,8),(2,3,0),(1,3,2),(1,3,0),(1,3,1)]);
+        assert_eq!(classes.iter().map(|c|(c.first,c.count,c.height,c.width)).collect::<Vec<_>>(),
+            vec![(0,3,4,11),(3,2,3,3),(5,2,3,2)]);
+        assert_eq!(state.pixels(),59);assert_eq!(reader.remaining(),0);
+    }
+    #[test]
+    fn dimensions_order_and_bounds(){
+        let mut s=DimensionState::new(1,12).unwrap();
+        assert!(s.width(Value(1)).is_err());
+        assert!(s.begin(Oob).is_err());assert!(s.begin(Value(0)).is_err());
+        assert!(s.begin(Value(i64::MAX)).is_err());
+        s.begin(Value(3)).unwrap();assert!(s.begin(Value(1)).is_err());
+        assert!(s.width(Value(-1)).is_err());assert!(s.width(Value(5)).is_err());
+        assert_eq!(s.decoded(),0);assert_eq!(s.pixels(),0);
+        assert!(matches!(s.width(Value(4)).unwrap(),WidthEvent::Symbol(_)));
+        assert!(!s.complete());assert!(s.width(Value(0)).is_err());
+        assert!(matches!(s.width(Oob).unwrap(),WidthEvent::End(_)));
+        assert!(s.complete());assert!(s.begin(Value(1)).is_err());
+        assert!(DimensionState::new(MAX_SYMBOLS+1,0).is_err());
+    }
+    #[test]
+    fn dimensions_empty_class_and_collective_limit(){
+        let mut s=DimensionState::new(2,super::super::bitmap::MAX_PIXELS).unwrap();
+        s.begin(Value(1)).unwrap();
+        assert!(matches!(s.width(Oob).unwrap(),WidthEvent::End(HeightClass{count:0,..})));
+        s.begin(Value(0)).unwrap();
+        s.width(Value(i64::from(super::super::bitmap::MAX_SIDE))).unwrap();
+        assert!(s.width(Value(0)).is_err());
+        assert_eq!(s.decoded(),1);
+        s.classes=MAX_CLASSES;
+        s.width(Oob).unwrap();assert!(s.begin(Value(0)).is_err());
+        assert!(DimensionState::new(0,0).unwrap().complete());
+    }
+    #[test]
+    fn exports_reference_huffman_runs(){
+        let bytes=[0,130,0,140,65];
+        let mut r=BitReader::new(&bytes,40).unwrap();
+        assert_eq!(huffman_exports(&mut r,3,7,6,8).unwrap(),vec![0,1,4,5,6,9]);
+        assert_eq!(r.remaining(),0);
+        let mut r=BitReader::new(&bytes,40-1).unwrap();
+        assert!(huffman_exports(&mut r,3,7,6,8).is_err());
+    }
+    #[test]
+    fn exports_annex_h_first_dictionary(){
+        // Official first dictionary: two B.1 runs, 0 then 1.
+        let mut r=BitReader::new(&[0,0x40],10).unwrap();
+        assert_eq!(huffman_exports(&mut r,0,1,1,2).unwrap(),vec![0]);
+        assert_eq!(r.remaining(),0);
+    }
+    #[test]
+    fn exports_invalid_and_zero_runs(){
+        fn scripted(total:u32,expected:u32,limit:u32,values:&[Integer])->Result<Vec<u32>>{
+            let mut it=values.iter().copied();
+            export_indices(0,total,expected,limit,||it.next().ok_or(Error::Invalid("test short")))
+        }
+        assert_eq!(scripted(3,0,1,&[Value(3)]).unwrap(),Vec::<u32>::new());
+        assert_eq!(scripted(0,0,0,&[]).unwrap(),Vec::<u32>::new());
+        assert!(scripted(1,1,1,&[Value(0)]).is_err());
+        assert!(scripted(1,0,1,&[Oob]).is_err());
+        assert!(scripted(1,0,1,&[Value(-1)]).is_err());
+        assert!(scripted(1,0,1,&[Value(2)]).is_err());
+        assert!(scripted(1,1,1,&[Value(1)]).is_err());
+        assert!(scripted(1,0,2,&[Value(0),Value(1)]).is_err());
+        assert!(scripted(1,2,0,&[]).is_err());
+        assert!(scripted(1,0,MAX_EXPORT_RUNS+1,&[]).is_err());
+    }
+    #[test]
+    fn dictionary_arithmetic_integer_budget(){
+        // Real QM adapter, with zero available decisions, must fail closed.
+        let mut banks=ArithmeticIntegers::default();
+        let mut d=super::super::qm::Decoder::new(&[255,172],0).unwrap();
+        assert!(banks.height(&mut d).is_err());
+        assert!(banks.width(&mut d).is_err());
+        assert!(banks.exports(&mut d,0,1,1,2).is_err());
+        assert_eq!(banks.exports(&mut d,0,0,0,0).unwrap(),Vec::<u32>::new());
     }
 }
