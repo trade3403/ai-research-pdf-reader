@@ -1,5 +1,5 @@
 //! T.88 (2000) 6.3.5.2–6.3.5.6, Figures 12–16.
-//! Generic refinement geometry and bounded native QM pixel reconstruction.
+//! Generic refinement geometry, bounded QM reconstruction and scoped segment decoding.
 use crate::{Error,Result};
 use super::{bitmap::Bitmap,generic::Offset};
 
@@ -401,5 +401,234 @@ mod decode_tests{
         let d=decode_bitmap(&s,&n,o,&mut bank,&mut qm,MAX_REFINEMENT_WORK).unwrap();
         check(&d,&[0,0],0,9,1,1);
         assert_eq!(bank.entries().iter().filter(|&&v|v!=Context::default()).count(),1);
+    }
+}
+
+
+/// Known-length generic refinement region segments (T.88 7.4.7, Table 35).
+/// Header parsing leaves entropy opaque; segment-level displacement is zero.
+use super::{Segment,bitmap::{RegionInfo,ComposeOp}};
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum RegionKind{Intermediate,Immediate,ImmediateLossless}
+impl RegionKind{
+    pub fn from_code(code:u8)->Result<Self>{
+        match code{40=>Ok(Self::Intermediate),42=>Ok(Self::Immediate),43=>Ok(Self::ImmediateLossless),
+            _=>Err(Error::Invalid("JBIG2 refinement segment kind"))}
+    }
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct RegionHeader{
+    pub region:RegionInfo,
+    pub neighborhood:Neighborhood,
+    pub typical_prediction:bool,
+}
+pub fn parse_region(data:&[u8])->Result<(RegionHeader,&[u8])>{
+    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2 refinement segment bytes"));}
+    let (region,rest)=bitmap::parse_region(data)?;
+    let (&flags,rest)=rest.split_first().ok_or(Error::Invalid("JBIG2 refinement flags"))?;
+    if flags&0xfc!=0{return Err(Error::Invalid("JBIG2 refinement reserved flags"));}
+    let template=Template::from_code(flags&1)?;
+    let n=template.adaptive_count()*2;
+    let bytes=rest.get(..n).ok_or(Error::Invalid("JBIG2 refinement AT truncated"))?;
+    let mut at_pixels=[at(0,0);2];
+    for (i,p) in bytes.chunks_exact(2).enumerate(){at_pixels[i]=at(p[0] as i8,p[1] as i8);}
+    let neighborhood=Neighborhood::new(template,&at_pixels[..n/2])?;
+    Ok((RegionHeader{region,neighborhood,typical_prediction:flags&2!=0},&rest[n..]))
+}
+/// Borrowed live auxiliary buffer or current page. The caller must own
+/// provenance/liveness and must not supply a previously consumed auxiliary
+/// buffer. This scoped API does not execute or mutate the page graph.
+pub enum RegionReference<'a>{
+    Auxiliary{segment:&'a Segment,region:RegionInfo,bitmap:&'a Bitmap},
+    Page{number:u32,bitmap:&'a Bitmap},
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedRegion{
+    pub kind:RegionKind,
+    pub region:RegionInfo,
+    pub reference_segment:Option<u32>,
+    pub bitmap:Bitmap,
+    pub stats:RefinementStats,
+}
+/// Decode a known-length segment from its inspected byte span and an explicit
+/// reference. No page painting, retention handling or cross-segment state.
+/// For page references, this subset requires the rectangle to be fully
+/// inside the current page; clipped/striped page refinement is not implemented.
+/// Auxiliary buffers must be same-page, with identical region metadata.
+pub fn decode_segment(segment:&Segment,stream:&[u8],reference:RegionReference<'_>,
+    work_limit:u64,decision_limit:usize)->Result<DecodedRegion>{
+    let kind=RegionKind::from_code(segment.kind)?;
+    if segment.page==0{return Err(Error::Unsupported("JBIG2 refinement page zero"));}
+    let data=stream.get(segment.payload.clone()).ok_or(Error::Invalid("JBIG2 refinement payload span"))?;
+    let (header,payload)=parse_region(data)?;
+    let r=header.region;
+    let opt=RefinementOptions{width:r.width,height:r.height,dx:0,dy:0,typical_prediction:header.typical_prediction};
+    let limit=work_limit.min(MAX_REFINEMENT_WORK);
+    let header_work=(data.len()-payload.len())as u64;
+    let mut remaining=limit.checked_sub(header_work).ok_or(Error::Limit("JBIG2 refinement header work"))?;
+    let mut reference_segment=None;
+    let crop;
+    let src=match reference{
+        RegionReference::Auxiliary{segment:dep,region,bitmap}=>{
+            if segment.referred.as_slice()!=[dep.number]||dep.number>=segment.number||
+                !matches!(dep.kind,4|20|36|40)||dep.page!=segment.page{
+                return Err(Error::Invalid("JBIG2 refinement auxiliary reference"));
+            }
+            if r!=region||(bitmap.width(),bitmap.height())!=(r.width,r.height){
+                return Err(Error::Invalid("JBIG2 refinement auxiliary region mismatch"));
+            }
+            reference_segment=Some(dep.number);
+            bitmap
+        }
+        RegionReference::Page{number,bitmap}=>{
+            if kind==RegionKind::Intermediate||!segment.referred.is_empty()||number!=segment.page||r.op!=ComposeOp::Replace{
+                return Err(Error::Invalid("JBIG2 refinement page reference"));
+            }
+            if u64::from(r.x)+u64::from(r.width)>u64::from(bitmap.width())||
+                u64::from(r.y)+u64::from(r.height)>u64::from(bitmap.height()){
+                return Err(Error::Unsupported("JBIG2 refinement page crop outside bounds"));
+            }
+            // Bound crop + target allocations before any allocation. Each
+            // bitmap is already individually bounded by parse_region.
+            let bytes=u64::from(r.width).div_ceil(8)*u64::from(r.height);
+            if bytes*2>bitmap::MAX_PACKED_BYTES as u64{return Err(Error::Limit("JBIG2 refinement crop and target bytes"));}
+            let crop_work=u64::from(r.width)*u64::from(r.height)*2+bytes;
+            remaining=remaining.checked_sub(crop_work).ok_or(Error::Limit("JBIG2 refinement crop work"))?;
+            let decode_work=work_bound(header.neighborhood.template(),opt)?
+                .checked_add(payload.len()as u64+header.neighborhood.template().context_count()as u64)
+                .ok_or(Error::Limit("JBIG2 refinement total work"))?;
+            if decode_work>remaining||decision_limit>MAX_REFINEMENT_DECISIONS{return Err(Error::Limit("JBIG2 refinement budget"));}
+            let mut image=Bitmap::new(r.width,r.height,false)?;
+            for y in 0..r.height{for x in 0..r.width{
+                let bit=bitmap.get(r.x+x,r.y+y).ok_or(Error::Invalid("JBIG2 refinement crop coordinate"))?;
+                image.set(x,y,bit)?;
+            }}
+            crop=image;
+            &crop
+        }
+    };
+    let mut d=decode_arithmetic(payload,src,&header.neighborhood,opt,remaining,decision_limit)?;
+    d.stats.work_bound+=limit-remaining;
+    Ok(DecodedRegion{kind,region:r,reference_segment,bitmap:d.bitmap,stats:d.stats})
+}
+
+#[cfg(test)]
+mod segment_tests{
+    use super::*;
+    // Prior independently encoded and cross-platform verified g2 vectors.
+    const A:&[u8]=&[192,34,140,221,147,255,172];
+    const B:&[u8]=&[56,108,187,186,43,255,172];
+    const C:&[u8]=&[62,159,39,101,31,255,172];
+    fn body(w:u32,h:u32,x:u32,y:u32,op:u8,flags:u8,at:&[u8],entropy:&[u8])->Vec<u8>{
+        let mut b=Vec::new();for n in [w,h,x,y]{b.extend(n.to_be_bytes());}
+        b.extend([op,flags]);b.extend(at);b.extend(entropy);b
+    }
+    fn seg(number:u32,kind:u8,page:u32,refs:&[u32],len:usize)->Segment{
+        Segment{number,kind,deferred_non_retain:false,retention:vec![],referred:refs.to_vec(),page,header:0..0,payload:0..len}
+    }
+    fn src()->Bitmap{Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap()}
+    #[test]
+    fn refinement_segment_headers(){
+        for flags in 0..4{
+            let at:&[u8]=if flags&1==0{&[255,255,128,127]}else{&[]};
+            let b=body(7,6,12,20,2,flags,at,A);
+            let (h,p)=parse_region(&b).unwrap();
+            assert_eq!((h.region.width,h.region.height,h.region.x,h.region.y,h.region.op),(7,6,12,20,ComposeOp::Xor));
+            assert_eq!(h.neighborhood.template(),if flags&1==0{Template::T0}else{Template::T1});
+            assert_eq!(h.typical_prediction,flags&2!=0);
+            assert_eq!(p,A);
+            if flags&1==0{assert_eq!(h.neighborhood.slots()[4].offset,super::at(-128,127));}
+            for i in 0..b.len()-A.len(){assert!(parse_region(&b[..i]).is_err());}
+        }
+    }
+    #[test]
+    fn refinement_segment_all_kinds_and_reference(){
+        let b=body(7,6,2,3,0,0,&[255;4],A);
+        let r=parse_region(&b).unwrap().0.region;
+        let source=src();
+        for kind in [40,42,43]{
+            let s=seg(9,kind,1,&[3],b.len());
+            for dep_kind in [4,20,36,40]{
+                let dep=seg(3,dep_kind,1,&[],0);
+                let d=decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region:r,bitmap:&source},MAX_REFINEMENT_WORK,42).unwrap();
+                assert_eq!(d.kind,RegionKind::from_code(kind).unwrap());
+                assert_eq!(d.region,r);assert_eq!(d.reference_segment,Some(3));
+                assert_eq!(d.bitmap.packed(),[170,56,56,198,170,84]);
+                assert_eq!(d.stats.decisions,42);
+            }
+        }
+    }
+    #[test]
+    fn refinement_segment_t1_zero_displacement(){
+        // Move g2's shifted source into local region coordinates. The old
+        // row 0 and all samples outside the new region are zero.
+        let source=Bitmap::from_packed(8,6,&[62,62,62,0,0,0]).unwrap();
+        let b=body(8,6,5,9,1,3,&[],B);
+        let r=parse_region(&b).unwrap().0.region;
+        let dep=seg(1,36,1,&[],0);let s=seg(2,40,1,&[1],b.len());
+        let d=decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region:r,bitmap:&source},MAX_REFINEMENT_WORK,37).unwrap();
+        assert_eq!(d.bitmap.packed(),[170,56,42,85,0,0]);
+        assert_eq!((d.stats.implicit_pixels,d.stats.explicit_pixels,d.stats.decisions),(17,31,37));
+    }
+    #[test]
+    fn refinement_segment_page_crop_replace(){
+        let b=body(7,6,3,2,4,2,&[255,0,0,0],C);
+        let s=seg(8,43,2,&[],b.len());
+        // Outside-crop pixels are deliberately black: GR must see only the
+        // cropped reference, not neighboring page pixels.
+        let mut page=Bitmap::new(13,11,true).unwrap();let source=src();
+        for y in 0..6{for x in 0..7{page.set(x+3,y+2,source.get(x,y).unwrap()).unwrap();}}
+        let original=page.packed().to_vec();
+        let d=decode_segment(&s,&b,RegionReference::Page{number:2,bitmap:&page},MAX_REFINEMENT_WORK,38).unwrap();
+        assert_eq!(d.bitmap.packed(),[170,170,254,170,84,0]);
+        assert_eq!(d.reference_segment,None);assert_eq!(d.stats.implicit_pixels,10);
+        assert_eq!(page.packed(),original);
+        let d2=decode_segment(&s,&b,RegionReference::Page{number:2,bitmap:&page},d.stats.work_bound,38).unwrap();
+        assert_eq!(d,d2);
+        assert!(decode_segment(&s,&b,RegionReference::Page{number:2,bitmap:&page},d.stats.work_bound-1,38).is_err());
+    }
+    #[test]
+    fn refinement_segment_invalid_auxiliary(){
+        let b=body(7,6,2,3,0,0,&[255;4],A);let r=parse_region(&b).unwrap().0.region;
+        let source=src();
+        let s=seg(9,40,1,&[3],b.len());
+        for dep in [seg(2,36,1,&[],0),seg(3,38,1,&[],0),seg(3,0,1,&[],0),seg(3,36,2,&[],0)]{
+            assert!(decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region:r,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
+        let dep=seg(3,36,1,&[],0);
+        for region in [RegionInfo{x:3,..r},RegionInfo{y:4,..r},RegionInfo{width:8,..r},RegionInfo{op:ComposeOp::And,..r}]{
+            assert!(decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
+        let wrong=Bitmap::new(8,6,false).unwrap();
+        assert!(decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region:r,bitmap:&wrong},MAX_REFINEMENT_WORK,42).is_err());
+        let s=seg(9,40,1,&[3,4],b.len());
+        assert!(decode_segment(&s,&b,RegionReference::Auxiliary{segment:&dep,region:r,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+    }
+    #[test]
+    fn refinement_segment_invalid_page_reference(){
+        let source=src();
+        for (kind,op,x,refs,number) in [(40,4,0,&[][..],1),(42,0,0,&[][..],1),
+            (42,4,1,&[][..],1),(42,4,u32::MAX,&[][..],1),(43,4,0,&[2][..],1),(43,4,0,&[][..],2)]{
+            let b=body(7,6,x,0,op,0,&[255;4],A);let s=seg(9,kind,1,refs,b.len());
+            assert!(decode_segment(&s,&b,RegionReference::Page{number,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
+    }
+    #[test]
+    fn refinement_segment_malformed_and_spans(){
+        let source=src();let b=body(7,6,0,0,4,0,&[255;4],A);
+        for i in 0..b.len(){
+            let s=seg(9,42,1,&[],i);
+            assert!(decode_segment(&s,&b,RegionReference::Page{number:1,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
+        for (index,value) in [(17,4),(18,0),(19,0),(16,7)]{
+            let mut bad=b.clone();bad[index]=value;
+            if index==18{bad[19]=0;}
+            let s=seg(9,42,1,&[],bad.len());
+            assert!(decode_segment(&s,&bad,RegionReference::Page{number:1,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
+        for (kind,page,len) in [(38,1,b.len()),(42,0,b.len()),(42,1,usize::MAX)]{
+            let s=seg(9,kind,page,&[],len);
+            assert!(decode_segment(&s,&b,RegionReference::Page{number:1,bitmap:&source},MAX_REFINEMENT_WORK,42).is_err());
+        }
     }
 }
