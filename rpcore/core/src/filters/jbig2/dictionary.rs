@@ -2637,3 +2637,41 @@ mod aggregation_multi_vectors{
         assert!(run(GOOD,ArithmeticLimits{work:d.work_used-1,..l},1).is_err());
     }
 }
+
+#[cfg(test)]
+mod aggregation_mixed_vectors{
+    use super::*;
+    // Offline Annex E vector: single black refinement followed by
+    // direct prior symbol and refined white. Shared displacement/GR/IAID.
+    const MIXED:&[u8]=&[149,20,56,203,95,170,125,186,152,236,191,255,172];
+    fn run(t:u8,limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+        let mut b=vec![8|(t<<4),2,2,255];
+        if t==0{b.extend([255;4]);}
+        b.extend([0,0,0,3,0,0,0,2]);b.extend(MIXED);
+        let (header,_)=parse(&b)?;let start=header.data_offset;
+        let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+        let src=Bitmap::from_packed(1,1,&[128])?;
+        decode_arithmetic_aggregation(&p,&b,&[&src],limits)
+    }
+    #[test]
+    fn mixed_single_and_multi_refined_pixels(){
+        for t in [0,1]{
+            let d=run(t,ArithmeticLimits::default()).unwrap();
+            assert_eq!(d.exported_indices,[0,1,2]);
+            assert_eq!(d.new_symbols.len(),2);
+            assert_eq!(d.new_symbols[0].packed(),[128]);
+            assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(2,1));
+            assert_eq!(d.new_symbols[1].packed(),[128]);
+        }
+    }
+    #[test]
+    fn mixed_single_and_multi_exact_budget(){
+        for t in [0,1]{
+            let d=run(t,ArithmeticLimits::default()).unwrap();
+            let l=ArithmeticLimits{decisions:92,work:d.work_used,..ArithmeticLimits::default()};
+            assert_eq!(run(t,l).unwrap(),d);
+            assert!(run(t,ArithmeticLimits{decisions:91,..l}).is_err());
+            assert!(run(t,ArithmeticLimits{work:d.work_used-1,..l}).is_err());
+        }
+    }
+}
