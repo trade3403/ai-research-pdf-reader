@@ -54,3 +54,10 @@ Use parse_variable_gsub_face on a parsed FontFace. Supply signed 16.16 user coor
 
 
 CI #153, 1cfd3f4d22737f26d82e04243739c1e9137b7f9e, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45808724109 : 1096/platform, 3288 total, zero failed/ignored, exact SHA and Release builds verified from three job logs. C4.4e7 bounded variable GSUB scheduling accepted.
+
+
+CI #159, fcbf2bf908ac894069ff7fc17c94cdc1167f47a5, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45829163360 : 1129/platform, 3387 total, zero failed/ignored; exact SHA and Release builds verified from three job logs.
+
+C4.4f6: VariableGsubFace::execute_with_provenance integrates existing dynamic scheduling with full tracked execution. Five native-font regressions for Archivo, Devanagari, Nastaliq default selection, Archivo rvrn scalar source oracle and source budget. Existing synthetic all-kind independent expected source sets retained. 1134/platform expected; CI pending. Native tests do not establish positive native coverage of every lookup kind or external shaper parity. Next C4.4g1 explicit per-glyph feature-mask foundation.
+
+Tracked APIs consume immutable SourceRun, return execution counters and exact sorted scalar index sets. Conditions do not contribute sources; expansion duplicates sets, contraction unions matched components, single/alternate/reverse preserve sets. Separate provenance limits apply. Errors return no partial output. Caller must associate nominal cmap seeds with the same font; domain checks do not certify font identity. No grapheme segmentation, deletion, bidi, masks or positioning.

@@ -89,3 +89,17 @@ impl VariableGsubFace<'_>{
         Ok(Some(VariableGsubResult{plan,execution}))
     }
 }
+
+impl VariableGsubFace<'_>{
+    /// Execute a caller-supplied nominal source run with the selected
+    /// variable plan. Glyph-domain validation is not font identity proof;
+    /// caller must map the source run with this same face's cmap.
+    pub fn execute_with_provenance(&self,request:VariableGsubRequest<'_>,run:&crate::SourceRun,
+        choices:&[GsubAlternateSelection],source_limits:crate::ProvenanceLimits)
+        ->Result<Option<(VariableGsubResult,crate::ProvenanceLedger)>,Error>{
+        let Some(plan)=self.build_plan(request)? else{return Ok(None);};
+        let program=self.compile_selected(&plan)?;
+        let (execution,ledger)=crate::execute_gsub_program_with_provenance(&program,run,choices,self.limits.execution,source_limits)?;
+        Ok(Some((VariableGsubResult{plan,execution},ledger)))
+    }
+}
