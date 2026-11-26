@@ -219,3 +219,5 @@ pub use font_gsub_context_execute::execute_gsub_context_with_alternates;
 pub use font_gsub_context_execute::{GsubExpansionExecLimits,GsubExpansionExecResult,execute_gsub_context_with_expansion};
 
 pub use font_gsub_context_execute::{GsubContractionExecLimits,GsubContractionExecResult,execute_gsub_context_with_contraction};
+
+pub use font_gsub_context_execute::execute_gsub_chained_context;

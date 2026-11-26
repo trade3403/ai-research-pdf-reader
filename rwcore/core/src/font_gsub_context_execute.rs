@@ -159,6 +159,36 @@ impl State<'_>{
         self.result.glyphs.truncate(write);
         Ok(last+1-removed.len())
     }
+    // Match preceding eligible glyphs nearest-first. Each inspected
+    // physical position is charged, including ignored glyphs.
+    fn match_back<F:FnMut(usize,u16)->bool>(&mut self,filter:&LookupFilter<'_>,
+        start:usize,len:usize,mut matches:F)->Result<bool,Error>{
+        let mut p=start;
+        for i in 0..len{
+            loop{
+                if p==0{return Ok(false);}
+                p-=1;
+                if self.eligible(filter,p)?{break;}
+            }
+            self.symbol()?;
+            if !matches(i,self.result.glyphs[p]){return Ok(false);}
+        }
+        Ok(true)
+    }
+    // Lookahead begins after the last matched input glyph, not after
+    // the first glyph. No lookahead position becomes an action anchor.
+    fn match_ahead<F:FnMut(usize,u16)->bool>(&mut self,filter:&LookupFilter<'_>,
+        start:usize,len:usize,mut matches:F)->Result<bool,Error>{
+        let mut p=start;
+        for i in 0..len{
+            while p<self.result.glyphs.len()&&!self.eligible(filter,p)?{p+=1;}
+            if p==self.result.glyphs.len(){return Ok(false);}
+            self.symbol()?;
+            if !matches(i,self.result.glyphs[p]){return Ok(false);}
+            p+=1;
+        }
+        Ok(true)
+    }
     fn eligible(&mut self,filter:&LookupFilter<'_>,p:usize)->Result<bool,Error>{
         tick(&mut self.result.filter_checks,self.limits.max_filter_checks,"gsub context filters")?;
         let g=*self.result.glyphs.get(p).ok_or(Error::Invalid("gsub context position"))?;
@@ -226,6 +256,47 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
             if cov[0].index(g).is_some(){
                 if let Some(positions)=state.match_tail(filter,p,cov.len()-1,|i,v|cov[i+1].index(v).is_some())?{
                     return Ok(Some(Matched{positions,actions:c.actions()}));
+                }
+            }
+        }
+        ExtensionTarget::Chain(c)=>{
+            if let Some(rules)=c.rules(g){
+                for r in rules{
+                    state.rule()?;
+                    if !state.match_back(filter,p,r.backtrack.len(),|i,v|v==r.backtrack[i])?{continue;}
+                    if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|v==r.remaining[i])?{
+                        if state.match_ahead(filter,positions.last().copied().unwrap()+1,
+                            r.lookahead.len(),|i,v|v==r.lookahead[i])?{
+                            return Ok(Some(Matched{positions,actions:&r.actions}));
+                        }
+                    }
+                }
+            }
+        }
+        ExtensionTarget::ClassChain(c)=>{
+            if let Some(rules)=c.rules(g){
+                for r in rules{
+                    state.rule()?;
+                    if !state.match_back(filter,p,r.backtrack.len(),|i,v|c.backtrack_class(v)==Some(r.backtrack[i]))?{continue;}
+                    if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|c.input_class(v)==Some(r.remaining[i]))?{
+                        if state.match_ahead(filter,positions.last().copied().unwrap()+1,
+                            r.lookahead.len(),|i,v|c.lookahead_class(v)==Some(r.lookahead[i]))?{
+                            return Ok(Some(Matched{positions,actions:&r.actions}));
+                        }
+                    }
+                }
+            }
+        }
+        ExtensionTarget::CoverageChain(c)=>{
+            state.rule()?;state.symbol()?;
+            let input=c.input();
+            if input[0].index(g).is_some()&&
+                state.match_back(filter,p,c.backtrack().len(),|i,v|c.backtrack()[i].index(v).is_some())?{
+                if let Some(positions)=state.match_tail(filter,p,input.len()-1,|i,v|input[i+1].index(v).is_some())?{
+                    if state.match_ahead(filter,positions.last().copied().unwrap()+1,
+                        c.lookahead().len(),|i,v|c.lookahead()[i].index(v).is_some())?{
+                        return Ok(Some(Matched{positions,actions:c.actions()}));
+                    }
                 }
             }
         }
@@ -317,7 +388,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
 /// No output is returned on error; no variable-length or cluster edits.
 pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,None,limits,None,None).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,None,limits,None,None,false).map(|r|r.expansion.execution)
 }
 /// Length-preserving Type 1/3/5 execution. Require exactly one explicit
 /// zero-based choice for every reachable effective Type 3 lookup,
@@ -326,7 +397,7 @@ pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
 /// choice fails atomically rather than falling through to later subtables.
 pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None,None).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,false).map(|r|r.expansion.execution)
 }
 /// Execute Type 1/2/3/5 roots and reachable targets, including Type 7
 /// wrappers. Nonempty expansion preserves the first replacement as the
@@ -335,7 +406,7 @@ pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,gly
 /// No deletion, ligature contraction, cluster or feature-mask propagation.
 pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubExpansionExecLimits)->Result<GsubExpansionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None).map(|r|r.expansion)
+    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None,false).map(|r|r.expansion)
 }
 /// Execute Type 1/2/3/4/5 (direct or wrapped) roots and dependencies.
 /// A ligature retains its first anchor and tombstones consumed trailing
@@ -344,11 +415,22 @@ pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyp
 /// No cluster/mark component metadata or feature-mask propagation.
 pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits))
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),false)
+}
+/// Length-preserving Type 1/3/5/6 roots and reachable dependencies,
+/// including Type 7 wrappers. Backtrack is nearest-first; input and
+/// lookahead are forward. All three use the current lookup's GDEF
+/// eligibility. Only input positions can be action anchors, and a root
+/// advances past its input span (not lookahead). All reads see current
+/// glyphs. Existing depth/cycle/work limits and explicit alternate
+/// choices apply. Other reachable kinds are rejected at preflight.
+pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,true).map(|r|r.expansion.execution)
 }
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits,
-    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>)->Result<GsubContractionExecResult,Error>{
+    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool)->Result<GsubContractionExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
         ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
@@ -360,6 +442,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     for lookup in program.lookups(){
         match lookup.effective_kind(){
             1|5=>{},
+            6 if chained=>{},
             2 if expansion.is_some()=>{},
             4 if contraction.is_some()=>{},
             3 if selections.is_some()=>{

@@ -425,3 +425,130 @@ fn contraction_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[G
     assert_eq!(a.expansion,execute_gsub_context_with_expansion(&p,&[10,9],&[],Default::default()).unwrap());
     assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions),(0,0,0));
 }
+
+
+fn chain1(first:u16,back:&[u16],tail:&[u16],ahead:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![1,8,1,14,1,1,first,1,4,back.len() as u16];
+    w.extend_from_slice(back);w.push(tail.len() as u16+1);w.extend_from_slice(tail);
+    w.push(ahead.len() as u16);w.extend_from_slice(ahead);w.push(actions.len() as u16);
+    for &(p,l) in actions{w.extend([p,l]);}w
+}
+fn chain2(actions:&[(u16,u16)])->Vec<u16>{
+    // Header: coverage at byte 16, back class at 22, input at 30,
+    // ahead at 40, class-1 rule set at 48. Separate class domains.
+    let mut w=vec![2,16,22,30,40,2,0,48,1,1,10,
+        1,9,1,7,1,10,2,1,1,1,15,1,8,
+        1,4,1,7,2,1,1,8,actions.len() as u16];
+    for &(p,l) in actions{w.extend([p,l]);}w
+}
+fn chain3(back:&[u16],input:&[u16],ahead:&[u16],actions:&[(u16,u16)])->Vec<u16>{
+    let mut w=vec![3];
+    let mut slots=Vec::new();
+    for seq in [back,input,ahead]{
+        w.push(seq.len() as u16);
+        for &g in seq{slots.push((w.len(),g));w.push(0);}
+    }
+    w.push(actions.len() as u16);
+    for &(p,l) in actions{w.extend([p,l]);}
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn chained_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubContextExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_chained_context(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn chained_all_formats_and_wrappers(){
+    for sub in [chain1(10,&[9],&[11],&[15],&[(1,0)]),chain2(&[(1,0)]),
+        chain3(&[9],&[10,11],&[15],&[(1,0)])]{
+        let b=fixture(&[(7,1,0,vec![single(11,20)]),(7,6,0,vec![sub])]);
+        assert_eq!(chained_run(&b,&[1],&[9,10,11,15,11],None,&[]).glyphs,vec![9,10,20,15,11]);
+    }
+}
+#[test]fn chained_backtrack_nearest_first_and_lookahead_forward(){
+    let b=fixture(&[(1,1,0,vec![single(10,20)]),
+        (6,6,0,vec![chain3(&[9,8],&[10],&[15,16],&[(0,0)])])]);
+    assert_eq!(chained_run(&b,&[1],&[8,9,10,15,16],None,&[]).glyphs,vec![8,9,20,15,16]);
+    for input in [vec![9,8,10,15,16],vec![8,9,10,16,15],vec![9,10,15,16],vec![8,9,10,15]]{
+        assert_eq!(chained_run(&b,&[1],&input,None,&[]).glyphs,input);
+    }
+}
+#[test]fn chained_gdef_skips_in_all_segments(){
+    let g=gdef();
+    let b=fixture(&[(1,1,0,vec![single(11,20)]),
+        (6,6,LOOKUP_IGNORE_MARK,vec![chain3(&[9,8],&[10,11],&[15,16],&[(1,0)])])]);
+    let input=[8,12,9,13,10,14,11,12,15,13,16];
+    assert_eq!(chained_run(&b,&[1],&input,Some(&g),&[]).glyphs,vec![8,12,9,13,10,14,20,12,15,13,16]);
+    assert_eq!(chained_run(&b,&[1],&input,None,&[]).glyphs,input);
+}
+#[test]fn chained_only_input_anchors_and_scan_does_not_skip_lookahead(){
+    let b=fixture(&[(1,1,0,vec![single(10,20),single(11,21)]),
+        (6,6,0,vec![chain3(&[],&[10],&[11],&[(0,0)]),
+            chain3(&[20],&[11],&[],&[(0,0)])])]);
+    let a=chained_run(&b,&[1],&[10,11],None,&[]);
+    assert_eq!(a.glyphs,vec![20,21]);assert_eq!(a.actions,2);
+}
+#[test]fn chained_empty_action_blocks_fallback_and_preserves_input_span(){
+    let b=fixture(&[(1,1,0,vec![single(10,20)]),
+        (6,6,0,vec![chain1(10,&[],&[10],&[],&[]),chain1(10,&[],&[],&[],&[(0,0)])])]);
+    let a=chained_run(&b,&[1],&[10,10,10],None,&[]);
+    assert_eq!(a.glyphs,vec![10,10,20]);assert_eq!((a.actions,a.matches),(1,3));
+}
+#[test]fn chained_nested_type5_and_type6_and_alternate(){
+    let b=fixture(&[(3,3,0,vec![alt(11,&[20,21])]),
+        (6,6,0,vec![chain3(&[10],&[11],&[15],&[(0,0)])]),
+        (5,5,0,vec![ctx3(&[10,11],&[(1,1)])]),
+        (6,6,0,vec![chain3(&[9],&[10],&[11,15],&[(0,2)])])]);
+    let a=chained_run(&b,&[3],&[9,10,11,15,11],None,&[choice(0,1)]);
+    assert_eq!(a.glyphs,vec![9,10,21,15,11]);assert_eq!((a.actions,a.peak_depth),(3,4));
+}
+#[test]fn chained_target_filter_rechecked_after_prior_action(){
+    let g=gdef();
+    let b=fixture(&[(1,1,0,vec![single(11,12)]),(1,1,LOOKUP_IGNORE_MARK,vec![single(12,20)]),
+        (6,6,LOOKUP_IGNORE_MARK,vec![chain3(&[9],&[10,11],&[15],&[(1,0),(1,1)])])]);
+    let a=chained_run(&b,&[2],&[9,10,13,11,15],Some(&g),&[]);
+    assert_eq!(a.glyphs,vec![9,10,13,12,15]);assert_eq!((a.actions,a.matches),(2,2));
+}
+#[test]fn chained_cycle_and_unsupported_preflight(){
+    let b=fixture(&[(6,6,0,vec![chain3(&[],&[10],&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_chained_context(&p,&[10],&[],Default::default()),Err(Error::Invalid(_))));
+    assert_eq!(execute_gsub_chained_context(&p,&[9],&[],Default::default()).unwrap().glyphs,vec![9]);
+    assert!(matches!(execute_gsub_context_with_contraction(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(6,6,0,vec![chain3(&[],&[10],&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_chained_context(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn chained_exact_budgets(){
+    let b=fixture(&[(1,1,0,vec![single(11,20)]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15],&[(1,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let input=[9,10,11,15];
+    // Root at 9, at 10 (with back/input/ahead), nested at 11,
+    // then root at 15. Format 3 charges first symbol on every probe.
+    let l=GsubContextExecLimits{max_glyphs:4,max_roots:1,max_lookups:2,max_depth:2,max_calls:4,
+        max_probes:4,max_filter_checks:7,max_rules:3,max_symbols:6,max_actions:1,max_matches:2};
+    let a=execute_gsub_chained_context(&p,&input,&[],l).unwrap();
+    assert_eq!(a.glyphs,vec![9,10,20,15]);
+    assert_eq!((a.calls,a.probes,a.filter_checks,a.rules,a.symbols,a.actions,a.matches),(4,4,7,3,6,1,2));
+    for bad in [GsubContextExecLimits{max_filter_checks:6,..l},GsubContextExecLimits{max_symbols:5,..l},
+        GsubContextExecLimits{max_rules:2,..l},GsubContextExecLimits{max_actions:0,..l},
+        GsubContextExecLimits{max_depth:1,..l},GsubContextExecLimits{max_calls:3,..l},
+        GsubContextExecLimits{max_probes:3,..l},GsubContextExecLimits{max_matches:1,..l}]{
+        assert!(matches!(execute_gsub_chained_context(&p,&input,&[],bad),Err(Error::Limit(_))));
+        assert_eq!(input,[9,10,11,15]);
+    }
+}
+#[test]fn chained_exhaustive_small_reference(){
+    let b=fixture(&[(1,1,0,vec![single(10,20)]),
+        (6,6,0,vec![chain3(&[9],&[10],&[11],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let alphabet=[9,10,11,15];
+    for code in 0usize..1024{
+        let input:Vec<_>=(0..5).map(|i|alphabet[(code/4usize.pow(i))%4]).collect();
+        let mut want=input.clone();
+        for i in 1..input.len()-1{
+            if input[i-1..=i+1]==[9,10,11]{want[i]=20;}
+        }
+        assert_eq!(execute_gsub_chained_context(&p,&input,&[],Default::default()).unwrap().glyphs,want);
+    }
+}

@@ -144,6 +144,9 @@ pub struct ClassChainContextSubstitution {
     sets:Vec<Option<Vec<ChainContextRule>>>,
 }
 impl ClassChainContextSubstitution {
+    pub(crate) fn backtrack_class(&self,g:u16)->Option<u16>{self.backtrack.class(g)}
+    pub(crate) fn input_class(&self,g:u16)->Option<u16>{self.input.class(g)}
+    pub(crate) fn lookahead_class(&self,g:u16)->Option<u16>{self.lookahead.class(g)}
     /// Stored rule sets in font order, including null and unreachable sets.
     pub fn rule_sets(&self)->&[Option<Vec<ChainContextRule>>]{&self.sets}
     pub fn len(&self)->usize{self.sets.len()}

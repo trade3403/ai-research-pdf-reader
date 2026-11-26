@@ -96,8 +96,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4d5d | Bounded nested Type 2 expansion and stable action-position tracking | Verified (#135) |
 | C4.4d5e | Independent native contextual expansion and action-position reference | Verified (#136) |
 | C4.4d5f | Bounded nested Type 4 contraction and consumed-anchor tracking | Verified (#137) |
-| C4.4d5g | Independent native contextual contraction and mixed growth/shrink reference | Source implemented; CI pending |
-| C4.4d6a | Bounded Type 6 chained contextual execution foundation | Planned |
+| C4.4d5g | Independent native contextual contraction and mixed growth/shrink reference | Verified (#138) |
+| C4.4d6a | Bounded Type 6 chained contextual execution foundation | Source implemented; CI pending |
+| C4.4d6b | Bounded Type 6 variable-length nested integration | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
