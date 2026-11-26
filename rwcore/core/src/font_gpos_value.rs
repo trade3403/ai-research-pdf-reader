@@ -70,6 +70,11 @@ pub fn parse_gpos_device(b:&[u8],at:usize,limits:GposValueLimits)->Result<GposDe
 pub fn parse_gpos_value_record(b:&[u8],at:usize,parent:usize,min_device_offset:usize,format:u16,
     limits:GposValueLimits)->Result<(GposValueRecord,usize),Error>{
     if b.len()>limits.max_bytes{return Err(Error::Limit("gpos value bytes"));}
+    let mut left=limits.max_device_entries;
+    decode_value_record(b,at,parent,min_device_offset,format,&mut left)
+}
+pub(crate) fn decode_value_record(b:&[u8],at:usize,parent:usize,min_device_offset:usize,format:u16,left:&mut usize)
+    ->Result<(GposValueRecord,usize),Error>{
     let size=gpos_value_record_size(format)?;
     bytes(b,at,size)?;
     let end=at.checked_add(size).ok_or(Error::Limit("gpos value offset"))?;
@@ -79,14 +84,13 @@ pub fn parse_gpos_value_record(b:&[u8],at:usize,parent:usize,min_device_offset:u
         if format&(1<<i)!=0{*v=word(b,p)? as i16;advance(&mut p,2)?;}
     }
     let mut devices:[Option<GposDevice>;4]=[None,None,None,None];
-    let mut left=limits.max_device_entries;
     for (i,v) in devices.iter_mut().enumerate(){
         if format&(0x10<<i)!=0{
             let rel=usize::from(word(b,p)?);advance(&mut p,2)?;
             if rel!=0{
                 let target=parent.checked_add(rel).ok_or(Error::Limit("gpos device offset"))?;
                 if target<min_device_offset{return Err(Error::Invalid("gpos device into inline records"));}
-                *v=Some(decode_device(b,target,&mut left)?);
+                *v=Some(decode_device(b,target,left)?);
             }
         }
     }
