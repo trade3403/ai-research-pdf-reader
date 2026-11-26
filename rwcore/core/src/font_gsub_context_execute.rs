@@ -88,6 +88,13 @@ struct State<'a>{
     limits:GsubContextExecLimits,
 }
 impl State<'_>{
+    // Single and alternate substitutions must update both buffers through
+    // the same path. Preserve existing execution counter semantics.
+    fn replace_one(&mut self,p:usize,output:u16)->Result<(),Error>{
+        if let Some(ledger)=self.provenance.as_mut(){ledger.expand(p,&[output])?;}
+        self.result.glyphs[p]=output;
+        Ok(())
+    }
     fn expand(&mut self,p:usize,seq:&[u16])->Result<usize,Error>{
         let l=self.expansion.ok_or(Error::Unsupported("gsub contextual expansion"))?;
         let delta=seq.len().checked_sub(1).ok_or(Error::Invalid("gsub empty expansion"))?;
@@ -334,8 +341,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
             if let Some(v)=rule.substitute(g){
                 state.matched()?;
                 state.result.changes+=usize::from(g!=v);
-                if let Some(ledger)=state.provenance.as_mut(){ledger.expand(p,&[v])?;}
-                state.result.glyphs[p]=v;
+                state.replace_one(p,v)?;
                 return Ok(Some(p+1));
             }
         }else if let ExtensionTarget::Reverse(rule)=sub.target(){
@@ -378,7 +384,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
             if let Some(v)=rule.select(g,state.choices[index].candidate_index)?{
                 state.matched()?;
                 state.result.changes+=usize::from(g!=v);
-                state.result.glyphs[p]=v;
+                state.replace_one(p,v)?;
                 return Ok(Some(p+1));
             }
         }else if let Some(m)=context_match(sub.target(),lookup,state,p)?{

@@ -114,3 +114,28 @@ fn alternate(a:u16)->Vec<u16>{vec![1,8,1,14,1,1,a,2,11,12]}
     assert_eq!(result.expansion.execution.glyphs,vec![20,mark]);
     assert_eq!(l.glyphs()[0].sources(),&[0,2]);assert_eq!(l.glyphs()[1].sources(),&[1]);
 }
+
+#[test]fn direct_alternate_then_ligature_preserves_sources_and_counters(){
+    let (run,n)=run("ABAB");
+    let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    for kind in [3,7]{
+        let bytes=fixture(&[(kind,3,alternate(a)),(4,4,ligature(12,b,20))]);
+        let p=compile_gsub_program(&bytes,&[0,1],n,None,Default::default()).unwrap();
+        let choices=[GsubAlternateSelection{lookup_index:0,candidate_index:1}];
+        let (result,l)=execute_gsub_with_direct_provenance(&p,&run,&choices,Default::default(),Default::default()).unwrap();
+        assert_eq!(result.expansion.execution.glyphs,vec![20,20]);
+        assert_eq!(l.glyphs()[0].sources(),&[0,1]);
+        assert_eq!(l.glyphs()[1].sources(),&[2,3]);
+        assert_eq!(result,execute_gsub_program(&p,&[a,b,a,b],&choices,Default::default()).unwrap());
+    }
+}
+#[test]fn direct_alternate_source_work_budget(){
+    let (run,n)=run("A");
+    let bytes=fixture(&[(3,3,alternate(run.glyphs()[0].glyph_id))]);
+    let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+    let choices=[GsubAlternateSelection{lookup_index:0,candidate_index:0}];
+    let exact=ProvenanceLimits{max_work:4,..Default::default()};
+    let (_,l)=execute_gsub_with_direct_provenance(&p,&run,&choices,Default::default(),exact).unwrap();
+    assert_eq!(l.work(),4);
+    assert!(matches!(execute_gsub_with_direct_provenance(&p,&run,&choices,Default::default(),ProvenanceLimits{max_work:3,..exact}),Err(Error::Limit(_))));
+}
