@@ -130,3 +130,6 @@ C4.4d4a pending CI; #129 verified 900/platform, 2700 total. Ten synthetic ligatu
 
 ## Latest checkpoint
 C4.4d4b pending CI; #130 verified 910/platform, 2730 total. Seven real-font ligature reference regressions, 917/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next bounded Type 5 context foundation only after CI passes.
+
+## Latest checkpoint
+C4.4d5a pending CI; #131 verified 917/platform, 2751 total. Ten synthetic contextual regressions, 927/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next contextual Type 3 nested selection and reference checks only after CI passes.

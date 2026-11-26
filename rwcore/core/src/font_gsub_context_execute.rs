@@ -1,0 +1,183 @@
+//! Length-preserving Type 1/5 contextual execution foundation.
+//! Explicit roots; dependency-only lookups run only at action positions.
+use crate::{CompiledGsubProgram,CompiledGsubLookup,ContextAction,Error,ExtensionTarget,LookupFilter};
+
+/// Hard stack ceiling even when a caller requests a larger limit.
+pub const GSUB_CONTEXT_MAX_DEPTH:usize=32;
+#[derive(Debug,Clone,Copy)]
+pub struct GsubContextExecLimits{
+    pub max_glyphs:usize,pub max_roots:usize,pub max_lookups:usize,
+    pub max_depth:usize,pub max_calls:usize,pub max_probes:usize,
+    pub max_filter_checks:usize,pub max_rules:usize,pub max_symbols:usize,
+    pub max_actions:usize,pub max_matches:usize,
+}
+impl Default for GsubContextExecLimits{
+    fn default()->Self{Self{max_glyphs:262144,max_roots:16384,max_lookups:16384,
+        max_depth:16,max_calls:16*1024*1024,max_probes:32*1024*1024,
+        max_filter_checks:32*1024*1024,max_rules:16*1024*1024,
+        max_symbols:32*1024*1024,max_actions:16*1024*1024,max_matches:16*1024*1024}}
+}
+#[derive(Debug,Clone,PartialEq,Eq,Default)]
+pub struct GsubContextExecResult{
+    pub glyphs:Vec<u16>,pub calls:usize,pub probes:usize,pub filter_checks:usize,
+    pub rules:usize,pub symbols:usize,pub actions:usize,pub matches:usize,
+    pub changes:usize,pub peak_depth:usize,
+}
+fn tick(n:&mut usize,cap:usize,label:&'static str)->Result<(),Error>{
+    if *n>=cap{return Err(Error::Limit(label));}*n+=1;Ok(())
+}
+struct State{
+    result:GsubContextExecResult,
+    active:Vec<(u16,usize)>,
+    limits:GsubContextExecLimits,
+}
+impl State{
+    fn eligible(&mut self,filter:&LookupFilter<'_>,p:usize)->Result<bool,Error>{
+        tick(&mut self.result.filter_checks,self.limits.max_filter_checks,"gsub context filters")?;
+        let g=*self.result.glyphs.get(p).ok_or(Error::Invalid("gsub context position"))?;
+        Ok(filter.eligibility(g)?.is_eligible())
+    }
+    fn symbol(&mut self)->Result<(),Error>{
+        tick(&mut self.result.symbols,self.limits.max_symbols,"gsub context symbols")
+    }
+    fn rule(&mut self)->Result<(),Error>{
+        tick(&mut self.result.rules,self.limits.max_rules,"gsub context rules")
+    }
+    fn matched(&mut self)->Result<(),Error>{
+        tick(&mut self.result.matches,self.limits.max_matches,"gsub context matches")
+    }
+    // First position is already covered/eligible. Tail indices refer to
+    // the original physical buffer, and ignored glyphs never enter them.
+    fn match_tail<F>(&mut self,filter:&LookupFilter<'_>,start:usize,len:usize,
+        mut matches:F)->Result<Option<Vec<usize>>,Error>
+        where F:FnMut(usize,u16)->bool{
+        let mut positions=Vec::new();
+        positions.try_reserve(1).map_err(|_|Error::Limit("gsub context positions"))?;
+        positions.push(start);
+        let mut p=start+1;
+        for i in 0..len{
+            while p<self.result.glyphs.len()&&!self.eligible(filter,p)?{p+=1;}
+            if p==self.result.glyphs.len(){return Ok(None);}
+            self.symbol()?;
+            if !matches(i,self.result.glyphs[p]){return Ok(None);}
+            positions.try_reserve(1).map_err(|_|Error::Limit("gsub context positions"))?;
+            positions.push(p);p+=1;
+        }
+        Ok(Some(positions))
+    }
+}
+struct Matched<'a>{positions:Vec<usize>,actions:&'a [ContextAction]}
+fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
+    state:&mut State,p:usize)->Result<Option<Matched<'a>>,Error>{
+    let g=state.result.glyphs[p];
+    let filter=lookup.filter();
+    match sub{
+        ExtensionTarget::Context(c)=>{
+            if let Some(rules)=c.rules(g){
+                for r in rules{
+                    state.rule()?;
+                    if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|v==r.remaining[i])?{
+                        return Ok(Some(Matched{positions,actions:&r.actions}));
+                    }
+                }
+            }
+        }
+        ExtensionTarget::ClassContext(c)=>{
+            if let Some(rules)=c.rules(g){
+                for r in rules{
+                    state.rule()?;
+                    if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|c.class_for_match(v)==Some(r.remaining[i]))?{
+                        return Ok(Some(Matched{positions,actions:&r.actions}));
+                    }
+                }
+            }
+        }
+        ExtensionTarget::CoverageContext(c)=>{
+            state.rule()?;
+            state.symbol()?;
+            let cov=c.coverages();
+            if cov[0].index(g).is_some(){
+                if let Some(positions)=state.match_tail(filter,p,cov.len()-1,|i,v|cov[i+1].index(v).is_some())?{
+                    return Ok(Some(Matched{positions,actions:c.actions()}));
+                }
+            }
+        }
+        _=>return Err(Error::Invalid("gsub context target kind")),
+    }
+    Ok(None)
+}
+// Return exclusive physical end of a match, or None. Nested callers
+// ignore this end; they execute only at the designated action position.
+fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
+    ->Result<Option<usize>,Error>{
+    tick(&mut state.result.calls,state.limits.max_calls,"gsub context calls")?;
+    if state.active.len()>=state.limits.max_depth.min(GSUB_CONTEXT_MAX_DEPTH){
+        return Err(Error::Limit("gsub context depth"));
+    }
+    if state.active.contains(&(id,p)){return Err(Error::Invalid("gsub context active cycle"));}
+    state.active.try_reserve(1).map_err(|_|Error::Limit("gsub context stack"))?;
+    state.active.push((id,p));
+    state.result.peak_depth=state.result.peak_depth.max(state.active.len());
+    let result=apply_inner(program,id,p,state);
+    state.active.pop();
+    result
+}
+fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
+    ->Result<Option<usize>,Error>{
+    let lookup=program.lookup(id).ok_or(Error::Invalid("gsub context missing lookup"))?;
+    if !state.eligible(lookup.filter(),p)?{return Ok(None);}
+    for sub in lookup.subtables(){
+        tick(&mut state.result.probes,state.limits.max_probes,"gsub context probes")?;
+        if let ExtensionTarget::Single(rule)=sub.target(){
+            let g=state.result.glyphs[p];
+            if let Some(v)=rule.substitute(g){
+                state.matched()?;
+                state.result.changes+=usize::from(g!=v);
+                state.result.glyphs[p]=v;
+                return Ok(Some(p+1));
+            }
+        }else if let Some(m)=context_match(sub.target(),lookup,state,p)?{
+            state.matched()?;
+            // Snapshot matched positions once; later actions see earlier
+            // edits, with each target using its own current-glyph filter.
+            for action in m.actions{
+                tick(&mut state.result.actions,state.limits.max_actions,"gsub context actions")?;
+                let at=*m.positions.get(action.sequence_index as usize)
+                    .ok_or(Error::Invalid("gsub context action position"))?;
+                apply_at(program,action.lookup_index,at,state)?;
+            }
+            return Ok(Some(m.positions.last().copied().unwrap()+1));
+        }
+    }
+    Ok(None)
+}
+/// Execute explicit Type 1/5 roots and their reachable Type 1/5
+/// dependencies (including Type 7 wrappers). Other reachable kinds fail
+/// preflight even for empty input. Context matching uses its own GDEF
+/// filter; actions run at captured physical positions in stored order.
+/// A matched root advances beyond the matched span, including empty
+/// actions. Runtime cycles on an active (lookup,position) fail closed;
+/// static cycles are permitted when they do not recur at runtime.
+/// All limits are cumulative except depth and input/program size.
+/// No output is returned on error; no variable-length or cluster edits.
+pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
+    if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
+        ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
+    if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
+        return Err(Error::Invalid("gsub context glyph domain"));
+    }
+    if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1|5)){
+        return Err(Error::Unsupported("gsub context reachable kind"));
+    }
+    let mut state=State{result:Default::default(),active:Vec::new(),limits};
+    state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
+    state.result.glyphs.extend_from_slice(glyphs);
+    for &id in program.roots(){
+        let mut p=0;
+        while p<glyphs.len(){
+            p=apply_at(program,id,p,&mut state)?.unwrap_or(p+1);
+        }
+    }
+    Ok(state.result)
+}

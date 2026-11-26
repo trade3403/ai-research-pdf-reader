@@ -114,6 +114,7 @@ pub struct ClassContextSubstitution{
     coverage:GlyphCoverage,classes:crate::GlyphClassDef,sets:Vec<Option<Vec<ContextRule>>>,
 }
 impl ClassContextSubstitution{
+    pub(crate) fn class_for_match(&self,id:u16)->Option<u16>{self.classes.class(id)}
     /// Stored rule sets in font order, including null and unreachable sets.
     pub fn rule_sets(&self)->&[Option<Vec<ContextRule>>]{&self.sets}
     pub fn rules(&self,id:u16)->Option<&[ContextRule]>{
