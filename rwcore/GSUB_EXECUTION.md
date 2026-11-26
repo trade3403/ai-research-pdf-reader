@@ -43,3 +43,11 @@ The generic fixture selection cap of 32 roots excluded the native Mongolian reve
 
 ## Acceptance result
 CI #146 passed all three platforms, including the complete 74-root native mong/rclt regression. The bounded GSUB execution contract is accepted. C4.4e1 starts a separate FeatureVariations parser/selector; no change to the accepted execution semantics or base planner yet.
+
+
+## Variable GSUB API contract (C4.4e7, CI pending)
+CI #152, 3baf3be5ff3f891f5dab192d3a873dc9ba321d3b, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45802058303 : 1091/platform, 3273 total, zero failed/ignored; exact HEAD and three Release builds verified from actual job logs.
+
+C4.4e7: five additional integration regressions for raw named-instance coordinates across Archivo, Devanagari and Nastaliq, ordered/tagged/default coordinate equivalence, repeat execution and plan provenance. Existing independent raw design-space and glyph ledger reference tests retained unchanged. 1096/platform expected; CI pending. No production substitution changes or external shaper equivalence claim.
+
+Use parse_variable_gsub_face on a parsed FontFace. Supply signed 16.16 user coordinates in fvar order or tagged coordinates (missing tags default); named instances expose ordered coordinates. normalize returns F2DOT14 after avar 1.0. build_plan selects explicit features; compile_plan rebuilds the request and rejects inconsistent provenance; execute returns an atomic Option result. None means no matching script/language. Alternate choices remain explicit. Equivalent plans are accepted, not cryptographically bound. No implicit rvrn, cluster tracking, script staging, positioning or variation outlines.

@@ -203,3 +203,8 @@
 - C4.4e5: strict avar 1.0 parsing rejects malformed order/range/reserved/trailing bytes instead of optional record recovery. Missing essential identity anchors leave axis unchanged. Version 2 and cross-axis remapping unsupported. Equal axis counts do not prove same-face fvar/avar provenance; caller must supply associated tables. Intermediate rounding policy documented, not external engine equivalence. User-coordinate GSUB integration, gvar/HVAR/MVAR, full shaping and external parity outstanding.
 
 - C4.4e6: same-face association is structural, not cryptographic identity or checksum certification. Compatible equivalent plans accepted, stale/forged selection rejected via full rebuild. fvar required; missing GSUB is an error in this specialized API. No automatic rvrn enabling, script stages, masks, clusters, avar 2.0, gvar/HVAR/MVAR, GPOS or external shaper equivalence. Native tests cover selected features, not complete language shaping.
+
+
+CI #152, 3baf3be5ff3f891f5dab192d3a873dc9ba321d3b, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45802058303 : 1091/platform, 3273 total, zero failed/ignored; exact HEAD and three Release builds verified from actual job logs.
+
+C4.4e7: five additional integration regressions for raw named-instance coordinates across Archivo, Devanagari and Nastaliq, ordered/tagged/default coordinate equivalence, repeat execution and plan provenance. Existing independent raw design-space and glyph ledger reference tests retained unchanged. 1096/platform expected; CI pending. No production substitution changes or external shaper equivalence claim.
