@@ -2688,3 +2688,45 @@ mod aggregation_mixed_vectors{
     }
 
 }
+
+#[cfg(test)]
+mod aggregation_displaced_vectors{
+    use super::*;
+    // Independent Annex E vectors with raw horizontal displacement +1/-1.
+    // Both refinement calls sample the same noncentral reference context:
+    // right neighbour for +1 and left neighbour for -1, on both templates.
+    const POS:&[u8]=&[149,19,226,202,95,170,125,186,152,236,191,255,172];
+    const NEG:&[u8]=&[149,17,50,194,95,170,125,186,152,236,191,255,172];
+    fn run(t:u8,data:&[u8],limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+        let mut b=vec![8|(t<<4),2,2,255];
+        if t==0{b.extend([255;4]);}
+        b.extend([0,0,0,3,0,0,0,2]);b.extend(data);
+        let (header,_)=parse(&b)?;let start=header.data_offset;
+        let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+        let src=Bitmap::from_packed(1,1,&[128])?;
+        decode_arithmetic_aggregation(&p,&b,&[&src],limits)
+    }
+    #[test]
+    fn mixed_positive_negative_displacement(){
+        for t in [0,1]{
+            for data in [POS,NEG]{
+                let d=run(t,data,ArithmeticLimits::default()).unwrap();
+                assert_eq!(d.exported_indices,[0,1,2]);
+                assert_eq!(d.new_symbols.len(),2);
+                assert_eq!(d.new_symbols[0].packed(),[128]);
+                assert_eq!(d.new_symbols[1].packed(),[128]);
+                assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(2,1));
+            }
+        }
+    }
+    #[test]
+    fn mixed_displaced_exact_decision_budget(){
+        for t in [0,1]{
+            for data in [POS,NEG]{
+                let d=run(t,data,ArithmeticLimits{decisions:92,..ArithmeticLimits::default()}).unwrap();
+                assert!(run(t,data,ArithmeticLimits{decisions:91,..ArithmeticLimits::default()}).is_err());
+                assert!(run(t,data,ArithmeticLimits{work:d.work_used-1,..ArithmeticLimits::default()}).is_err());
+            }
+        }
+    }
+}
