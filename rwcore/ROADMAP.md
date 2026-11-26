@@ -132,8 +132,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.5b2 | GPOS Anchor and shared adjustment primitives | Verified (#174) |
 | C4.5c1 | SinglePos formats 1/2 parsing and application | Verified (#175) |
 | C4.5c2 | Independent native SinglePos reference acceptance | Verified (#176) |
-| C4.5d1 | PairPos format 1 glyph-pair decoding and adjustment | Implemented; CI pending |
-| C4.5d2 | PairPos format 2 class matrix | Planned |
+| C4.5d1 | PairPos format 1 glyph-pair decoding and adjustment | Verified (#177) |
+| C4.5d2 | PairPos format 2 class matrix | Implemented; CI pending |
+| C4.5d3 | Independent native PairPos reference acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
