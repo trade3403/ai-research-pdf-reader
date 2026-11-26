@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0d2 [#140 / 45781419745](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745) completed/failure：Linux及Windows均在rustfmt失败，model_install_reference.rs:30 verify_installed 链需展开；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777547128)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777546865)。Linux真实模型任务成功，[实际日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45781419745/job/139777547309)：MODEL_INSTALL PASS precision=Fp32 payload_bytes=312033188 translation_nonempty=true；Int8 payload_bytes=84903620 translation_nonempty=true；全文242/269接受、27拒译，语义未测。Windows真实模型因前置失败跳过。严格按日志最小格式修复，不改变算法、测试及历史专项。全量CI成功后才进入D3.0e。
+
 2026-11-26 D3.0d1 基线 55a7ef708b7c9974c30a60b4157775cb44878976 / [#139 / 45775645771](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45775645771) 全量 success；Linux189 workspace+59 portable=248/248，Windows188+59=247/247，共495基础+4网络=499。Windows映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux INT8 242/269、27拒译、5221/6036词、245/317数字串、415.338061s、982.664964ms加载、122480KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0d2：Store::import_checked/ recover_checked 在同目录发布前校验可信pin和结构加载器；显式quarantine_stage隔离残留目录（不覆盖、不删除）。rptranslate/model_install.rs用既有OfflineTranslator FP32/INT8完整加载和分词探针，验证失败不发布；恢复失败保留暂存。新增3跨平台单测、两平台真实安装示例分别装FP32/INT8并再次加载、真实推理，CI fixture pins仅从已通过独立参考的私有转换文件生成，非生产信任分发。目标501基础+4网络=505及四个真实安装/推理探针。无本地编译；不承诺断电日志、并发安全或已安装模型自动隔离。D3.0e进行版本激活/升级/回滚/卸载及端到端。

@@ -30,7 +30,9 @@ fn fixture_entry(source: &Path, precision: Precision) -> Result<Entry, String> {
 fn probe(source: &Path, store: &Store, precision: Precision) -> Result<(), String> {
     let entry = fixture_entry(source, precision)?;
     let path = model_install::import(store, &entry, source).map_err(|e| format!("{e:?}"))?;
-    store.verify_installed(&entry).map_err(|e| format!("{e:?}"))?;
+    store
+        .verify_installed(&entry)
+        .map_err(|e| format!("{e:?}"))?;
     let translator = match precision {
         Precision::Fp32 => OfflineTranslator::load(&path, MODEL_PAYLOAD_BYTES),
         Precision::Int8 => OfflineTranslator::load_mixed(&path, PAYLOAD_BYTES),
