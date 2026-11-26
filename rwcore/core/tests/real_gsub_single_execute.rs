@@ -1277,3 +1277,289 @@ fn verify_native_expansion(font:&[u8],n:u32,expected_multiple:usize,expected_con
 #[test]fn padauk_native_expansion(){verify_native_expansion(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,19,6);}
 #[test]fn devanagari_native_expansion(){verify_native_expansion(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,3,85);}
 #[test]fn nastaliq_native_expansion(){verify_native_expansion(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,59,1341);}
+
+
+// C4.4d5g: stable identity reference for both growth and contraction.
+// The ledger retains deleted tokens as boundary landmarks. A context
+// never changes its captured tokens; actions resolve only live identities.
+struct ContractionOracle{
+    base:ExpansionOracle,
+    ledger:Vec<usize>,
+    alive:Vec<bool>,
+    ligatures:usize,removed:usize,skipped:usize,peak:usize,
+}
+impl ContractionOracle{
+    fn new(input:&[u16])->Self{
+        Self{base:ExpansionOracle::new(input),ledger:(0..input.len()).collect(),
+            alive:vec![true;input.len()],ligatures:0,removed:0,skipped:0,peak:input.len()}
+    }
+    fn boundary(&self,after:Option<usize>)->usize{
+        match after{
+            Some(token)=>self.ledger.iter().take_while(|&&v|v!=token)
+                .filter(|&&v|self.alive[v]).count(),
+            None=>self.base.tokens.len(),
+        }
+    }
+    fn expand(&mut self,p:usize,seq:&[u16]){
+        let start=self.base.next_token;
+        let delta=seq.len()-1;
+        if delta>0{
+            let anchor=self.base.tokens[p];
+            let at=self.ledger.iter().position(|&v|v==anchor).unwrap()+1;
+            self.ledger.splice(at..at,start..start+delta);
+            self.alive.resize(start+delta,true);
+        }
+        self.base.replace(p,seq);
+        self.peak=self.peak.max(self.base.tokens.len());
+    }
+    fn shrink(&mut self,pos:&[usize],output:u16)->usize{
+        let p=pos[0];let count=pos.len()-1;
+        let after=self.base.tokens.get(pos.last().unwrap()+1).copied();
+        self.ligatures+=1;self.removed+=count;
+        self.base.a.edit_work+=self.base.tokens.len()-p+
+            self.base.frame_sizes.iter().map(|&n|(n+2)*count).sum::<usize>();
+        self.base.a.execution.matches+=1;
+        self.base.a.execution.changes+=1;
+        self.base.a.execution.glyphs[p]=output;
+        // Independently delete in descending order, rather than compact
+        // the suffix and rebase positions as in the production engine.
+        for &i in pos[1..].iter().rev(){
+            self.alive[self.base.tokens.remove(i)]=false;
+            self.base.a.execution.glyphs.remove(i);
+        }
+        self.boundary(after)
+    }
+    fn apply(&mut self,gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
+        contexts:&[NativeContextRoot],id:u16,p:usize)->Option<usize>{
+        self.base.frame_sizes.push(0);
+        assert!(self.base.frame_sizes.len()<=32);
+        let result=self.inner(gd,mixed,ligs,contexts,id,p);
+        self.base.frame_sizes.pop();
+        result
+    }
+    fn inner(&mut self,gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
+        contexts:&[NativeContextRoot],id:u16,p:usize)->Option<usize>{
+        let a=&mut self.base.a.execution;
+        a.calls+=1;a.filter_checks+=1;
+        a.peak_depth=a.peak_depth.max(self.base.frame_sizes.len());
+        let glyph=a.glyphs[p];
+        if let Some(root)=mixed.iter().find(|r|r.index==id){
+            if !gd.eligible(glyph,root.flags,root.mark){return None;}
+            for sub in &root.rules{
+                a.probes+=1;
+                if let Some(seq)=sub.get(&glyph){
+                    a.matches+=1;
+                    if root.kind==2{
+                        self.expand(p,seq);
+                        return Some(p+seq.len());
+                    }
+                    assert!(matches!(root.kind,1|3));
+                    a.changes+=usize::from(glyph!=seq[0]);a.glyphs[p]=seq[0];
+                    return Some(p+1);
+                }
+            }
+            return None;
+        }
+        if let Some(root)=ligs.iter().find(|r|r.index==id){
+            if !gd.eligible(glyph,root.flags,root.mark){return None;}
+            for sub in &root.rules{
+                a.probes+=1;
+                if let Some(rules)=sub.get(&glyph){
+                    for rule in rules{
+                        a.rules+=1;
+                        let mut pos=vec![p];
+                        for i in p+1..a.glyphs.len(){
+                            a.filter_checks+=1;
+                            let g=a.glyphs[i];
+                            if !gd.eligible(g,root.flags,root.mark){continue;}
+                            a.symbols+=1;
+                            if g!=rule.tail[pos.len()-1]{break;}
+                            pos.push(i);
+                            if pos.len()==rule.tail.len()+1{break;}
+                        }
+                        if pos.len()==rule.tail.len()+1{
+                            return Some(self.shrink(&pos,rule.output));
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        let root=contexts.iter().find(|r|r.index==id).unwrap();
+        if !gd.eligible(glyph,root.flags,root.mark){return None;}
+        for sub in &root.subs{
+            self.base.a.execution.probes+=1;
+            if let Some((pos,actions))=native_match(&mut self.base.a.execution,gd,root,sub,p){
+                self.base.a.execution.matches+=1;
+                let after=self.base.tokens.get(pos.last().unwrap()+1).copied();
+                let anchors:Vec<_>=pos.iter().map(|&i|self.base.tokens[i]).collect();
+                *self.base.frame_sizes.last_mut().unwrap()=anchors.len();
+                for &(sequence,target) in actions{
+                    self.base.a.execution.actions+=1;
+                    let token=anchors[sequence];
+                    if !self.alive[token]{self.skipped+=1;continue;}
+                    let at=self.base.position(token);
+                    self.apply(gd,mixed,ligs,contexts,target,at);
+                }
+                return Some(self.boundary(after));
+            }
+        }
+        None
+    }
+}
+fn contraction_reference(input:&[u16],gd:&RawGdef,mixed:&[RawMixed],ligs:&[RawLigRoot],
+    contexts:&[NativeContextRoot],roots:&[u16])->(GsubContractionExecResult,usize){
+    let mut o=ContractionOracle::new(input);
+    for &root in roots{
+        let mut p=0;
+        while p<o.base.tokens.len(){p=o.apply(gd,mixed,ligs,contexts,root,p).unwrap_or(p+1);}
+    }
+    assert_eq!(o.base.tokens.len(),input.len()+o.base.a.inserted_glyphs-o.removed);
+    assert_eq!(o.base.tokens,o.ledger.iter().copied().filter(|&t|o.alive[t]).collect::<Vec<_>>());
+    (GsubContractionExecResult{expansion:o.base.a,ligatures:o.ligatures,
+        removed_glyphs:o.removed,skipped_actions:o.skipped},o.peak)
+}
+fn contraction_closure(b:&[u8],root:u16,contexts:&[NativeContextRoot])->Option<Vec<u16>>{
+    let mut pending=vec![root];
+    let mut seen=std::collections::BTreeSet::new();
+    while let Some(id)=pending.pop(){
+        if !seen.insert(id){continue;}
+        match native_kind(b,id){
+            1..=4=>{},
+            5=>pending.extend(native_edges(contexts.iter().find(|r|r.index==id).unwrap())),
+            _=>return None,
+        }
+    }
+    Some(seen.into_iter().collect())
+}
+fn exact_contraction(p:&CompiledGsubProgram<'_>,input:&[u16],choices:&[GsubAlternateSelection],
+    want:&GsubContractionExecResult,peak:usize){
+    let e=&want.expansion.execution;
+    let l=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{
+        max_glyphs:peak,max_roots:p.roots().len(),max_lookups:p.lookups().len(),
+        max_depth:e.peak_depth,max_calls:e.calls,max_probes:e.probes,max_filter_checks:e.filter_checks,
+        max_rules:e.rules,max_symbols:e.symbols,max_actions:e.actions,max_matches:e.matches},
+        max_inserted:want.expansion.inserted_glyphs,max_edit_work:want.expansion.edit_work},
+        max_removed:want.removed_glyphs};
+    assert_eq!(execute_gsub_context_with_contraction(p,input,choices,l).unwrap(),*want);
+    let mut bad=Vec::new();
+    if peak>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_glyphs:peak-1,..l.expansion.context},..l.expansion},..l});}
+    if l.max_removed>0{bad.push(GsubContractionExecLimits{max_removed:l.max_removed-1,..l});}
+    if l.expansion.max_inserted>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_inserted:l.expansion.max_inserted-1,..l.expansion},..l});}
+    if l.expansion.max_edit_work>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_edit_work:l.expansion.max_edit_work-1,..l.expansion},..l});}
+    if e.actions>0{bad.push(GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_actions:e.actions-1,..l.expansion.context},..l.expansion},..l});}
+    for cap in bad{assert!(matches!(execute_gsub_context_with_contraction(p,input,choices,cap),Err(Error::Limit(_))));}
+}
+// Construct a Type 5 parent around an actual native Type 4 subtable.
+// Actions: ligate, deliberately target a consumed anchor, then expand
+// the retained first glyph with a synthetic Type 2 replacement.
+fn native_ligature_parent(target:&[u8],input:&[u16],output:u16)->Vec<u8>{
+    let mut b:Vec<u8>=[1u16,0,10,12,14,0,0,3,8,0,0,4,0,1,8]
+        .iter().flat_map(|v|v.to_be_bytes()).collect();
+    b.extend_from_slice(target);
+    if b.len()%2!=0{b.push(0);}
+    let off=u16::try_from(b.len()-14).unwrap();
+    b[18..20].copy_from_slice(&off.to_be_bytes());
+    b.extend([2u16,0,1,8,1,8,1,14,1,1,output,2,output,input[0]]
+        .iter().flat_map(|v|v.to_be_bytes()));
+    let off=u16::try_from(b.len()-14).unwrap();
+    b[20..22].copy_from_slice(&off.to_be_bytes());
+    let mut w=vec![3,input.len() as u16,3];w.resize(3+input.len(),0);
+    w.extend([0,0,1,1,0,1]);
+    for (i,&g) in input.iter().enumerate(){w[3+i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    b.extend([5u16,0,1,8].into_iter().chain(w).flat_map(|v|v.to_be_bytes()));
+    b
+}
+fn verify_native_contraction(font:&[u8],n:u32,expected:usize){
+    let b=table(font,b"GSUB");let gd=table(font,b"GDEF");
+    let rawgd=RawGdef::read(gd,n as usize);
+    let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mut mixed=mixed_roots(b,n as usize);mixed.extend(alternate_roots(b,n as usize));
+    let ligs=ligature_roots(b,n as usize);
+    let contexts=native_context_roots(b,n as usize);
+    assert_eq!(ligs.iter().map(|r|r.rules.len()).sum::<usize>(),expected);
+    let list=u(b,8);
+    let mut samples=Vec::new();
+    let mut constructed=0;
+    for root in &ligs{
+        let p=compile_gsub_program(b,&[root.index],n,Some(&g),Default::default()).unwrap();
+        let mut run:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+        let at=list+u(b,list+2+2*root.index as usize);
+        for (j,map) in root.rules.iter().enumerate(){
+            for (&first,rules) in map.iter().take(8){
+                for rule in rules.iter().take(2){
+                    run.push(first);run.extend_from_slice(&rule.tail);
+                }
+            }
+            let Some((&first,rules))=map.iter().next() else{continue};
+            let rule=&rules[0];
+            let input:Vec<_>=std::iter::once(first).chain(rule.tail.iter().copied()).collect();
+            samples.extend_from_slice(&input);
+            let s=at+u(b,at+6+2*j);
+            let t=if u(b,at)==7{s+d(b,s+4)}else{s};
+            let c=t+u(b,t+2);
+            let mut end=(c+4+u(b,c+2)*if u(b,c)==1{2}else{6}).max(t+6+2*u(b,t+4));
+            for k in 0..u(b,t+4){
+                let set=t+u(b,t+6+2*k);
+                end=end.max(set+2+2*u(b,set));
+                for m in 0..u(b,set){
+                    let rule=set+u(b,set+2+2*m);
+                    end=end.max(rule+4+2*(u(b,rule+2)-1));
+                }
+            }
+            let bytes=native_ligature_parent(&b[t..end],&input,rule.output);
+            let q=compile_gsub_program(&bytes,&[2],n,None,Default::default()).unwrap();
+            let raw=RawGdef{class:vec![0;n as usize],attachment:vec![0;n as usize],sets:vec![]};
+            let ml=mixed_roots(&bytes,n as usize);
+            let lr=ligature_roots(&bytes,n as usize);
+            let cr=native_context_roots(&bytes,n as usize);
+            let (want,peak)=contraction_reference(&input,&raw,&ml,&lr,&cr,&[2]);
+            assert_eq!(want.expansion.execution.glyphs,vec![rule.output,first]);
+            assert_eq!((want.ligatures,want.removed_glyphs,want.skipped_actions,want.expansion.inserted_glyphs),
+                (1,rule.tail.len(),1,1));
+            exact_contraction(&q,&input,&[],&want,peak);
+            constructed+=1;
+        }
+        let (want,peak)=contraction_reference(&run,&rawgd,&mixed,&ligs,&contexts,&[root.index]);
+        exact_contraction(&p,&run,&[],&want,peak);
+        assert_eq!(want.expansion.execution.glyphs,
+            execute_gsub_with_ligatures(&p,&run,&[],Default::default()).unwrap().execution.glyphs);
+    }
+    assert_eq!(constructed,expected);
+    // Combined native non-contextual roots exercise growth followed by
+    // contraction and vice versa according to original LookupList order.
+    let mut roots:Vec<_>=mixed.iter().map(|r|r.index).chain(ligs.iter().map(|r|r.index)).collect();
+    roots.sort_unstable();
+    let choices:Vec<_>=roots.iter().copied().filter(|&id|native_kind(b,id)==3)
+        .map(|id|alternate_choice(id,0)).collect();
+    let p=compile_gsub_program(b,&roots,n,Some(&g),Default::default()).unwrap();
+    let run:Vec<_>=(0..n as u16).chain(samples.iter().take(256).copied()).collect();
+    let (want,peak)=contraction_reference(&run,&rawgd,&mixed,&ligs,&contexts,&roots);
+    exact_contraction(&p,&run,&choices,&want,peak);
+    for root in &contexts{
+        let p=compile_gsub_program(b,&[root.index],n,Some(&g),Default::default()).unwrap();
+        let choices:Vec<_>=p.lookups().iter().filter(|l|l.effective_kind()==3)
+            .map(|l|alternate_choice(l.index(),0)).collect();
+        let Some(ids)=contraction_closure(b,root.index,&contexts) else{
+            assert!(matches!(execute_gsub_context_with_contraction(&p,&[],&choices,Default::default()),Err(Error::Unsupported(_))));
+            continue;
+        };
+        assert_eq!(p.closure().reachable,ids);assert!(p.closure().is_proven_acyclic());
+        if !ids.iter().any(|&id|native_kind(b,id)==4){continue;}
+        let witnesses=native_witnesses(root,&rawgd);
+        for input in &witnesses{
+            let (want,_)=contraction_reference(input,&rawgd,&mixed,&ligs,&contexts,&[root.index]);
+            assert_eq!(execute_gsub_context_with_contraction(&p,input,&choices,Default::default()).unwrap(),want);
+        }
+        let run:Vec<_>=(0..n as u16).chain(witnesses.iter().take(16).flatten().copied()).collect();
+        let (want,peak)=contraction_reference(&run,&rawgd,&mixed,&ligs,&contexts,&[root.index]);
+        exact_contraction(&p,&run,&choices,&want,peak);
+    }
+}
+#[test]fn abeezee_regular_native_contraction(){verify_native_contraction(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),268,3);}
+#[test]fn abeezee_italic_native_contraction(){verify_native_contraction(include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf"),268,3);}
+#[test]fn alegreya_native_contraction(){verify_native_contraction(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109,11);}
+#[test]fn aref_native_contraction(){verify_native_contraction(include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf"),739,1);}
+#[test]fn padauk_native_contraction(){verify_native_contraction(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,22);}
+#[test]fn devanagari_native_contraction(){verify_native_contraction(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,35);}
+#[test]fn nastaliq_native_contraction(){verify_native_contraction(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,5);}
