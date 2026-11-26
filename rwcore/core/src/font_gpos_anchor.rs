@@ -19,6 +19,10 @@ fn word(b:&[u8],p:usize)->Result<u16,Error>{
 /// ContourPoint is retained as an index, not resolved to an outline point.
 pub fn parse_gpos_anchor(b:&[u8],at:usize,limits:GposValueLimits)->Result<GposAnchor,Error>{
     if b.len()>limits.max_bytes{return Err(Error::Limit("gpos anchor bytes"));}
+    let mut left=limits.max_device_entries;
+    decode_anchor(b,at,&mut left)
+}
+pub(crate) fn decode_anchor(b:&[u8],at:usize,left:&mut usize)->Result<GposAnchor,Error>{
     let format=word(b,at)?;
     let size=match format{1=>6,2=>8,3=>10,_=>return Err(Error::Invalid("gpos anchor format"))};
     let end=at.checked_add(size).ok_or(Error::Limit("gpos anchor offset"))?;
@@ -28,13 +32,12 @@ pub fn parse_gpos_anchor(b:&[u8],at:usize,limits:GposValueLimits)->Result<GposAn
         1=>GposAnchorDetail::Coordinate,
         2=>GposAnchorDetail::ContourPoint(word(b,at+6)?),
         3=>{
-            let mut left=limits.max_device_entries;
             let mut read=|p|{
                 let rel=usize::from(word(b,p)?);
                 if rel==0{return Ok(None);}
                 if rel<size{return Err(Error::Invalid("gpos anchor device into header"));}
                 let target=at.checked_add(rel).ok_or(Error::Limit("gpos anchor device offset"))?;
-                crate::font_gpos_value::decode_device(b,target,&mut left).map(Some)
+                crate::font_gpos_value::decode_device(b,target,left).map(Some)
             };
             GposAnchorDetail::Device{x:read(at+6)?,y:read(at+8)?}
         }
