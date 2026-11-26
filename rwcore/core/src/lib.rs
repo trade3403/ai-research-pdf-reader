@@ -223,3 +223,5 @@ pub use font_gsub_context_execute::{GsubContractionExecLimits,GsubContractionExe
 pub use font_gsub_context_execute::execute_gsub_chained_context;
 
 pub use font_gsub_context_execute::execute_gsub_chained_context_with_edits;
+
+pub use font_gsub_context_execute::execute_gsub_program;

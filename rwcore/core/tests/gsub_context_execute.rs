@@ -673,3 +673,124 @@ fn chained_edit_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[
         assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.ligatures),(matches,matches,matches));
     }
 }
+
+
+// Format 1: input coverage and replacement array share sorted indices.
+fn reverse8(input:&[(u16,u16)],back:&[u16],ahead:&[u16])->Vec<u16>{
+    assert!(input.windows(2).all(|w|w[0].0<w[1].0));
+    let mut w=vec![1,0,back.len() as u16];
+    let mut slots=Vec::new();
+    for &g in back{slots.push((w.len(),g));w.push(0);}
+    w.push(ahead.len() as u16);
+    for &g in ahead{slots.push((w.len(),g));w.push(0);}
+    w.push(input.len() as u16);
+    w.extend(input.iter().map(|&(_,v)|v));
+    w[1]=(w.len()*2) as u16;
+    w.extend([1,input.len() as u16]);w.extend(input.iter().map(|&(g,_)|g));
+    for (i,g) in slots{w[i]=(w.len()*2) as u16;w.extend([1,1,g]);}
+    w
+}
+fn full_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubContractionExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_program(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn reverse_root_cascades_from_end_and_wrapper_direction(){
+    for kind in [8,7]{
+        let b=fixture(&[(kind,8,0,vec![reverse8(&[(10,20)],&[],&[20])])]);
+        let a=full_run(&b,&[0],&[10,10,10,20],None,&[]);
+        assert_eq!(a.expansion.execution.glyphs,vec![20,20,20,20]);
+        assert_eq!((a.expansion.execution.calls,a.expansion.execution.matches,a.expansion.execution.changes),(4,3,3));
+    }
+}
+#[test]fn reverse_backtrack_nearest_first_ahead_forward_and_boundaries(){
+    let b=fixture(&[(8,8,0,vec![reverse8(&[(10,20),(11,21)],&[9,8],&[15,16])])]);
+    assert_eq!(full_run(&b,&[0],&[8,9,11,15,16],None,&[]).expansion.execution.glyphs,vec![8,9,21,15,16]);
+    for input in [vec![9,8,10,15,16],vec![8,9,10,16,15],vec![9,10,15,16],vec![8,9,10,15]]{
+        assert_eq!(full_run(&b,&[0],&input,None,&[]).expansion.execution.glyphs,input);
+    }
+}
+#[test]fn reverse_gdef_filter_for_input_and_context(){
+    let g=gdef();
+    let b=fixture(&[(8,8,LOOKUP_IGNORE_MARK,vec![reverse8(&[(10,20),(12,21)],&[9],&[15])])]);
+    let input=[9,13,10,12,15];
+    assert_eq!(full_run(&b,&[0],&input,Some(&g),&[]).expansion.execution.glyphs,vec![9,13,20,12,15]);
+    assert_eq!(full_run(&b,&[0],&input,None,&[]).expansion.execution.glyphs,input);
+}
+#[test]fn reverse_identity_first_match_blocks_fallback(){
+    let b=fixture(&[(8,8,0,vec![reverse8(&[(10,10)],&[],&[15]),reverse8(&[(10,20)],&[],&[])])]);
+    let a=full_run(&b,&[0],&[10,15,10],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![10,15,20]);
+    assert_eq!((a.expansion.execution.matches,a.expansion.execution.changes),(2,1));
+}
+#[test]fn reverse_roots_preserve_order_and_see_variable_length_edits(){
+    let b=fixture(&[(2,2,0,vec![alt(9,&[10,20])]),(7,8,0,vec![reverse8(&[(10,20)],&[],&[20])]),
+        (4,4,0,vec![lig(20,21,&[20])]),(1,1,0,vec![single(21,22)])]);
+    let a=full_run(&b,&[0,1,2,3],&[9,9],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![22,22]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.ligatures),(2,2,2));
+}
+#[test]fn reverse_nested_type5_and_type6_use_only_action_position(){
+    for (kind,sub) in [(5,ctx3(&[9,10],&[(1,0)])),(6,chain3(&[9],&[10],&[20],&[(0,0)]))]{
+        let b=fixture(&[(7,8,0,vec![reverse8(&[(10,20)],&[],&[20])]),(kind,kind,0,vec![sub])]);
+        let a=full_run(&b,&[1],&[9,10,20,10,20],None,&[]);
+        assert_eq!(a.expansion.execution.glyphs,vec![9,20,20,10,20]);
+        assert_eq!((a.expansion.execution.actions,a.expansion.execution.matches,a.expansion.execution.peak_depth),(1,2,2));
+    }
+}
+#[test]fn reverse_nested_after_growth_reads_rebased_live_position(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),
+        (8,8,0,vec![reverse8(&[(11,22)],&[21,20],&[15])]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15],&[(0,0),(1,1)])])]);
+    let a=full_run(&b,&[2],&[9,10,11,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22,15]);
+    assert_eq!((a.expansion.inserted_glyphs,a.expansion.execution.actions),(1,2));
+}
+#[test]fn reverse_exact_limits_and_immutable_input(){
+    let b=fixture(&[(8,8,0,vec![reverse8(&[(10,20)],&[9],&[15])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    let input=[9,10,15];
+    let l=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{
+        context:GsubContextExecLimits{max_glyphs:3,max_roots:1,max_lookups:1,max_depth:1,
+            max_calls:3,max_probes:3,max_filter_checks:5,max_rules:3,max_symbols:5,max_actions:0,max_matches:1},
+        max_inserted:0,max_edit_work:0},max_removed:0};
+    let a=execute_gsub_program(&p,&input,&[],l).unwrap();
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,15]);
+    assert_eq!((a.expansion.execution.filter_checks,a.expansion.execution.symbols,a.expansion.execution.rules),(5,5,3));
+    for c in [GsubContextExecLimits{max_filter_checks:4,..l.expansion.context},
+        GsubContextExecLimits{max_symbols:4,..l.expansion.context},
+        GsubContextExecLimits{max_probes:2,..l.expansion.context},
+        GsubContextExecLimits{max_calls:2,..l.expansion.context},
+        GsubContextExecLimits{max_rules:2,..l.expansion.context},
+        GsubContextExecLimits{max_matches:0,..l.expansion.context}]{
+        let bad=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:c,..l.expansion},..l};
+        assert!(matches!(execute_gsub_program(&p,&input,&[],bad),Err(Error::Limit(_))));
+        assert_eq!(input,[9,10,15]);
+    }
+}
+#[test]fn reverse_legacy_rejection_empty_and_full_api_parity(){
+    let b=fixture(&[(8,8,0,vec![reverse8(&[(10,20)],&[],&[])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_chained_context_with_edits(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+    assert_eq!(execute_gsub_program(&p,&[],&[],Default::default()).unwrap().expansion.execution,GsubContextExecResult::default());
+    assert!(matches!(execute_gsub_program(&p,&[32],&[],Default::default()),Err(Error::Invalid(_))));
+    let b=fixture(&[(3,3,0,vec![alt(10,&[20,21])]),(6,6,0,vec![chain3(&[9],&[10],&[11],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let input=[9,10,11];let choices=[choice(0,1)];
+    assert_eq!(execute_gsub_program(&p,&input,&choices,Default::default()).unwrap(),
+        execute_gsub_chained_context_with_edits(&p,&input,&choices,Default::default()).unwrap());
+}
+#[test]fn reverse_exhaustive_small_independent_reference(){
+    let b=fixture(&[(8,8,0,vec![reverse8(&[(10,20)],&[],&[20])])]);
+    let p=compile_gsub_program(&b,&[0],32,None,Default::default()).unwrap();
+    let alphabet=[9,10,20];
+    for code in 0usize..729{
+        let input:Vec<_>=(0..6).map(|i|alphabet[(code/3usize.pow(i))%3]).collect();
+        // A contiguous run of 10 immediately before 20 is replaced in
+        // full; compute this from original input, not the reverse loop.
+        let want:Vec<_>=input.iter().enumerate().map(|(i,&g)|{
+            if g==10&&input[i..].iter().copied().find(|&v|v!=10)==Some(20){20}else{g}
+        }).collect();
+        let a=execute_gsub_program(&p,&input,&[],Default::default()).unwrap();
+        assert_eq!(a.expansion.execution.glyphs,want);
+    }
+}

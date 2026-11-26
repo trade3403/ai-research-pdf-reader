@@ -99,8 +99,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4d5g | Independent native contextual contraction and mixed growth/shrink reference | Verified (#138) |
 | C4.4d6a | Bounded Type 6 chained contextual execution foundation | Verified (#139) |
 | C4.4d6b | Bounded Type 6 variable-length nested integration | Verified (#140) |
-| C4.4d6c | Independent native Type 6 mixed execution reference | Source implemented; CI pending |
-| C4.4d8a | Bounded Type 8 reverse chained substitution execution | Planned |
+| C4.4d6c | Independent native Type 6 mixed execution reference | Verified (#141) |
+| C4.4d8a | Bounded Type 8 reverse chained substitution execution | Source implemented; CI pending |
+| C4.4d8b | Independent native Type 8 reverse execution and mixed program reference | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |

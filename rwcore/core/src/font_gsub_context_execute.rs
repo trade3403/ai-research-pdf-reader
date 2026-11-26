@@ -334,6 +334,25 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
                 state.result.glyphs[p]=v;
                 return Ok(Some(p+1));
             }
+        }else if let ExtensionTarget::Reverse(rule)=sub.target(){
+            // Type 8 is length-preserving. Its conditions use the same
+            // current-run, nearest-first backtrack and forward lookahead
+            // semantics as Type 6. Only the input glyph is replaced.
+            state.rule()?;state.symbol()?;
+            let g=state.result.glyphs[p];
+            if let Some(index)=rule.input().index(g){
+                if state.match_back(lookup.filter(),p,rule.backtrack().len(),
+                    |i,v|rule.backtrack()[i].index(v).is_some())? &&
+                    state.match_ahead(lookup.filter(),p+1,rule.lookahead().len(),
+                    |i,v|rule.lookahead()[i].index(v).is_some())?{
+                    let output=*rule.replacements().get(index as usize)
+                        .ok_or(Error::Invalid("gsub reverse replacement index"))?;
+                    state.matched()?;
+                    state.result.changes+=usize::from(output!=g);
+                    state.result.glyphs[p]=output;
+                    return Ok(Some(p+1));
+                }
+            }
         }else if let ExtensionTarget::Ligature(rule)=sub.target(){
             let g=state.result.glyphs[p];
             if let Some(rules)=rule.rules(g){
@@ -388,7 +407,7 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<
 /// No output is returned on error; no variable-length or cluster edits.
 pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,None,limits,None,None,false).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,None,limits,None,None,false,false).map(|r|r.expansion.execution)
 }
 /// Length-preserving Type 1/3/5 execution. Require exactly one explicit
 /// zero-based choice for every reachable effective Type 3 lookup,
@@ -397,7 +416,7 @@ pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
 /// choice fails atomically rather than falling through to later subtables.
 pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None,None,false).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,false,false).map(|r|r.expansion.execution)
 }
 /// Execute Type 1/2/3/5 roots and reachable targets, including Type 7
 /// wrappers. Nonempty expansion preserves the first replacement as the
@@ -406,7 +425,7 @@ pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,gly
 /// No deletion, ligature contraction, cluster or feature-mask propagation.
 pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubExpansionExecLimits)->Result<GsubExpansionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None,false).map(|r|r.expansion)
+    execute_context_inner(program,glyphs,Some(choices),limits.context,Some(limits),None,false,false).map(|r|r.expansion)
 }
 /// Execute Type 1/2/3/4/5 (direct or wrapped) roots and dependencies.
 /// A ligature retains its first anchor and tombstones consumed trailing
@@ -415,7 +434,7 @@ pub fn execute_gsub_context_with_expansion(program:&CompiledGsubProgram<'_>,glyp
 /// No cluster/mark component metadata or feature-mask propagation.
 pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),false)
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),false,false)
 }
 /// Length-preserving Type 1/3/5/6 roots and reachable dependencies,
 /// including Type 7 wrappers. Backtrack is nearest-first; input and
@@ -426,7 +445,7 @@ pub fn execute_gsub_context_with_contraction(program:&CompiledGsubProgram<'_>,gl
 /// choices apply. Other reachable kinds are rejected at preflight.
 pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits,None,None,true).map(|r|r.expansion.execution)
+    execute_context_inner(program,glyphs,Some(choices),limits,None,None,true,false).map(|r|r.expansion.execution)
 }
 /// Execute effective Type 1 through 6, including Type 7 wrappers.
 /// Uses the same input-anchor and exclusive-boundary policy as the
@@ -439,11 +458,23 @@ pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u1
 /// Type 8, cluster metadata and feature masks remain unsupported.
 pub fn execute_gsub_chained_context_with_edits(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
-    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true)
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,false)
+}
+/// Execute all effective GSUB substitution kinds (1–6 and 8), including
+/// Type 7 wrappers. Root order is unchanged, but each effective Type 8
+/// root visits current physical positions from end to start; other
+/// roots advance forward. Earlier positions see already replaced later
+/// glyphs during a reverse pass. A nested Type 8 action is a single
+/// position invocation, not a reverse scan of the entire run.
+/// All existing context and edit budgets and explicit alternate
+/// selections apply. No cluster metadata, feature masks or script stages.
+pub fn execute_gsub_program(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true,true)
 }
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits,
-    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool)->Result<GsubContractionExecResult,Error>{
+    expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool,reverse:bool)->Result<GsubContractionExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
         ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
@@ -456,6 +487,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
         match lookup.effective_kind(){
             1|5=>{},
             6 if chained=>{},
+            8 if reverse=>{},
             2 if expansion.is_some()=>{},
             4 if contraction.is_some()=>{},
             3 if selections.is_some()=>{
@@ -470,9 +502,18 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
     state.result.glyphs.extend_from_slice(glyphs);
     for &id in program.roots(){
-        let mut p=0;
-        while p<state.result.glyphs.len(){
-            p=apply_at(program,id,p,&mut state)?.unwrap_or(p+1);
+        let lookup=program.lookup(id).ok_or(Error::Invalid("gsub context missing root"))?;
+        if lookup.effective_kind()==8{
+            // A reverse lookup can only replace one glyph at a time;
+            // the run length stays fixed throughout this root.
+            for p in (0..state.result.glyphs.len()).rev(){
+                apply_at(program,id,p,&mut state)?;
+            }
+        }else{
+            let mut p=0;
+            while p<state.result.glyphs.len(){
+                p=apply_at(program,id,p,&mut state)?.unwrap_or(p+1);
+            }
         }
     }
     Ok(GsubContractionExecResult{expansion:GsubExpansionExecResult{execution:state.result,
