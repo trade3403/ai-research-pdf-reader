@@ -316,3 +316,41 @@ fn strict_plan(bytes:&[u8])->GsubPlan{
         assert_eq!(source_sets(&result.provenance),vec![vec![0],vec![1],vec![2],vec![3]]);
     }
 }
+
+fn stage(ids:&[u16])->ShapeStageSpec{ShapeStageSpec{features:ids.to_vec()}}
+#[test]fn staged_order_and_persistent_growth_contraction(){
+    let (run,n)=run("A");let a=run.glyphs()[0].glyph_id;
+    let bytes=masked_fixture(&[(4,4,ligature(11,12,20)),(2,2,multiple(a))],&[(b"liga",&[0]),(b"salt",&[1])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(&plan,1,&[],Default::default()).unwrap();
+    let (_,r,_)=execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[1]),stage(&[0])],Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(r.execution.expansion.execution.glyphs,vec![20]);
+    assert_eq!(source_sets(&r.provenance),vec![vec![0]]);
+    assert_eq!(r.glyph_masks,vec![3]);assert_eq!(r.execution.expansion.inserted_glyphs,1);assert_eq!(r.execution.removed_glyphs,1);
+    let (_,reverse,_)=execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[0]),stage(&[1])],Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(reverse.execution.expansion.execution.glyphs,vec![11,12]);
+}
+#[test]fn staged_shared_root_uses_stage_specific_masks(){
+    let (run,n)=run("AA");let a=run.glyphs()[0].glyph_id;
+    let bytes=masked_fixture(&[(1,1,single(a,20))],&[(b"liga",&[0]),(b"salt",&[0])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let edits=[FeatureMaskOverride{feature:0,start:1,end:2,enabled:false},FeatureMaskOverride{feature:1,start:0,end:1,enabled:false}];
+    let masks=ScalarFeatureMasks::build(&plan,2,&edits,Default::default()).unwrap();
+    let (schedule,r,blocked)=execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[0]),stage(&[1])],Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(schedule.root_count(),2);assert_eq!(r.execution.expansion.execution.glyphs,vec![20,20]);
+    assert_eq!(r.skipped_roots,2);assert_eq!(blocked,0);assert_eq!(r.glyph_masks,vec![1,2]);
+}
+#[test]fn staged_single_stage_parity_and_cumulative_limits(){
+    let (run,n)=run("AB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=masked_fixture(&[(1,1,single(a,20)),(1,1,single(b,21))],&[(b"liga",&[0]),(b"salt",&[1])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(&plan,2,&[],Default::default()).unwrap();
+    let (_,r,k)=execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[0,1])],Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!((r,k),execute_gsub_program_with_strict_masks(&p,&run,&[],&masks,Default::default(),Default::default(),1000).unwrap());
+    let specs=[stage(&[0]),stage(&[1])];
+    let (_,r,_)=execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert!(execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),Default::default(),Default::default(),r.mask_work-1).is_err());
+    let mut limits=GsubProgramExecLimits::default();limits.expansion.context.max_calls=3;
+    assert!(matches!(execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),limits,Default::default(),1000),Err(Error::Limit(_))));
+    assert!(execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[0])],Default::default(),Default::default(),Default::default(),1000).is_err());
+}

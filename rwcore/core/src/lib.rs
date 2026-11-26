@@ -264,3 +264,5 @@ pub use font_gsub_context_execute::execute_gsub_program_with_strict_masks;
 
 pub mod font_shape_stages;
 pub use font_shape_stages::{ShapeStageLimits,ShapeStageSpec,ShapeStage,ShapeStageSchedule,build_shape_stage_schedule};
+
+pub use font_gsub_context_execute::execute_staged_gsub;

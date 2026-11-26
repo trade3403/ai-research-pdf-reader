@@ -82,6 +82,7 @@ struct RootMaskState<'a>{
     skipped:usize,
     strict:bool,
     blocked:usize,
+    staged_roots:Option<&'a [crate::GsubPlannedLookup]>,
 }
 struct State<'a>{
     provenance:Option<crate::ProvenanceLedger>,
@@ -530,10 +531,13 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     let mut state=State{provenance:provenance.take(),choices,result:Default::default(),active:Vec::new(),limits,expansion,work:Default::default(),contraction,shrink:Default::default()};
     state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
     state.result.glyphs.extend_from_slice(glyphs);
-    for (root_index,&id) in program.roots().iter().enumerate(){
+    let root_count=masking.as_ref().and_then(|m|m.staged_roots).map_or(program.roots().len(),|r|r.len());
+    if root_count>limits.max_roots{return Err(Error::Limit("gsub staged roots"));}
+    for root_index in 0..root_count{
+        let id=masking.as_ref().and_then(|m|m.staged_roots).map_or_else(||program.roots()[root_index],|r|r[root_index].index);
         let root_mask=if let Some(m)=masking.as_deref_mut(){
             let plan=program.validated_plan().ok_or(Error::Invalid("gsub masks missing plan"))?;
-            let features=&plan.lookups[root_index].features;
+            let features=if let Some(roots)=m.staged_roots{&roots[root_index].features}else{&plan.lookups[root_index].features};
             m.left=m.left.checked_sub(features.len()).ok_or(Error::Limit("gsub mask work"))?;
             m.masks.lookup_mask(features)?
         }else{0};
@@ -627,7 +631,7 @@ pub fn execute_gsub_program_with_masks(program:&CompiledGsubProgram<'_>,run:&cra
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<MaskedGsubResult,Error>{
-    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,false).map(|r|r.0)
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,false,None).map(|r|r.0)
 }
 /// Strict shared-feature input and nested action policy. Returns the
 /// legacy masked result plus number of rejected input/action checks.
@@ -635,11 +639,11 @@ pub fn execute_gsub_program_with_strict_masks(program:&CompiledGsubProgram<'_>,r
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<(MaskedGsubResult,usize),Error>{
-    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true)
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,None)
 }
 fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
-    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,strict:bool)
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,strict:bool,staged_roots:Option<&[crate::GsubPlannedLookup]>)
     ->Result<(MaskedGsubResult,usize),Error>{
     let plan=program.validated_plan().ok_or(Error::Invalid("gsub masks missing plan"))?;
     if masks.features()!=plan.features.as_slice()||masks.required_feature()!=plan.required_feature||
@@ -652,7 +656,7 @@ fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
     let mut provenance=Some(crate::ProvenanceLedger::from_run(run,program.glyph_count(),source_limits)?);
     let mut glyphs=Vec::new();glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub mask allocation"))?;
     glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
-    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0,strict,blocked:0};
+    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0,strict,blocked:0,staged_roots};
     let execution=execute_context_inner(program,&glyphs,Some(choices),limits.expansion.context,
         Some(limits.expansion),Some(limits),true,true,&mut provenance,Some(&mut m))?;
     let ledger=provenance.ok_or(Error::Invalid("gsub mask missing ledger"))?;
@@ -684,4 +688,30 @@ fn common_input_bits(state:&State<'_>,positions:&[usize],mut bits:u64,
         if bits==0{m.blocked=m.blocked.checked_add(1).ok_or(Error::Limit("gsub mask blocked"))?;break;}
     }
     Ok(bits)
+}
+
+/// Build and execute an explicit stage partition in one atomic run.
+/// All existing execution, source and mask budgets are cumulative.
+/// A shared root may run in multiple stages with distinct contributor
+/// masks; the physical glyph buffer and provenance ledger never reset.
+/// Alternate choices remain one per reachable lookup, across stages.
+pub fn execute_staged_gsub(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
+    specs:&[crate::ShapeStageSpec],stage_limits:crate::ShapeStageLimits,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
+    ->Result<(crate::ShapeStageSchedule,MaskedGsubResult,usize),Error>{
+    let schedule=crate::build_shape_stage_schedule(program,specs,stage_limits)?;
+    if schedule.root_count()>limits.expansion.context.max_roots{return Err(Error::Limit("gsub staged roots"));}
+    let mut roots=Vec::new();
+    roots.try_reserve_exact(schedule.root_count()).map_err(|_|Error::Limit("gsub staged allocation"))?;
+    for stage in schedule.stages(){
+        for root in stage.lookups(){
+            let mut features=Vec::new();
+            features.try_reserve_exact(root.features.len()).map_err(|_|Error::Limit("gsub staged allocation"))?;
+            features.extend_from_slice(&root.features);
+            roots.push(crate::GsubPlannedLookup{index:root.index,features});
+        }
+    }
+    let (result,blocked)=execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,Some(&roots))?;
+    Ok((schedule,result,blocked))
 }
