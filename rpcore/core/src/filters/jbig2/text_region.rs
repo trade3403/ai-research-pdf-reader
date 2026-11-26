@@ -296,3 +296,50 @@ mod arithmetic_text_tests{
         assert!(decode_arithmetic(&[255,172],options(),&[],MAX_TEXT_DECISIONS+1,100).is_err());
     }
 }
+
+#[cfg(test)]
+mod arithmetic_text_vectors {
+    use super::*;
+    // Original Annex E encoder fixtures, independent of the Rust decoder.
+    const GOOD:&[u8]=&[147,150,68,103,175,63,255,172];
+    const BAD_ID:&[u8]=&[169,109,255,172];
+    const EXCESS:&[u8]=&[169,114,15,255,172];
+    const OOB:&[u8]=&[207,255,172];
+    fn options(instances:u32)->Options{Options{width:8,height:4,default_black:false,
+        op:ComposeOp::Or,strips:2,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances}}
+    fn symbols()->[Bitmap;3]{
+        [Bitmap::from_packed(1,1,&[128]).unwrap(),Bitmap::from_packed(1,1,&[128]).unwrap(),
+         Bitmap::from_packed(1,1,&[128]).unwrap()]
+    }
+    #[test]
+    fn arithmetic_text_two_strips_pixels(){
+        let s=symbols();let refs=[&s[0],&s[1],&s[2]];
+        let d=decode_arithmetic(GOOD,options(3),&refs,50,100).unwrap();
+        assert_eq!(d.bitmap.packed(),[16,64,128,0]);
+        assert_eq!(d.stats.instances,3);assert_eq!(d.stats.strips,2);
+        assert_eq!(d.stats.composed_pixels,3);
+    }
+    #[test]
+    fn arithmetic_text_exact_decisions(){
+        let s=symbols();let refs=[&s[0],&s[1],&s[2]];
+        assert!(decode_arithmetic(GOOD,options(3),&refs,49,100).is_err());
+        assert!(decode_arithmetic(GOOD,options(3),&refs,50,100).is_ok());
+    }
+    #[test]
+    fn arithmetic_text_reject_invalid_id(){
+        let s=symbols();let refs=[&s[0],&s[1],&s[2]];
+        assert!(matches!(decode_arithmetic(BAD_ID,options(1),&refs,100,100),
+            Err(Error::Invalid("JBIG2 IAID symbol index"))));
+    }
+    #[test]
+    fn arithmetic_text_reject_excess(){
+        let s=symbols();let refs=[&s[0],&s[1],&s[2]];
+        assert!(matches!(decode_arithmetic(EXCESS,options(1),&refs,100,100),
+            Err(Error::Invalid("JBIG2 text excess instances"))));
+    }
+    #[test]
+    fn arithmetic_text_reject_initial_oob(){
+        assert!(matches!(decode_arithmetic(OOB,options(0),&[],100,100),
+            Err(Error::Invalid("JBIG2 text unexpected OOB"))));
+    }
+}
