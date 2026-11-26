@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0b2 [#130 / 45745233571](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571) Linux全基础223项及真实HTTPS小文件77字节正负例成功；Windows基础223项（fmt/clippy/workspace/portable）成功，显式网络探针在download.rs:229 Downloader::new返回Configuration，[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571/job/139659547203)。即RP_CURL未满足绝对路径及现有文件约束，实际变量内容未记录，不能断言具体PATH原因。CI改为显式SystemRoot/System32/curl.exe，经Get-Item验证文件并取FullName，打印路径及curl --version再执行同一网络验收；不放宽下载器、证书或校验门槛，不修改推理算法。查询时Linux真实模型专项仍运行，不主动取消。待全量CI成功进入D3.0c。
+
 2026-11-26 D3.0b1 基线 eeb648d70e871805a0b45f7d8236c5890c6c9b21 / [#129 / 45739907242](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242) 全量 success；Linux/Windows各160 workspace+59 portable=219/219，共438/438。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242/job/139647366518) INT8 242/269、27拒译、5221/6036词、245/317数字串、317.227274s、829.240588ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0b2：Rust自主下载管理与成熟curl HTTPS适配器，显式可信绝对EXE路径（不搜索PATH），禁用配置文件/代理/重定向，HTTPS协议限定、系统TLS证书验证、连接15s/总600s、流式限制及SHA256核对、HTTP200及进程退出验证；可信目录读取及单文件新建暂存，失败清理（报告清理失败）、不覆盖。新增4项离线单测及1项显式真实HTTPS探针（两平台对公开仓库固定commit 77字节Cargo.toml正负例，非真实模型在线发布验证）；预计446基础通过+2显式网络探针。无新增Rust依赖，但在线下载需要可信curl及证书环境，不自研TLS；环境、源站及暂存目录须可信，不支持代理、重定向、并发敌对修改或DNS/IP策略。实际模型目录尚未部署，未发布模型；暂停/续传/失败恢复、安装事务、升级仍待后续。未本地编译，等待CI。

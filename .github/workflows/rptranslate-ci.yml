@@ -421,7 +421,11 @@ jobs:
       - name: Windows actual pinned HTTPS fixture
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          $env:RP_CURL = (Get-Command curl.exe -CommandType Application).Source
+          $curl = Get-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\curl.exe') -ErrorAction Stop
+          if ($curl.PSIsContainer) { throw 'Expected system curl executable file' }
+          $env:RP_CURL = $curl.FullName
+          Write-Output "RP_CURL=$env:RP_CURL"
+          & $env:RP_CURL --version
           cargo test --locked --offline -p rpmodel download::tests::actual_https_pinned_fixture -- --ignored --nocapture
       - name: Native release executable and independent training reference
         run: |
