@@ -552,3 +552,124 @@ fn chained_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubA
         assert_eq!(execute_gsub_chained_context(&p,&input,&[],Default::default()).unwrap().glyphs,want);
     }
 }
+
+
+fn chained_edit_run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>,choices:&[GsubAlternateSelection])->GsubContractionExecResult{
+    let p=compile_gsub_program(b,roots,32,g,Default::default()).unwrap();
+    execute_gsub_chained_context_with_edits(&p,input,choices,Default::default()).unwrap()
+}
+#[test]fn chained_edit_all_formats_expansion_and_wrapped_targets(){
+    for sub in [chain1(10,&[9],&[11],&[15],&[(0,0),(1,1)]),chain2(&[(0,0),(1,1)]),
+        chain3(&[9],&[10,11],&[15],&[(0,0),(1,1)])]{
+        let b=fixture(&[(7,2,0,vec![alt(10,&[20,21])]),(7,1,0,vec![single(11,22)]),(7,6,0,vec![sub])]);
+        let a=chained_edit_run(&b,&[2],&[9,10,11,15],None,&[]);
+        assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22,15]);
+        assert_eq!((a.expansion.inserted_glyphs,a.expansion.multiple_matches,a.removed_glyphs),(1,1,0));
+    }
+}
+#[test]fn chained_edit_all_formats_contraction_and_consumed_actions(){
+    for sub in [chain1(10,&[9],&[11],&[15],&[(0,0),(1,1),(0,1)]),chain2(&[(0,0),(1,1),(0,1)]),
+        chain3(&[9],&[10,11],&[15],&[(0,0),(1,1),(0,1)])]{
+        let b=fixture(&[(7,4,0,vec![lig(10,20,&[11])]),(1,1,0,vec![single(20,22)]),(7,6,0,vec![sub])]);
+        let a=chained_edit_run(&b,&[2],&[9,10,11,15],None,&[]);
+        assert_eq!(a.expansion.execution.glyphs,vec![9,22,15]);
+        assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions,a.expansion.execution.actions),(1,1,1,3));
+    }
+}
+#[test]fn chained_edit_new_backtrack_after_expansion(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(1,1,0,vec![single(11,22)]),
+        (6,6,0,vec![chain3(&[21,20],&[11],&[15],&[(0,1)])]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15],&[(0,0),(1,2)])])]);
+    let a=chained_edit_run(&b,&[3],&[9,10,11,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22,15]);
+    assert_eq!((a.expansion.execution.peak_depth,a.expansion.execution.actions),(3,3));
+}
+#[test]fn chained_edit_new_lookahead_after_contraction(){
+    let b=fixture(&[(4,4,0,vec![lig(11,20,&[15])]),(1,1,0,vec![single(10,22)]),
+        (6,6,0,vec![chain3(&[9],&[10],&[20,16],&[(0,1)])]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15,16],&[(1,0),(0,2)])])]);
+    let a=chained_edit_run(&b,&[3],&[9,10,11,15,16],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,22,20,16]);
+    assert_eq!((a.ligatures,a.removed_glyphs,a.expansion.execution.actions),(1,1,3));
+}
+#[test]fn chained_edit_type5_parent_and_type6_descendants_rebase(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(4,4,0,vec![lig(11,22,&[15])]),
+        (1,1,0,vec![single(16,23)]),
+        (6,6,0,vec![chain3(&[9],&[10,11,15],&[16],&[(0,0),(1,1),(2,2)])]),
+        (5,5,0,vec![ctx3(&[9,10,11,15,16],&[(1,3),(3,2),(4,2)])])]);
+    let a=chained_edit_run(&b,&[4],&[9,10,11,15,16,16],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22,23,16]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.skipped_actions,a.expansion.execution.peak_depth),(1,1,2,3));
+}
+#[test]fn chained_edit_ignored_gaps_and_dynamic_target_filter(){
+    let g=gdef();
+    let b=fixture(&[(4,4,LOOKUP_IGNORE_MARK,vec![lig(10,20,&[11])]),
+        (2,2,0,vec![alt(20,&[12,21])]),(1,1,LOOKUP_IGNORE_MARK,vec![single(12,23)]),
+        (6,6,LOOKUP_IGNORE_MARK,vec![chain3(&[9],&[10,11],&[15],&[(0,0),(0,1),(0,2),(1,2)])])]);
+    let a=chained_edit_run(&b,&[3],&[9,13,10,14,11,12,15],Some(&g),&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,13,12,21,14,12,15]);
+    assert_eq!((a.ligatures,a.removed_glyphs,a.skipped_actions,a.expansion.inserted_glyphs),(1,1,1,1));
+}
+#[test]fn chained_edit_lookahead_is_not_root_skip_region(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(4,4,0,vec![lig(11,22,&[15])]),
+        (6,6,0,vec![chain3(&[9],&[10],&[11,15],&[(0,0)]),
+            chain3(&[21],&[11],&[15],&[(0,1)])])]);
+    let a=chained_edit_run(&b,&[2],&[9,10,11,15],None,&[]);
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22]);
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.expansion.execution.actions),(1,1,2));
+}
+#[test]fn chained_edit_exact_intermediate_peak_and_work_limits(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(4,4,0,vec![lig(11,22,&[15])]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15],&[(0,0),(1,1)])])]);
+    let p=compile_gsub_program(&b,&[2],32,None,Default::default()).unwrap();
+    let input=[9,10,11,15];
+    let l=GsubContractionExecLimits{expansion:GsubExpansionExecLimits{
+        context:GsubContextExecLimits{max_glyphs:5,max_roots:1,max_lookups:3,max_depth:2,
+            max_calls:4,max_probes:4,max_filter_checks:8,max_rules:3,max_symbols:6,max_actions:2,max_matches:3},
+        max_inserted:1,max_edit_work:18},max_removed:1};
+    let a=execute_gsub_chained_context_with_edits(&p,&input,&[],l).unwrap();
+    assert_eq!(a.expansion.execution.glyphs,vec![9,20,21,22]);
+    assert_eq!((a.expansion.edit_work,a.expansion.execution.filter_checks,a.expansion.execution.symbols),(18,8,6));
+    for bad in [GsubContractionExecLimits{max_removed:0,..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_inserted:0,..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{max_edit_work:17,..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_glyphs:4,..l.expansion.context},..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_filter_checks:7,..l.expansion.context},..l.expansion},..l},
+        GsubContractionExecLimits{expansion:GsubExpansionExecLimits{context:GsubContextExecLimits{max_symbols:5,..l.expansion.context},..l.expansion},..l}]{
+        assert!(matches!(execute_gsub_chained_context_with_edits(&p,&input,&[],bad),Err(Error::Limit(_))));
+        assert_eq!(input,[9,10,11,15]);
+    }
+}
+#[test]fn chained_edit_legacy_parity_and_cycle_guard(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[10,11])]),(6,6,0,vec![chain3(&[],&[10],&[],&[(0,0),(0,1)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_chained_context_with_edits(&p,&[10],&[],Default::default()),Err(Error::Invalid(_))));
+    assert!(matches!(execute_gsub_chained_context(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+    assert!(matches!(execute_gsub_context_with_contraction(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+    let b=fixture(&[(3,3,0,vec![alt(10,&[20,21])]),(6,6,0,vec![chain3(&[9],&[10],&[11],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let a=execute_gsub_chained_context_with_edits(&p,&[9,10,11],&[choice(0,1)],Default::default()).unwrap();
+    assert_eq!(a.expansion.execution,execute_gsub_chained_context(&p,&[9,10,11],&[choice(0,1)],Default::default()).unwrap());
+    assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.skipped_actions),(0,0,0));
+}
+#[test]fn chained_edit_exhaustive_small_reference(){
+    let b=fixture(&[(2,2,0,vec![alt(10,&[20,21])]),(4,4,0,vec![lig(11,22,&[15])]),
+        (6,6,0,vec![chain3(&[9],&[10,11],&[15],&[(0,0),(1,1)])])]);
+    let p=compile_gsub_program(&b,&[2],32,None,Default::default()).unwrap();
+    let alphabet=[9,10,11,15];
+    for code in 0usize..4096{
+        let input:Vec<_>=(0..6).map(|i|alphabet[(code/4usize.pow(i))%4]).collect();
+        let mut want=Vec::new();let mut i=0;let mut matches=0;
+        // No overlapping [9,10,11,15] patterns and the new output
+        // glyphs are outside the input alphabet. Independent streaming
+        // rewrite consumes the complete pattern.
+        while i<input.len(){
+            if input[i..].starts_with(&[9,10,11,15]){
+                want.extend([9,20,21,22]);i+=4;matches+=1;
+            }else{want.push(input[i]);i+=1;}
+        }
+        let a=execute_gsub_chained_context_with_edits(&p,&input,&[],Default::default()).unwrap();
+        assert_eq!(a.expansion.execution.glyphs,want);
+        assert_eq!((a.expansion.inserted_glyphs,a.removed_glyphs,a.ligatures),(matches,matches,matches));
+    }
+}

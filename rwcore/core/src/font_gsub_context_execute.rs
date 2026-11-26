@@ -428,6 +428,19 @@ pub fn execute_gsub_chained_context(program:&CompiledGsubProgram<'_>,glyphs:&[u1
     choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
     execute_context_inner(program,glyphs,Some(choices),limits,None,None,true).map(|r|r.expansion.execution)
 }
+/// Execute effective Type 1 through 6, including Type 7 wrappers.
+/// Uses the same input-anchor and exclusive-boundary policy as the
+/// contextual contraction API. Backtrack and lookahead are conditions,
+/// not action anchors; each new lookup matches the current glyph run.
+/// Descendants may inspect or edit beyond an ancestor input span.
+/// Growth keeps the first output anchor; ligatures retain the first
+/// component and skip actions on consumed trailing components.
+/// All existing context, expansion and contraction budgets apply.
+/// Type 8, cluster metadata and feature masks remain unsupported.
+pub fn execute_gsub_chained_context_with_edits(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    choices:&[GsubAlternateSelection],limits:GsubContractionExecLimits)->Result<GsubContractionExecResult,Error>{
+    execute_context_inner(program,glyphs,Some(choices),limits.expansion.context,Some(limits.expansion),Some(limits),true)
+}
 fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits,
     expansion:Option<GsubExpansionExecLimits>,contraction:Option<GsubContractionExecLimits>,chained:bool)->Result<GsubContractionExecResult,Error>{

@@ -177,3 +177,5 @@
 - C4.4d5g: 80 native Type 4 subtables across seven fonts. Constructed parents and Type 2 targets are synthetic, native Type 4 target bytes unchanged; native Type 5 execution limited to supported closures and bounded witnesses. Actual dynamic native nested contraction counts not measured yet. No external shaping equivalence or ligature cluster/component metadata; Type 6/8, feature masks, performance and corpus/security acceptance outstanding.
 
 - C4.4d6a: length-preserving subset only, rejects reachable Type 2/4/8 even on empty input. Native Type 6 execution reference, variable-length integration, script staging, masks, clusters and full shaping equivalence outstanding. No external shaper comparison or performance benchmark.
+
+- C4.4d6b: explicit opt-in variable-length Type 6 execution using existing consumed-anchor skip policy and ancestor input boundaries. Descendants can inspect/edit outside ancestor input, so this is not a claim of external shaper equivalence. Native Type 6 execution reference, Type 8, cluster/mark-component metadata, feature masks, full script stages, performance and corpus/security acceptance outstanding.

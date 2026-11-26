@@ -154,3 +154,6 @@ C4.4d5g pending CI; #137 verified 971/platform, 2913 total. Seven native contrac
 
 ## Latest checkpoint
 C4.4d6a pending CI; #138 verified 978/platform, 2934 total. Ten chained context regressions, 988/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next Type 6 variable-length integration only after CI passes.
+
+## Latest checkpoint
+C4.4d6b pending CI; #139 verified 988/platform, 2964 total. Ten variable-length chained regressions, 998/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next native Type 6 execution reference only after CI passes.
