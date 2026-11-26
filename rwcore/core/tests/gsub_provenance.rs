@@ -58,3 +58,59 @@ fn run(text:&str)->(SourceRun,u32){
     let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
     assert!(matches!(execute_gsub_with_provenance(&p,&run,Default::default(),Default::default()),Err(Error::Unsupported(_))));
 }
+
+fn ligature(a:u16,b:u16,out:u16)->Vec<u16>{
+    vec![1,8,1,14,1,1,a,1,4,out,2,b]
+}
+fn alternate(a:u16)->Vec<u16>{vec![1,8,1,14,1,1,a,2,11,12]}
+#[test]fn direct_alternate_explicit_choice(){
+    let (run,n)=run("ABA");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    let bytes=fixture(&[(7,3,alternate(a))]);
+    let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+    let choices=[GsubAlternateSelection{lookup_index:0,candidate_index:1}];
+    let (result,l)=execute_gsub_with_direct_provenance(&p,&run,&choices,Default::default(),Default::default()).unwrap();
+    assert_eq!(result.expansion.execution.glyphs,vec![12,b,12]);
+    assert_eq!(l.glyphs().iter().map(|g|g.sources()).collect::<Vec<_>>(),vec![&[0][..],&[1][..],&[2][..]]);
+    assert!(execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),Default::default()).is_err());
+    assert!(execute_gsub_with_direct_provenance(&p,&run,&[GsubAlternateSelection{lookup_index:0,candidate_index:2}],Default::default(),Default::default()).is_err());
+}
+#[test]fn direct_ligature_and_wrapped(){
+    let (run,n)=run("ABAB");let a=run.glyphs()[0].glyph_id;let b=run.glyphs()[1].glyph_id;
+    for kind in [4,7]{
+        let bytes=fixture(&[(kind,4,ligature(a,b,20))]);
+        let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+        let (result,l)=execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),Default::default()).unwrap();
+        assert_eq!(result.expansion.execution.glyphs,vec![20,20]);
+        assert_eq!(l.glyphs()[0].sources(),&[0,1]);assert_eq!(l.glyphs()[1].sources(),&[2,3]);
+        assert_eq!(result.ligatures,2);
+        assert_eq!(result,execute_gsub_program(&p,&[a,b,a,b],&[],Default::default()).unwrap());
+    }
+}
+#[test]fn direct_expansion_then_ligature_deduplicates(){
+    let (run,n)=run("A");let a=run.glyphs()[0].glyph_id;
+    let bytes=fixture(&[(2,2,multiple(a)),(4,4,ligature(11,12,20))]);
+    let p=compile_gsub_program(&bytes,&[0,1],n,None,Default::default()).unwrap();
+    let (result,l)=execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),Default::default()).unwrap();
+    assert_eq!(result.expansion.execution.glyphs,vec![20]);assert_eq!(l.glyphs()[0].sources(),&[0]);
+}
+#[test]fn direct_ligature_budget_atomic(){
+    let (run,n)=run("AB");let before=run.clone();
+    let bytes=fixture(&[(4,4,ligature(run.glyphs()[0].glyph_id,run.glyphs()[1].glyph_id,20))]);
+    let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),ProvenanceLimits{max_sources_per_glyph:1,..Default::default()}),Err(Error::Limit(_))));
+    assert_eq!(run,before);
+}
+#[test]fn direct_ligature_ignored_gap(){
+    let (run,n)=run("ACB");let a=run.glyphs()[0].glyph_id;let mark=run.glyphs()[1].glyph_id;let b=run.glyphs()[2].glyph_id;
+    // Synthetic GDEF 1.0 class definition, format 2, one mark range.
+    let gd=[1u16,0,12,0,0,0,2,1,mark,mark,3];
+    let gbytes:Vec<_>=gd.iter().flat_map(|v|v.to_be_bytes()).collect();
+    let gdef=parse_gdef(&gbytes,n,Default::default()).unwrap();
+    let mut bytes=fixture(&[(4,4,ligature(a,b,20))]);
+    // First lookup starts at word 9; flag at word 10.
+    bytes[20..22].copy_from_slice(&LOOKUP_IGNORE_MARK.to_be_bytes());
+    let p=compile_gsub_program(&bytes,&[0],n,Some(&gdef),Default::default()).unwrap();
+    let (result,l)=execute_gsub_with_direct_provenance(&p,&run,&[],Default::default(),Default::default()).unwrap();
+    assert_eq!(result.expansion.execution.glyphs,vec![20,mark]);
+    assert_eq!(l.glyphs()[0].sources(),&[0,2]);assert_eq!(l.glyphs()[1].sources(),&[1]);
+}

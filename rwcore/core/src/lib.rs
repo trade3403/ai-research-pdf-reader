@@ -250,3 +250,5 @@ pub mod font_provenance;
 pub use font_provenance::{ProvenanceLimits,TrackedGlyph,ProvenanceLedger};
 
 pub use font_gsub_context_execute::execute_gsub_with_provenance;
+
+pub use font_gsub_context_execute::execute_gsub_with_direct_provenance;

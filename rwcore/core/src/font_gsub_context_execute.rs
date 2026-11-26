@@ -151,6 +151,7 @@ impl State<'_>{
                 else{*at-=before(*at);}
             }
         }
+        if let Some(ledger)=self.provenance.as_mut(){ledger.contract(positions,output)?;}
         self.result.glyphs[p]=output;
         let mut write=p+1;
         let mut k=0;
@@ -542,6 +543,18 @@ pub fn execute_gsub_with_provenance(program:&CompiledGsubProgram<'_>,run:&crate:
     if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1|2)){
         return Err(Error::Unsupported("gsub provenance reachable kind"));
     }
+    execute_gsub_with_direct_provenance(program,run,&[],limits,source_limits)
+}
+
+/// Provenance-aware direct Types 1–4, including extension wrappers.
+/// Type 3 requires explicit choices; Type 4 merges only matched physical
+/// components, leaving ignored gaps and their sources untouched.
+pub fn execute_gsub_with_direct_provenance(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits)
+    ->Result<(GsubProgramExecResult,crate::ProvenanceLedger),Error>{
+    if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1..=4)){
+        return Err(Error::Unsupported("gsub provenance reachable kind"));
+    }
     if run.glyphs().len()>limits.expansion.context.max_glyphs{
         return Err(Error::Limit("gsub provenance input"));
     }
@@ -549,7 +562,7 @@ pub fn execute_gsub_with_provenance(program:&CompiledGsubProgram<'_>,run:&crate:
     let mut glyphs=Vec::new();
     glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub provenance allocation"))?;
     glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
-    let result=execute_context_inner(program,&glyphs,Some(&[]),limits.expansion.context,
+    let result=execute_context_inner(program,&glyphs,Some(choices),limits.expansion.context,
         Some(limits.expansion),Some(limits),true,true,&mut provenance)?;
     let ledger=provenance.ok_or(Error::Invalid("gsub provenance missing"))?;
     if !ledger.glyphs().iter().map(|g|g.glyph_id).eq(result.expansion.execution.glyphs.iter().copied()){
