@@ -39,6 +39,9 @@ fn tagged(b:&[u8],base:usize,budget:&mut usize,unique:bool)->Result<Vec<GsubReco
 /// Top-level offsets are absolute in the supplied GSUB slice. Child table
 /// contents are not validated here. Feature tags may repeat per OpenType.
 pub fn parse_gsub_directory(b:&[u8],limits:GsubLimits)->Result<GsubDirectory,Error>{
+    parse_layout_directory(b,limits)
+}
+pub(crate) fn parse_layout_directory(b:&[u8],limits:GsubLimits)->Result<GsubDirectory,Error>{
     if b.len()>limits.max_bytes{return Err(Error::Limit("gsub bytes"));}
     let major=word(b,0)?;let minor=word(b,2)?;
     if major!=1||minor>1{return Err(Error::Unsupported("gsub version"));}
@@ -92,7 +95,10 @@ fn language(b:&[u8],p:usize,features:usize,budget:&mut usize)->Result<GsubLangSy
 /// slice. Substitution subtables, feature parameters, GDEF mark-set indices
 /// and variation bodies remain opaque, not validated for execution.
 pub fn parse_gsub_layout(b:&[u8],limits:GsubLimits)->Result<GsubLayout,Error>{
-    let directory=parse_gsub_directory(b,limits)?;
+    parse_layout_children(b,limits,8)
+}
+pub(crate) fn parse_layout_children(b:&[u8],limits:GsubLimits,max_kind:u16)->Result<GsubLayout,Error>{
+    let directory=parse_layout_directory(b,limits)?;
     let mut budget=limits.max_records;
     charge(&mut budget,directory.scripts.len()+directory.features.len()+directory.lookups.len())?;
     let mut scripts=Vec::new();
@@ -125,7 +131,7 @@ pub fn parse_gsub_layout(b:&[u8],limits:GsubLimits)->Result<GsubLayout,Error>{
     let mut lookups=Vec::new();
     for &p in &directory.lookups{
         let kind=word(b,p)?;let flags=word(b,p+2)?;let n=usize::from(word(b,p+4)?);
-        if !(1..=8).contains(&kind)||flags&0x00e0!=0{return Err(Error::Invalid("gsub lookup kind or flags"));}
+        if !(1..=max_kind).contains(&kind)||flags&0x00e0!=0{return Err(Error::Invalid("gsub lookup kind or flags"));}
         charge(&mut budget,n)?;
         let size=6+2*n+if flags&0x10!=0{2}else{0};slice(b,p,size)?;
         let mut subtables=Vec::with_capacity(n);

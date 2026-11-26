@@ -272,3 +272,6 @@ pub use font_shape_stages::{ShapeTagStage,shape_stage_specs_from_tags};
 pub use font_shape_stages::ShapeScriptProfile;
 
 pub use font_gsub_context_execute::{ShapeStageTrace,execute_staged_gsub_traced};
+
+pub mod font_gpos;
+pub use font_gpos::*;
