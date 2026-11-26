@@ -251,8 +251,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                 for r in rules{
                     state.rule()?;
                     if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|v==r.remaining[i])?{
-                        if common_input_bits(state,&positions,bits,masking)?==0{continue;}
-                        return Ok(Some(Matched{positions,actions:&r.actions}));
+                        if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:&r.actions}));}
                     }
                 }
             }
@@ -262,7 +261,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                 for r in rules{
                     state.rule()?;
                     if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|c.class_for_match(v)==Some(r.remaining[i]))?{
-                        return Ok(Some(Matched{positions,actions:&r.actions}));
+                        if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:&r.actions}));}
                     }
                 }
             }
@@ -273,7 +272,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
             let cov=c.coverages();
             if cov[0].index(g).is_some(){
                 if let Some(positions)=state.match_tail(filter,p,cov.len()-1,|i,v|cov[i+1].index(v).is_some())?{
-                    return Ok(Some(Matched{positions,actions:c.actions()}));
+                    if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:c.actions()}));}
                 }
             }
         }
@@ -285,7 +284,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                     if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|v==r.remaining[i])?{
                         if state.match_ahead(filter,positions.last().copied().unwrap()+1,
                             r.lookahead.len(),|i,v|v==r.lookahead[i])?{
-                            return Ok(Some(Matched{positions,actions:&r.actions}));
+                            if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:&r.actions}));}
                         }
                     }
                 }
@@ -299,7 +298,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                     if let Some(positions)=state.match_tail(filter,p,r.remaining.len(),|i,v|c.input_class(v)==Some(r.remaining[i]))?{
                         if state.match_ahead(filter,positions.last().copied().unwrap()+1,
                             r.lookahead.len(),|i,v|c.lookahead_class(v)==Some(r.lookahead[i]))?{
-                            return Ok(Some(Matched{positions,actions:&r.actions}));
+                            if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:&r.actions}));}
                         }
                     }
                 }
@@ -313,7 +312,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
                 if let Some(positions)=state.match_tail(filter,p,input.len()-1,|i,v|input[i+1].index(v).is_some())?{
                     if state.match_ahead(filter,positions.last().copied().unwrap()+1,
                         c.lookahead().len(),|i,v|c.lookahead()[i].index(v).is_some())?{
-                        return Ok(Some(Matched{positions,actions:c.actions()}));
+                        if common_input_bits(state,&positions,bits,masking)?!=0{return Ok(Some(Matched{positions,actions:c.actions()}));}
                     }
                 }
             }
@@ -548,7 +547,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
         }else{
             let mut p=0;
             while p<state.result.glyphs.len(){
-                p=if root_allowed(&state,p,root_mask,masking.as_deref_mut())?{apply_at(program,id,p,&mut state)?.unwrap_or(p+1)}else{p+1};
+                p=if root_allowed(&state,p,root_mask,masking.as_deref_mut())?{apply_at(program,id,p,&mut state,&mut masking,if root_mask==0{u64::MAX}else{root_mask})?.unwrap_or(p+1)}else{p+1};
             }
         }
     }

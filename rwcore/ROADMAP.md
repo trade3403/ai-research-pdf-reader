@@ -119,7 +119,7 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4f6 | Comprehensive native GSUB provenance acceptance and API contract | Verified (#160) |
 | C4.4g1 | Explicit per-glyph feature-mask foundation | Verified (#161) |
 | C4.4g2 | Validated root lookup gating and live masks | Verified (#162) |
-| C4.4g3 | Component and contextual mask policy | Implemented; CI pending |
+| C4.4g3 | Component and contextual mask policy | #163 failed; repair CI pending |
 | C4.4g4 | Strict mask native and independent reference acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
