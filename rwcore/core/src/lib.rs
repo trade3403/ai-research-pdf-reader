@@ -254,3 +254,6 @@ pub use font_gsub_context_execute::execute_gsub_with_provenance;
 pub use font_gsub_context_execute::execute_gsub_with_direct_provenance;
 
 pub use font_gsub_context_execute::execute_gsub_program_with_provenance;
+
+pub mod font_feature_masks;
+pub use font_feature_masks::{FeatureMaskLimits,FeatureMaskOverride,ScalarFeatureMasks};

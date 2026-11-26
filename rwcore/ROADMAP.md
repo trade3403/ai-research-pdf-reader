@@ -116,8 +116,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4f3 | GSUB single/multiple substitution provenance integration | Verified (#156) |
 | C4.4f4 | GSUB alternate and ligature provenance integration | Verified (#158) |
 | C4.4f5 | Nested contextual and reverse GSUB provenance integration | Verified (#159) |
-| C4.4f6 | Comprehensive native GSUB provenance acceptance and API contract | Implemented; CI pending |
-| C4.4g1 | Explicit per-glyph feature-mask foundation | Planned |
+| C4.4f6 | Comprehensive native GSUB provenance acceptance and API contract | Verified (#160) |
+| C4.4g1 | Explicit per-glyph feature-mask foundation | Implemented; CI pending |
+| C4.4g2 | Validated root lookup gating and live masks | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
