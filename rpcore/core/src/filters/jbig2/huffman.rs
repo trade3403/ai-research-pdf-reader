@@ -1,5 +1,5 @@
 //! Native JBIG2 canonical Huffman integer decoding (T.88 B.3/B.4).
-//! Rows in specification order; zero-length rows disabled. No type 53 parser.
+//! Rows in specification order; zero-length rows disabled. Includes bounded Type 53 custom table parsing.
 use crate::{Error,Result};
 use super::integer::Integer;
 use crate::filters::ccitt::BitReader;
@@ -584,5 +584,190 @@ mod standard_tests{
         assert_eq!(b.decode(&mut r).unwrap(),Integer::Oob);
         assert_eq!(a.decode(&mut r).unwrap(),Integer::Value(8));
         assert_eq!(r.remaining(),0);
+    }
+}
+
+
+/// Parsed Type 53 code table payload (T.88 7.4.13 and Annex B.2).
+/// The row order is preserved, including disabled rows and extensions.
+pub struct CustomTable {
+    pub htps:u8,
+    pub htrs:u8,
+    pub htoob:bool,
+    pub htlow:i32,
+    pub hthigh:i32,
+    pub encoded_bits:usize,
+    pub padding_bits:u8,
+    table:Table,
+}
+impl CustomTable{
+    pub fn rows(&self)->&[Row]{&self.table.rows}
+    pub fn table(&self)->&Table{&self.table}
+    pub fn into_table(self)->Table{self.table}
+}
+
+fn read_field(reader:&mut BitReader<'_>,width:u8)->Result<u8>{
+    let mut v=0u8;
+    for _ in 0..width{v=(v<<1)|reader.bit()?;}
+    Ok(v)
+}
+
+/// Accept one bounded, complete code table payload. HTHIGH is the exclusive
+/// upper bound (B.2.3), so normal ranges must tile [HTLOW, HTHIGH) exactly.
+/// Arbitrary final sub-byte padding is ignored; extra full bytes are rejected.
+/// A disabled lower extension may have a base one below i32::MIN.
+pub fn parse_custom(data:&[u8])->Result<CustomTable>{
+    const MAX_PAYLOAD:usize=9+MAX_ROWS*2;
+    if data.len()>MAX_PAYLOAD{return Err(Error::Limit("JBIG2 custom Huffman payload"));}
+    if data.len()<9{return Err(Error::Invalid("JBIG2 custom Huffman header"));}
+    let flags=data[0];
+    if flags&128!=0{return Err(Error::Invalid("JBIG2 custom Huffman reserved flag"));}
+    let htoob=flags&1!=0;
+    let htps=((flags>>1)&7)+1;
+    let htrs=((flags>>4)&7)+1;
+    let htlow=i32::from_be_bytes([data[1],data[2],data[3],data[4]]);
+    let hthigh=i32::from_be_bytes([data[5],data[6],data[7],data[8]]);
+    if htlow>=hthigh{return Err(Error::Invalid("JBIG2 custom Huffman bounds"));}
+    let mut reader=BitReader::new(&data[9..],(data.len()-9)*8)?;
+    let mut current=i64::from(htlow);
+    let end=i64::from(hthigh);
+    let special_count=2+usize::from(htoob);
+    let mut rows=Vec::new();
+    while current<end{
+        if rows.len()>=MAX_ROWS-special_count{return Err(Error::Limit("JBIG2 custom Huffman rows"));}
+        let prefix_len=read_field(&mut reader,htps)?;
+        let extra=read_field(&mut reader,htrs)?;
+        if prefix_len>MAX_PREFIX||extra>32{return Err(Error::Limit("JBIG2 custom Huffman field width"));}
+        let next=current.checked_add(1i64<<extra).ok_or(Error::Limit("JBIG2 custom Huffman range"))?;
+        if next>end{return Err(Error::Invalid("JBIG2 custom Huffman range exceeds HTHIGH"));}
+        rows.push(Row{prefix_len,range:Range::Normal{base:current,extra}});
+        current=next;
+    }
+    let lower=read_field(&mut reader,htps)?;
+    let upper=read_field(&mut reader,htps)?;
+    rows.push(Row{prefix_len:lower,range:Range::Lower{base:i64::from(htlow)-1}});
+    rows.push(Row{prefix_len:upper,range:Range::Upper{base:end}});
+    if htoob{
+        rows.push(Row{prefix_len:read_field(&mut reader,htps)?,range:Range::Oob});
+    }
+    let encoded_bits=reader.position();
+    let padding_bits=reader.remaining();
+    if padding_bits>=8{return Err(Error::Invalid("JBIG2 custom Huffman trailing bytes"));}
+    let table=Table::new(&rows)?;
+    Ok(CustomTable{htps,htrs,htoob,htlow,hthigh,encoded_bits,padding_bits:padding_bits as u8,table})
+}
+
+/// Decode a previously inspected Type 53 segment from its original stream.
+/// Dependency selection and dictionary/text execution are separate steps.
+pub fn parse_custom_segment(stream:&[u8],segment:&super::Segment)->Result<CustomTable>{
+    if segment.kind!=53{return Err(Error::Invalid("JBIG2 expected code table segment"));}
+    let data=stream.get(segment.payload.clone()).ok_or(Error::Invalid("JBIG2 custom Huffman payload span"))?;
+    parse_custom(data)
+}
+
+#[cfg(test)]
+mod custom_tests{
+    use super::*;
+    const OFFICIAL:&[u8]=&[0x42,0,0,0,0,0,1,1,0x10,0x49,0x23,0x81,0x80];
+    const FIXTURES:[&[u8];15]=[
+        &[0x42,0x00,0x00,0x00,0x00,0x00,0x01,0x01,0x10,0x49,0x23,0x81,0x80],
+        &[0x25,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4b,0x21,0x06,0x23,0xb8,0x6c],
+        &[0x37,0xff,0xff,0xff,0x00,0x00,0x00,0x00,0x4b,0x88,0x10,0x20,0x30,0x43,0x56,0x87,0x60],
+        &[0x24,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x4c,0x21,0x06,0x23,0xb8,0x50],
+        &[0x34,0xff,0xff,0xff,0x01,0x00,0x00,0x00,0x4c,0xf0,0x41,0x03,0x08,0x75,0xbe],
+        &[0x34,0xff,0xff,0xf8,0x00,0x00,0x00,0x08,0x00,0xb5,0x26,0x44,0x7a,0xd5,0x62,0xa7,0x6e,0xe2,0x4c,0xad,0x80],
+        &[0x34,0xff,0xff,0xfc,0x00,0x00,0x00,0x08,0x00,0x92,0xe2,0x3d,0x6a,0xb1,0x62,0xd5,0xad,0x1d,0xc3,0x97,0x56,0x80],
+        &[0x37,0xff,0xff,0xff,0xf1,0x00,0x00,0x06,0x86,0x83,0x91,0x81,0x90,0x70,0x40,0x21,0x50,0x60,0x34,0x61,0x44,0x45,0x56,0x57,0x67,0x78,0x6a,0x99,0x20],
+        &[0x37,0xff,0xff,0xff,0xe1,0x00,0x00,0x0d,0x0b,0x84,0x92,0x82,0x91,0x71,0x41,0x31,0x31,0x51,0x61,0x35,0x62,0x45,0x46,0x57,0x58,0x68,0x79,0x6b,0x99,0x20],
+        &[0x37,0xff,0xff,0xff,0xeb,0x00,0x00,0x10,0x46,0x74,0x80,0x70,0x50,0x22,0x50,0x60,0x70,0x80,0x26,0x55,0x65,0x66,0x67,0x68,0x69,0x6a,0x7b,0x88,0x20],
+        &[0x24,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x8d,0x21,0x18,0x21,0xa6,0xac,0xba,0xef,0xcf,0x7e,0x1c],
+        &[0x26,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x49,0x10,0x40,0xca,0x85,0x2c,0x5c,0x39,0x74,0xed,0xe4,0x50,0x80],
+        &[0x24,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x8d,0x21,0x88,0x28,0x85,0xbc,0x72,0xcf,0x4d,0x7e,0x1c],
+        &[0x02,0xff,0xff,0xff,0xfe,0x00,0x00,0x00,0x03,0xd9,0x6c,0x00],
+        &[0x24,0xff,0xff,0xff,0xe8,0x00,0x00,0x00,0x19,0xf3,0x2a,0x60,0x60,0x86,0x20,0xa7,0x2f,0x3f],
+    ];
+    fn payload(flags:u8,lo:i32,hi:i32,body:&[u8])->Vec<u8>{
+        let mut data=vec![flags];
+        data.extend(lo.to_be_bytes());data.extend(hi.to_be_bytes());data.extend(body);data
+    }
+    #[test]
+    fn custom_official_b4(){
+        let t=parse_custom(OFFICIAL).unwrap();
+        assert_eq!((t.htps,t.htrs,t.htoob,t.htlow,t.hthigh),(2,5,false,0,65808));
+        assert_eq!((t.encoded_bits,t.padding_bits),(25,7));
+        assert_eq!(t.rows(),standard::rows(1).unwrap());
+        assert_eq!(t.table().codes(),standard::table(1).unwrap().codes());
+    }
+    #[test]
+    fn custom_all_standard_serialized(){
+        for (i,data) in FIXTURES.iter().enumerate(){
+            let n=(i+1)as u8;
+            let t=parse_custom(data).unwrap();
+            assert_eq!(t.rows(),standard::rows(n).unwrap(),"table {}",n);
+            assert_eq!(t.table().codes(),standard::table(n).unwrap().codes());
+        }
+    }
+    #[test]
+    fn custom_signed_extensions_and_oob(){
+        let t=parse_custom(&[35,255,255,255,254,0,0,0,1,140,62]).unwrap();
+        assert_eq!((t.htlow,t.hthigh,t.htoob),(-2,1,true));
+        let bytes=[5,176,0,0,0,6,0,0,0,7,224,0,0,0,28,0,0,1,232];
+        let mut r=BitReader::new(&bytes,150).unwrap();
+        for v in [Integer::Value(-2),Integer::Value(-1),Integer::Value(0),Integer::Oob,Integer::Value(-3),Integer::Value(-10),Integer::Value(1),Integer::Value(123)]{
+            assert_eq!(t.table().decode(&mut r).unwrap(),v);
+        }
+        assert_eq!(r.remaining(),0);
+    }
+    #[test]
+    fn custom_truncation_padding_and_segment(){
+        for n in 0..OFFICIAL.len(){assert!(parse_custom(&OFFICIAL[..n]).is_err());}
+        let mut data=OFFICIAL.to_vec();*data.last_mut().unwrap()|=0x7f;
+        assert_eq!(parse_custom(&data).unwrap().padding_bits,7);
+        data.push(0);assert!(parse_custom(&data).is_err());
+        let mut stream=vec![0,0,0,1,53,0,0,0,0,0,13];
+        stream.extend(OFFICIAL);
+        let inspected=super::super::inspect(&stream).unwrap();
+        let mut seg=inspected.segments[0].clone();
+        assert_eq!(parse_custom_segment(&stream,&seg).unwrap().rows(),standard::rows(1).unwrap());
+        seg.kind=0;assert!(parse_custom_segment(&stream,&seg).is_err());
+        seg.kind=53;seg.payload.end=usize::MAX;assert!(parse_custom_segment(&stream,&seg).is_err());
+    }
+    #[test]
+    fn custom_rejects_bad_flags_bounds_ranges(){
+        let mut data=OFFICIAL.to_vec();data[0]|=128;assert!(parse_custom(&data).is_err());
+        assert!(parse_custom(&payload(0,1,1,&[0])).is_err());
+        assert!(parse_custom(&payload(0,1,-1,&[0])).is_err());
+        // width 1 would cover two values, not one.
+        assert!(parse_custom(&payload(0,0,1,&[0xc0])).is_err());
+        // All three one-bit prefixes oversubscribe the tree.
+        assert!(parse_custom(&payload(0,0,1,&[0xb0])).is_err());
+        assert!(parse_custom(&payload(0,0,1,&[0])).is_err());
+        // HTPS=8, prefix=33; HTRS=8, extra=33.
+        assert!(parse_custom(&payload(0x7e,0,1,&[33,0,0,0])).is_err());
+        assert!(parse_custom(&payload(0x7e,0,1,&[1,33,0,0])).is_err());
+    }
+    #[test]
+    fn custom_signed_extreme_bounds(){
+        // HTPS=HTRS=1; one normal singleton, both extensions disabled.
+        let t=parse_custom(&payload(0,i32::MIN,i32::MIN+1,&[0x80])).unwrap();
+        assert_eq!(t.rows()[1],Row{prefix_len:0,range:Range::Lower{base:i64::from(i32::MIN)-1}});
+        let mut r=BitReader::new(&[0],1).unwrap();
+        assert_eq!(t.table().decode(&mut r).unwrap(),Integer::Value(i64::from(i32::MIN)));
+        // Enabling the impossible lower extension must fail.
+        assert!(parse_custom(&payload(0,i32::MIN,i32::MIN+1,&[0xa0])).is_err());
+        let t=parse_custom(&payload(0,i32::MAX-1,i32::MAX,&[0x90])).unwrap();
+        let mut r=BitReader::new(&[0x80,0,0,0,0],33).unwrap();
+        assert_eq!(t.table().decode(&mut r).unwrap(),Integer::Value(i64::from(i32::MAX)));
+    }
+    #[test]
+    fn custom_work_limits(){
+        // 4094 singleton normal rows + 2 disabled extensions = cap.
+        // All normal prefixes disabled except the first; 2 bits per row.
+        let mut body=vec![0u8;1024];body[0]=0x80;
+        let t=parse_custom(&payload(0,0,4094,&body)).unwrap();
+        assert_eq!(t.rows().len(),MAX_ROWS);
+        body.push(0);
+        assert!(matches!(parse_custom(&payload(0,0,4095,&body)),Err(Error::Limit(_))));
+        assert!(matches!(parse_custom(&vec![0;9+MAX_ROWS*2+1]),Err(Error::Limit(_))));
     }
 }
