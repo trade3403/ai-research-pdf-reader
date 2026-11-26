@@ -98,6 +98,10 @@ impl PartialDownload {
         })
     }
 
+    pub(crate) fn asset(&self) -> &Asset {
+        &self.asset
+    }
+
     pub fn progress(&self) -> Progress {
         Progress {
             received: self.received,

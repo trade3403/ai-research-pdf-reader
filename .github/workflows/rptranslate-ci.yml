@@ -39,6 +39,7 @@ jobs:
         run: |
           export RP_CURL="$(command -v curl)"
           cargo test --locked --offline -p rpmodel download::tests::actual_https_pinned_fixture -- --ignored --nocapture
+          cargo test --locked --offline -p rpmodel download::tests::actual_https_range_fixture -- --ignored --nocapture
       - name: Release CPU build
         run: cargo build --locked --offline --release -p rptranslate
       - name: Smoke test
@@ -427,6 +428,7 @@ jobs:
           Write-Output "RP_CURL=$env:RP_CURL"
           & $env:RP_CURL --version
           cargo test --locked --offline -p rpmodel download::tests::actual_https_pinned_fixture -- --ignored --nocapture
+          cargo test --locked --offline -p rpmodel download::tests::actual_https_range_fixture -- --ignored --nocapture
       - name: Native release executable and independent training reference
         run: |
           $PSNativeCommandUseErrorActionPreference = $true

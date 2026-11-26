@@ -3,6 +3,7 @@
 use crate::{
     catalog::{self, Asset, Catalog, Entry},
     online_catalog::{self, Origin},
+    resume::{self, PartialDownload, Progress, Range},
 };
 use std::{
     fs::{self, OpenOptions},
@@ -23,6 +24,7 @@ pub enum Error {
     Cleanup,
     Catalog(catalog::Error),
     Online(online_catalog::Error),
+    Resume(resume::Error),
 }
 
 struct Tee<'a, R, W> {
@@ -57,6 +59,66 @@ fn receive(mut input: impl Read, output: &mut impl Write, asset: &Asset) -> Resu
         return Err(Error::Framing);
     }
     Ok(())
+}
+
+
+const MAX_RANGE_HEADER: usize = 64 * 1024;
+
+/// curl --include returns HTTP headers followed by the decoded body.
+/// Reject ambiguous or unexpected framing before any staging write.
+fn range_response(data: &[u8], range: Range) -> Result<(&str, &[u8]), Error> {
+    let boundary = data
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .ok_or(Error::Framing)?;
+    if boundary > MAX_RANGE_HEADER {
+        return Err(Error::Framing);
+    }
+    let header = std::str::from_utf8(&data[..boundary]).map_err(|_| Error::Framing)?;
+    let mut lines = header.split("\r\n");
+    let mut status = lines.next().ok_or(Error::Framing)?.split_ascii_whitespace();
+    if status.next() != Some("HTTP/1.1") || status.next() != Some("206") {
+        return Err(Error::HttpStatus);
+    }
+    let mut content_range = None;
+    let mut length = None;
+    let mut encoding = None;
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(Error::Framing)?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || value.bytes().any(|b| b < 32 && b != b'\t')
+        {
+            return Err(Error::Framing);
+        }
+        let value = value.trim_matches([' ', '\t']);
+        if name.eq_ignore_ascii_case("content-range") {
+            if content_range.replace(value).is_some() {
+                return Err(Error::Framing);
+            }
+        } else if name.eq_ignore_ascii_case("content-length") {
+            if length.replace(value).is_some() {
+                return Err(Error::Framing);
+            }
+        } else if name.eq_ignore_ascii_case("content-encoding") && encoding.replace(value).is_some() {
+            return Err(Error::Framing);
+        }
+    }
+    if encoding.is_some_and(|v| !v.eq_ignore_ascii_case("identity")) {
+        return Err(Error::Framing);
+    }
+    let content_range = content_range.ok_or(Error::Framing)?;
+    let count = range.end - range.start + 1;
+    let body = &data[boundary + 4..];
+    if content_range != format!("bytes {}-{}/{}", range.start, range.end, range.total)
+        || body.len() as u64 != count
+        || length.is_some_and(|v| v.parse::<u64>().ok() != Some(count))
+    {
+        return Err(Error::Framing);
+    }
+    Ok((content_range, body))
 }
 
 #[derive(Debug)]
@@ -127,6 +189,100 @@ impl Downloader {
             return Err(Error::Transport);
         }
         Ok(())
+    }
+
+
+    /// Perform one bounded range request. Stop between chunks to pause.
+    /// The caller owns the partial file and must keep the same trusted pin.
+    /// A final successful step includes whole-file SHA256 verification.
+    pub fn fetch_next(
+        &self,
+        entry: &Entry,
+        name: &str,
+        partial: &mut PartialDownload,
+        max_bytes: u64,
+    ) -> Result<Progress, Error> {
+        let url = self.origin.asset_url(entry, name).map_err(Error::Online)?;
+        let asset = entry.files.get(name).ok_or(Error::Configuration)?;
+        if partial.asset() != asset {
+            return Err(Error::Configuration);
+        }
+        self.fetch_next_url(&url, partial, max_bytes)
+    }
+
+    fn fetch_next_url(
+        &self,
+        url: &str,
+        partial: &mut PartialDownload,
+        max_bytes: u64,
+    ) -> Result<Progress, Error> {
+        let Some(range) = partial.next_range(max_bytes).map_err(Error::Resume)? else {
+            partial.verify_complete().map_err(Error::Resume)?;
+            return Ok(partial.progress());
+        };
+        let count = range.end - range.start + 1;
+        let mut child = Command::new(&self.curl)
+            .args([
+                "--disable",
+                "--globoff",
+                "--silent",
+                "--fail",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--noproxy",
+                "*",
+                "--http1.1",
+                "--connect-timeout",
+                "15",
+                "--max-time",
+                "120",
+                "--max-filesize",
+                &count.to_string(),
+                "--header",
+                "Accept-Encoding: identity",
+                "--header",
+                &format!("Range: {}", range.header()),
+                "--include",
+                "--output",
+                "-",
+                "--url",
+                url,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| Error::Transport)?;
+        let limit = count + MAX_RANGE_HEADER as u64 + 4;
+        let mut data = Vec::new();
+        let read = child
+            .stdout
+            .take()
+            .ok_or(Error::Transport)
+            .and_then(|stdout| {
+                stdout
+                    .take(limit + 1)
+                    .read_to_end(&mut data)
+                    .map_err(|_| Error::Transport)
+            });
+        if read.is_err() || data.len() as u64 > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Framing);
+        }
+        if !child.wait().map_err(|_| Error::Transport)?.success() {
+            return Err(Error::Transport);
+        }
+        let (header, body) = range_response(&data, range)?;
+        let progress = partial
+            .append(range, 206, header, body)
+            .map_err(Error::Resume)?;
+        if progress.received == progress.total {
+            partial.verify_complete().map_err(Error::Resume)?;
+        }
+        Ok(progress)
     }
 
     pub fn fetch_catalog(&self, trusted: &Asset) -> Result<Catalog, Error> {
@@ -216,6 +372,97 @@ mod tests {
             Downloader::new(Path::new("curl"), Origin::new("example.org").unwrap()),
             Err(Error::Configuration)
         ));
+    }
+
+
+    #[test]
+    fn range_headers_and_binary_body() {
+        let range = Range {
+            start: 1,
+            end: 2,
+            total: 3,
+        };
+        let data = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-2/3\r\nContent-Length: 2\r\n\r\n\x00\xff";
+        let (header, body) = range_response(data, range).unwrap();
+        assert_eq!(header, "bytes 1-2/3");
+        assert_eq!(body, [0, 255]);
+    }
+
+    #[test]
+    fn range_rejects_ambiguous_or_wrong_responses() {
+        let range = Range {
+            start: 0,
+            end: 1,
+            total: 3,
+        };
+        for bad in [
+            "HTTP/1.1 200 OK\r\nContent-Range: bytes 0-1/3\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/4\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/3\r\ncontent-range: bytes 0-1/3\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/3\r\nContent-Encoding: gzip\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/3\r\nContent-Length: 3\r\n\r\nab",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/3\r\n\r\na",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/3\r\n\r\nabc",
+        ] {
+            assert!(range_response(bad.as_bytes(), range).is_err());
+        }
+    }
+
+    #[test]
+    fn range_header_budget_is_bounded() {
+        let range = Range {
+            start: 0,
+            end: 0,
+            total: 1,
+        };
+        let data = format!(
+            "HTTP/1.1 206 Partial Content\r\nX-Pad: {}\r\nContent-Range: bytes 0-0/1\r\n\r\na",
+            "x".repeat(MAX_RANGE_HEADER)
+        );
+        assert_eq!(range_response(data.as_bytes(), range), Err(Error::Framing));
+    }
+
+    #[test]
+    #[ignore = "explicit online CI probe only"]
+    fn actual_https_range_fixture() {
+        let binary = std::env::var_os("RP_CURL").expect("absolute trusted curl path");
+        let downloader = Downloader::new(
+            Path::new(&binary),
+            Origin::new("raw.githubusercontent.com").unwrap(),
+        )
+        .unwrap();
+        let asset = Asset {
+            bytes: 77,
+            sha256: "5cdbd96cac32e26a8900d732a4a8be550b1d1a10762e35fecdcd75ec41f81fd5".into(),
+        };
+        let url = concat!(
+            "https://raw.githubusercontent.com/trade3403/ai-research-pdf-reader/",
+            "eeb648d70e871805a0b45f7d8236c5890c6c9b21/rptranslate/crates/rpmodel/Cargo.toml"
+        );
+        let root = std::env::temp_dir().join(format!(
+            "rpmodel-https-range-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("fixture.part");
+        let mut partial = PartialDownload::create(&path, asset.clone()).unwrap();
+        let first = downloader.fetch_next_url(url, &mut partial, 32).unwrap();
+        assert_eq!(first.received, 32);
+        drop(partial);
+        let mut partial = PartialDownload::resume(&path, asset).unwrap();
+        let second = downloader.fetch_next_url(url, &mut partial, 32).unwrap();
+        assert_eq!(second.received, 64);
+        let third = downloader.fetch_next_url(url, &mut partial, 32).unwrap();
+        assert_eq!(third.received, 77);
+        assert_eq!(partial.verify_complete(), Ok(()));
+        drop(partial);
+        fs::remove_dir_all(root).unwrap();
+        println!("HTTPS_RANGE_FIXTURE PASS bytes=77 chunks=3 reopened=true");
     }
 
     #[test]
