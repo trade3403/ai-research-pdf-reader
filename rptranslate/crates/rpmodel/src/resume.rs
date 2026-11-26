@@ -182,9 +182,7 @@ impl PartialDownload {
         if self.received != self.asset.bytes {
             return Err(Error::Incomplete);
         }
-        self.file
-            .seek(SeekFrom::Start(0))
-            .map_err(|_| Error::Io)?;
+        self.file.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
         self.asset.verify(&mut self.file).map_err(Error::Catalog)
     }
 

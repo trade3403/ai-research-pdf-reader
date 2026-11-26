@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0c1 [#132 / 45751359238](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45751359238) Linux及Windows均在rustfmt失败：resume.rs:182 seek链式表达式应合为一行；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45751359238/job/139679655021)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45751359238/job/139679655376)。按真实日志最小格式修复，不改变逻辑、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。全量CI成功后才进入D3.0c2。
+
 2026-11-26 D3.0b2 基线 cc9e92f4b8030d1c0fcb9dc4df8b18a1a4385237 / [#131 / 45746394625](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45746394625) 全量 success；Linux/Windows各164 workspace+59 portable=223/223，共446/446；两平台显式HTTPS_PINNED_FIXTURE PASS bytes=77 corruption_rejected=true，共2/2。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux真实专项 INT8 242/269、27拒译、5221/6036词、245/317数字串、316.043903s、844.735081ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0c1：自主持久化下载分段组装器 resume.rs；独立传输接口接受206、精确Content-Range与长度，4MiB单段上限，先验范围/长度再写入，sync_all持久化，写失败回滚或标记不可用；分段间暂停、按已有文件长度重开续传、字节进度、全文件SHA256最终校验、显式重启，禁止覆盖及符号链接/Windows reparse，调用方控制目录并排除并发修改，跨重启提供同一可信pin。新增6项离线单测；预计458基础+2历史真实HTTPS。尚未本地编译，等待CI。本批未接实际HTTP Range网络传输、暂停正在进行的请求、速度统计、自动重试或抗断电事务；D3.0c2全绿后接入curl Range及真实网络分段验收。D3.0d安装/离线导入、e升级回滚仍未开始。
