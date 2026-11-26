@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Includes direct Huffman and arithmetic symbols; refinement and cross-dictionary context reuse pending.
+//! Includes direct Huffman/arithmetic symbols and bounded PDF dictionary execution; refinement and cross-dictionary context reuse pending.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -981,5 +981,294 @@ mod arithmetic_direct_tests{
         assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
         p.header.exported=2;p.encoded.end=usize::MAX;
         assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+    }
+}
+
+
+/// Direct dictionary executor for one inspected PDF JBIG2 globals/page pair.
+/// Retains each decoded bitmap once in an immutable arena. Export lists
+/// contain identities, not bitmap copies; equal pixels from separate coding
+/// operations are deliberately not coalesced. No page/region execution.
+use std::collections::BTreeMap;
+
+pub const MAX_EXEC_DICTIONARIES:u32=4096;
+pub const MAX_EXEC_SLOTS:usize=2*MAX_SYMBOLS as usize;
+#[derive(Debug,Clone,Copy)]
+pub struct ExecutionLimits{
+    pub dictionaries:u32,
+    pub new_symbols:u32,
+    /// Cumulative namespace plus export-list entries, including temporary
+    /// entries, not just the number of unique bitmaps.
+    pub symbol_slots:usize,
+    pub pixels:u64,
+    pub packed_bytes:usize,
+    pub work:u64,
+    pub export_runs_per_dictionary:u32,
+    pub decisions_per_dictionary:usize,
+}
+impl Default for ExecutionLimits{
+    fn default()->Self{Self{dictionaries:MAX_EXEC_DICTIONARIES,new_symbols:MAX_SYMBOLS,
+        symbol_slots:MAX_EXEC_SLOTS,pixels:bitmap::MAX_PIXELS,packed_bytes:bitmap::MAX_PACKED_BYTES,
+        work:MAX_DICTIONARY_WORK,export_runs_per_dictionary:MAX_EXPORT_RUNS,
+        decisions_per_dictionary:MAX_ARITHMETIC_DECISIONS}}
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct SymbolId(usize);
+impl SymbolId{
+    /// Identity within the returned DictionarySet only.
+    pub fn index(self)->usize{self.0}
+}
+#[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
+pub struct ExecutionStats{
+    pub dictionaries:u32,
+    pub huffman:u32,
+    pub arithmetic:u32,
+    pub new_symbols:u32,
+    pub symbol_slots:usize,
+    pub pixels:u64,
+    pub packed_bytes:usize,
+    pub work_used:u64,
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DictionarySet{
+    arena:Vec<Bitmap>,
+    exports:BTreeMap<u32,Vec<SymbolId>>,
+    stats:ExecutionStats,
+}
+impl DictionarySet{
+    pub fn stats(&self)->ExecutionStats{self.stats}
+    pub fn dictionary(&self,segment_number:u32)->Option<&[SymbolId]>{
+        self.exports.get(&segment_number).map(Vec::as_slice)
+    }
+    pub fn bitmap(&self,id:SymbolId)->Option<&Bitmap>{self.arena.get(id.0)}
+    pub fn symbol(&self,segment_number:u32,index:usize)->Option<&Bitmap>{
+        self.bitmap(*self.dictionary(segment_number)?.get(index)?)
+    }
+}
+
+/// Parse and resolve the original streams internally: callers cannot supply
+/// a stale/forged dependency graph. Decode every Type 0 in graph order,
+/// including unused dictionaries; other segment payloads remain opaque
+/// except referenced Type 53 tables. Retention flags are not executed:
+/// even unexported new symbols remain in the bounded arena for this call.
+/// Any error discards the entire result. The work budget is a conservative
+/// algorithmic accounting unit, not a memory/RSS or wall-clock guarantee.
+pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
+    if limits.dictionaries>MAX_EXEC_DICTIONARIES||limits.new_symbols>MAX_SYMBOLS||
+        limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
+        limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
+        limits.export_runs_per_dictionary>MAX_EXPORT_RUNS||
+        limits.decisions_per_dictionary>MAX_ARITHMETIC_DECISIONS{
+        return Err(Error::Limit("JBIG2 dictionary execution limits"));
+    }
+    let mut left=limits.work;
+    let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 dictionary input"))?;
+    charge_work(&mut left,input as u64)?;
+    let inspected=super::inspect_pdf_streams(globals,page)?;
+    let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
+    let mut set=DictionarySet{arena:Vec::new(),exports:BTreeMap::new(),stats:ExecutionStats::default()};
+    for node in &inspected.graph{
+        charge_work(&mut left,1)?;
+        let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 dictionary graph node"))?;
+        if segment.kind!=0{continue;}
+        if set.stats.dictionaries>=limits.dictionaries{return Err(Error::Limit("JBIG2 executed dictionaries"));}
+        // Use the graph node directly: do not re-scan the graph per dictionary.
+        let mut deps=Vec::new();
+        deps.try_reserve_exact(node.dependencies.len()).map_err(|_|Error::Limit("JBIG2 dictionary dependency allocation"))?;
+        for &loc in &node.dependencies{
+            charge_work(&mut left,1)?;
+            let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 dictionary dependency"))?;
+            let payload=stream(loc.source).get(dep.payload.clone()).ok_or(Error::Invalid("JBIG2 dictionary dependency span"))?;
+            // Charge repeated custom table construction, even for reuses.
+            if dep.kind==53{charge_work(&mut left,(payload.len() as u64).saturating_mul(64))?;}
+            deps.push((dep,payload));
+        }
+        let original=stream(node.location.source);
+        let plan=plan(segment,original,&deps)?;
+        let new_count=set.stats.new_symbols.checked_add(plan.header.new_symbols)
+            .ok_or(Error::Limit("JBIG2 executed symbols"))?;
+        if new_count>limits.new_symbols{return Err(Error::Limit("JBIG2 executed symbols"));}
+        let total=plan.imported.checked_add(plan.header.new_symbols).ok_or(Error::Limit("JBIG2 dictionary namespace"))? as usize;
+        let slots=set.stats.symbol_slots.checked_add(total).and_then(|n|n.checked_add(plan.header.exported as usize))
+            .ok_or(Error::Limit("JBIG2 dictionary symbol slots"))?;
+        if slots>limits.symbol_slots{return Err(Error::Limit("JBIG2 dictionary symbol slots"));}
+        charge_work(&mut left,total as u64+u64::from(plan.header.exported))?;
+        let mut namespace=Vec::new();
+        namespace.try_reserve_exact(total).map_err(|_|Error::Limit("JBIG2 dictionary namespace allocation"))?;
+        for &(id,declared) in &plan.dictionaries{
+            let actual=set.dictionary(id).ok_or(Error::Invalid("JBIG2 dictionary missing decoded import"))?;
+            if actual.len()!=declared as usize{return Err(Error::Invalid("JBIG2 dictionary import count mismatch"));}
+            namespace.extend_from_slice(actual);
+        }
+        if namespace.len()!=plan.imported as usize{return Err(Error::Invalid("JBIG2 dictionary namespace count"));}
+        let pixels=limits.pixels.checked_sub(set.stats.pixels).ok_or(Error::Limit("JBIG2 dictionary pixels"))?;
+        let packed_bytes=limits.packed_bytes.checked_sub(set.stats.packed_bytes).ok_or(Error::Limit("JBIG2 dictionary packed bytes"))?;
+        let (images,indices,bytes,work)=if plan.header.huffman{
+            let d=decode_huffman_direct(&plan,original,HuffmanLimits{pixels,packed_bytes,work:left,
+                export_runs:limits.export_runs_per_dictionary})?;
+            (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
+        }else{
+            let d=decode_arithmetic_direct(&plan,original,ArithmeticLimits{pixels,packed_bytes,work:left,
+                export_runs:limits.export_runs_per_dictionary,decisions:limits.decisions_per_dictionary})?;
+            (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
+        };
+        charge_work(&mut left,work)?;
+        if images.len()!=plan.header.new_symbols as usize||indices.len()!=plan.header.exported as usize{
+            return Err(Error::Invalid("JBIG2 decoded dictionary count"));
+        }
+        let actual_pixels=images.iter().try_fold(0u64,|n,image|
+            n.checked_add(u64::from(image.width())*u64::from(image.height()))
+                .ok_or(Error::Limit("JBIG2 dictionary pixels")))?;
+        let actual_bytes=images.iter().try_fold(0usize,|n,image|
+            n.checked_add(image.packed().len()).ok_or(Error::Limit("JBIG2 dictionary packed bytes")))?;
+        if actual_pixels>pixels||actual_bytes>packed_bytes||actual_bytes!=bytes{
+            return Err(Error::Limit("JBIG2 dictionary decoded bitmap budget"));
+        }
+        let start=set.arena.len();
+        set.arena.try_reserve_exact(images.len()).map_err(|_|Error::Limit("JBIG2 dictionary arena allocation"))?;
+        namespace.extend((start..start+images.len()).map(SymbolId));
+        let mut exported=Vec::new();
+        exported.try_reserve_exact(indices.len()).map_err(|_|Error::Limit("JBIG2 dictionary export allocation"))?;
+        for index in indices{
+            exported.push(*namespace.get(index as usize).ok_or(Error::Invalid("JBIG2 dictionary export index"))?);
+        }
+        set.arena.extend(images);
+        if set.exports.insert(segment.number,exported).is_some(){
+            return Err(Error::Invalid("JBIG2 duplicate executed dictionary"));
+        }
+        set.stats.dictionaries+=1;
+        if plan.header.huffman{set.stats.huffman+=1;}else{set.stats.arithmetic+=1;}
+        set.stats.new_symbols=new_count;
+        set.stats.symbol_slots=slots;
+        set.stats.pixels+=actual_pixels;
+        set.stats.packed_bytes+=actual_bytes;
+    }
+    set.stats.work_used=limits.work-left;
+    Ok(set)
+}
+
+#[cfg(test)]
+mod executor_tests{
+    use super::*;
+    // Official Annex H dictionary payloads, independently verified in
+    // collective_tests and arithmetic_direct_tests. Synthetic segment graph.
+    const FIRST:&[u8]=&[0,1,0,0,0,1,0,0,0,1,0xe9,0xcb,0xf4,0,0x26,0xaf,4,0xbf,0xf0,0x78,0x2f,0xe0,0,0x40];
+    const SECOND:&[u8]=&[0,1,0,0,0,2,0,0,0,2,0xe5,0xcd,0xf8,0,0x79,0xe0,0x84,0x10,0x81,0xf0,0x82,0x10,0x86,0x10,0x79,0xf0,0,0x80];
+    const TWO:&[u8]=&[8,0,2,255,0,0,0,2,0,0,0,2,0x4f,0xe7,0x8c,0x20,0x0e,0x1d,0xc7,0xcf,1,0x11,0xc4,0xb2,0x6f,0xff,0xac];
+    const MIXED:&[u8]=&[0,1,0,0,0,2,0,0,0,2,112,252,0,160,111,192,128,64,0,66,16];
+    const A:&[u8]=&[0x42,0,0,0,0,0,1,1,0x10,0x49,0x23,0x81,0x80];
+    fn seg(id:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        assert!(refs.len()<=4);
+        let mut v=vec![0,0,0,id,kind,(refs.len()as u8)<<5];
+        v.extend(refs);v.push(page);v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn info(id:u8)->Vec<u8>{
+        let mut data=Vec::new();
+        for n in [20u32,20,300,300]{data.extend(n.to_be_bytes());}
+        data.extend([0,0,0]);seg(id,48,1,&[],&data)
+    }
+    fn reexport(n:u8)->Vec<u8>{
+        assert!(n<16);
+        // No new symbols: B.1 run zero then n (each five bits).
+        vec![0,1,0,0,0,n,0,0,0,0,n>>2,n<<6]
+    }
+    fn fixture()->(Vec<u8>,Vec<u8>){
+        let mut g=seg(1,0,0,&[],FIRST);g.extend(seg(2,0,0,&[],SECOND));
+        let mut p=info(3);p.extend(seg(4,0,1,&[],TWO));
+        p.extend(seg(5,0,1,&[2,1,4],&reexport(5)));
+        p.extend(seg(6,0,1,&[5,1],&reexport(6)));
+        (g,p)
+    }
+    fn ids(set:&DictionarySet,id:u32)->Vec<usize>{
+        set.dictionary(id).unwrap().iter().map(|s|s.index()).collect()
+    }
+    #[test]
+    fn executor_mixed_official_pixels(){
+        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!((d.stats().dictionaries,d.stats().huffman,d.stats().arithmetic),(5,4,1));
+        assert_eq!((d.stats().new_symbols,d.stats().pixels,d.stats().packed_bytes),(5,184,32));
+        assert_eq!(d.stats().symbol_slots,32);
+        assert_eq!(d.symbol(1,0).unwrap().packed(),[240,136,136,136,240,128,128,128]);
+        for id in [2,4]{
+            assert_eq!(d.symbol(id,0).unwrap().packed(),[120,132,128,128,132,120]);
+            assert_eq!(d.symbol(id,1).unwrap().packed(),[120,4,124,132,132,124]);
+        }
+    }
+    #[test]
+    fn executor_order_and_shared_identity(){
+        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(ids(&d,1),[0]);assert_eq!(ids(&d,2),[1,2]);assert_eq!(ids(&d,4),[3,4]);
+        assert_eq!(ids(&d,5),[1,2,0,3,4]);assert_eq!(ids(&d,6),[1,2,0,3,4,0]);
+        assert!(std::ptr::eq(d.symbol(1,0).unwrap(),d.symbol(6,5).unwrap()));
+        assert!(std::ptr::eq(d.symbol(2,0).unwrap(),d.symbol(6,0).unwrap()));
+        // Equal pixels from different decodes do not imply identical IDs.
+        assert_eq!(d.symbol(2,0),d.symbol(4,0));
+        assert!(!std::ptr::eq(d.symbol(2,0).unwrap(),d.symbol(4,0).unwrap()));
+        assert!(d.dictionary(3).is_none());assert!(d.symbol(6,6).is_none());
+        assert!(d.bitmap(SymbolId(usize::MAX)).is_none());
+    }
+    #[test]
+    fn executor_new_and_imported_namespace(){
+        let g=seg(1,0,0,&[],FIRST);
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],MIXED));
+        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(ids(&d,3),[0,2]);
+        assert_eq!(d.symbol(3,1).unwrap().packed(),[0x80,0x40]);
+        assert_eq!(d.bitmap(SymbolId(1)).unwrap().packed(),[0xa0]);
+        assert_eq!(d.stats().new_symbols,3);
+    }
+    #[test]
+    fn executor_cumulative_limits(){
+        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let l=ExecutionLimits{dictionaries:5,new_symbols:5,symbol_slots:32,pixels:184,
+            packed_bytes:32,work:d.stats().work_used,..ExecutionLimits::default()};
+        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        for l in [
+            ExecutionLimits{dictionaries:4,..l},ExecutionLimits{new_symbols:4,..l},
+            ExecutionLimits{symbol_slots:31,..l},ExecutionLimits{pixels:183,..l},
+            ExecutionLimits{packed_bytes:31,..l},ExecutionLimits{work:l.work-1,..l},
+            ExecutionLimits{export_runs_per_dictionary:1,..l},
+            ExecutionLimits{decisions_per_dictionary:71,..l},
+            ExecutionLimits{symbol_slots:MAX_EXEC_SLOTS+1,..l},
+        ]{assert!(execute_pdf_dictionaries(&g,&p,l).is_err());}
+    }
+    #[test]
+    fn executor_custom_table_dispatch(){
+        let g=seg(1,53,0,&[],A);
+        let mut body=FIRST.to_vec();body[1]=0x41; // custom BMSIZE, other standard
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&body));
+        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(d.symbol(3,0).unwrap().packed(),[240,136,136,136,240,128,128,128]);
+        assert!(d.dictionary(1).is_none());
+        let mut p=info(2);p.extend(seg(3,0,1,&[],&body));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+    }
+    #[test]
+    fn executor_bad_graph_or_payload(){
+        let g=seg(1,0,0,&[],FIRST);
+        let mut p=info(2);p.extend(seg(3,0,1,&[0],&reexport(1)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let mut p=info(2);p.extend(seg(3,0,1,&[2],&reexport(1)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&reexport(2)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let mut bad=TWO.to_vec();bad.pop();
+        let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let mut bad=TWO.to_vec();bad[0]|=2; // context retention unsupported
+        let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
+        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+    }
+    #[test]
+    fn executor_empty_and_non_dictionary_scope(){
+        let p=info(1);
+        let d=execute_pdf_dictionaries(&[],&p,ExecutionLimits{dictionaries:0,new_symbols:0,
+            symbol_slots:0,pixels:0,packed_bytes:0,..ExecutionLimits::default()}).unwrap();
+        assert_eq!(d.stats().new_symbols,0);assert_eq!(d.stats().dictionaries,0);
+        let mut p=info(1);p.extend(seg(2,0,1,&[],&[0,1,0,0,0,0,0,0,0,0]));
+        p.extend(seg(3,38,1,&[],&[0xff])); // intentionally opaque region
+        let d=execute_pdf_dictionaries(&[],&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(d.dictionary(2),Some(&[][..]));assert!(d.dictionary(3).is_none());
+        assert_eq!(d.stats().packed_bytes,0);
     }
 }
