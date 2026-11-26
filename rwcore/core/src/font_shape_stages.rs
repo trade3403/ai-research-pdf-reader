@@ -135,3 +135,29 @@ pub fn shape_stage_specs_from_tags(layout:&crate::GsubLayout,program:&CompiledGs
     if out.len()>limits.max_stages{return Err(Error::Limit("shape tag stages"));}
     Ok(out)
 }
+
+ /// Explicit experimental ordering profiles. These are scheduling
+ /// templates, not full script shapers. No joining analysis, syllable
+ /// segmentation, reordering, implicit feature enabling or bidi.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum ShapeScriptProfile{Latin,Arabic,IndicV2}
+impl ShapeScriptProfile{
+    pub fn for_script(script:[u8;4])->Result<Self,Error>{
+        match &script{
+            b"latn"=>Ok(Self::Latin),
+            b"arab"=>Ok(Self::Arabic),
+            b"dev2"|b"bng2"|b"gjr2"|b"gur2"|b"knd2"|b"mlm2"|b"ory2"|b"tml2"|b"tel2"=>Ok(Self::IndicV2),
+            _=>Err(Error::Unsupported("shape script profile")),
+        }
+    }
+    /// Static ordering of explicitly selected tags only. The caller
+    /// must supply script-specific scalar masks and preprocessing.
+    pub fn groups(self)->Vec<ShapeTagStage>{
+        let groups:&[&[[u8;4]]]=match self{
+            Self::Latin=>&[&[*b"rvrn"],&[*b"ccmp",*b"locl"],&[*b"rlig"],&[*b"liga",*b"clig",*b"calt"]],
+            Self::Arabic=>&[&[*b"rvrn"],&[*b"ccmp",*b"locl"],&[*b"isol",*b"fina",*b"fin2",*b"fin3",*b"medi",*b"med2",*b"init"],&[*b"rlig"],&[*b"calt",*b"liga",*b"clig"]],
+            Self::IndicV2=>&[&[*b"rvrn"],&[*b"locl",*b"ccmp"],&[*b"nukt"],&[*b"akhn"],&[*b"rphf"],&[*b"rkrf"],&[*b"pref"],&[*b"blwf"],&[*b"half"],&[*b"pstf"],&[*b"vatu"],&[*b"cjct"],&[*b"init",*b"pres",*b"abvs",*b"blws",*b"psts",*b"haln"]],
+        };
+        groups.iter().map(|tags|ShapeTagStage{tags:tags.to_vec()}).collect()
+    }
+}

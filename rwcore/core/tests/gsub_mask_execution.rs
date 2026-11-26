@@ -94,3 +94,34 @@ fn check(disable:bool){
     assert_eq!(result.skipped_roots,schedule.root_count()*run.glyphs().len());assert_eq!(blocked,0);
     assert!(result.glyph_masks.iter().all(|&x|x==0));
 }
+
+#[test]fn native_profile_positive_case_stage(){
+    let (font,_)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&[])};
+    // Broad nominal seed inventory, separated into independent scalar
+    // runs so contextual neighbors cannot create accidental matches.
+    let plan=f.build_plan(req).unwrap().unwrap();
+    let groups=ShapeScriptProfile::Latin.groups();
+    let layout=parse_gsub_layout(sf.table(*b"GSUB").unwrap(),Default::default()).unwrap();
+    let p=f.compile_plan(req,&plan).unwrap();
+    let specs=shape_stage_specs_from_tags(&layout,&p,&groups,Default::default()).unwrap();
+    assert!(specs.len()>=2);
+    let mut positive=0;
+    for code in 0x20..=0x2ff{
+        let Some(ch)=char::from_u32(code) else{continue;};
+        if cmap.glyph_for_char(ch).unwrap().is_none(){continue;}
+        let mut buf=[0u8;4];
+        let run=map_source_run(ch.encode_utf8(&mut buf),&cmap,false,Default::default()).unwrap();
+        let masks=ScalarFeatureMasks::build(&plan.plan,1,&[],Default::default()).unwrap();
+        let (_,result,_)=execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),Default::default(),Default::default(),100000).unwrap();
+        let input=run.glyphs()[0].glyph_id;
+        if result.execution.expansion.execution.glyphs!=vec![input]{positive+=1;}
+        assert_eq!(result.provenance.scalar_count(),1);
+        assert!(result.provenance.glyphs().iter().all(|g|g.sources()==[0]));
+        let (old,_)=f.execute_with_provenance(req,&run,&[],Default::default()).unwrap().unwrap();
+        assert_eq!(result.execution.expansion.execution.glyphs,old.execution.expansion.execution.glyphs);
+    }
+    assert!(positive>0,"native fixture must actually substitute at least one scalar");
+}

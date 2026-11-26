@@ -82,3 +82,20 @@ fn tags(values:&[[u8;4]])->ShapeTagStage{ShapeTagStage{tags:values.to_vec()}}
     assert!(shape_stage_specs_from_tags(&layout,&p,&groups,ShapeStageLimits{max_work:1,..Default::default()}).is_err());
     assert_eq!(shape_stage_specs_from_tags(&layout,&p,&[],Default::default()).unwrap(),vec![spec(&[0,1,2])]);
 }
+
+#[test]fn script_profile_selection_and_unique_tags(){
+    use std::collections::BTreeSet;
+    assert_eq!(ShapeScriptProfile::for_script(*b"latn").unwrap(),ShapeScriptProfile::Latin);
+    assert_eq!(ShapeScriptProfile::for_script(*b"arab").unwrap(),ShapeScriptProfile::Arabic);
+    assert_eq!(ShapeScriptProfile::for_script(*b"dev2").unwrap(),ShapeScriptProfile::IndicV2);
+    for tag in [*b"DFLT",*b"deva",*b"hani"]{assert!(ShapeScriptProfile::for_script(tag).is_err());}
+    for p in [ShapeScriptProfile::Latin,ShapeScriptProfile::Arabic,ShapeScriptProfile::IndicV2]{
+        let mut seen=BTreeSet::new();
+        for group in p.groups(){assert!(!group.tags.is_empty());for tag in group.tags{assert!(seen.insert(tag));}}
+    }
+}
+#[test]fn script_profile_latin_partition(){
+    let b=fixture();let p=program(&b);let layout=parse_gsub_layout(&b,Default::default()).unwrap();
+    let specs=shape_stage_specs_from_tags(&layout,&p,&ShapeScriptProfile::Latin.groups(),Default::default()).unwrap();
+    assert_eq!(specs,vec![spec(&[0]),spec(&[1]),spec(&[2])]);
+}
