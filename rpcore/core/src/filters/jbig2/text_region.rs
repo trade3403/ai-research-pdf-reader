@@ -325,6 +325,15 @@ impl ArithmeticTextContexts{
         Self{dt:IntegerDecoder::new(),fs:IntegerDecoder::new(),ds:IntegerDecoder::new(),
             it:IntegerDecoder::new(),extra:std::array::from_fn(|_|IntegerDecoder::new())}
     }
+    /// Dictionary single-reference refinement uses the same displacement
+    /// syntax banks as embedded text-region refinement.
+    pub(crate) fn decode_displacement(&mut self,decoder:&mut super::qm::Decoder<'_>)->Result<(i64,i64)>{
+        use super::integer::Integer;
+        let Integer::Value(dx)=self.extra[3].decode(decoder)? else{return Err(Error::Invalid("JBIG2 refinement X OOB"));};
+        let Integer::Value(dy)=self.extra[4].decode(decoder)? else{return Err(Error::Invalid("JBIG2 refinement Y OOB"));};
+        Ok((dx,dy))
+    }
+
 }
 
 /// Decode one text region on caller-owned QM, IAID and GR banks.
