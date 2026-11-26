@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Direct dictionaries, direct context reuse and arithmetic single-symbol refinement execution.
+//! Direct and single-symbol refinement dictionaries with scoped bitmap context reuse.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -1047,8 +1047,8 @@ pub struct ExecutionLimits{
     pub work:u64,
     pub export_runs_per_dictionary:u32,
     pub decisions_per_dictionary:usize,
-    /// Retained GB entries plus active GB for direct arithmetic, or active
-    /// GR/IAID/IAx entries for single refinement (not RSS).
+    /// Retained GB/GR entries plus active GB for direct arithmetic, or
+    /// active GR/IAID/IAx entries for single refinement (not RSS).
     pub context_entries:usize,
 }
 impl Default for ExecutionLimits{
@@ -1076,6 +1076,8 @@ pub struct ExecutionStats{
     pub work_used:u64,
     pub retained_contexts:u32,
     pub reused_contexts:u32,
+    pub retained_gr_contexts:u32,
+    pub reused_gr_contexts:u32,
     pub peak_context_entries:usize,
 }
 #[derive(Debug,PartialEq,Eq)]
@@ -1117,6 +1119,7 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
     let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
     let mut set=DictionarySet{arena:Vec::new(),exports:BTreeMap::new(),stats:ExecutionStats::default()};
     let mut snapshots:BTreeMap<u32,BitmapContextSnapshot>=BTreeMap::new();
+    let mut gr_snapshots:BTreeMap<u32,RefinementContextSnapshot>=BTreeMap::new();
     let mut retained_entries=0usize;
     for node in &inspected.graph{
         charge_work(&mut left,1)?;
@@ -1163,9 +1166,10 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
                 export_runs:limits.export_runs_per_dictionary})?;
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else if plan.header.refine_aggregate{
-            if plan.header.context_used||plan.header.context_retained||plan.context_source.is_some(){
-                return Err(Error::Unsupported("JBIG2 retained refinement dictionary contexts"));
-            }
+            let initial=match plan.context_source{
+                Some(id)=>Some(gr_snapshots.get(&id).ok_or(Error::Invalid("JBIG2 missing retained refinement context"))?),
+                None=>None,
+            };
             let active=retained_entries.checked_add(refinement_context_entries(&plan.header,plan.imported)?)
                 .ok_or(Error::Limit("JBIG2 context entries"))?;
             if active>limits.context_entries{return Err(Error::Limit("JBIG2 context entries"));}
@@ -1174,9 +1178,22 @@ pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)
             for &id in &namespace{
                 imports.push(set.bitmap(id).ok_or(Error::Invalid("JBIG2 refinement missing bitmap identity"))?);
             }
-            let d=decode_arithmetic_single_refinement(&plan,original,&imports,ArithmeticLimits{
+            let (d,snapshot)=decode_arithmetic_single_refinement_with_context(&plan,original,&imports,ArithmeticLimits{
                 pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
-                decisions:limits.decisions_per_dictionary})?;
+                decisions:limits.decisions_per_dictionary},initial)?;
+            if initial.is_some(){
+                set.stats.reused_contexts+=1;set.stats.reused_gr_contexts+=1;
+            }
+            if let Some(snapshot)=snapshot{
+                // Keep only the GR bank. IAID and integer contexts are
+                // transient; GB is implicitly zero in this restricted mode.
+                retained_entries=retained_entries.checked_add(snapshot.entries())
+                    .ok_or(Error::Limit("JBIG2 retained GR entries"))?;
+                if gr_snapshots.insert(segment.number,snapshot).is_some(){
+                    return Err(Error::Invalid("JBIG2 duplicate GR snapshot"));
+                }
+                set.stats.retained_contexts+=1;set.stats.retained_gr_contexts+=1;
+            }
             // Borrow ends before the arena grows. Only newly decoded
             // bitmaps are moved into it by the common commit path below.
             set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
@@ -1489,16 +1506,43 @@ fn refinement_context_entries(header:&Header,imported:u32)->Result<usize>{
     // Count active GR, IAID and six independent 512-entry integer banks.
     Ok(t.context_count()+(1usize<<bits)+6*512)
 }
-/// Arithmetic refinement dictionaries in which every new symbol refines
-/// exactly one earlier symbol. No multi-instance aggregation, Huffman
-/// refinement or cross-dictionary retained GR contexts in this subset.
-/// Imported bitmaps are borrowed, in the plan's ordered namespace.
+/// Immutable bitmap probability state for the single-refinement subset.
+/// GB is always zero here: neither this mode nor a compatible ancestor
+/// executes a generic region. Retain its geometry, not a redundant bank.
+/// GR is copied into a fresh active bank; no QM or IAx state is retained.
+#[derive(Debug,PartialEq,Eq)]
+pub struct RefinementContextSnapshot{
+    generic:Neighborhood,
+    neighborhood:super::refinement::Neighborhood,
+    bank:super::refinement::ContextBank,
+}
+impl RefinementContextSnapshot{
+    pub fn entries(&self)->usize{self.bank.entries().len()}
+    pub fn nonzero_entries(&self)->usize{
+        self.bank.entries().iter().filter(|&&v|v!=super::qm::Context::default()).count()
+    }
+    pub fn template(&self)->super::refinement::Template{self.bank.template()}
+}
+/// Compatibility wrapper for callers that do not manage snapshots.
 pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
     limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+    if plan.header.context_used||plan.header.context_retained||plan.context_source.is_some(){
+        return Err(Error::Unsupported("JBIG2 single refinement requires context-aware entry"));
+    }
+    Ok(decode_arithmetic_single_refinement_with_context(plan,stream,imports,limits,None)?.0)
+}
+/// Exactly one reference per new symbol. No Huffman refinement or
+/// multi-instance aggregation. Executor verifies last-dictionary provenance;
+/// direct callers must provide that dictionary's immutable snapshot.
+pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits,initial:Option<&RefinementContextSnapshot>)->Result<(ArithmeticDictionary,Option<RefinementContextSnapshot>)>{
     use super::{integer::{IntegerDecoder,IaidDecoder},refinement};
     let h=&plan.header;
-    if h.huffman||!h.refine_aggregate||h.context_used||h.context_retained||plan.context_source.is_some(){
+    if h.huffman||!h.refine_aggregate{
         return Err(Error::Unsupported("JBIG2 single arithmetic refinement mode"));
+    }
+    if h.context_used!=initial.is_some()||(!h.context_used&&plan.context_source.is_some()){
+        return Err(Error::Invalid("JBIG2 refinement context presence"));
     }
     if plan.tables.is_some()||h.selections.is_some()||imports.len()!=plan.imported as usize{
         return Err(Error::Invalid("JBIG2 refinement dictionary imports/tables"));
@@ -1512,6 +1556,12 @@ pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bi
     if h.new_symbols>0&&imports.is_empty(){return Err(Error::Invalid("JBIG2 refinement no initial reference"));}
     let template=refinement::Template::from_code(h.refinement_template)?;
     let neighborhood=refinement::Neighborhood::new(template,&h.refinement_adaptive)?;
+    let generic=Neighborhood::new(h.template,&h.adaptive)?;
+    if let Some(snapshot)=initial{
+        if snapshot.generic!=generic||snapshot.neighborhood!=neighborhood||snapshot.template()!=template{
+            return Err(Error::Invalid("JBIG2 refinement snapshot parameters"));
+        }
+    }
     let data=stream.get(plan.encoded.clone()).ok_or(Error::Invalid("JBIG2 refinement dictionary span"))?;
     let mut left=limits.work;
     charge_work(&mut left,data.len() as u64)?;
@@ -1519,6 +1569,7 @@ pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bi
     let mut decoder=super::qm::Decoder::new(data,limits.decisions)?;
     let mut id=IaidDecoder::new(bits)?;
     let mut gr=refinement::ContextBank::new(template)?;
+    if let Some(snapshot)=initial{gr.restore_from(&snapshot.bank)?;}
     let mut banks=ArithmeticIntegers::default();
     let mut ai=IntegerDecoder::new();let mut dx_bank=IntegerDecoder::new();let mut dy_bank=IntegerDecoder::new();
     let mut state=DimensionState::new(h.new_symbols,limits.pixels)?;
@@ -1565,8 +1616,9 @@ pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bi
     let indices=export_indices(plan.imported,h.new_symbols,h.exported,limits.export_runs,||{
         charge_work(&mut left,INT_WORK)?;banks.ex.decode(&mut decoder)
     })?;
-    Ok(ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
-        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()})
+    let snapshot=if h.context_retained{Some(RefinementContextSnapshot{generic,neighborhood,bank:gr})}else{None};
+    Ok((ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
+        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()},snapshot))
 }
 
 #[cfg(test)]
@@ -1747,9 +1799,11 @@ mod refinement_executor_tests{
     #[test]
     fn refinement_executor_unsupported_modes_fail_closed(){
         let g=seg(1,0,0,&[],SOURCE);
-        let mut retained=body(1,T1);retained[0]|=2;
-        let mut p=info(2);p.extend(seg(3,0,1,&[1],&retained));
-        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        // Retaining GR is now supported. A direct Huffman dictionary is
+        // still not a compatible retained refinement source.
+        let mut used=body(1,T1);used[0]|=1;
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&used));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&body(1,&[124,191,255,172])));
         assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
         // Huffman refinement header: SDRTEMPLATE=1, no AT bytes.
@@ -1763,5 +1817,138 @@ mod refinement_executor_tests{
             let mut p=info(2);p.extend(seg(3,0,1,refs,&body(1,entropy)));
             assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
         }
+    }
+}
+
+
+#[cfg(test)]
+mod retained_gr_tests{
+    use super::*;
+    const SOURCE:&[u8]=&[0,1,0,0,0,1,0,0,0,1,229,211,240,0,0,124,124,124,0,0,0,64];
+    const T0:&[u8]=&[124,227,105,204,198,86,197,71,223,255,172];
+    const T1:&[u8]=&[124,227,105,204,198,86,191,231,207,255,172];
+    // Independent Annex E JS encoder: new QM stream, all integer banks
+    // reset; inherit only GR from the parent. Both templates happen to
+    // produce the same bytes. 43 decisions, 6 pixels, four changed states.
+    const CHILD:&[u8]=&[124,227,108,255,96,191,255,172];
+    fn body(t:u8,flags:u8,child:bool,entropy:&[u8])->Vec<u8>{
+        let mut v=vec![8|(t<<4)|flags,2,2,255];if t==0{v.extend([255;4]);}
+        v.extend(if child{[0,0,0,4,0,0,0,1]}else{[0,0,0,3,0,0,0,2]});
+        v.extend(entropy);v
+    }
+    fn parent(t:u8,flags:u8)->Vec<u8>{body(t,flags,false,if t==0{T0}else{T1})}
+    fn plan_for(data:&[u8],imported:u32)->Plan{
+        let (header,_)=parse(data).unwrap();let start=header.data_offset;
+        Plan{header,imported,dictionaries:vec![],tables:None,context_source:None,encoded:start..data.len()}
+    }
+    fn src()->Bitmap{Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap()}
+    fn seg(id:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,id,kind,(refs.len()as u8)<<5];v.extend(refs);
+        v.push(page);v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn info(id:u8)->Vec<u8>{
+        let mut d=vec![];for n in [20u32,20,300,300]{d.extend(n.to_be_bytes());}
+        d.extend([0,0,0]);seg(id,48,1,&[],&d)
+    }
+    fn fixture(t:u8,child_flags:u8)->(Vec<u8>,Vec<u8>){
+        let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&parent(t,2)));
+        let mut p=info(3);p.extend(seg(4,0,1,&[2],&body(t,child_flags,true,CHILD)));(g,p)
+    }
+    fn ids(d:&DictionarySet,n:u32)->Vec<usize>{
+        d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()
+    }
+    #[test]
+    fn retained_gr_both_templates_reference(){
+        for t in [0,1]{
+            let s=src();let p=parent(t,2);let l=ArithmeticLimits::default();
+            let (d,snap)=decode_arithmetic_single_refinement_with_context(&plan_for(&p,1),&p,&[&s],l,None).unwrap();
+            let snap=snap.unwrap();
+            assert_eq!(snap.entries(),if t==0{8192}else{1024});
+            assert_eq!(snap.nonzero_entries(),if t==0{12}else{11});
+            let b=body(t,3,true,CHILD);
+            let imports=[&s,&d.new_symbols[0],&d.new_symbols[1]];
+            let (child,after)=decode_arithmetic_single_refinement_with_context(&plan_for(&b,3),&b,&imports,l,Some(&snap)).unwrap();
+            let after=after.unwrap();
+            assert_eq!(child.exported_indices,[0,1,2,3]);
+            assert_eq!(child.new_symbols[0].packed(),[160,64]);
+            assert_eq!(child.pixel_decisions,6);
+            assert_eq!(snap.bank.entries().iter().zip(after.bank.entries()).filter(|(a,b)|a!=b).count(),4);
+            assert_eq!(snap.nonzero_entries(),after.nonzero_entries());
+            let b=body(t,0,true,CHILD);
+            let reset=decode_arithmetic_single_refinement(&plan_for(&b,3),&b,&imports,l);
+            assert!(reset.is_err()||reset.unwrap()!=child);
+        }
+    }
+    #[test]
+    fn retained_gr_executor_global_to_page(){
+        for t in [0,1]{
+            let (g,p)=fixture(t,1);
+            let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(d.symbol(4,3).unwrap().packed(),[160,64]);
+            assert_eq!((d.stats().retained_gr_contexts,d.stats().reused_gr_contexts),(1,1));
+            assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts),(1,1));
+            assert_eq!((d.stats().new_symbols,d.stats().pixels,d.stats().packed_bytes),(4,62,12));
+            assert!(std::ptr::eq(d.symbol(2,1).unwrap(),d.symbol(4,1).unwrap()));
+            assert!(!std::ptr::eq(d.symbol(2,1).unwrap(),d.symbol(4,3).unwrap()));
+        }
+    }
+    #[test]
+    fn retained_gr_immutable_branch(){
+        let (g,mut p)=fixture(1,3);
+        p.extend(seg(5,0,1,&[2],&body(1,1,true,CHILD)));
+        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(ids(&d,5),[0,1,2,4]);
+        assert_eq!(d.symbol(4,3),d.symbol(5,3));
+        assert_eq!(d.stats().retained_gr_contexts,2);assert_eq!(d.stats().reused_gr_contexts,2);
+        assert_eq!(d.stats().peak_context_entries,6148);
+    }
+    #[test]
+    fn retained_gr_exact_context_and_work(){
+        let (g,p)=fixture(1,1);
+        let l=ExecutionLimits{context_entries:5124,..ExecutionLimits::default()};
+        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        assert_eq!(d.stats().peak_context_entries,5124);
+        let l=ExecutionLimits{work:d.stats().work_used,..l};
+        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{work:l.work-1,..l}).is_err());
+    }
+    #[test]
+    fn retained_gr_presence_and_geometry(){
+        let s=src();let p=parent(0,2);let l=ArithmeticLimits::default();
+        let (d,snap)=decode_arithmetic_single_refinement_with_context(&plan_for(&p,1),&p,&[&s],l,None).unwrap();
+        let snap=snap.unwrap();let imports=[&s,&d.new_symbols[0],&d.new_symbols[1]];
+        let b=body(0,1,true,CHILD);let mut plan=plan_for(&b,3);
+        assert!(decode_arithmetic_single_refinement_with_context(&plan,&b,&imports,l,None).is_err());
+        plan.header.context_used=false;
+        assert!(decode_arithmetic_single_refinement_with_context(&plan,&b,&imports,l,Some(&snap)).is_err());
+        plan.header.context_used=true;plan.header.adaptive[0].x=1;
+        assert!(decode_arithmetic_single_refinement_with_context(&plan,&b,&imports,l,Some(&snap)).is_err());
+        plan.header.adaptive[0].x=2;plan.header.refinement_adaptive[1].x=0;
+        assert!(decode_arithmetic_single_refinement_with_context(&plan,&b,&imports,l,Some(&snap)).is_err());
+        let b=body(1,1,true,CHILD);
+        assert!(decode_arithmetic_single_refinement_with_context(&plan_for(&b,3),&b,&imports,l,Some(&snap)).is_err());
+    }
+    #[test]
+    fn retained_gr_last_dependency_validation(){
+        let (_,p)=fixture(1,1);
+        let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&parent(1,0)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let (g,_)=fixture(1,1);
+        // Last dependency is the direct dictionary, not the retained GR
+        // dictionary. Never search backward for any compatible snapshot.
+        let mut p=info(3);p.extend(seg(4,0,1,&[2,1],&body(1,1,true,CHILD)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let mut p=info(3);p.extend(seg(4,0,1,&[2],&body(0,1,true,CHILD)));
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+    }
+    #[test]
+    fn retained_gr_zero_bank_without_retain(){
+        let s=src();let b=parent(1,0);let p=plan_for(&b,1);let l=ArithmeticLimits::default();
+        let (d,snap)=decode_arithmetic_single_refinement_with_context(&p,&b,&[&s],l,None).unwrap();
+        assert!(snap.is_none());
+        assert_eq!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).unwrap(),d);
+        let b=parent(1,2);
+        assert!(decode_arithmetic_single_refinement(&plan_for(&b,1),&b,&[&s],l).is_err());
     }
 }
