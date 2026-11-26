@@ -32,9 +32,9 @@ impl Origin {
                 || label.len() > 63
                 || label.starts_with('-')
                 || label.ends_with('-')
-                || !label.bytes().all(|b| {
-                    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
-                })
+                || !label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
                 return Err(Error::Origin);
             }

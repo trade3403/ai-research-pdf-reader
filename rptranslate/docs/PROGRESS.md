@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0b1 [#128 / 45739660406](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406) Linux及Windows均在rustfmt失败：online_catalog.rs:32 DNS label校验闭包链式换行；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406/job/139641241283)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739660406/job/139641241225)。严格按日志最小格式修复，不改变逻辑、测试及历史专项；查询时Linux真实专项仍运行，不主动取消。未全量验收不进入D3.0b2。
+
 2026-11-26 D3.0a 基线 bd7f0c3eff91ffd992f9816080c6f5b3a1234ae4 / [#127 / 45729380679](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679) 全量 success；Linux/Windows各154 workspace+59 portable=213/213，共426/426。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679/job/139611612794) INT8 242/269、27拒译、5221/6036词、245/317数字串、235.066981s、698.359469ms加载、122448KiB RSS；FP32 4/8，人工语义未测。
 
 D3.0b1：自主 RPCatalog v1 严格JSON解析，复用D1受限Parser与SHA256及D3.0a typed catalog；外部可信长度/摘要先验证再解析，1MiB/1024条/64文件限制，拒绝重复字段、未知schema、非法版本、非法精度、路径及不可信地址语法；显式配置DNS源站，按固定路径生成HTTPS目录与资源URL，不从JSON接收URL。新增6项单测，预计两平台438项基础回归。尚未编译验收；本阶段不发网络请求，不实现签名信任分发、DNS/IP策略、HTTPS传输或发布真实模型。D3.0b2在本阶段全绿后接入受限HTTPS实际传输及真实网络测试；D3.0c断点续传，d安装导入，e升级回滚卸载。
