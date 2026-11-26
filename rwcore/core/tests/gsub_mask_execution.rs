@@ -125,3 +125,17 @@ fn check(disable:bool){
     }
     assert!(positive>0,"native fixture must actually substitute at least one scalar");
 }
+
+#[test]fn native_script_profile_trace_parity(){
+    let (font,_)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    let run=map_source_run("Aé office ()",&cmap,false,Default::default()).unwrap();
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&[])};
+    let (plan,schedule,result,blocked,trace)=f.execute_script_profile(req,&run,&[],&[],Default::default(),Default::default(),Default::default(),100000).unwrap().unwrap();
+    assert_eq!(trace.len(),schedule.stages().len());
+    assert_eq!(trace.iter().map(|x|x.changes).sum::<usize>(),result.execution.expansion.execution.changes);
+    assert_eq!(trace.iter().map(|x|x.root_count).sum::<usize>(),schedule.root_count());
+    assert_eq!((plan,schedule,result,blocked),f.execute_tag_stages(req,&run,&[],&ShapeScriptProfile::Latin.groups(),&[],Default::default(),Default::default(),Default::default(),100000).unwrap().unwrap());
+    let bad=VariableGsubRequest{script:*b"hani",..req};
+    assert!(f.execute_script_profile(bad,&run,&[],&[],Default::default(),Default::default(),Default::default(),100000).is_err());
+}

@@ -83,6 +83,8 @@ struct RootMaskState<'a>{
     strict:bool,
     blocked:usize,
     staged_roots:Option<&'a [crate::GsubPlannedLookup]>,
+    root_changes:Vec<usize>,
+    trace:bool,
 }
 struct State<'a>{
     provenance:Option<crate::ProvenanceLedger>,
@@ -534,6 +536,7 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     let root_count=masking.as_ref().and_then(|m|m.staged_roots).map_or(program.roots().len(),|r|r.len());
     if root_count>limits.max_roots{return Err(Error::Limit("gsub staged roots"));}
     for root_index in 0..root_count{
+        let before_changes=state.result.changes;
         let id=masking.as_ref().and_then(|m|m.staged_roots).map_or_else(||program.roots()[root_index],|r|r[root_index].index);
         let root_mask=if let Some(m)=masking.as_deref_mut(){
             let plan=program.validated_plan().ok_or(Error::Invalid("gsub masks missing plan"))?;
@@ -553,6 +556,9 @@ fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
             while p<state.result.glyphs.len(){
                 p=if root_allowed(&state,p,root_mask,masking.as_deref_mut())?{apply_at(program,id,p,&mut state,&mut masking,if root_mask==0{u64::MAX}else{root_mask})?.unwrap_or(p+1)}else{p+1};
             }
+        }
+        if let Some(m)=masking.as_deref_mut(){
+            if m.trace{m.root_changes.push(state.result.changes-before_changes);}
         }
     }
     *provenance=state.provenance.take();
@@ -631,7 +637,7 @@ pub fn execute_gsub_program_with_masks(program:&CompiledGsubProgram<'_>,run:&cra
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<MaskedGsubResult,Error>{
-    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,false,None).map(|r|r.0)
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,false,None,false).map(|r|r.0)
 }
 /// Strict shared-feature input and nested action policy. Returns the
 /// legacy masked result plus number of rejected input/action checks.
@@ -639,12 +645,12 @@ pub fn execute_gsub_program_with_strict_masks(program:&CompiledGsubProgram<'_>,r
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<(MaskedGsubResult,usize),Error>{
-    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,None)
+    execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,None,false).map(|(r,b,_)|(r,b))
 }
 fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
     choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
-    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,strict:bool,staged_roots:Option<&[crate::GsubPlannedLookup]>)
-    ->Result<(MaskedGsubResult,usize),Error>{
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,strict:bool,staged_roots:Option<&[crate::GsubPlannedLookup]>,trace:bool)
+    ->Result<(MaskedGsubResult,usize,Vec<usize>),Error>{
     let plan=program.validated_plan().ok_or(Error::Invalid("gsub masks missing plan"))?;
     if masks.features()!=plan.features.as_slice()||masks.required_feature()!=plan.required_feature||
         masks.scalar_masks().len()!=run.scalars().len(){
@@ -656,7 +662,9 @@ fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
     let mut provenance=Some(crate::ProvenanceLedger::from_run(run,program.glyph_count(),source_limits)?);
     let mut glyphs=Vec::new();glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub mask allocation"))?;
     glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
-    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0,strict,blocked:0,staged_roots};
+    let mut root_changes=Vec::new();
+    if trace{root_changes.try_reserve_exact(staged_roots.map_or(program.roots().len(),|r|r.len())).map_err(|_|Error::Limit("gsub trace allocation"))?;}
+    let mut m=RootMaskState{masks,left:max_mask_work,skipped:0,strict,blocked:0,staged_roots,root_changes,trace};
     let execution=execute_context_inner(program,&glyphs,Some(choices),limits.expansion.context,
         Some(limits.expansion),Some(limits),true,true,&mut provenance,Some(&mut m))?;
     let ledger=provenance.ok_or(Error::Invalid("gsub mask missing ledger"))?;
@@ -665,7 +673,7 @@ fn execute_masked_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
     }
     let glyph_masks=masks.project(&ledger,m.left)?;
     m.left=m.left.checked_sub(ledger.glyphs().len()).and_then(|v|v.checked_sub(ledger.reference_count())).ok_or(Error::Limit("gsub mask work"))?;
-    Ok((MaskedGsubResult{execution,provenance:ledger,glyph_masks,skipped_roots:m.skipped,mask_work:max_mask_work-m.left},m.blocked))
+    Ok((MaskedGsubResult{execution,provenance:ledger,glyph_masks,skipped_roots:m.skipped,mask_work:max_mask_work-m.left},m.blocked,m.root_changes))
 }
 
 fn live_bits(state:&State<'_>,p:usize,m:&mut RootMaskState<'_>)->Result<u64,Error>{
@@ -700,6 +708,30 @@ pub fn execute_staged_gsub(program:&CompiledGsubProgram<'_>,run:&crate::SourceRu
     specs:&[crate::ShapeStageSpec],stage_limits:crate::ShapeStageLimits,
     limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
     ->Result<(crate::ShapeStageSchedule,MaskedGsubResult,usize),Error>{
+    execute_staged_inner(program,run,choices,masks,specs,stage_limits,limits,source_limits,max_mask_work,false)
+        .map(|(s,r,b,_)|(s,r,b))
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ShapeStageTrace{
+    pub stage_index:usize,
+    pub root_count:usize,
+    /// Number of changing substitution operations, not number of glyphs.
+    pub changes:usize,
+}
+/// Same atomic execution with bounded stage-level change diagnostics.
+/// Trace storage is limited by validated stage and root caps.
+pub fn execute_staged_gsub_traced(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
+    specs:&[crate::ShapeStageSpec],stage_limits:crate::ShapeStageLimits,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize)
+    ->Result<(crate::ShapeStageSchedule,MaskedGsubResult,usize,Vec<ShapeStageTrace>),Error>{
+    execute_staged_inner(program,run,choices,masks,specs,stage_limits,limits,source_limits,max_mask_work,true)
+}
+fn execute_staged_inner(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],masks:&crate::ScalarFeatureMasks,
+    specs:&[crate::ShapeStageSpec],stage_limits:crate::ShapeStageLimits,
+    limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,max_mask_work:usize,trace:bool)
+    ->Result<(crate::ShapeStageSchedule,MaskedGsubResult,usize,Vec<ShapeStageTrace>),Error>{
     let schedule=crate::build_shape_stage_schedule(program,specs,stage_limits)?;
     if schedule.root_count()>limits.expansion.context.max_roots{return Err(Error::Limit("gsub staged roots"));}
     let mut roots=Vec::new();
@@ -712,6 +744,19 @@ pub fn execute_staged_gsub(program:&CompiledGsubProgram<'_>,run:&crate::SourceRu
             roots.push(crate::GsubPlannedLookup{index:root.index,features});
         }
     }
-    let (result,blocked)=execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,Some(&roots))?;
-    Ok((schedule,result,blocked))
+    let (result,blocked,counts)=execute_masked_inner(program,run,choices,masks,limits,source_limits,max_mask_work,true,Some(&roots),trace)?;
+    let mut traces=Vec::new();
+    if trace{
+        traces.try_reserve_exact(schedule.stages().len()).map_err(|_|Error::Limit("gsub trace allocation"))?;
+        let mut at=0;
+        for (stage_index,stage) in schedule.stages().iter().enumerate(){
+            let n=stage.lookups().len();
+            let end=at+n;
+            let changes=counts.get(at..end).ok_or(Error::Invalid("gsub trace count"))?.iter().sum();
+            traces.push(ShapeStageTrace{stage_index,root_count:n,changes});
+            at=end;
+        }
+        if at!=counts.len(){return Err(Error::Invalid("gsub trace length"));}
+    }
+    Ok((schedule,result,blocked,traces))
 }

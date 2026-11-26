@@ -354,3 +354,24 @@ fn stage(ids:&[u16])->ShapeStageSpec{ShapeStageSpec{features:ids.to_vec()}}
     assert!(matches!(execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),limits,Default::default(),1000),Err(Error::Limit(_))));
     assert!(execute_staged_gsub(&p,&run,&[],&masks,&[stage(&[0])],Default::default(),Default::default(),Default::default(),1000).is_err());
 }
+
+#[test]fn staged_trace_positive_two_stages(){
+    let (run,n)=run("A");let a=run.glyphs()[0].glyph_id;
+    let bytes=masked_fixture(&[(4,4,ligature(11,12,20)),(2,2,multiple(a))],&[(b"liga",&[0]),(b"salt",&[1])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(&plan,1,&[],Default::default()).unwrap();
+    let specs=[stage(&[1]),stage(&[0])];
+    let (schedule,result,blocked,trace)=execute_staged_gsub_traced(&p,&run,&[],&masks,&specs,Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(trace,vec![ShapeStageTrace{stage_index:0,root_count:1,changes:1},ShapeStageTrace{stage_index:1,root_count:1,changes:1}]);
+    assert_eq!(result.execution.expansion.execution.glyphs,vec![20]);
+    assert_eq!((schedule,result,blocked),execute_staged_gsub(&p,&run,&[],&masks,&specs,Default::default(),Default::default(),Default::default(),1000).unwrap());
+}
+#[test]fn staged_trace_counts_disabled_and_noop(){
+    let (run,n)=run("A");let a=run.glyphs()[0].glyph_id;
+    let bytes=masked_fixture(&[(1,1,single(a,a)),(1,1,single(a,20))],&[(b"liga",&[0]),(b"salt",&[1])]);
+    let plan=strict_plan(&bytes);let p=compile_gsub_plan_program(&bytes,&plan,n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(&plan,1,&[FeatureMaskOverride{feature:1,start:0,end:1,enabled:false}],Default::default()).unwrap();
+    let (_,result,_,trace)=execute_staged_gsub_traced(&p,&run,&[],&masks,&[stage(&[0]),stage(&[1])],Default::default(),Default::default(),Default::default(),1000).unwrap();
+    assert_eq!(trace.iter().map(|x|x.changes).collect::<Vec<_>>(),vec![0,0]);
+    assert_eq!(result.execution.expansion.execution.matches,1);assert_eq!(result.skipped_roots,1);
+}
