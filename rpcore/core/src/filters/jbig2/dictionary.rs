@@ -1672,8 +1672,13 @@ fn decode_arithmetic_refinement_impl(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
                     charge_work(&mut left,u64::from(bits)+2*INT_WORK)?;
                     let available=plan.imported+s.index;
                     let index=id.decode_for_count(&mut decoder,available)? as usize;
-                    let Integer::Value(dx)=dx_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement X OOB"));};
-                    let Integer::Value(dy)=dy_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement Y OOB"));};
+                    let (dx,dy)=if let Some(contexts)=text.as_mut(){
+                        contexts.decode_displacement(&mut decoder)?
+                    }else{
+                        let Integer::Value(dx)=dx_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement X OOB"));};
+                        let Integer::Value(dy)=dy_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement Y OOB"));};
+                        (dx,dy)
+                    };
                     let reference=if index<imports.len(){imports[index]}else{
                         out.get(index-imports.len()).ok_or(Error::Invalid("JBIG2 refinement forward symbol"))?
                     };
