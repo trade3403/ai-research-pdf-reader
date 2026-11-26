@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Includes direct Huffman collective bitmaps; arithmetic/refinement and context reuse pending.
+//! Includes direct Huffman and arithmetic symbols; refinement and cross-dictionary context reuse pending.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -769,5 +769,217 @@ mod collective_tests{
         let d=decode_huffman_direct(&p,&data,HuffmanLimits::default()).unwrap();
         assert!(d.new_symbols.is_empty());assert_eq!(d.exported_indices,[0,1]);
         assert_eq!(d.classes,0);
+    }
+}
+
+
+/// Direct arithmetic dictionary: shared QM stream, separate IAx banks and
+/// a persistent generic pixel bank across all new symbols (T.88 6.5.8.1).
+/// Retained contexts from a different dictionary are not yet supported.
+pub const MAX_ARITHMETIC_DECISIONS:usize=16_777_216;
+#[derive(Debug,Clone,Copy)]
+pub struct ArithmeticLimits{
+    pub pixels:u64,
+    pub packed_bytes:usize,
+    pub work:u64,
+    pub export_runs:u32,
+    pub decisions:usize,
+}
+impl Default for ArithmeticLimits{
+    fn default()->Self{Self{pixels:bitmap::MAX_PIXELS,packed_bytes:bitmap::MAX_PACKED_BYTES,
+        work:MAX_DICTIONARY_WORK,export_runs:MAX_EXPORT_RUNS,decisions:MAX_ARITHMETIC_DECISIONS}}
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct ArithmeticDictionary{
+    pub new_symbols:Vec<Bitmap>,
+    pub exported_indices:Vec<u32>,
+    pub classes:u32,
+    pub pixel_decisions:u64,
+    pub packed_bytes:usize,
+    pub work_used:u64,
+    pub marker_offset:usize,
+}
+
+/// Decode a positive-size direct symbol using the caller's existing QM
+/// stream and generic context bank, without resetting either between symbols.
+/// No TPGD or skip mask (Table 16). Errors can advance stream and contexts.
+pub fn decode_direct_symbol(width:u32,height:u32,neighborhood:&Neighborhood,
+    contexts:&mut [super::qm::Context],decoder:&mut super::qm::Decoder<'_>,
+    work_limit:u64)->Result<Bitmap>{
+    let template=neighborhood.template();
+    if contexts.len()!=template.context_count(){return Err(Error::Invalid("JBIG2 symbol context bank"));}
+    packed_len(width,height)?;
+    let area=u64::from(width)*u64::from(height);
+    let work=area.checked_mul(template.bits() as u64+1).ok_or(Error::Limit("JBIG2 symbol work"))?;
+    if work>work_limit.min(MAX_DICTIONARY_WORK){return Err(Error::Limit("JBIG2 symbol work"));}
+    let mut image=Bitmap::new(width,height,false)?;
+    for y in 0..height{
+        for x in 0..width{
+            let cx=neighborhood.context(&image,x,y)?;
+            let bit=decoder.decode(&mut contexts[cx])?!=0;
+            image.set(x,y,bit)?;
+        }
+    }
+    Ok(image)
+}
+
+pub fn decode_arithmetic_direct(plan:&Plan,stream:&[u8],limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+    if plan.header.huffman||plan.header.refine_aggregate||plan.header.context_used||plan.header.context_retained{
+        return Err(Error::Unsupported("JBIG2 non-direct arithmetic dictionary"));
+    }
+    if plan.tables.is_some()||plan.header.selections.is_some(){
+        return Err(Error::Invalid("JBIG2 arithmetic dictionary Huffman tables"));
+    }
+    if limits.pixels>bitmap::MAX_PIXELS||limits.packed_bytes>bitmap::MAX_PACKED_BYTES||
+        limits.work>MAX_DICTIONARY_WORK||limits.export_runs>MAX_EXPORT_RUNS||
+        limits.decisions>MAX_ARITHMETIC_DECISIONS{
+        return Err(Error::Limit("JBIG2 arithmetic dictionary limits"));
+    }
+    let data=stream.get(plan.encoded.clone()).ok_or(Error::Invalid("JBIG2 arithmetic dictionary span"))?;
+    let total=plan.imported.checked_add(plan.header.new_symbols).ok_or(Error::Limit("JBIG2 dictionary total"))?;
+    if total>MAX_SYMBOLS{return Err(Error::Limit("JBIG2 dictionary total"));}
+    if plan.header.exported>total{return Err(Error::Invalid("JBIG2 dictionary export count"));}
+    let neighborhood=Neighborhood::new(plan.header.template,&plan.header.adaptive)?;
+    let mut state=DimensionState::new(plan.header.new_symbols,limits.pixels)?;
+    let mut left=limits.work;
+    // Charge full input scan and context initialization before decoder creation.
+    charge_work(&mut left,data.len() as u64)?;
+    let count=plan.header.template.context_count();
+    charge_work(&mut left,count as u64)?;
+    let mut decoder=super::qm::Decoder::new(data,limits.decisions)?;
+    let mut contexts=Vec::new();
+    contexts.try_reserve_exact(count).map_err(|_|Error::Limit("JBIG2 symbol context allocation"))?;
+    contexts.resize(count,super::qm::Context::default());
+    let mut banks=ArithmeticIntegers::default();
+    let mut out=Vec::new();
+    out.try_reserve_exact(plan.header.new_symbols as usize).map_err(|_|Error::Limit("JBIG2 dictionary symbols allocation"))?;
+    let mut packed=0usize;
+    // Conservative upper bound on one Annex A integer (sign, class, 32
+    // magnitude bits); actual binary decisions also have a separate QM cap.
+    const INTEGER_WORK:u64=39;
+    while !state.complete(){
+        charge_work(&mut left,INTEGER_WORK)?;
+        state.begin(banks.height(&mut decoder)?)?;
+        loop{
+            charge_work(&mut left,INTEGER_WORK)?;
+            match state.width(banks.width(&mut decoder)?)?{
+                WidthEvent::End(_)=>break,
+                WidthEvent::Symbol(s)=>{
+                    let bytes=packed_len(s.width,s.height)?;
+                    let next=packed.checked_add(bytes).ok_or(Error::Limit("JBIG2 dictionary packed bytes"))?;
+                    if next>limits.packed_bytes{return Err(Error::Limit("JBIG2 dictionary packed budget"));}
+                    let work=u64::from(s.width)*u64::from(s.height)*(plan.header.template.bits()as u64+1);
+                    charge_work(&mut left,work)?;
+                    let image=decode_direct_symbol(s.width,s.height,&neighborhood,&mut contexts,&mut decoder,work)?;
+                    out.push(image);
+                    packed=next;
+                }
+            }
+        }
+    }
+    let indices=export_indices(plan.imported,plan.header.new_symbols,plan.header.exported,limits.export_runs,||{
+        charge_work(&mut left,INTEGER_WORK)?;
+        banks.ex.decode(&mut decoder)
+    })?;
+    // Explicit FF AC was required on initialization; marker fill is not an
+    // authentication mechanism or proof of all intended encoded decisions.
+    Ok(ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
+        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()})
+}
+
+#[cfg(test)]
+mod arithmetic_direct_tests{
+    use super::*;
+    // Official T.88 (2000) H.1 segment 9 and segment 16. Figure H.4 and
+    // Figure H.12(a) independently specify the expected six-by-six pixels.
+    const TWO:&[u8]=&[8,0,2,255,0,0,0,2,0,0,0,2,0x4f,0xe7,0x8c,0x20,0x0e,0x1d,0xc7,0xcf,0x01,0x11,0xc4,0xb2,0x6f,0xff,0xac];
+    const ONE:&[u8]=&[8,0,2,255,0,0,0,1,0,0,0,1,0x4f,0xe7,0x8d,0x68,0x1b,0x14,0x2f,0x3f,0xff,0xac];
+    fn make_plan(data:&[u8])->Plan{
+        let (header,_)=parse(data).unwrap();
+        let start=header.data_offset;
+        Plan{header,imported:0,dictionaries:vec![],tables:None,context_source:None,encoded:start..data.len()}
+    }
+    fn decode(data:&[u8])->Result<ArithmeticDictionary>{
+        decode_arithmetic_direct(&make_plan(data),data,ArithmeticLimits::default())
+    }
+    #[test]
+    fn arithmetic_annex_h_two_symbols(){
+        let d=decode(TWO).unwrap();
+        assert_eq!((d.classes,d.pixel_decisions,d.packed_bytes,d.marker_offset),(1,72,12,13));
+        assert_eq!(d.exported_indices,[0,1]);
+        for s in &d.new_symbols{assert_eq!((s.width(),s.height()),(6,6));}
+        assert_eq!(d.new_symbols[0].packed(),[120,132,128,128,132,120]);
+        assert_eq!(d.new_symbols[1].packed(),[120,4,124,132,132,124]);
+    }
+    #[test]
+    fn arithmetic_annex_h_single_symbol(){
+        let d=decode(ONE).unwrap();
+        assert_eq!((d.classes,d.pixel_decisions,d.packed_bytes,d.marker_offset),(1,36,6,8));
+        assert_eq!(d.exported_indices,[0]);
+        assert_eq!(d.new_symbols[0].packed(),[120,4,124,132,132,124]);
+    }
+    #[test]
+    fn arithmetic_persistent_bank_and_interleaving(){
+        let n=Neighborhood::nominal(Template::T2);
+        let mut c=vec![super::super::qm::Context::default();1024];
+        let mut qm=super::super::qm::Decoder::new(&TWO[12..],1000).unwrap();
+        let mut banks=ArithmeticIntegers::default();
+        assert_eq!(banks.height(&mut qm).unwrap(),Integer::Value(6));
+        assert_eq!(banks.width(&mut qm).unwrap(),Integer::Value(6));
+        let a=decode_direct_symbol(6,6,&n,&mut c,&mut qm,396).unwrap();
+        assert!(c.iter().any(|v|*v!=super::super::qm::Context::default()));
+        assert_eq!(banks.width(&mut qm).unwrap(),Integer::Value(0));
+        let b=decode_direct_symbol(6,6,&n,&mut c,&mut qm,396).unwrap();
+        assert_eq!(banks.width(&mut qm).unwrap(),Integer::Oob);
+        assert_eq!(banks.exports(&mut qm,0,2,2,2).unwrap(),[0,1]);
+        assert_eq!(a.packed(),[120,132,128,128,132,120]);
+        assert_eq!(b.packed(),[120,4,124,132,132,124]);
+    }
+    #[test]
+    fn arithmetic_budget_exact_and_rejected(){
+        let d=decode(TWO).unwrap();
+        let p=make_plan(TWO);
+        let l=ArithmeticLimits{pixels:72,packed_bytes:12,work:d.work_used,export_runs:2,decisions:1000};
+        assert_eq!(decode_arithmetic_direct(&p,TWO,l).unwrap(),d);
+        for l in [
+            ArithmeticLimits{pixels:71,..l},ArithmeticLimits{packed_bytes:11,..l},
+            ArithmeticLimits{work:d.work_used-1,..l},ArithmeticLimits{export_runs:1,..l},
+            ArithmeticLimits{decisions:71,..l},ArithmeticLimits{decisions:MAX_ARITHMETIC_DECISIONS+1,..l},
+        ]{assert!(decode_arithmetic_direct(&p,TWO,l).is_err());}
+    }
+    #[test]
+    fn arithmetic_markers_and_invalid_modes(){
+        for n in 12..TWO.len(){assert!(decode(&TWO[..n]).is_err());}
+        let mut extra=TWO.to_vec();extra.push(0);assert!(decode(&extra).is_err());
+        let mut bad=TWO.to_vec();*bad.last_mut().unwrap()=0xad;assert!(decode(&bad).is_err());
+        let mut p=make_plan(TWO);p.header.context_used=true;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+        p.header.context_used=false;p.header.context_retained=true;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+        p.header.context_retained=false;p.header.refine_aggregate=true;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+        p.header.refine_aggregate=false;p.header.huffman=true;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+    }
+    #[test]
+    fn arithmetic_symbol_template_and_size_validation(){
+        for t in [Template::T0,Template::T1,Template::T2,Template::T3]{
+            let n=Neighborhood::nominal(t);
+            let mut c=vec![super::super::qm::Context::default();t.context_count()];
+            let mut d=super::super::qm::Decoder::new(&[255,172],0).unwrap();
+            assert!(decode_direct_symbol(1,1,&n,&mut c[..1],&mut d,100).is_err());
+            assert!(decode_direct_symbol(0,1,&n,&mut c,&mut d,100).is_err());
+            assert!(decode_direct_symbol(1,1,&n,&mut c,&mut d,0).is_err());
+            assert!(decode_direct_symbol(1,1,&n,&mut c,&mut d,100).is_err());
+        }
+    }
+    #[test]
+    fn arithmetic_namespace_and_span_bounds(){
+        let mut p=make_plan(TWO);p.imported=MAX_SYMBOLS;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+        p.imported=0;p.header.exported=3;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
+        p.header.exported=2;p.encoded.end=usize::MAX;
+        assert!(decode_arithmetic_direct(&p,TWO,ArithmeticLimits::default()).is_err());
     }
 }
