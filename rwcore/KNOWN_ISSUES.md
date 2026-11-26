@@ -195,3 +195,5 @@
 - C4.4e1: only Format 1 condition interpretation, strict malformed-known-table rejection; unsupported condition/version and out-of-domain axis skip per selection policy. Coordinates must already include normalization/avar remapping; fvar axis count is caller-supplied. Alternate feature parameters opaque. No variation-aware compile integration or native positive FeatureVariations fixture yet; no script stages, masks or cluster propagation.
 
 - C4.4e2: normalized F2DOT14 coordinates and fvar axis count remain caller-supplied, no cryptographic font identity guarantee; selected Feature membership and effective lookup provenance revalidated. No native positive variation reference, fvar/avar normalization, feature parameter interpretation, full shaping, masks, clusters or GPOS yet.
+
+- C4.4e3: native positive Archivo covers one Format 1 condition, one alternate Feature and seven Type 1 mappings, not all real variation table structures. Inputs are normalized F2DOT14; fvar/avar conversion and outline interpolation not implemented by this milestone. Full shaping, GPOS, clusters/masks, external parity and security/performance acceptance remain open.

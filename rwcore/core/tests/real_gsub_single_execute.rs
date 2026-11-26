@@ -2356,3 +2356,125 @@ fn verify_full_plan_acceptance(font:&[u8],n:u32,require_reverse:bool){
 #[test]fn devanagari_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,false);}
 #[test]fn nastaliq_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,false);}
 #[test]fn mongolian_full_plan_acceptance(){verify_full_plan_acceptance(include_bytes!("fixtures/notosansmongolian/NotoSansMongolian-Regular.ttf"),3715,true);}
+
+
+// C4.4e3: unmodified native variable font, independent raw reference.
+// This fixture's sole variation substitutes the otherwise empty rvrn
+// Feature table; the alternate is an actual native Type 1 lookup.
+const ARCHIVO_NATIVE:&[u8]=include_bytes!("fixtures/archivo/Archivo[wdth,wght].ttf");
+fn archivo_raw_variation(b:&[u8])->(usize,u16,i16,i16,u16,Vec<u16>){
+    assert_eq!((u(b,0),u(b,2)),(1,1));
+    let p=d(b,10);assert_ne!(p,0);
+    assert_eq!((u(b,p),u(b,p+2),d(b,p+4)),(1,0,1));
+    let c=p+d(b,p+8);let s=p+d(b,p+12);
+    assert_eq!(u(b,c),1);
+    let at=c+d(b,c+2);assert_eq!(u(b,at),1);
+    let axis=u(b,at+2) as u16;
+    let min=u(b,at+4) as i16;let max=u(b,at+6) as i16;
+    assert_eq!((u(b,s),u(b,s+2),u(b,s+4)),(1,0,1));
+    let feature=u(b,s+6) as u16;
+    let alternate=s+d(b,s+8);
+    assert_eq!(u(b,alternate),0);
+    let refs=(0..u(b,alternate+2)).map(|i|u(b,alternate+4+2*i) as u16).collect();
+    (p,axis,min,max,feature,refs)
+}
+#[test]fn archivo_native_variation_inventory_and_boundaries(){
+    let font=ARCHIVO_NATIVE;assert_eq!(font.len(),658596);
+    assert_eq!(u(table(font,b"maxp"),4),834);
+    let fvar=table(font,b"fvar");let axes=u(fvar,8);let base=u(fvar,4);let stride=u(fvar,10);
+    assert_eq!(axes,2);assert_eq!(&fvar[base..base+4],b"wght");
+    assert_eq!(&fvar[base+stride..base+stride+4],b"wdth");
+    let b=table(font,b"GSUB");let (p,axis,min,max,feature,refs)=archivo_raw_variation(b);
+    assert_eq!((axis,min,max,feature,refs.as_slice()),(0,-3985,16384,17,&[37][..]));
+    let fl=u(b,6);let rec=fl+2+6*feature as usize;
+    assert_eq!(&b[rec..rec+4],b"rvrn");assert_eq!(u(b,fl+u(b,rec+4)+2),0);
+    let v=parse_gsub_feature_variations(b,axes,Default::default(),Default::default()).unwrap().unwrap();
+    assert_eq!(v.records().len(),1);
+    assert_eq!(v.records()[0].conditions(),&[FeatureVariationCondition::AxisRange(VariationAxisRange{axis_index:axis,min,max})]);
+    assert_eq!(v.records()[0].alternate(feature).unwrap().lookups,refs);
+    // Exhaust every normalized weight value at three representative
+    // widths. Reference derives the bounds directly from native bytes.
+    for x in -16384i16..=16384{for y in [-16384,0,16384]{
+        assert_eq!(v.select(&[x,y]).unwrap().map(|(i,_)|i),if min<=x&&x<=max{Some(0)}else{None});
+    }}
+    let l=FeatureVariationLimits{max_bytes:b.len()-p,max_axes:axes,max_records:1,
+        max_conditions:1,max_substitutions:1,max_lookup_refs:1};
+    assert_eq!(parse_gsub_feature_variations(b,axes,Default::default(),l).unwrap().unwrap(),v);
+    for bad in [FeatureVariationLimits{max_records:0,..l},FeatureVariationLimits{max_conditions:0,..l},
+        FeatureVariationLimits{max_substitutions:0,..l},FeatureVariationLimits{max_lookup_refs:0,..l}]{
+        assert!(matches!(parse_gsub_feature_variations(b,axes,Default::default(),bad),Err(Error::Limit(_))));
+    }
+}
+fn archivo_variation_execution(tags:&[[u8;4]],mixed_schedule:bool){
+    let font=ARCHIVO_NATIVE;let n=834u32;let b=table(font,b"GSUB");
+    let (_,axis,min,max,feature,alternate)=archivo_raw_variation(b);assert_eq!(axis,0);
+    // The selected native roots (case and rvrn) have flags zero.
+    // Use the real GDEF independently for the oracle and the engine.
+    let gd=table(font,b"GDEF");let rawgd=RawGdef::read(gd,n as usize);
+    let g=parse_gdef(gd,n,Default::default()).unwrap();
+    let mixed=mixed_roots(b,n as usize);
+    let root=mixed.iter().find(|r|r.index==37).unwrap();
+    assert_eq!((root.kind,root.flags,root.rules.len(),root.rules[0].len()),(1,0,1,7));
+    assert!(root.rules[0].iter().any(|(&id,v)|v.as_slice()!=[id]));
+    let layout=parse_gsub_layout(b,Default::default()).unwrap();
+    let base=build_gsub_base_plan(&layout,*b"latn",None,tags,Default::default()).unwrap().unwrap();
+    assert_eq!(base.lookups.iter().map(|l|l.index).collect::<Vec<_>>(),raw_default_plan_roots(b,*b"latn",tags));
+    assert_eq!(base.lookups.len(),usize::from(mixed_schedule));
+    let input:Vec<_>=(0..n as u16).chain((0..n as u16).rev()).collect();
+    let mut outputs=Vec::new();
+    for coords in [[min-1,0],[min,0],[min+1,-16384],[max,16384]]{
+        let selected=coords[0]>=min&&coords[0]<=max;
+        let mut roots=raw_default_plan_roots(b,*b"latn",tags);
+        if selected{roots.extend_from_slice(&alternate);roots.sort_unstable();roots.dedup();}
+        let plan=build_gsub_variation_plan(b,*b"latn",None,tags,2,&coords,
+            Default::default(),Default::default(),Default::default()).unwrap().unwrap();
+        assert_eq!(plan.matched_record,selected.then_some(0));
+        assert_eq!(plan.replaced_features,if selected{vec![feature]}else{vec![]});
+        assert_eq!(plan.plan.features,base.features);
+        assert_eq!(plan.plan.lookups.iter().map(|l|l.index).collect::<Vec<_>>(),roots);
+        for l in &plan.plan.lookups{
+            let expected=if l.index==37{vec![17]}else{vec![1]};
+            assert_eq!(l.features,expected);
+        }
+        let p=compile_gsub_variation_plan_program(b,&plan,2,&coords,n,Some(&g),
+            Default::default(),Default::default()).unwrap();
+        assert_eq!(p.closure().reachable,roots);assert!(p.dependencies().is_empty());
+        let(want,peak)=full_reference(&input,&rawgd,&mixed,&[],&[],&[],&[],&roots);
+        exact_full(&p,&input,&[],&want,peak);
+        // For this single-root positive schedule all 7 native input
+        // mappings are reached twice by the ascending/descending run.
+        if !mixed_schedule{assert_eq!(want.expansion.execution.matches,if selected{14}else{0});}
+        let direct=compile_gsub_program(b,&roots,n,Some(&g),Default::default()).unwrap();
+        assert_eq!(execute_gsub_program(&direct,&input,&[],Default::default()).unwrap(),want);
+        let stale=[coords[0],if coords[1]==0{1}else{0}];
+        assert!(matches!(compile_gsub_variation_plan_program(b,&plan,2,&stale,n,Some(&g),
+            Default::default(),Default::default()),Err(Error::Invalid(_))));
+        outputs.push(want.expansion.execution.glyphs);
+    }
+    assert_ne!(outputs[0],outputs[1],"native variation must change actual glyph output");
+    assert_eq!(outputs[1],outputs[2]);assert_eq!(outputs[2],outputs[3]);
+}
+#[test]fn archivo_native_rvrn_plan_execution(){archivo_variation_execution(&[*b"rvrn"],false);}
+#[test]fn archivo_native_mixed_case_rvrn_execution(){archivo_variation_execution(&[*b"case",*b"rvrn"],true);}
+#[test]fn native_variable_fonts_without_feature_variations(){
+    for font in [
+        include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf").as_slice(),
+        include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf").as_slice()
+    ]{
+        let axes=u(table(font,b"fvar"),8);assert!(axes>0);
+        let b=table(font,b"GSUB");let n=u(table(font,b"maxp"),4) as u32;
+        assert!(parse_gsub_feature_variations(b,axes,Default::default(),Default::default()).unwrap().is_none());
+        let layout=parse_gsub_layout(b,Default::default()).unwrap();
+        let script=layout.scripts.iter().find(|s|s.default_language.is_some()).unwrap().tag;
+        let base=build_gsub_base_plan(&layout,script,None,&[],Default::default()).unwrap().unwrap();
+        let coords=vec![0;axes];
+        let p=build_gsub_variation_plan(b,script,None,&[],axes,&coords,Default::default(),
+            Default::default(),Default::default()).unwrap().unwrap();
+        assert!(!p.variations_present);assert_eq!(p.matched_record,None);
+        assert_eq!(p.plan,base);
+        let gd=parse_gdef(table(font,b"GDEF"),n,Default::default()).unwrap();
+        let a=compile_gsub_variation_plan_program(b,&p,axes,&coords,n,Some(&gd),Default::default(),Default::default()).unwrap();
+        let old=compile_gsub_plan_program(b,&base,n,Some(&gd),Default::default()).unwrap();
+        assert_eq!(a.roots(),old.roots());assert_eq!(a.closure(),old.closure());
+    }
+}
