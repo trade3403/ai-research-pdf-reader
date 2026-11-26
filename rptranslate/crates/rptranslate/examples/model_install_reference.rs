@@ -61,8 +61,7 @@ fn lifecycle_probe(source: &Path, store: &Store, entry: &Entry) -> Result<(), St
     // Same audited weights, different version identifiers: lifecycle test,
     // not a claim of a newly trained or independently released model.
     next.version = Version(2, 0, 0);
-    let catalog =
-        Catalog::new(vec![entry.clone(), next.clone()]).map_err(|e| format!("{e:?}"))?;
+    let catalog = Catalog::new(vec![entry.clone(), next.clone()]).map_err(|e| format!("{e:?}"))?;
     model_install::activate(store, entry).map_err(|e| format!("{e:?}"))?;
     model_install::import(store, &next, source).map_err(|e| format!("{e:?}"))?;
     model_install::activate(store, &next).map_err(|e| format!("{e:?}"))?;
