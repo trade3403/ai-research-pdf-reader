@@ -9,7 +9,10 @@ use crate::{
 };
 use rpinfer::{marian_model::GenerationOptions, matmul::Kernel};
 use rpmodel::catalog::Version;
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+};
 
 pub const VERSION: u32 = 1;
 pub const MAX_BLOCK_BYTES: usize = 64 * 1024;
@@ -294,9 +297,160 @@ fn map_result<'a>(
     })
 }
 
+const MAX_HOST_SPANS: usize = 64;
+const MAX_SELECTION_SEGMENTS: usize = 64;
+const MAX_SELECTION_OUTPUT: usize = 256 * 1024;
+
+fn rejected(failure: paragraph::Failure) -> paragraph::Error {
+    paragraph::Error::Rejected {
+        index: 0,
+        attempts: vec![paragraph::Attempt {
+            strategy: paragraph::Strategy::ProtectedGaps,
+            failure,
+        }],
+    }
+}
+
+fn host_error(code: &str) -> paragraph::Error {
+    rejected(paragraph::Failure::Generation(code.into()))
+}
+
+fn append_segment(
+    result: &mut ParagraphTranslation,
+    segment: paragraph::Segment,
+) -> Result<(), paragraph::Error> {
+    if result.segments.len() >= MAX_SELECTION_SEGMENTS
+        || segment.text.len() + 1 > MAX_SELECTION_OUTPUT.saturating_sub(result.text.len())
+    {
+        return Err(paragraph::Error::Limit);
+    }
+    if !result.text.is_empty() {
+        result.text.push('\n');
+    }
+    result.text.push_str(&segment.text);
+    result.segments.push(segment);
+    Ok(())
+}
+
+/// Only the host's explicitly marked literal spans are copied. All nonblank
+/// gaps go through the existing paragraph engine; a failed gap rejects the
+/// entire selection. A final whole-selection audit catches join artifacts.
+fn protected_with(
+    block: &PreparedBlock<'_>,
+    engine: &ContextEngine,
+    explicit: Option<Domain>,
+    mut run: impl FnMut(&str, Option<Domain>) -> Result<ParagraphTranslation, paragraph::Error>,
+) -> Result<ParagraphTranslation, paragraph::Error> {
+    if block.host_spans.is_empty() {
+        return run(block.source, explicit);
+    }
+    if block.host_spans.len() > MAX_HOST_SPANS {
+        return Err(paragraph::Error::Limit);
+    }
+    let domain = match explicit {
+        Some(domain) => domain,
+        None => engine
+            .decide(block.source, None)
+            .map_err(paragraph::Error::Plan)?
+            .domain,
+    };
+    let plan = Plan::prepare_indexed(block.source, engine.glossary(domain))
+        .map_err(paragraph::Error::Plan)?;
+    let mut ranges = Vec::with_capacity(block.host_spans.len());
+    for span in &block.host_spans {
+        let range = span.range.start - block.range.start..span.range.end - block.range.start;
+        if block.source[range.clone()].trim().is_empty() {
+            return Err(host_error("empty_host_literal"));
+        }
+        for detected in plan.spans() {
+            if detected.range.start < range.end
+                && detected.range.end > range.start
+                && (detected.range.start < range.start || detected.range.end > range.end)
+            {
+                return Err(host_error("host_splits_scientific_span"));
+            }
+        }
+        ranges.push(range);
+    }
+    let mut result = ParagraphTranslation {
+        text: String::new(),
+        segments: Vec::new(),
+    };
+    let mut cursor = 0;
+    let mut translated_gap = false;
+    let mut expected = BTreeMap::new();
+    for (index, gap_end) in ranges
+        .iter()
+        .map(|range| range.start)
+        .chain(std::iter::once(block.source.len()))
+        .enumerate()
+    {
+        let gap = &block.source[cursor..gap_end];
+        if !gap.trim().is_empty() {
+            let translated = run(gap, Some(domain))?;
+            if !document::complete(gap, &translated) {
+                return Err(host_error("invalid_gap_mapping"));
+            }
+            translated_gap = true;
+            for mut segment in translated.segments {
+                segment.source.start += cursor;
+                segment.source.end += cursor;
+                append_segment(&mut result, segment)?;
+            }
+        }
+        if let Some(range) = ranges.get(index) {
+            let literal = &block.source[range.clone()];
+            *expected.entry(literal).or_insert(0_usize) += 1;
+            append_segment(
+                &mut result,
+                paragraph::Segment {
+                    source: range.clone(),
+                    domain,
+                    basis: None,
+                    strategy: paragraph::Strategy::ProtectedGaps,
+                    rejected: Vec::new(),
+                    protected_spans: 1,
+                    text: literal.into(),
+                },
+            )?;
+            cursor = range.end;
+        }
+    }
+    if !translated_gap {
+        return Err(host_error("host_only_selection"));
+    }
+    for (literal, count) in expected {
+        if result.text.match_indices(literal).count() != count {
+            return Err(host_error("host_literal_count"));
+        }
+    }
+    paragraph::audit(block.source, &plan, &result.text)
+        .map_err(|issue| rejected(paragraph::Failure::Quality(issue)))?;
+    Ok(result)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Accepted,
+    Partial,
+    Rejected,
+}
+
+impl BilingualResult<'_> {
+    pub fn status(&self) -> Status {
+        let accepted = self.blocks.iter().filter(|b| b.outcome.is_ok()).count();
+        if accepted == 0 {
+            Status::Rejected
+        } else if accepted == self.blocks.len() {
+            Status::Accepted
+        } else {
+            Status::Partial
+        }
+    }
+}
+
 /// Synchronous, local, audited translation using the existing resident model.
-/// Host hints are transported by prepare, but v1 cannot enforce them yet;
-/// refuse rather than silently translate a caller-protected selection.
+/// Host spans are exact literals, never automatically translated terms.
 pub fn translate<'a>(
     prepared: Prepared<'a>,
     translator: &OfflineTranslator,
@@ -308,9 +462,6 @@ pub fn translate<'a>(
     if prepared.model.precision != translator.precision() {
         return Err(Error::PrecisionMismatch);
     }
-    if prepared.blocks.iter().any(|b| !b.host_spans.is_empty()) {
-        return Err(Error::UnsupportedHostProtection);
-    }
     let session = translator.session().map_err(|_| Error::ModelSession)?;
     let blocks: Vec<_> = prepared
         .blocks
@@ -320,13 +471,22 @@ pub fn translate<'a>(
             source: b.source,
         })
         .collect();
-    let translated = document::translate(&session, &blocks, engine, explicit, options, kernel)
-        .map_err(|e| match e {
-            document::Error::InputLimit => Error::InputLimit,
-            document::Error::InvalidOrder => Error::InvalidOrder,
-            document::Error::InvalidCoverage(_) => Error::InvalidMapping,
-            document::Error::OutputLimit => Error::OutputLimit,
-        })?;
+    let mut originals = prepared.blocks.iter();
+    let translated = document::translate_with(&blocks, |source| {
+        let original = originals.next().ok_or(paragraph::Error::Limit)?;
+        if original.source != source {
+            return Err(host_error("invalid_selection_mapping"));
+        }
+        protected_with(original, engine, explicit, |gap, domain| {
+            session.translate_paragraph(gap, engine, domain, options, kernel)
+        })
+    })
+    .map_err(|e| match e {
+        document::Error::InputLimit => Error::InputLimit,
+        document::Error::InvalidOrder => Error::InvalidOrder,
+        document::Error::InvalidCoverage(_) => Error::InvalidMapping,
+        document::Error::OutputLimit => Error::OutputLimit,
+    })?;
     map_result(prepared, translated)
 }
 
@@ -503,5 +663,146 @@ mod tests {
             map_result(prepare(&input).unwrap(), wrong).unwrap_err(),
             Error::InvalidMapping
         );
+    }
+
+    fn synthetic_gap(source: &str, target: &str) -> ParagraphTranslation {
+        ParagraphTranslation {
+            text: target.into(),
+            segments: vec![paragraph::Segment {
+                source: 0..source.len(),
+                domain: Domain::General,
+                basis: None,
+                strategy: paragraph::Strategy::Whole,
+                rejected: vec![],
+                protected_spans: 0,
+                text: target.into(),
+            }],
+        }
+    }
+
+    fn host_block<'a>(source: &'a str, spans: Vec<HostSpan>) -> PreparedBlock<'a> {
+        PreparedBlock {
+            id: 1,
+            location: Location::Pdf { page: 0, block: 0 },
+            range: 5..5 + source.len(),
+            source,
+            detected: vec![],
+            host_spans: spans,
+        }
+    }
+
+    #[test]
+    fn exact_host_formula_and_citation() {
+        let source = "Results $x+y$ [Ref]";
+        let block = host_block(
+            source,
+            vec![
+                HostSpan {
+                    range: 13..18,
+                    kind: HostKind::Formula,
+                },
+                HostSpan {
+                    range: 19..24,
+                    kind: HostKind::Citation,
+                },
+            ],
+        );
+        let engine = ContextEngine::builtin().unwrap();
+        let mut calls = 0;
+        let result = protected_with(&block, &engine, Some(Domain::General), |gap, _| {
+            calls += 1;
+            Ok(synthetic_gap(gap, "结果"))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(result.text, "结果\n$x+y$\n[Ref]");
+        assert!(document::complete(source, &result));
+        assert_eq!(result.segments[1].source, 8..13);
+    }
+
+    #[test]
+    fn rejects_duplicate_host_literal_and_failed_gap() {
+        let block = host_block(
+            "Results [Ref]",
+            vec![HostSpan {
+                range: 13..18,
+                kind: HostKind::Citation,
+            }],
+        );
+        let engine = ContextEngine::builtin().unwrap();
+        assert!(protected_with(&block, &engine, Some(Domain::General), |gap, _| {
+            Ok(synthetic_gap(gap, "结果[Ref]"))
+        })
+        .is_err());
+        assert_eq!(
+            protected_with(&block, &engine, None, |_, _| Err(paragraph::Error::Limit)),
+            Err(paragraph::Error::Limit)
+        );
+    }
+
+    #[test]
+    fn rejects_host_only_and_scientific_span_split() {
+        let engine = ContextEngine::builtin().unwrap();
+        let only = host_block(
+            "[Ref]",
+            vec![HostSpan {
+                range: 5..10,
+                kind: HostKind::Citation,
+            }],
+        );
+        assert!(protected_with(&only, &engine, None, |_, _| panic!("no gap")).is_err());
+        let split = host_block(
+            "maximum strain",
+            vec![HostSpan {
+                range: 13..19,
+                kind: HostKind::Term,
+            }],
+        );
+        assert!(protected_with(&split, &engine, Some(Domain::Geotechnical), |_, _| {
+            panic!("split terminology")
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_numeric_join_regression() {
+        let block = host_block(
+            "Results 12 MPa",
+            vec![HostSpan {
+                range: 13..19,
+                kind: HostKind::Quantity,
+            }],
+        );
+        let engine = ContextEngine::builtin().unwrap();
+        assert!(protected_with(&block, &engine, Some(Domain::General), |gap, _| {
+            Ok(synthetic_gap(gap, "结果 13"))
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn status_partial_preserves_original_order() {
+        let mut selections = [pdf("Text", 0..4), pdf("More", 0..4)];
+        selections[1].id = 2;
+        selections[1].location = Location::Pdf { page: 1, block: 0 };
+        let input = request(&selections, Format::Pdf);
+        let result = map_result(
+            prepare(&input).unwrap(),
+            document::DocumentTranslation {
+                blocks: vec![
+                    document::BlockResult {
+                        id: 1,
+                        outcome: Ok(synthetic_gap("Text", "文本")),
+                    },
+                    document::BlockResult {
+                        id: 2,
+                        outcome: Err(paragraph::Error::Limit),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.status(), Status::Partial);
+        assert_eq!(result.blocks[1].original.source, "More");
     }
 }

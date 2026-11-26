@@ -7,7 +7,16 @@ use rpmodel::{
     lifecycle,
     sha256::digest_reader,
 };
-use rptranslate::{model_install, offline::OfflineTranslator};
+use rptranslate::{
+    context::ContextEngine,
+    glossary::Domain,
+    model_install,
+    offline::OfflineTranslator,
+    selection::{
+        self, Format, HostKind, HostSpan, LanguagePair, Location, ModelIdentity, Request, Selection,
+        Status,
+    },
+};
 use std::{collections::BTreeMap, fs, path::Path};
 
 fn fixture_entry(source: &Path, precision: Precision) -> Result<Entry, String> {
@@ -26,6 +35,81 @@ fn fixture_entry(source: &Path, precision: Precision) -> Result<Entry, String> {
         min_engine: Version(1, 0, 0),
         files,
     })
+}
+
+fn selection_probe(translator: &OfflineTranslator) -> Result<(), String> {
+    let engine = ContextEngine::builtin().map_err(|e| format!("{e:?}"))?;
+    let block = "prefix We measured maximum strain. [Ref] $x+y$";
+    let citation = block.find("[Ref]").ok_or("citation")?;
+    let formula = block.find("$x+y$").ok_or("formula")?;
+    let spans = [
+        HostSpan {
+            range: citation..citation + "[Ref]".len(),
+            kind: HostKind::Citation,
+        },
+        HostSpan {
+            range: formula..block.len(),
+            kind: HostKind::Formula,
+        },
+    ];
+    let mut options = translator.default_options();
+    options.beam_width = 1;
+    options.max_new = 128;
+    for (format, location) in [
+        (Format::Pdf, Location::Pdf { page: 1, block: 2 }),
+        (Format::Word, Location::Word { paragraph: 3 }),
+    ] {
+        let selections = [Selection {
+            id: 1,
+            location,
+            block,
+            range: 7..block.len(),
+            host_spans: &spans,
+        }];
+        let request = Request {
+            protocol: selection::VERSION,
+            document_id: "fixture",
+            revision: 3,
+            format,
+            model: ModelIdentity {
+                id: "opus-en-zh",
+                version: Version(1, 0, 0),
+                precision: translator.precision(),
+                language: LanguagePair::EnglishToSimplifiedChinese,
+            },
+            selections: &selections,
+        };
+        let prepared = selection::prepare(&request).map_err(|e| e.code())?;
+        let result = selection::translate(
+            prepared,
+            translator,
+            &engine,
+            Some(Domain::Geotechnical),
+            options,
+            Kernel::Auto,
+        )
+        .map_err(|e| e.code())?;
+        let outcome = result.blocks[0]
+            .outcome
+            .as_ref()
+            .map_err(|e| format!("{e:?}"))?;
+        if result.status() != Status::Accepted
+            || result.revision != 3
+            || result.blocks[0].original.location != location
+            || result.blocks[0].original.source != &block[7..]
+            || !outcome.text.contains("最大应变")
+            || !outcome.text.contains("[Ref]")
+            || !outcome.text.contains("$x+y$")
+            || outcome.segments.last().map(|s| &s.source) != Some(&spans[1].range)
+        {
+            return Err("selection mapping or protected translation".into());
+        }
+        println!(
+            "SELECTION_REFERENCE PASS precision={:?} format={format:?} literal=true mapping=true",
+            translator.precision()
+        );
+    }
+    Ok(())
 }
 
 fn probe(source: &Path, store: &Store, precision: Precision) -> Result<(), String> {
@@ -53,6 +137,7 @@ fn probe(source: &Path, store: &Store, precision: Precision) -> Result<(), Strin
         "MODEL_INSTALL PASS precision={precision:?} payload_bytes={} translation_nonempty=true",
         translator.payload_bytes()
     );
+    selection_probe(&translator)?;
     lifecycle_probe(source, store, &entry)
 }
 

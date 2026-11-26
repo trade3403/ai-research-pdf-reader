@@ -37,7 +37,7 @@ pub struct DocumentTranslation {
     pub blocks: Vec<BlockResult>,
 }
 
-fn complete(source: &str, translated: &ParagraphTranslation) -> bool {
+pub(crate) fn complete(source: &str, translated: &ParagraphTranslation) -> bool {
     if translated.segments.is_empty() {
         return false;
     }
@@ -67,7 +67,7 @@ fn complete(source: &str, translated: &ParagraphTranslation) -> bool {
     source.get(end..).is_some_and(|tail| tail.trim().is_empty()) && combined == translated.text
 }
 
-fn translate_with(
+pub(crate) fn translate_with(
     blocks: &[Block<'_>],
     mut run: impl FnMut(&str) -> Result<ParagraphTranslation, paragraph::Error>,
 ) -> Result<DocumentTranslation, Error> {
