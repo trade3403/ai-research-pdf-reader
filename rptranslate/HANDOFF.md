@@ -2,13 +2,15 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前 D3.0b2 HTTPS下载适配，等待CI；D3.0b1已验收**。D2 训练与蒸馏独立项目，不计入主线。
+- **当前 D3.0c1 持久化断点组装，等待CI；D3.0b2已验收**。D2 训练与蒸馏独立项目，不计入主线。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 Ubuntu/Windows 标准 CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
 - 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.11 当前验收后依据真实覆盖、质量缺陷及用户最新授权推进。
 
 ## 当前状态（最新优先）
+- 2026-11-26 D3.0b2 基线 cc9e92f4b8030d1c0fcb9dc4df8b18a1a4385237 / [#131 / 45746394625](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45746394625) 全量 success；Linux/Windows各164 workspace+59 portable=223/223，共446/446；两平台显式HTTPS_PINNED_FIXTURE PASS bytes=77 corruption_rejected=true，共2/2。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux真实专项 INT8 242/269、27拒译、5221/6036词、245/317数字串、316.043903s、844.735081ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
+- D3.0c1：自主持久化下载分段组装器 resume.rs；独立传输接口接受206、精确Content-Range与长度，4MiB单段上限，先验范围/长度再写入，sync_all持久化，写失败回滚或标记不可用；分段间暂停、按已有文件长度重开续传、字节进度、全文件SHA256最终校验、显式重启，禁止覆盖及符号链接/Windows reparse，调用方控制目录并排除并发修改，跨重启提供同一可信pin。新增6项离线单测；预计458基础+2历史真实HTTPS。尚未本地编译，等待CI。本批未接实际HTTP Range网络传输、暂停正在进行的请求、速度统计、自动重试或抗断电事务；D3.0c2全绿后接入curl Range及真实网络分段验收。D3.0d安装/离线导入、e升级回滚仍未开始。
 - 2026-11-26 D3.0b2 [#130 / 45745233571](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571) Linux全基础223项及真实HTTPS小文件77字节正负例成功；Windows基础223项（fmt/clippy/workspace/portable）成功，显式网络探针在download.rs:229 Downloader::new返回Configuration，[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571/job/139659547203)。即RP_CURL未满足绝对路径及现有文件约束，实际变量内容未记录，不能断言具体PATH原因。CI改为显式SystemRoot/System32/curl.exe，经Get-Item验证文件并取FullName，打印路径及curl --version再执行同一网络验收；不放宽下载器、证书或校验门槛，不修改推理算法。查询时Linux真实模型专项仍运行，不主动取消。待全量CI成功进入D3.0c。
 - 2026-11-26 D3.0b1 基线 eeb648d70e871805a0b45f7d8236c5890c6c9b21 / [#129 / 45739907242](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242) 全量 success；Linux/Windows各160 workspace+59 portable=219/219，共438/438。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242/job/139647366518) INT8 242/269、27拒译、5221/6036词、245/317数字串、317.227274s、829.240588ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
 - D3.0b2：Rust自主下载管理与成熟curl HTTPS适配器，显式可信绝对EXE路径（不搜索PATH），禁用配置文件/代理/重定向，HTTPS协议限定、系统TLS证书验证、连接15s/总600s、流式限制及SHA256核对、HTTP200及进程退出验证；可信目录读取及单文件新建暂存，失败清理（报告清理失败）、不覆盖。新增4项离线单测及1项显式真实HTTPS探针（两平台对公开仓库固定commit 77字节Cargo.toml正负例，非真实模型在线发布验证）；预计446基础通过+2显式网络探针。无新增Rust依赖，但在线下载需要可信curl及证书环境，不自研TLS；环境、源站及暂存目录须可信，不支持代理、重定向、并发敌对修改或DNS/IP策略。实际模型目录尚未部署，未发布模型；暂停/续传/失败恢复、安装事务、升级仍待后续。未本地编译，等待CI。

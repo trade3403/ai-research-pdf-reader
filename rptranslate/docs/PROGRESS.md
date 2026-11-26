@@ -4,6 +4,10 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.0b2 基线 cc9e92f4b8030d1c0fcb9dc4df8b18a1a4385237 / [#131 / 45746394625](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45746394625) 全量 success；Linux/Windows各164 workspace+59 portable=223/223，共446/446；两平台显式HTTPS_PINNED_FIXTURE PASS bytes=77 corruption_rejected=true，共2/2。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux真实专项 INT8 242/269、27拒译、5221/6036词、245/317数字串、316.043903s、844.735081ms加载、122440KiB RSS；FP32 4/8，人工语义未测。
+
+D3.0c1：自主持久化下载分段组装器 resume.rs；独立传输接口接受206、精确Content-Range与长度，4MiB单段上限，先验范围/长度再写入，sync_all持久化，写失败回滚或标记不可用；分段间暂停、按已有文件长度重开续传、字节进度、全文件SHA256最终校验、显式重启，禁止覆盖及符号链接/Windows reparse，调用方控制目录并排除并发修改，跨重启提供同一可信pin。新增6项离线单测；预计458基础+2历史真实HTTPS。尚未本地编译，等待CI。本批未接实际HTTP Range网络传输、暂停正在进行的请求、速度统计、自动重试或抗断电事务；D3.0c2全绿后接入curl Range及真实网络分段验收。D3.0d安装/离线导入、e升级回滚仍未开始。
+
 2026-11-26 D3.0b2 [#130 / 45745233571](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571) Linux全基础223项及真实HTTPS小文件77字节正负例成功；Windows基础223项（fmt/clippy/workspace/portable）成功，显式网络探针在download.rs:229 Downloader::new返回Configuration，[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45745233571/job/139659547203)。即RP_CURL未满足绝对路径及现有文件约束，实际变量内容未记录，不能断言具体PATH原因。CI改为显式SystemRoot/System32/curl.exe，经Get-Item验证文件并取FullName，打印路径及curl --version再执行同一网络验收；不放宽下载器、证书或校验门槛，不修改推理算法。查询时Linux真实模型专项仍运行，不主动取消。待全量CI成功进入D3.0c。
 
 2026-11-26 D3.0b1 基线 eeb648d70e871805a0b45f7d8236c5890c6c9b21 / [#129 / 45739907242](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242) 全量 success；Linux/Windows各160 workspace+59 portable=219/219，共438/438。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45739907242/job/139647366518) INT8 242/269、27拒译、5221/6036词、245/317数字串、317.227274s、829.240588ms加载、122440KiB RSS；FP32 4/8，人工语义未测。

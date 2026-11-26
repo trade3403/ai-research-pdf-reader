@@ -12,6 +12,7 @@ pub mod normalization;
 pub mod online_catalog;
 pub mod package;
 pub mod quantized;
+pub mod resume;
 pub mod safetensors;
 pub mod sha256;
 pub mod spm;
