@@ -1,5 +1,5 @@
 //! T.88 7.4.2 symbol dictionary data header and ordered dependency plan.
-//! Includes direct Huffman/arithmetic symbols, bounded dictionary execution and direct arithmetic context reuse; refinement pending.
+//! Direct dictionaries, direct context reuse and scoped arithmetic single-symbol refinement.
 use crate::{Error,Result,MAX_BYTES};
 use super::{Segment,SegmentLocation,SegmentSource,PdfInspection};
 use super::generic::{Offset,Template,Neighborhood};
@@ -1447,5 +1447,188 @@ mod retained_context_tests{
         assert!(decode_arithmetic_with_context(&make_plan(CHILD,2),CHILD,ArithmeticLimits::default(),None).is_err());
         assert!(decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),Some(&s)).is_err());
         assert!(decode_arithmetic_direct(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default()).is_err());
+    }
+}
+
+
+/// T.88 6.5.8.2.3: fixed IAID width over the entire dictionary namespace.
+pub fn refinement_id_bits(imported:u32,new:u32)->Result<u8>{
+    let total=imported.checked_add(new).ok_or(Error::Limit("JBIG2 refinement namespace"))?;
+    if total>MAX_SYMBOLS{return Err(Error::Limit("JBIG2 refinement namespace"));}
+    Ok(if total<=1{0}else{(u32::BITS-(total-1).leading_zeros())as u8})
+}
+fn refinement_context_entries(header:&Header,imported:u32)->Result<usize>{
+    let t=super::refinement::Template::from_code(header.refinement_template)?;
+    let bits=refinement_id_bits(imported,header.new_symbols)?;
+    // Count active GR, IAID and six independent 512-entry integer banks.
+    Ok(t.context_count()+(1usize<<bits)+6*512)
+}
+/// Arithmetic refinement dictionaries in which every new symbol refines
+/// exactly one earlier symbol. No multi-instance aggregation, Huffman
+/// refinement or cross-dictionary retained GR contexts in this subset.
+/// Imported bitmaps are borrowed, in the plan's ordered namespace.
+pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+    use super::{integer::{IntegerDecoder,IaidDecoder},refinement};
+    let h=&plan.header;
+    if h.huffman||!h.refine_aggregate||h.context_used||h.context_retained||plan.context_source.is_some(){
+        return Err(Error::Unsupported("JBIG2 single arithmetic refinement mode"));
+    }
+    if plan.tables.is_some()||h.selections.is_some()||imports.len()!=plan.imported as usize{
+        return Err(Error::Invalid("JBIG2 refinement dictionary imports/tables"));
+    }
+    if limits.pixels>bitmap::MAX_PIXELS||limits.packed_bytes>bitmap::MAX_PACKED_BYTES||
+        limits.work>MAX_DICTIONARY_WORK||limits.export_runs>MAX_EXPORT_RUNS||
+        limits.decisions>MAX_ARITHMETIC_DECISIONS{return Err(Error::Limit("JBIG2 refinement dictionary limits"));}
+    let bits=refinement_id_bits(plan.imported,h.new_symbols)?;
+    let total=plan.imported+h.new_symbols;
+    if h.exported>total{return Err(Error::Invalid("JBIG2 refinement export count"));}
+    if h.new_symbols>0&&imports.is_empty(){return Err(Error::Invalid("JBIG2 refinement no initial reference"));}
+    let template=refinement::Template::from_code(h.refinement_template)?;
+    let neighborhood=refinement::Neighborhood::new(template,&h.refinement_adaptive)?;
+    let data=stream.get(plan.encoded.clone()).ok_or(Error::Invalid("JBIG2 refinement dictionary span"))?;
+    let mut left=limits.work;
+    charge_work(&mut left,data.len() as u64)?;
+    charge_work(&mut left,refinement_context_entries(h,plan.imported)? as u64)?;
+    let mut decoder=super::qm::Decoder::new(data,limits.decisions)?;
+    let mut id=IaidDecoder::new(bits)?;
+    let mut gr=refinement::ContextBank::new(template)?;
+    let mut banks=ArithmeticIntegers::default();
+    let mut ai=IntegerDecoder::new();let mut dx_bank=IntegerDecoder::new();let mut dy_bank=IntegerDecoder::new();
+    let mut state=DimensionState::new(h.new_symbols,limits.pixels)?;
+    let mut out:Vec<Bitmap>=Vec::new();
+    out.try_reserve_exact(h.new_symbols as usize).map_err(|_|Error::Limit("JBIG2 refinement symbols allocation"))?;
+    let mut packed=0usize;
+    const INT_WORK:u64=39;
+    while !state.complete(){
+        charge_work(&mut left,INT_WORK)?;
+        state.begin(banks.height(&mut decoder)?)?;
+        loop{
+            charge_work(&mut left,INT_WORK)?;
+            match state.width(banks.width(&mut decoder)?)?{
+                WidthEvent::End(_)=>break,
+                WidthEvent::Symbol(s)=>{
+                    let bytes=packed_len(s.width,s.height)?;
+                    let next=packed.checked_add(bytes).ok_or(Error::Limit("JBIG2 refinement packed bytes"))?;
+                    if next>limits.packed_bytes{return Err(Error::Limit("JBIG2 refinement packed budget"));}
+                    charge_work(&mut left,INT_WORK)?;
+                    match ai.decode(&mut decoder)?{
+                        Integer::Value(1)=>{},
+                        Integer::Value(n) if n>1=>return Err(Error::Unsupported("JBIG2 multiple symbol aggregation")),
+                        _=>return Err(Error::Invalid("JBIG2 refinement instance count")),
+                    }
+                    charge_work(&mut left,u64::from(bits)+2*INT_WORK)?;
+                    let available=plan.imported+s.index;
+                    let index=id.decode_for_count(&mut decoder,available)? as usize;
+                    let Integer::Value(dx)=dx_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement X OOB"));};
+                    let Integer::Value(dy)=dy_bank.decode(&mut decoder)? else{return Err(Error::Invalid("JBIG2 refinement Y OOB"));};
+                    let reference=if index<imports.len(){imports[index]}else{
+                        out.get(index-imports.len()).ok_or(Error::Invalid("JBIG2 refinement forward symbol"))?
+                    };
+                    // Table 18: known class dimensions, raw RDX/RDY,
+                    // no extra RDW/RDH or half-size correction, TPGR off.
+                    let opt=refinement::RefinementOptions{width:s.width,height:s.height,dx,dy,typical_prediction:false};
+                    let work=refinement::work_bound(template,opt)?;
+                    charge_work(&mut left,work)?;
+                    let decoded=refinement::decode_bitmap(reference,&neighborhood,opt,&mut gr,&mut decoder,work)?;
+                    out.push(decoded.bitmap);packed=next;
+                }
+            }
+        }
+    }
+    let indices=export_indices(plan.imported,h.new_symbols,h.exported,limits.export_runs,||{
+        charge_work(&mut left,INT_WORK)?;banks.ex.decode(&mut decoder)
+    })?;
+    Ok(ArithmeticDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
+        pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left,marker_offset:decoder.marker_offset()})
+}
+
+#[cfg(test)]
+mod single_refinement_tests{
+    use super::*;
+    // Independent JS Annex E encoder/reader, two new symbols (3x2,4x2),
+    // first uses imported symbol with (+1,-1), second uses first new
+    // symbol with (-1,+1). Fixed 2-bit IAID, shared GR/IAx banks.
+    const T0:&[u8]=&[124,227,105,204,198,86,197,71,223,255,172];
+    const T1:&[u8]=&[124,227,105,204,198,86,191,231,207,255,172];
+    fn body(t:u8,entropy:&[u8])->Vec<u8>{
+        let mut v=vec![8|(t<<4),2,2,255];
+        if t==0{v.extend([255;4]);}
+        v.extend([0,0,0,3,0,0,0,2]);v.extend(entropy);v
+    }
+    fn plan_for(data:&[u8])->Plan{
+        let (header,_)=parse(data).unwrap();let start=header.data_offset;
+        Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..data.len()}
+    }
+    fn src()->Bitmap{Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap()}
+    fn check(d:&ArithmeticDictionary){
+        assert_eq!((d.classes,d.pixel_decisions,d.packed_bytes),(1,14,4));
+        assert_eq!(d.exported_indices,[0,1,2]);
+        assert_eq!((d.new_symbols[0].width(),d.new_symbols[0].height()),(3,2));
+        assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(4,2));
+        assert_eq!(d.new_symbols[0].packed(),[160,64]);
+        assert_eq!(d.new_symbols[1].packed(),[192,48]);
+    }
+    #[test]
+    fn single_refinement_t0_reference(){
+        let b=body(0,T0);check(&decode_arithmetic_single_refinement(&plan_for(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap());
+    }
+    #[test]
+    fn single_refinement_t1_reference(){
+        let b=body(1,T1);check(&decode_arithmetic_single_refinement(&plan_for(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap());
+    }
+    #[test]
+    fn single_refinement_fixed_iaid_width(){
+        for (n,bits) in [(0,0),(1,0),(2,1),(3,2),(4,2),(5,3),(MAX_SYMBOLS,20)]{
+            assert_eq!(refinement_id_bits(0,n).unwrap(),bits);
+        }
+        assert_eq!(refinement_id_bits(1,2).unwrap(),2);
+        assert!(refinement_id_bits(MAX_SYMBOLS,1).is_err());
+        assert!(refinement_id_bits(u32::MAX,1).is_err());
+    }
+    #[test]
+    fn single_refinement_bad_instance_and_reference(){
+        for (entropy,unsupported) in [(&[124,191,255,172][..],true),(&[124,239,255,172],false),
+            (&[124,63,255,172],false),(&[124,219,255,172],false),(&[124,224,255,172],false)]{
+            let b=body(1,entropy);let e=decode_arithmetic_single_refinement(&plan_for(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap_err();
+            assert_eq!(matches!(e,Error::Unsupported(_)),unsupported);
+        }
+    }
+    #[test]
+    fn single_refinement_budgets(){
+        let b=body(1,T1);let p=plan_for(&b);let s=src();
+        let d=decode_arithmetic_single_refinement(&p,&b,&[&s],ArithmeticLimits::default()).unwrap();
+        let l=ArithmeticLimits{pixels:14,packed_bytes:4,work:d.work_used,decisions:66,export_runs:2};
+        assert_eq!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).unwrap(),d);
+        for l in [ArithmeticLimits{pixels:13,..l},ArithmeticLimits{packed_bytes:3,..l},
+            ArithmeticLimits{work:l.work-1,..l},ArithmeticLimits{decisions:65,..l},
+            ArithmeticLimits{export_runs:1,..l}]{
+            assert!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).is_err());
+        }
+    }
+    #[test]
+    fn single_refinement_modes_and_spans(){
+        let b=body(1,T1);let s=src();let l=ArithmeticLimits::default();
+        for n in 12..b.len(){
+            let p=plan_for(&b[..n]);assert!(decode_arithmetic_single_refinement(&p,&b[..n],&[&s],l).is_err());
+        }
+        let mut p=plan_for(&b);
+        assert!(decode_arithmetic_single_refinement(&p,&b,&[],l).is_err());
+        p.imported=0;assert!(decode_arithmetic_single_refinement(&p,&b,&[],l).is_err());
+        p.imported=1;p.header.context_retained=true;
+        assert!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.context_retained=false;p.header.context_used=true;
+        assert!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.context_used=false;p.header.huffman=true;
+        assert!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.huffman=false;p.encoded.end=usize::MAX;
+        assert!(decode_arithmetic_single_refinement(&p,&b,&[&s],l).is_err());
+    }
+    #[test]
+    fn single_refinement_context_accounting(){
+        let b=body(1,T1);let p=plan_for(&b);
+        assert_eq!(refinement_context_entries(&p.header,1).unwrap(),1024+4+3072);
+        let b=body(0,T0);let p=plan_for(&b);
+        assert_eq!(refinement_context_entries(&p.header,1).unwrap(),8192+4+3072);
     }
 }
