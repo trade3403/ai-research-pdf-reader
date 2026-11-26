@@ -686,3 +686,59 @@ fn verify_ligature(font:&[u8],glyphs:u32,expected:usize){
 #[test]fn padauk_ligature_execution(){verify_ligature(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782,22);}
 #[test]fn devanagari_ligature_execution(){verify_ligature(include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf"),1117,35);}
 #[test]fn nastaliq_ligature_execution(){verify_ligature(include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf"),1723,5);}
+
+
+// C4.4d5b: execute native Type 3 subtable bytes through a constructed
+// Type 5 Format 3 parent. The parent is synthetic, not a native font
+// context. Raw candidate decoding and selection remain independent.
+fn native_alternate_parent(target:&[u8],first:u16)->Vec<u8>{
+    // LookupList at word 7; two roots, first is dependency-only.
+    let mut b:Vec<u8>=[1u16,0,10,12,14,0,0,2,6,0,3,0,1,8]
+        .iter().flat_map(|v|v.to_be_bytes()).collect();
+    b.extend_from_slice(target);
+    if b.len()%2!=0{b.push(0);}
+    let offset=u16::try_from(b.len()-14).unwrap();
+    b[18..20].copy_from_slice(&offset.to_be_bytes());
+    // Context format 3: one covered input, one action (0, lookup 0).
+    b.extend([5u16,0,1,8,3,1,1,12,0,0,1,1,first].iter().flat_map(|v|v.to_be_bytes()));
+    b
+}
+fn verify_native_alternate_context(font:&[u8],n:u32){
+    let b=table(font,b"GSUB");
+    let roots=alternate_roots(b,n as usize);
+    assert!(!roots.is_empty());
+    let list=u(b,8);
+    let mut checked=0;
+    for root in &roots{
+        let p=list+u(b,list+2+2*root.index as usize);
+        for (j,map) in root.rules.iter().enumerate(){
+            let source=p+u(b,p+6+2*j);
+            let t=if u(b,p)==7{source+d(b,source+4)}else{source};
+            // Copy only the actual subtable extent: header, coverage and
+            // alternate sets. Relative offsets are preserved unchanged.
+            let c=t+u(b,t+2);
+            let cov_end=c+4+u(b,c+2)*if u(b,c)==1{2}else{6};
+            let mut end=cov_end.max(t+6+2*u(b,t+4));
+            for i in 0..u(b,t+4){
+                let s=t+u(b,t+6+2*i);
+                end=end.max(s+2+2*u(b,s));
+            }
+            for (&glyph,candidates) in map{
+                let bytes=native_alternate_parent(&b[t..end],glyph);
+                let program=compile_gsub_program(&bytes,&[1],n,None,Default::default()).unwrap();
+                for (index,&want) in candidates.iter().enumerate(){
+                    let input=[glyph,glyph];
+                    let a=execute_gsub_context_with_alternates(&program,&input,&[alternate_choice(0,index)],Default::default()).unwrap();
+                    assert_eq!(a.glyphs,vec![want,want]);
+                    assert_eq!((a.actions,a.matches,a.peak_depth),(2,4,2));
+                    checked+=1;
+                }
+                assert!(matches!(execute_gsub_context_with_alternates(&program,&[glyph],
+                    &[alternate_choice(0,candidates.len())],Default::default()),Err(Error::Invalid(_))));
+            }
+        }
+    }
+    assert!(checked>0);
+}
+#[test]fn alegreya_native_alternate_nested_reference(){verify_native_alternate_context(include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf"),2109);}
+#[test]fn padauk_native_alternate_nested_reference(){verify_native_alternate_context(include_bytes!("fixtures/padauk/Padauk-Regular.ttf"),782);}

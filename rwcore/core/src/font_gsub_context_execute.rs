@@ -1,6 +1,6 @@
 //! Length-preserving Type 1/5 contextual execution foundation.
 //! Explicit roots; dependency-only lookups run only at action positions.
-use crate::{CompiledGsubProgram,CompiledGsubLookup,ContextAction,Error,ExtensionTarget,LookupFilter};
+use crate::{CompiledGsubProgram,CompiledGsubLookup,ContextAction,Error,ExtensionTarget,LookupFilter,GsubAlternateSelection};
 
 /// Hard stack ceiling even when a caller requests a larger limit.
 pub const GSUB_CONTEXT_MAX_DEPTH:usize=32;
@@ -26,12 +26,13 @@ pub struct GsubContextExecResult{
 fn tick(n:&mut usize,cap:usize,label:&'static str)->Result<(),Error>{
     if *n>=cap{return Err(Error::Limit(label));}*n+=1;Ok(())
 }
-struct State{
+struct State<'a>{
+    choices:&'a [GsubAlternateSelection],
     result:GsubContextExecResult,
     active:Vec<(u16,usize)>,
     limits:GsubContextExecLimits,
 }
-impl State{
+impl State<'_>{
     fn eligible(&mut self,filter:&LookupFilter<'_>,p:usize)->Result<bool,Error>{
         tick(&mut self.result.filter_checks,self.limits.max_filter_checks,"gsub context filters")?;
         let g=*self.result.glyphs.get(p).ok_or(Error::Invalid("gsub context position"))?;
@@ -68,7 +69,7 @@ impl State{
 }
 struct Matched<'a>{positions:Vec<usize>,actions:&'a [ContextAction]}
 fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
-    state:&mut State,p:usize)->Result<Option<Matched<'a>>,Error>{
+    state:&mut State<'_>,p:usize)->Result<Option<Matched<'a>>,Error>{
     let g=state.result.glyphs[p];
     let filter=lookup.filter();
     match sub{
@@ -108,7 +109,7 @@ fn context_match<'a>(sub:&'a ExtensionTarget,lookup:&CompiledGsubLookup<'_>,
 }
 // Return exclusive physical end of a match, or None. Nested callers
 // ignore this end; they execute only at the designated action position.
-fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
+fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>)
     ->Result<Option<usize>,Error>{
     tick(&mut state.result.calls,state.limits.max_calls,"gsub context calls")?;
     if state.active.len()>=state.limits.max_depth.min(GSUB_CONTEXT_MAX_DEPTH){
@@ -122,7 +123,7 @@ fn apply_at(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
     state.active.pop();
     result
 }
-fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
+fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State<'_>)
     ->Result<Option<usize>,Error>{
     let lookup=program.lookup(id).ok_or(Error::Invalid("gsub context missing lookup"))?;
     if !state.eligible(lookup.filter(),p)?{return Ok(None);}
@@ -131,6 +132,16 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
         if let ExtensionTarget::Single(rule)=sub.target(){
             let g=state.result.glyphs[p];
             if let Some(v)=rule.substitute(g){
+                state.matched()?;
+                state.result.changes+=usize::from(g!=v);
+                state.result.glyphs[p]=v;
+                return Ok(Some(p+1));
+            }
+        }else if let ExtensionTarget::Alternate(rule)=sub.target(){
+            let index=state.choices.binary_search_by_key(&id,|c|c.lookup_index)
+                .map_err(|_|Error::Invalid("gsub context alternate missing"))?;
+            let g=state.result.glyphs[p];
+            if let Some(v)=rule.select(g,state.choices[index].candidate_index)?{
                 state.matched()?;
                 state.result.changes+=usize::from(g!=v);
                 state.result.glyphs[p]=v;
@@ -162,15 +173,39 @@ fn apply_inner(program:&CompiledGsubProgram<'_>,id:u16,p:usize,state:&mut State)
 /// No output is returned on error; no variable-length or cluster edits.
 pub fn execute_gsub_context(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
     limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
+    execute_context_inner(program,glyphs,None,limits)
+}
+/// Length-preserving Type 1/3/5 execution. Require exactly one explicit
+/// zero-based choice for every reachable effective Type 3 lookup,
+/// including dependency-only lookups, sorted by original index.
+/// Bounds are checked only on eligible covered glyphs; an invalid
+/// choice fails atomically rather than falling through to later subtables.
+pub fn execute_gsub_context_with_alternates(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    choices:&[GsubAlternateSelection],limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
+    execute_context_inner(program,glyphs,Some(choices),limits)
+}
+fn execute_context_inner(program:&CompiledGsubProgram<'_>,glyphs:&[u16],
+    selections:Option<&[GsubAlternateSelection]>,limits:GsubContextExecLimits)->Result<GsubContextExecResult,Error>{
     if glyphs.len()>limits.max_glyphs||program.roots().len()>limits.max_roots
         ||program.lookups().len()>limits.max_lookups{return Err(Error::Limit("gsub context size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){
         return Err(Error::Invalid("gsub context glyph domain"));
     }
-    if program.lookups().iter().any(|l|!matches!(l.effective_kind(),1|5)){
-        return Err(Error::Unsupported("gsub context reachable kind"));
+    let choices=selections.unwrap_or(&[]);
+    if choices.len()>limits.max_lookups{return Err(Error::Limit("gsub context alternate choices"));}
+    let mut iter=choices.iter();
+    for lookup in program.lookups(){
+        match lookup.effective_kind(){
+            1|5=>{},
+            3 if selections.is_some()=>{
+                let choice=iter.next().ok_or(Error::Invalid("gsub context alternate missing"))?;
+                if choice.lookup_index!=lookup.index(){return Err(Error::Invalid("gsub context alternate order or lookup"));}
+            }
+            _=>return Err(Error::Unsupported("gsub context reachable kind")),
+        }
     }
-    let mut state=State{result:Default::default(),active:Vec::new(),limits};
+    if iter.next().is_some(){return Err(Error::Invalid("gsub context alternate extra"));}
+    let mut state=State{choices,result:Default::default(),active:Vec::new(),limits};
     state.result.glyphs.try_reserve_exact(glyphs.len()).map_err(|_|Error::Limit("gsub context allocation"))?;
     state.result.glyphs.extend_from_slice(glyphs);
     for &id in program.roots(){

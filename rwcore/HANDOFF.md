@@ -133,3 +133,6 @@ C4.4d4b pending CI; #130 verified 910/platform, 2730 total. Seven real-font liga
 
 ## Latest checkpoint
 C4.4d5a pending CI; #131 verified 917/platform, 2751 total. Ten synthetic contextual regressions, 927/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next contextual Type 3 nested selection and reference checks only after CI passes.
+
+## Latest checkpoint
+C4.4d5b pending CI; #132 verified 927/platform, 2781 total. Ten context/alternate regressions, 937/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next independent native Type 5 length-preserving closure reference after CI passes.

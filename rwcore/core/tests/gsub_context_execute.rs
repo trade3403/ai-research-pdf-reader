@@ -129,3 +129,105 @@ fn run(b:&[u8],roots:&[u16],input:&[u16],g:Option<&Gdef>)->GsubContextExecResult
     let s=execute_gsub_single(&p,&input,Default::default()).unwrap();
     assert_eq!(a.glyphs,s.glyphs);assert_eq!((a.calls,a.probes,a.matches,a.changes),(s.visits,s.probes,s.matches,s.changes));
 }
+
+
+fn alt(g:u16,seq:&[u16])->Vec<u16>{
+    let mut w=vec![1,8,1,14,1,1,g,seq.len() as u16];w.extend_from_slice(seq);w
+}
+fn choice(lookup_index:u16,candidate_index:usize)->GsubAlternateSelection{
+    GsubAlternateSelection{lookup_index,candidate_index}
+}
+#[test]fn contextual_alternate_all_formats_and_wrapper(){
+    for sub in [ctx1(10,&[11],&[(1,0)]),ctx2(&[(1,0)]),ctx3(&[10,11],&[(1,0)])]{
+        let b=fixture(&[(7,3,0,vec![alt(11,&[20,21])]),(5,5,0,vec![sub])]);
+        let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+        for (i,v) in [20,21].into_iter().enumerate(){
+            let a=execute_gsub_context_with_alternates(&p,&[10,11,11],&[choice(0,i)],Default::default()).unwrap();
+            assert_eq!(a.glyphs,vec![10,v,11]);assert_eq!((a.actions,a.matches,a.changes,a.peak_depth),(1,2,1,2));
+        }
+        assert!(matches!(execute_gsub_context(&p,&[],Default::default()),Err(Error::Unsupported(_))));
+    }
+}
+#[test]fn contextual_alternate_reachable_exact_choices(){
+    let b=fixture(&[(3,3,0,vec![alt(10,&[11])]),(3,3,0,vec![alt(11,&[12])]),
+        (5,5,0,vec![ctx1(10,&[],&[(0,0),(0,1)])]),(3,3,0,vec![alt(12,&[13])])]);
+    let p=compile_gsub_program(&b,&[2],32,None,Default::default()).unwrap();
+    for bad in [vec![],vec![choice(0,0)],vec![choice(1,0),choice(0,0)],
+        vec![choice(0,0),choice(0,0)],vec![choice(0,0),choice(3,0)],
+        vec![choice(0,0),choice(1,0),choice(3,0)]]{
+        assert!(matches!(execute_gsub_context_with_alternates(&p,&[],&bad,Default::default()),Err(Error::Invalid(_))));
+    }
+    let a=execute_gsub_context_with_alternates(&p,&[10,11],&[choice(0,0),choice(1,0)],Default::default()).unwrap();
+    assert_eq!(a.glyphs,vec![12,11]);assert_eq!((a.actions,a.matches,a.changes),(2,3,2));
+}
+#[test]fn contextual_alternate_first_match_and_atomic_invalid(){
+    let b=fixture(&[(1,1,0,vec![single(10,11)]),(3,3,0,vec![alt(11,&[11]),alt(11,&[20,21])]),
+        (5,5,0,vec![ctx1(10,&[],&[(0,0),(0,1)])])]);
+    let p=compile_gsub_program(&b,&[2],32,None,Default::default()).unwrap();
+    let input=[10,9];
+    assert!(matches!(execute_gsub_context_with_alternates(&p,&input,&[choice(1,1)],Default::default()),Err(Error::Invalid(_))));
+    assert_eq!(input,[10,9]);
+    let a=execute_gsub_context_with_alternates(&p,&input,&[choice(1,0)],Default::default()).unwrap();
+    assert_eq!(a.glyphs,vec![11,9]);assert_eq!((a.matches,a.changes),(3,1));
+}
+#[test]fn contextual_alternate_filter_after_prior_action(){
+    let g=gdef();
+    let b=fixture(&[(1,1,0,vec![single(11,12)]),(3,3,LOOKUP_IGNORE_MARK,vec![alt(12,&[20])]),
+        (5,5,LOOKUP_IGNORE_MARK,vec![ctx3(&[10,11],&[(1,0),(1,1)])])]);
+    let p=compile_gsub_program(&b,&[2],32,Some(&g),Default::default()).unwrap();
+    let a=execute_gsub_context_with_alternates(&p,&[10,13,11],&[choice(1,usize::MAX)],Default::default()).unwrap();
+    assert_eq!(a.glyphs,vec![10,13,12]);assert_eq!((a.actions,a.matches,a.changes),(2,2,1));
+}
+#[test]fn contextual_alternate_nested_and_root_selection_shared(){
+    let b=fixture(&[(3,3,0,vec![alt(10,&[11,12]),alt(12,&[13,14])]),
+        (5,5,0,vec![ctx1(9,&[10],&[(1,0)])]),(5,5,0,vec![ctx1(9,&[],&[(0,1)])])]);
+    let p=compile_gsub_program(&b,&[0,2],32,None,Default::default()).unwrap();
+    // Root 0 changes 10 to 12, so nested context no longer matches.
+    let a=execute_gsub_context_with_alternates(&p,&[9,10],&[choice(0,1)],Default::default()).unwrap();
+    assert_eq!(a.glyphs,vec![9,12]);assert_eq!(a.actions,1);
+    let p=compile_gsub_program(&b,&[2],32,None,Default::default()).unwrap();
+    let a=execute_gsub_context_with_alternates(&p,&[9,10,10],&[choice(0,1)],Default::default()).unwrap();
+    assert_eq!(a.glyphs,vec![9,12,10]);assert_eq!((a.actions,a.peak_depth),(2,3));
+}
+#[test]fn contextual_alternate_exact_work_limits(){
+    let b=fixture(&[(3,3,0,vec![alt(11,&[20,21])]),(5,5,0,vec![ctx3(&[10,11],&[(1,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    let input=[10,11];let choices=[choice(0,1)];
+    let l=GsubContextExecLimits{max_glyphs:2,max_roots:1,max_lookups:2,max_depth:2,max_calls:2,
+        max_probes:2,max_filter_checks:3,max_rules:1,max_symbols:2,max_actions:1,max_matches:2};
+    assert_eq!(execute_gsub_context_with_alternates(&p,&input,&choices,l).unwrap().glyphs,vec![10,21]);
+    for bad in [GsubContextExecLimits{max_calls:1,..l},GsubContextExecLimits{max_probes:1,..l},
+        GsubContextExecLimits{max_filter_checks:2,..l},GsubContextExecLimits{max_rules:0,..l},
+        GsubContextExecLimits{max_symbols:1,..l},GsubContextExecLimits{max_actions:0,..l},
+        GsubContextExecLimits{max_matches:1,..l},GsubContextExecLimits{max_depth:1,..l}]{
+        assert!(matches!(execute_gsub_context_with_alternates(&p,&input,&choices,bad),Err(Error::Limit(_))));
+    }
+}
+#[test]fn contextual_alternate_legacy_equivalence_and_unsupported(){
+    let b=fixture(&[(1,1,0,vec![single(10,11)]),(5,5,0,vec![ctx1(10,&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert_eq!(execute_gsub_context_with_alternates(&p,&[10,9],&[],Default::default()).unwrap(),
+        execute_gsub_context(&p,&[10,9],Default::default()).unwrap());
+    let b=fixture(&[(2,2,0,vec![alt(10,&[11,12])]),(5,5,0,vec![ctx1(10,&[],&[(0,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,None,Default::default()).unwrap();
+    assert!(matches!(execute_gsub_context_with_alternates(&p,&[],&[],Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn contextual_alternate_exhaustive_small_reference(){
+    // Independent finite-domain reference for a filtered two-symbol rule.
+    let g=gdef();
+    let b=fixture(&[(3,3,0,vec![alt(11,&[20,21])]),(5,5,LOOKUP_IGNORE_MARK,vec![ctx3(&[10,11],&[(1,0)])])]);
+    let p=compile_gsub_program(&b,&[1],32,Some(&g),Default::default()).unwrap();
+    let alphabet=[9,10,11,12,13];
+    for code in 0usize..625{
+        let input:Vec<_>=(0..4).map(|i|alphabet[(code/5usize.pow(i))%5]).collect();
+        for (index,v) in [20,21].into_iter().enumerate(){
+            let mut want=input.clone();
+            let visible:Vec<_>=input.iter().enumerate().filter(|(_,g)|**g!=12&&**g!=13).map(|(i,_)|i).collect();
+            let mut k=0;
+            while k+1<visible.len(){
+                if input[visible[k]]==10&&input[visible[k+1]]==11{want[visible[k+1]]=v;k+=2;}else{k+=1;}
+            }
+            assert_eq!(execute_gsub_context_with_alternates(&p,&input,&[choice(0,index)],Default::default()).unwrap().glyphs,want);
+        }
+    }
+}
