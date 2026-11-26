@@ -2,13 +2,15 @@
 
 ## 首要任务与用户约束
 - 仓库 trade3403/ai-research-pdf-reader，独立分支 feature/rptranslate；只修改 rptranslate/ 及 .github/workflows/rptranslate-ci.yml。禁止改 main/A/B/C、其他项目，不自动合并或发布。
-- **当前 D3.0a 模型目录与完整性基础，等待CI；D1工程已封版**。D2 训练与蒸馏独立项目，不计入主线。
+- **当前 D3.0b1 可信在线目录解析，等待CI；D3.0a已验收**。D2 训练与蒸馏独立项目，不计入主线。
 - 用户明确取消每小时自动任务；D线路自动研发验收 ID 6b05aef0467c81918bd85a7cc779030d 已核对为 disabled。不要重新启用、创建定时任务，也不要承诺后台修复。当前窗口/新窗口直接实际修复并提交CI。
 - GitHub 免费 Ubuntu/Windows 标准 CPU Runner；不使用收费、自托管、用户电脑或GPU。自主Rust推理、无Python/外部推理框架运行时。Python/PyTorch/NumPy仅CI独立参考或未来训练。
 - 每次先读取最新 HEAD（交接文档不能替代实时状态）、Actions runs/jobs/logs 及 docs/PROGRESS.md、docs/D1.9_INT8.md、docs/D1.9H_PAIRED_BASELINE.md、ROADMAP/TARGETS/DEVELOPMENT。失败依据真实日志最小修复，保留 fmt/clippy -D warnings/workspace测试/portable-only/独立数学及格式/真实模型所有门槛。不要反复推测式提交；若现有真实专项执行中，尽量保留结果，避免重复触发或取消。每次提交前核对 HEAD，非强制快进 expected_sha，避免并发覆盖。提交标题保留 D1.9h D1.10a D1.8f 标记，以保证条件验收运行。
 - 每阶段报告真实 commit、Actions链接、实际输出和未完成项。没有CI成功不能声称全量验收通过。完成 D1.11 当前验收后依据真实覆盖、质量缺陷及用户最新授权推进。
 
 ## 当前状态（最新优先）
+- 2026-11-26 D3.0a 基线 bd7f0c3eff91ffd992f9816080c6f5b3a1234ae4 / [#127 / 45729380679](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679) 全量 success；Linux/Windows各154 workspace+59 portable=213/213，共426/426。Windows真实映射逐位一致、FP32/INT8出站阻断翻译与坏模型恢复通过；Linux [真实专项](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45729380679/job/139611612794) INT8 242/269、27拒译、5221/6036词、245/317数字串、235.066981s、698.359469ms加载、122448KiB RSS；FP32 4/8，人工语义未测。
+- D3.0b1：自主 RPCatalog v1 严格JSON解析，复用D1受限Parser与SHA256及D3.0a typed catalog；外部可信长度/摘要先验证再解析，1MiB/1024条/64文件限制，拒绝重复字段、未知schema、非法版本、非法精度、路径及不可信地址语法；显式配置DNS源站，按固定路径生成HTTPS目录与资源URL，不从JSON接收URL。新增6项单测，预计两平台438项基础回归。尚未编译验收；本阶段不发网络请求，不实现签名信任分发、DNS/IP策略、HTTPS传输或发布真实模型。D3.0b2在本阶段全绿后接入受限HTTPS实际传输及真实网络测试；D3.0c断点续传，d安装导入，e升级回滚卸载。
 - 2026-11-26 D3.0a [#126 / 45728004014](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45728004014) Linux及Windows均在rustfmt失败：catalog.rs:309同一行断言缩进20空格应为8空格；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45728004014/job/139602650043)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45728004014/job/139602649869)。按真实日志最小格式修复，不改变算法、测试及历史专项；查询时Linux真实专项仍执行，不主动取消；未通过全量CI不启动D3.0b。
 - 2026-11-26 D1.13b / D1 工程封版：`92e928d799500fd1f57c4670c0247a717e3294e6` / [#125 / 45722557574](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574) completed/success，HEAD一致。Linux/Windows各149 workspace+59 portable，共416/416；四实际任务全部成功，两条件任务跳过。Windows [日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139596519826)：97量化矩阵、159辅助张量、77320704 codes、1208136 scales、687593 floats逐位相等；普通578.847ms/映射576.226ms（单次观察），损坏INT8与FP32拒绝并恢复；FP32 payload 312033188 bytes、INT8 84903620 bytes，auto/portable均通过真实model-check及术语翻译；中文空格路径、EXE静态PE依赖检查、针对两个EXE的出站阻断通过。Linux [真实模型日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45722557574/job/139584198996)：INT8全文242/269接受、27拒译、5221/6036词、245/317数字串、251内部段、484.149854s、811.439720ms加载、122244KiB RSS；FP32样本4/8。仅词面工程验收，人工语义质量未测；不等于干净Windows安装、内核隔离或产品发布批准。D2训练蒸馏归独立RPDistill，不重复。用户授权进入D3.0。
 - D3.0a：新增无依赖 Rust 型化目录、数字版本比较、精度精确选择、最低引擎版本约束、重复键/路径/大小预算拒绝、流式SHA256及受控目录完整性验证。5项新增单测；尚未CI验收。目录输入须受信，哈希不是签名；不支持敌对并发修改，不替代已存在模型结构加载器。后续D3.0b可信在线目录解析与HTTPS传输，D3.0c暂停/Range/恢复，D3.0d暂存校验及安装/导入，D3.0e升级/回滚/卸载及真实模型端到端。子阶段为本窗口工程拆分，未全部完成。

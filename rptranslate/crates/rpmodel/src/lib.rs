@@ -8,6 +8,7 @@ pub mod mapped;
 pub mod mapped;
 pub mod marian;
 pub mod normalization;
+pub mod online_catalog;
 pub mod package;
 pub mod quantized;
 pub mod safetensors;
