@@ -37,7 +37,7 @@ pub fn gpos_value_record_size(format:u16)->Result<usize,Error>{
     if format&0xff00!=0{return Err(Error::Invalid("gpos value reserved format"));}
     Ok(format.count_ones() as usize*2)
 }
-fn decode_device(b:&[u8],at:usize,left:&mut usize)->Result<GposDevice,Error>{
+pub(crate) fn decode_device(b:&[u8],at:usize,left:&mut usize)->Result<GposDevice,Error>{
     bytes(b,at,6)?;
     let start=word(b,at)?;let end=word(b,at+2)?;let format=word(b,at+4)?;
     if format==0x8000{return Ok(GposDevice::VariationIndex{outer:start,inner:end});}

@@ -278,3 +278,6 @@ pub use font_gpos::*;
 
 pub mod font_gpos_value;
 pub use font_gpos_value::*;
+
+pub mod font_gpos_anchor;
+pub use font_gpos_anchor::*;
