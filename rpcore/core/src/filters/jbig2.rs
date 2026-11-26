@@ -7,6 +7,7 @@ pub mod integer;
 pub mod bitmap;
 pub mod generic;
 pub mod huffman;
+pub mod dictionary;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
