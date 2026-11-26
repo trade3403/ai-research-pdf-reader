@@ -269,3 +269,33 @@ jobs:
           if [ -f rpcore/target/icc-render-report/report.md ]; then cat rpcore/target/icc-render-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/icc-render-report/print-profiles/report.md ]; then cat rpcore/target/icc-render-report/print-profiles/report.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ -f rpcore/target/icc-render-report/registry/report.md ]; then cat rpcore/target/icc-render-report/registry/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  perf-pdfium:
+    # Observational paired baseline; reference engine stays in a test-only venv.
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          python3 -m venv rpcore/target/pdfium-perf-venv
+          rpcore/target/pdfium-perf-venv/bin/python -m pip install --only-binary=:all: pypdfium2==5.8.0 Pillow==12.3.0
+          rpcore/target/pdfium-perf-venv/bin/python rpcore/corpus/pdfium_performance.py --self-test
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example perf_probe --example render_demo --example truetype_demo --example image_demo
+      - run: |
+          mkdir -p rpcore/target/pdfium-performance
+          rustc -Vv > rpcore/target/pdfium-performance/rust-version.txt
+          rpcore/target/pdfium-perf-venv/bin/python -m pip freeze > rpcore/target/pdfium-performance/reference-versions.txt
+          rpcore/target/release/examples/render_demo rpcore/target/perf-fixtures
+          rpcore/target/release/examples/truetype_demo rpcore/target/perf-fixtures
+          rpcore/target/release/examples/image_demo rpcore/target/perf-fixtures
+          rpcore/target/pdfium-perf-venv/bin/python rpcore/corpus/pdfium_performance.py --probe rpcore/target/release/examples/perf_probe --fixtures rpcore/target/perf-fixtures --out rpcore/target/pdfium-performance --commit "$GITHUB_SHA"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-pdfium-performance
+          path: rpcore/target/pdfium-performance/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/pdfium-performance/report.md ]; then cat rpcore/target/pdfium-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
