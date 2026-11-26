@@ -14,3 +14,9 @@
 固定 RPCore/PDFium commit 或版本、构建配置和后端、CPU/OS/RAM、线程数、输入文件 SHA256、页面、DPI（96/150/200/300）、像素格式、背景、裁剪、抗锯齿和色彩设置。两者 release 构建；区分冷/热缓存、打开/首屏/单页/批量/文本提取/搜索/索引构建，计时包含相同工作边界，交替执行，预热后至少 10 次有效重复，记录 median/p95、页/秒、峰值 RSS、失败/超时及覆盖率；同时输出原始 JSON/CSV、环境和可复现命令。比较同一 runner 的配对结果，不跨 GitHub runner 直接比较绝对耗时。实际像素尺寸与质量检查（参考图、像素误差、文本完整性、字符坐标）必须先通过；抗锯齿差异采用预先记录的容差和人工抽查。未支持项及拒绝项列出，不作零耗时处理。使用合法合成/公开许可论文，保存来源及哈希。CI 性能只作观察和回归证据，硬门槛须有稳定基线；不引入收费 runner。
 ## 依赖与并发边界
 PDFium 仅限隔离 benchmark/test 工具，固定来源/版本并审计许可，不链接、不打包进正式 RPCore 或桌面应用；继续保留现有测试和 PDF.js 过渡门槛，禁止以外部引擎替代自主算法。不得干扰 B 线当前 CI、并发覆盖或修改 A/C/D/main。后续 B 线每批先读 HANDOFF.md、本文件及实际 HEAD/CI；报告已测数据、目标差距、质量门槛与未完成事项。
+
+## B-P0a 启动记录（待 CI 验收）
+- B11.3e3e 已在 51e34cbcf69a774b754a51823b5a28cb981ad170 / CI #456 (45747789882) 正式验收，10/10 jobs、560/平台，共 1680 项。按启动顺序先进入 B-P0a。
+- 新增原生 release `core/examples/perf_probe.rs`、独立 `corpus/pdfium_performance.py` 和 Linux `perf-pdfium` job。固定 pypdfium2 5.8.0（本地参考 PDFium 149.0.7825.0）及 Pillow 12.3.0，仅测试 venv；记录版本、库 SHA256 和许可声明/notice 哈希，不进入生产依赖。来源 https://pypi.org/project/pypdfium2/5.8.0/ 和 https://pypi.org/project/pillow/12.3.0/ 。
+- 原始合成矢量、TrueType、JPEG 三份 PDF；29 个场景：3 个打开及页信息、24 个四 DPI 冷/热文档渲染、2 个文本/字符原点。每场景 1 对预热 + 10 对测量，交替引擎；输出 report.json、trials.csv、report.md、代表性 PNG、构建/硬件/输入和库哈希。暂用 RGB MAE <=12、最大通道误差 >32 的像素比例 <=8%、同尺寸非全白，文本 ODo 与字符原点 <=1pt；任何失败、不稳定输出或未通过质量门槛的场景不产生比率。
+- 口径：输入已在内存，fresh document 非冷 OS 缓存；计时不含进程启动、磁盘 I/O、RGB 归一化；PDFium 含 Python/ctypes 包装开销，RSS 含整个进程，内部线程未单独测量。是探索基线而非原生同接口最终性能结论。暂未测真实论文、多页吞吐、索引搜索、Windows 实机；无已测 RPCore/PDFium 性能比率。需新 HEAD CI 全绿并阅读 perf-pdfium 结果后如实记录，必要时修复测量协议，之后回到 B11.3e3f。现有生产核心和 560/平台历史测试不变。
