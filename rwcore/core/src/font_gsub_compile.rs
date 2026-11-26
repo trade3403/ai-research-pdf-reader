@@ -110,6 +110,10 @@ pub fn compile_gsub_plan<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef:Option<
     compile(b,&layout,&indices,glyph_count,gdef,l)
 }
 fn validate_plan(layout:&GsubLayout,plan:&GsubPlan,l:GsubCompileLimits)->Result<Vec<u16>,Error>{
+    validate_plan_inner(layout,plan,l,None,false)
+}
+fn validate_plan_inner(layout:&GsubLayout,plan:&GsubPlan,l:GsubCompileLimits,
+    variation:Option<&crate::FeatureVariationRecord>,evaluated:bool)->Result<Vec<u16>,Error>{
     if plan.lookups.len()>l.max_lookups||plan.features.len()>l.max_plan_refs{return Err(Error::Limit("gsub compile plan size"));}
     if plan.features.windows(2).any(|w|w[0]>=w[1]){return Err(Error::Invalid("gsub compile feature order"));}
     let script=layout.scripts.iter().find(|s|s.tag==plan.script).ok_or(Error::Invalid("gsub compile plan script"))?;
@@ -119,7 +123,7 @@ fn validate_plan(layout:&GsubLayout,plan:&GsubPlan,l:GsubCompileLimits)->Result<
     }.ok_or(Error::Invalid("gsub compile plan language"))?;
     if plan.required_feature!=lang.required_feature||
         lang.required_feature.is_some_and(|r|plan.features.binary_search(&r).is_err())||
-        plan.base_only_variations_present!=layout.directory.feature_variations.is_some(){
+        plan.base_only_variations_present!=(!evaluated&&layout.directory.feature_variations.is_some()){
         return Err(Error::Invalid("gsub compile plan metadata"));
     }
     let mut budget=l.max_plan_refs;
@@ -130,8 +134,9 @@ fn validate_plan(layout:&GsubLayout,plan:&GsubPlan,l:GsubCompileLimits)->Result<
     for &id in &plan.features{
         if !allowed.contains(&id){return Err(Error::Invalid("gsub compile feature membership"));}
         let feature=layout.features.get(usize::from(id)).ok_or(Error::Invalid("gsub compile feature index"))?;
-        charge(&mut budget,feature.lookups.len(),"gsub compile plan refs")?;
-        for &i in &feature.lookups{
+        let lookups=variation.and_then(|v|v.alternate(id)).map_or(feature.lookups.as_slice(),|a|a.lookups.as_slice());
+        charge(&mut budget,lookups.len(),"gsub compile plan refs")?;
+        for &i in lookups{
             expected.entry(i).or_default().insert(id);
             if expected.len()>l.max_lookups{return Err(Error::Limit("gsub compile lookups"));}
         }
@@ -235,5 +240,33 @@ pub fn compile_gsub_plan_program<'a>(b:&[u8],plan:&GsubPlan,glyph_count:u32,gdef
     l:GsubProgramLimits)->Result<CompiledGsubProgram<'a>,Error>{
     let layout=parse_gsub_layout(b,l.compile.layout)?;
     let roots=validate_plan(&layout,plan,l.compile)?;
+    compile_program(b,&layout,&roots,glyph_count,gdef,l)
+}
+
+/// Re-read the original GSUB and select the variation record at the
+/// caller's normalized coordinates. Validate selected record, selected
+/// feature replacement inventory and exact lookup provenance before
+/// compiling the reachable program. The caller supplies axis count
+/// and coordinates independently, so a stale plan cannot silently
+/// change the intended coordinate selection.
+pub fn compile_gsub_variation_plan_program<'a>(b:&[u8],plan:&crate::GsubVariationPlan,
+    axis_count:usize,coordinates:&[i16],glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GsubProgramLimits,variation_limits:crate::FeatureVariationLimits)->Result<CompiledGsubProgram<'a>,Error>{
+    let layout=parse_gsub_layout(b,l.compile.layout)?;
+    let variations=crate::font_feature_variations::variations_for_layout(b,&layout.directory,axis_count,coordinates,variation_limits)?;
+    let selected=match &variations{Some(v)=>v.select(coordinates)?,None=>None};
+    let record=selected.map(|(_,r)|r);
+    if plan.axis_count!=axis_count||plan.coordinates!=coordinates||
+        plan.matched_record!=selected.map(|(i,_)|i)||
+        plan.variations_present!=variations.is_some()||
+        plan.plan.features.len()>l.compile.max_plan_refs||
+        plan.replaced_features.len()>l.compile.max_plan_refs{
+        return Err(Error::Invalid("gsub variation plan metadata"));
+    }
+    let roots=validate_plan_inner(&layout,&plan.plan,l.compile,record,true)?;
+    if !plan.plan.features.iter().copied().filter(|&id|record.and_then(|r|r.alternate(id)).is_some())
+        .eq(plan.replaced_features.iter().copied()){
+        return Err(Error::Invalid("gsub variation plan replacement provenance"));
+    }
     compile_program(b,&layout,&roots,glyph_count,gdef,l)
 }

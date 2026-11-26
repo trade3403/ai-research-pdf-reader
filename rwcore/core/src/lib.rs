@@ -230,3 +230,6 @@ pub use font_gsub_context_execute::{GsubProgramExecLimits,GsubProgramExecResult}
 
 pub mod font_feature_variations;
 pub use font_feature_variations::{FeatureVariationLimits,VariationAxisRange,FeatureVariationCondition,AlternateFeatureTable,FeatureVariationRecord,FeatureVariations,parse_feature_variations,parse_gsub_feature_variations};
+
+pub use font_feature_variations::{GsubVariationPlan,build_gsub_variation_plan};
+pub use font_gsub_compile::compile_gsub_variation_plan_program;

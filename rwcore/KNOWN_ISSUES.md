@@ -193,3 +193,5 @@
 - #145 failure: test selection cap, not demonstrated substitution failure. Full Mongolian rclt plan repair pending CI; no gate waiver. Existing native Type 8 positive regression retained; full language shaping not claimed.
 
 - C4.4e1: only Format 1 condition interpretation, strict malformed-known-table rejection; unsupported condition/version and out-of-domain axis skip per selection policy. Coordinates must already include normalization/avar remapping; fvar axis count is caller-supplied. Alternate feature parameters opaque. No variation-aware compile integration or native positive FeatureVariations fixture yet; no script stages, masks or cluster propagation.
+
+- C4.4e2: normalized F2DOT14 coordinates and fvar axis count remain caller-supplied, no cryptographic font identity guarantee; selected Feature membership and effective lookup provenance revalidated. No native positive variation reference, fvar/avar normalization, feature parameter interpretation, full shaping, masks, clusters or GPOS yet.

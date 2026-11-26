@@ -1,6 +1,6 @@
 //! GSUB base feature selection and ordered lookup planning.
 //! No script-specific shaping stages, feature variations, or lookup execution.
-use crate::{Error,GsubLayout,GsubLangSys};
+use crate::{Error,GsubLayout,GsubLangSys,FeatureVariationRecord};
 use std::collections::{BTreeMap,BTreeSet};
 
 #[derive(Debug,Clone,Copy)]
@@ -62,6 +62,10 @@ fn select_language<'a>(script:&'a crate::GsubScript,requested:Option<[u8;4]>,sca
 /// values, masks, script-dependent stages and FeatureVariations are separate.
 pub fn build_gsub_base_plan(layout:&GsubLayout,script:[u8;4],language:Option<[u8;4]>,
     enabled:&[[u8;4]],l:GsubPlanLimits)->Result<Option<GsubPlan>,Error>{
+    build_gsub_plan_inner(layout,script,language,enabled,l,None,false)
+}
+pub(crate) fn build_gsub_plan_inner(layout:&GsubLayout,script:[u8;4],language:Option<[u8;4]>,
+    enabled:&[[u8;4]],l:GsubPlanLimits,variation:Option<&FeatureVariationRecord>,evaluated:bool)->Result<Option<GsubPlan>,Error>{
     if enabled.len()>l.max_requested_tags{return Err(Error::Limit("gsub plan requested tags"));}
     let mut scan=l.max_scan_records;
     charge(&mut scan,layout.scripts.len(),"gsub plan scan")?;
@@ -92,8 +96,9 @@ pub fn build_gsub_base_plan(layout:&GsubLayout,script:[u8;4],language:Option<[u8
     let mut ordered:BTreeMap<u16,BTreeSet<u16>>=BTreeMap::new();
     for &id in &features{
         let feature=&layout.features[usize::from(id)];
-        charge(&mut refs,feature.lookups.len(),"gsub plan lookup refs")?;
-        for &index in &feature.lookups{
+        let lookups=variation.and_then(|v|v.alternate(id)).map_or(feature.lookups.as_slice(),|a|a.lookups.as_slice());
+        charge(&mut refs,lookups.len(),"gsub plan lookup refs")?;
+        for &index in lookups{
             if usize::from(index)>=layout.lookups.len(){return Err(Error::Invalid("gsub plan lookup index"));}
             ordered.entry(index).or_default().insert(id);
             if ordered.len()>l.max_lookups{return Err(Error::Limit("gsub plan lookups"));}
@@ -104,6 +109,6 @@ pub fn build_gsub_base_plan(layout:&GsubLayout,script:[u8;4],language:Option<[u8
         features:features.into_iter().collect(),
         unavailable_tags:requested.difference(&available).copied().collect(),
         lookups:ordered.into_iter().map(|(index,features)|GsubPlannedLookup{index,features:features.into_iter().collect()}).collect(),
-        base_only_variations_present:layout.directory.feature_variations.is_some(),
+        base_only_variations_present:!evaluated&&layout.directory.feature_variations.is_some(),
     }))
 }

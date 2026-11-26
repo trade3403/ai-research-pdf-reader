@@ -171,3 +171,48 @@ pub fn parse_gsub_feature_variations(b:&[u8],axis_count:usize,layout_limits:Gsub
     let d=parse_gsub_directory(b,layout_limits)?;
     d.feature_variations.map(|p|parse_feature_variations(&b[p..],axis_count,d.features.len(),d.lookups.len(),limits)).transpose()
 }
+
+/// A variation-aware single base-feature pass. The embedded plan has
+/// base_only_variations_present=false because selection was evaluated;
+/// use compile_gsub_variation_plan_program, not the legacy base API.
+/// Indices in replaced_features refer only to selected LangSys features.
+/// Alternate parameter payloads remain opaque.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GsubVariationPlan{
+    pub plan:crate::GsubPlan,
+    pub axis_count:usize,
+    pub coordinates:Vec<i16>,
+    pub variations_present:bool,
+    pub matched_record:Option<usize>,
+    pub replaced_features:Vec<u16>,
+}
+pub(crate) fn variations_for_layout(b:&[u8],directory:&crate::GsubDirectory,
+    axis_count:usize,coordinates:&[i16],limits:FeatureVariationLimits)->Result<Option<FeatureVariations>,Error>{
+    if axis_count>limits.max_axes{return Err(Error::Limit("feature variations axes"));}
+    if axis_count>65535||coordinates.len()!=axis_count||
+        coordinates.iter().any(|&v|!(-16384..=16384).contains(&v)){
+        return Err(Error::Invalid("feature variations coordinates"));
+    }
+    directory.feature_variations.map(|p|parse_feature_variations(&b[p..],axis_count,
+        directory.features.len(),directory.lookups.len(),limits)).transpose()
+}
+/// Build a dynamic plan directly from original GSUB bytes. Script and
+/// language fallback, required feature membership, tag selection and
+/// ordered lookup deduplication are shared with the base planner.
+/// Only the first selected record supplies alternate feature tables;
+/// a missing replacement keeps the original feature. No axis
+/// normalization, feature values, masks or script staging here.
+pub fn build_gsub_variation_plan(b:&[u8],script:[u8;4],language:Option<[u8;4]>,
+    enabled:&[[u8;4]],axis_count:usize,coordinates:&[i16],layout_limits:GsubLimits,
+    variation_limits:FeatureVariationLimits,plan_limits:crate::GsubPlanLimits)->Result<Option<GsubVariationPlan>,Error>{
+    let layout=crate::parse_gsub_layout(b,layout_limits)?;
+    let variations=variations_for_layout(b,&layout.directory,axis_count,coordinates,variation_limits)?;
+    let selected=match &variations{Some(v)=>v.select(coordinates)?,None=>None};
+    let record=selected.map(|(_,r)|r);
+    let Some(plan)=crate::font_gsub_plan::build_gsub_plan_inner(&layout,script,language,enabled,plan_limits,record,true)?
+        else{return Ok(None);};
+    let replaced_features=plan.features.iter().copied().filter(|&id|
+        record.and_then(|r|r.alternate(id)).is_some()).collect();
+    Ok(Some(GsubVariationPlan{plan,axis_count,coordinates:coordinates.to_vec(),
+        variations_present:variations.is_some(),matched_record:selected.map(|(i,_)|i),replaced_features}))
+}

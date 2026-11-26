@@ -178,3 +178,6 @@ C4.4d9 pending CI; #144 verified 1028/platform, 3084 total. Eight end-to-end nat
 
 ## Latest checkpoint
 C4.4d9 accepted at #146, exact baseline 5c06c9b0638380a8d093d1adc6f9c20155ce3951, 1036/platform, 3108 total. C4.4e1 independent FeatureVariations parser and selector pending CI, 12 regressions, 1048/platform expected. Next variation-aware plan/program compilation only after pass. Read DEV_STATE.md and GSUB_EXECUTION.md.
+
+## Latest checkpoint
+C4.4e2 pending CI; #147 verified 1048/platform, 3144 total. Ten synthetic dynamic plan/program tests, 1058/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next C4.4e3 native positive variation reference only after CI passes.

@@ -104,8 +104,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4d8b | Independent reverse execution and native mixed program reference (synthetic positive Type 8) | Verified (#143) |
 | C4.4d8c | Licensed native Type 8 positive fixture and wrapper acceptance | Verified (#144) |
 | C4.4d9 | Bounded full GSUB execution acceptance and API consolidation | Verified (#146) |
-| C4.4e1 | FeatureVariations condition-set and feature substitution foundation | Source implemented; CI pending |
-| C4.4e2 | Variation-aware feature plan and validated program compilation | Planned |
+| C4.4e1 | FeatureVariations condition-set and feature substitution foundation | Verified (#147) |
+| C4.4e2 | Variation-aware feature plan and validated program compilation | Source implemented; CI pending |
+| C4.4e3 | Native positive FeatureVariations reference and dynamic plan acceptance | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
