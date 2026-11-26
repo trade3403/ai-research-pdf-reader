@@ -1566,6 +1566,7 @@ pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],
     let mut left=limits.work;
     charge_work(&mut left,data.len() as u64)?;
     charge_work(&mut left,refinement_context_entries(h,plan.imported)? as u64)?;
+    if let Some(snapshot)=initial{charge_work(&mut left,snapshot.entries() as u64)?;}
     let mut decoder=super::qm::Decoder::new(data,limits.decisions)?;
     let mut id=IaidDecoder::new(bits)?;
     let mut gr=refinement::ContextBank::new(template)?;
@@ -1876,7 +1877,9 @@ mod retained_gr_tests{
             assert_eq!(snap.nonzero_entries(),after.nonzero_entries());
             let b=body(t,0,true,CHILD);
             let reset=decode_arithmetic_single_refinement(&plan_for(&b,3),&b,&imports,l);
-            assert!(reset.is_err()||reset.unwrap()!=child);
+            if let Ok(reset)=reset{
+                assert!(reset.new_symbols!=child.new_symbols||reset.exported_indices!=child.exported_indices);
+            }
         }
     }
     #[test]
