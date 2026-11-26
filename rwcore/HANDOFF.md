@@ -139,3 +139,6 @@ C4.4d5b pending CI; #132 verified 927/platform, 2781 total. Ten context/alternat
 
 ## Latest checkpoint
 C4.4d5c pending CI; #133 verified 937/platform, 2811 total. Seven native contextual reference/control regressions, 944/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next nested Type 2 expansion and position tracking after CI passes.
+
+## Latest checkpoint
+C4.4d5d pending CI; #134 verified 944/platform, 2832 total. Ten contextual expansion regressions, 954/platform expected. Read DEV_STATE.md and exact HEAD; no concurrent writers. Next independent native expansion reference only after CI passes.

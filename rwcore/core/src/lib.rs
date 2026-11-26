@@ -215,3 +215,5 @@ pub mod font_gsub_context_execute;
 pub use font_gsub_context_execute::{GSUB_CONTEXT_MAX_DEPTH,GsubContextExecLimits,GsubContextExecResult,execute_gsub_context};
 
 pub use font_gsub_context_execute::execute_gsub_context_with_alternates;
+
+pub use font_gsub_context_execute::{GsubExpansionExecLimits,GsubExpansionExecResult,execute_gsub_context_with_expansion};
