@@ -3,6 +3,7 @@ pub mod constrained;
 pub mod context;
 pub mod document;
 pub mod glossary;
+pub mod model_install;
 pub mod offline;
 pub mod paragraph;
 pub mod protection;

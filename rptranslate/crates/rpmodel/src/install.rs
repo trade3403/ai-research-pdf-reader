@@ -15,6 +15,7 @@ pub enum Error {
     UnsafeStore,
     AlreadyInstalled,
     PendingStage,
+    Validation(String),
     Io,
     Cleanup,
 }
@@ -82,6 +83,17 @@ impl Store {
     /// Stage is a sibling of the destination, so publication uses rename
     /// on one filesystem. A pre-existing stage is never deleted or reused.
     pub fn import(&self, entry: &Entry, source: &Path) -> Result<PathBuf, Error> {
+        self.import_checked(entry, source, |_| Ok(()))
+    }
+
+    /// Validate the staged model with an architecture-specific loader before
+    /// publication. The validator must be read-only and close all handles.
+    pub fn import_checked(
+        &self,
+        entry: &Entry,
+        source: &Path,
+        validate: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<PathBuf, Error> {
         let key = self.key(entry)?;
         let target = self.root.join(&key);
         let stage = self.root.join(format!(".stage-{key}"));
@@ -93,7 +105,7 @@ impl Store {
         }
         entry.verify_directory(source).map_err(Error::Catalog)?;
         fs::create_dir(&stage).map_err(|_| Error::Io)?;
-        let result = self.copy_and_commit(entry, source, &stage, &target);
+        let result = self.copy_and_commit(entry, source, &stage, &target, validate);
         if result.is_err() && fs::remove_dir_all(&stage).is_err() {
             return Err(Error::Cleanup);
         }
@@ -106,6 +118,7 @@ impl Store {
         source: &Path,
         stage: &Path,
         target: &Path,
+        validate: impl FnOnce(&Path) -> Result<(), String>,
     ) -> Result<(), Error> {
         for (name, asset) in &entry.files {
             let source_path = source.join(name);
@@ -126,7 +139,51 @@ impl Store {
             }
             output.sync_all().map_err(|_| Error::Io)?;
         }
+        self.publish_checked(entry, stage, target, validate)
+    }
+
+    /// Recover only a complete verified stage. Failure leaves it untouched.
+    pub fn recover_checked(
+        &self,
+        entry: &Entry,
+        validate: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<PathBuf, Error> {
+        let key = self.key(entry)?;
+        let target = self.root.join(&key);
+        let stage = self.root.join(format!(".stage-{key}"));
+        if present(&target)? {
+            return Err(Error::AlreadyInstalled);
+        }
+        self.publish_checked(entry, &stage, &target, validate)?;
+        Ok(target)
+    }
+
+    /// Explicitly isolate an abandoned stage without deleting its contents.
+    /// No overwrite, and do not follow a symlink or reparse point.
+    pub fn quarantine_stage(&self, entry: &Entry) -> Result<PathBuf, Error> {
+        let key = self.key(entry)?;
+        let stage = self.root.join(format!(".stage-{key}"));
+        let dest = self.root.join(format!(".quarantine-{key}"));
+        let meta = fs::symlink_metadata(&stage).map_err(|_| Error::Io)?;
+        if !meta.is_dir() || catalog::is_link(&meta) {
+            return Err(Error::UnsafeStore);
+        }
+        if present(&dest)? {
+            return Err(Error::AlreadyInstalled);
+        }
+        fs::rename(stage, &dest).map_err(|_| Error::Io)?;
+        Ok(dest)
+    }
+
+    fn publish_checked(
+        &self,
+        entry: &Entry,
+        stage: &Path,
+        target: &Path,
+        validate: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<(), Error> {
         entry.verify_directory(stage).map_err(Error::Catalog)?;
+        validate(stage).map_err(Error::Validation)?;
         if present(target)? {
             return Err(Error::AlreadyInstalled);
         }
@@ -282,7 +339,7 @@ mod tests {
         fs::write(stage.join("data.bin"), b"existing").unwrap();
         let target = store.installed_path(&entry).unwrap();
         assert_eq!(
-            store.copy_and_commit(&entry, &root.source(), &stage, &target),
+            store.copy_and_commit(&entry, &root.source(), &stage, &target, |_| Ok(())),
             Err(Error::Io)
         );
         assert!(!target.exists());
@@ -296,6 +353,60 @@ mod tests {
             Store::open(&root.source().join("data.bin"), Version(1, 0, 0)).unwrap_err(),
             Error::UnsafeStore
         );
+    }
+
+    #[test]
+    fn validator_failure_never_publishes_and_cleans_new_stage() {
+        let root = Scratch::new();
+        let store = root.store();
+        let entry = entry(Precision::Int8);
+        let result = store.import_checked(&entry, &root.source(), |_| Err("profile".into()));
+        assert_eq!(result, Err(Error::Validation("profile".into())));
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn recovers_only_complete_verified_stage() {
+        let root = Scratch::new();
+        let store = root.store();
+        let entry = entry(Precision::Int8);
+        let stage = store.root.join(".stage-model-fixture-1.2.3-int8");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("data.bin"), b"a").unwrap();
+        assert!(store
+            .recover_checked(&entry, |_| panic!("bad bytes"))
+            .is_err());
+        assert_eq!(fs::read(stage.join("data.bin")).unwrap(), b"a");
+        fs::write(stage.join("data.bin"), b"abc").unwrap();
+        assert_eq!(
+            store.recover_checked(&entry, |_| Err("profile".into())),
+            Err(Error::Validation("profile".into()))
+        );
+        assert!(stage.exists());
+        let path = store.recover_checked(&entry, |_| Ok(())).unwrap();
+        assert!(!stage.exists());
+        assert_eq!(path, store.installed_path(&entry).unwrap());
+        assert_eq!(store.verify_installed(&entry), Ok(()));
+        assert_eq!(
+            store.recover_checked(&entry, |_| Ok(())),
+            Err(Error::AlreadyInstalled)
+        );
+    }
+
+    #[test]
+    fn quarantine_preserves_stage_and_never_overwrites() {
+        let root = Scratch::new();
+        let store = root.store();
+        let entry = entry(Precision::Int8);
+        let stage = store.root.join(".stage-model-fixture-1.2.3-int8");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("data.bin"), b"a").unwrap();
+        let dest = store.quarantine_stage(&entry).unwrap();
+        assert!(!stage.exists());
+        assert_eq!(fs::read(dest.join("data.bin")).unwrap(), b"a");
+        fs::create_dir(&stage).unwrap();
+        assert_eq!(store.quarantine_stage(&entry), Err(Error::AlreadyInstalled));
+        assert!(stage.exists());
     }
 
     #[cfg(unix)]

@@ -369,6 +369,11 @@ jobs:
           target/release/rptranslate model-check int8 "$RUNNER_TEMP/rpmodel-mixed" | grep -F 'MODEL_CHECK PASS precision=int8 payload_bytes=84903620'
           if target/release/rptranslate model-check unknown "$RUNNER_TEMP/rpmodel-v1"; then exit 1; fi
           if target/release/rptranslate model-check fp32 "$RUNNER_TEMP/rpmodel-mixed"; then exit 1; fi
+      - name: Verify real model staged installation and translation on Linux
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        run: |
+          set -eu
+          cargo run --locked --offline --release -p rptranslate --example model_install_reference -- "$RUNNER_TEMP/rpmodel-v1" "$RUNNER_TEMP/rpmodel-mixed" "$RUNNER_TEMP/rpmodel-install-store"
       - name: Transfer verified FP32 fixture to Windows
         if: contains(github.event.head_commit.message, 'D1.13b')
         uses: actions/upload-artifact@v4
@@ -508,6 +513,11 @@ jobs:
           $b = (& $scalar translate-paragraph-int8 $root geotechnical $text 1 128) -join "`n"
           if ($a -cne $b -or -not $a.Contains('最大应变')) { throw 'Windows translation mismatch' }
           Write-Output 'WINDOWS_TRANSLATION PASS precision=int8 auto_portable_equal=true glossary=true local_model=true'
+      - name: Verify real model staged installation and translation on Windows
+        if: contains(github.event.head_commit.message, 'D1.13b')
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo run --locked --offline --release -p rptranslate --example model_install_reference -- "$env:RUNNER_TEMP/rpmodel-v1" "$env:RUNNER_TEMP/rpmodel-mixed" "$env:RUNNER_TEMP/rpmodel-install-store"
       - name: Verify native FP32 and INT8 deployment under outbound firewall block
         if: contains(github.event.head_commit.message, 'D1.13b')
         run: ./tools/check_windows_deployment.ps1
