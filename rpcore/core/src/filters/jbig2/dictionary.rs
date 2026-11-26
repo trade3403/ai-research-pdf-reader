@@ -1572,7 +1572,20 @@ pub fn decode_arithmetic_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bi
 /// direct callers must provide that dictionary's immutable snapshot.
 pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
     limits:ArithmeticLimits,initial:Option<&RefinementContextSnapshot>)->Result<(ArithmeticDictionary,Option<RefinementContextSnapshot>)>{
-    use super::{integer::{IntegerDecoder,IaidDecoder},refinement};
+    decode_arithmetic_refinement_impl(plan,stream,imports,limits,initial,false)
+}
+/// Candidate aggregation entry: permits more than one instance per symbol.
+pub fn decode_arithmetic_aggregation(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
+    Ok(decode_arithmetic_refinement_impl(plan,stream,imports,limits,None,true)?.0)
+}
+fn decode_arithmetic_refinement_impl(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits,initial:Option<&RefinementContextSnapshot>,aggregate:bool)
+    ->Result<(ArithmeticDictionary,Option<RefinementContextSnapshot>)>{
+    use super::{integer::{IntegerDecoder,IaidDecoder},refinement,text_region};
+    if aggregate&&(plan.header.context_used||plan.header.context_retained||plan.context_source.is_some()){
+        return Err(Error::Unsupported("JBIG2 aggregation retained contexts"));
+    }
     let h=&plan.header;
     if h.huffman||!h.refine_aggregate{
         return Err(Error::Unsupported("JBIG2 single arithmetic refinement mode"));
@@ -1609,6 +1622,10 @@ pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],
     if let Some(snapshot)=initial{gr.restore_from(&snapshot.bank)?;}
     let mut banks=ArithmeticIntegers::default();
     let mut ai=IntegerDecoder::new();let mut dx_bank=IntegerDecoder::new();let mut dy_bank=IntegerDecoder::new();
+    let mut text=if aggregate{
+        charge_work(&mut left,9*512)?;
+        Some(text_region::ArithmeticTextContexts::new())
+    }else{None};
     let mut state=DimensionState::new(h.new_symbols,limits.pixels)?;
     let mut out:Vec<Bitmap>=Vec::new();
     out.try_reserve_exact(h.new_symbols as usize).map_err(|_|Error::Limit("JBIG2 refinement symbols allocation"))?;
@@ -1628,7 +1645,28 @@ pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],
                     charge_work(&mut left,INT_WORK)?;
                     match ai.decode(&mut decoder)?{
                         Integer::Value(1)=>{},
-                        Integer::Value(n) if n>1=>return Err(Error::Unsupported("JBIG2 multiple symbol aggregation")),
+                        Integer::Value(n) if n>1=>{
+                            let contexts=text.as_mut().ok_or(Error::Unsupported("JBIG2 multiple symbol aggregation"))?;
+                            let instances=u32::try_from(n).map_err(|_|Error::Limit("JBIG2 aggregation instances"))?;
+                            if instances>text_region::MAX_INSTANCES{return Err(Error::Limit("JBIG2 aggregation instances"));}
+                            let available=plan.imported+s.index;
+                            charge_work(&mut left,u64::from(available))?;
+                            // Reserve worst-case arithmetic syntax work before decoding.
+                            charge_work(&mut left,u64::from(instances)*(10*INT_WORK+u64::from(bits))+INT_WORK)?;
+                            let mut refs=Vec::new();
+                            refs.try_reserve_exact(available as usize).map_err(|_|Error::Limit("JBIG2 aggregation references"))?;
+                            refs.extend(imports.iter().copied());
+                            refs.extend(out.iter());
+                            if refs.len()!=available as usize{return Err(Error::Invalid("JBIG2 aggregation namespace"));}
+                            let options=text_region::Options{width:s.width,height:s.height,default_black:false,
+                                op:bitmap::ComposeOp::Or,strips:1,corner:text_region::Corner::TopLeft,
+                                transposed:false,ds_offset:0,instances};
+                            let decoded=text_region::decode_arithmetic_shared(options,&refs,&mut decoder,&mut id,
+                                contexts,Some(&neighborhood),Some(&mut gr),left.min(bitmap::MAX_COMPOSE_WORK))?;
+                            charge_work(&mut left,decoded.stats.work_used)?;
+                            out.push(decoded.bitmap);packed=next;
+                            continue;
+                        },
                         _=>return Err(Error::Invalid("JBIG2 refinement instance count")),
                     }
                     charge_work(&mut left,u64::from(bits)+2*INT_WORK)?;
@@ -2524,5 +2562,33 @@ mod retained_huffman_gr_tests{
         assert!(snap.is_none());assert_eq!(decode_huffman_single_refinement(&plan_for(&b,1),&b,&[&s],l).unwrap(),d);
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&b));
         let (_,p)=fixture(1,1);assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod aggregation_candidate_tests{
+    use super::*;
+    fn fixture()->(Vec<u8>,Plan,Bitmap){
+        let mut b=vec![24,2,2,255,0,0,0,3,0,0,0,2];
+        b.extend([124,227,105,204,198,86,191,231,207,255,172]);
+        let (header,_)=parse(&b).unwrap();let start=header.data_offset;
+        let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+        (b,p,Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap())
+    }
+    #[test]
+    fn aggregation_entry_preserves_single_reference(){
+        let (b,p,s)=fixture();
+        let expected=decode_arithmetic_single_refinement(&p,&b,&[&s],ArithmeticLimits::default()).unwrap();
+        let actual=decode_arithmetic_aggregation(&p,&b,&[&s],ArithmeticLimits::default()).unwrap();
+        assert_eq!(actual.new_symbols,expected.new_symbols);
+        assert_eq!(actual.exported_indices,expected.exported_indices);
+        assert_eq!(actual.work_used,expected.work_used+9*512);
+    }
+    #[test]
+    fn aggregation_entry_context_work_preflight(){
+        let (b,p,s)=fixture();
+        let expected=decode_arithmetic_single_refinement(&p,&b,&[&s],ArithmeticLimits::default()).unwrap();
+        let limits=ArithmeticLimits{work:expected.work_used,..ArithmeticLimits::default()};
+        assert!(decode_arithmetic_aggregation(&p,&b,&[&s],limits).is_err());
     }
 }
