@@ -52,7 +52,10 @@ fn parse_version(input: &str) -> Result<Version, Error> {
 
 fn encode(selection: Selection) -> String {
     let previous = selection.previous.map_or_else(|| "-".into(), version_text);
-    format!("RPActive1\n{}\n{previous}\n", version_text(selection.current))
+    format!(
+        "RPActive1\n{}\n{previous}\n",
+        version_text(selection.current)
+    )
 }
 
 fn decode(input: &str) -> Result<Selection, Error> {
