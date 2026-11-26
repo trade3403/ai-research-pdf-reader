@@ -1955,3 +1955,243 @@ mod retained_gr_tests{
         assert!(decode_arithmetic_single_refinement(&plan_for(&b,1),&b,&[&s],l).is_err());
     }
 }
+
+
+/// T.88 6.5.8.2.3: unlike arithmetic IAID, Huffman IDs use at least one bit.
+pub fn huffman_refinement_id_bits(imported:u32,new:u32)->Result<u8>{
+    Ok(refinement_id_bits(imported,new)?.max(1))
+}
+
+#[derive(Debug,PartialEq,Eq)]
+pub struct HuffmanRefinementDictionary{
+    pub new_symbols:Vec<Bitmap>,
+    pub exported_indices:Vec<u32>,
+    pub classes:u32,
+    pub blocks:u32,
+    pub entropy_bytes:usize,
+    pub pixel_decisions:u64,
+    pub packed_bytes:usize,
+    pub work_used:u64,
+}
+fn refinement_huff_value(table:&Table,reader:&mut BitReader<'_>,left:&mut u64)->Result<Integer>{
+    let start=reader.position();
+    let v=table.decode(reader)?;
+    charge_work(left,1+(reader.position()-start)as u64)?;
+    Ok(v)
+}
+fn refinement_huff_integer(table:&Table,reader:&mut BitReader<'_>,left:&mut u64)->Result<i64>{
+    match refinement_huff_value(table,reader,left)?{
+        Integer::Value(v)=>Ok(v),
+        Integer::Oob=>Err(Error::Invalid("JBIG2 Huffman refinement integer OOB")),
+    }
+}
+
+/// T.88 6.5.8.2.1–3/Table 18. Restricted to one instance per new symbol,
+/// positive dimensions, known embedded block size and explicit FF AC end.
+/// GR statistics persist across blocks, arithmetic registers restart.
+/// DH/DW and AGGINST use selected tables; offsets use B.15 and RSIZE B.1.
+/// No cross-dictionary context retention, multiple instances or executor
+/// dispatch in this entry. Imported images are borrowed in namespace order.
+/// The final marker is a boundary check, not entropy authentication.
+pub fn decode_huffman_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits)->Result<HuffmanRefinementDictionary>{
+    use super::refinement;
+    let h=&plan.header;
+    if !h.huffman||!h.refine_aggregate||h.context_used||h.context_retained||plan.context_source.is_some(){
+        return Err(Error::Unsupported("JBIG2 single Huffman refinement mode"));
+    }
+    if imports.len()!=plan.imported as usize||h.selections.is_none(){
+        return Err(Error::Invalid("JBIG2 Huffman refinement imports/tables"));
+    }
+    if limits.pixels>bitmap::MAX_PIXELS||limits.packed_bytes>bitmap::MAX_PACKED_BYTES||
+        limits.work>MAX_DICTIONARY_WORK||limits.export_runs>MAX_EXPORT_RUNS||
+        limits.decisions>MAX_ARITHMETIC_DECISIONS{
+        return Err(Error::Limit("JBIG2 Huffman refinement limits"));
+    }
+    let bits=huffman_refinement_id_bits(plan.imported,h.new_symbols)?;
+    let total=plan.imported+h.new_symbols;
+    if h.exported>total{return Err(Error::Invalid("JBIG2 Huffman refinement export count"));}
+    if h.new_symbols>0&&imports.is_empty(){return Err(Error::Invalid("JBIG2 Huffman refinement no reference"));}
+    let data=stream.get(plan.encoded.clone()).ok_or(Error::Invalid("JBIG2 Huffman refinement span"))?;
+    if data.len()>MAX_BYTES||data.len()>ccitt::MAX_BITS/8{return Err(Error::Limit("JBIG2 Huffman refinement input"));}
+    let tables=plan.tables.as_ref().ok_or(Error::Invalid("JBIG2 Huffman refinement tables"))?;
+    let template=refinement::Template::from_code(h.refinement_template)?;
+    let neighborhood=refinement::Neighborhood::new(template,&h.refinement_adaptive)?;
+    let mut left=limits.work;
+    charge_work(&mut left,template.context_count()as u64)?;
+    let mut gr=refinement::ContextBank::new(template)?;
+    let offset=huffman::standard::table(15)?;
+    let size=huffman::standard::table(1)?;
+    let mut reader=BitReader::new(data,data.len()*8)?;
+    let mut base=0usize;
+    let mut state=DimensionState::new(h.new_symbols,limits.pixels)?;
+    let mut out:Vec<Bitmap>=Vec::new();
+    out.try_reserve_exact(h.new_symbols as usize).map_err(|_|Error::Limit("JBIG2 Huffman refinement symbols allocation"))?;
+    let mut packed=0usize;
+    let mut entropy_bytes=0usize;
+    let mut decisions=limits.decisions;
+    while !state.complete(){
+        state.begin(refinement_huff_value(&tables[0].table,&mut reader,&mut left)?)?;
+        loop{
+            match state.width(refinement_huff_value(&tables[1].table,&mut reader,&mut left)?)?{
+                WidthEvent::End(_)=>break,
+                WidthEvent::Symbol(s)=>{
+                    let bytes=packed_len(s.width,s.height)?;
+                    let next=packed.checked_add(bytes).ok_or(Error::Limit("JBIG2 Huffman refinement packed bytes"))?;
+                    if next>limits.packed_bytes{return Err(Error::Limit("JBIG2 Huffman refinement packed budget"));}
+                    match refinement_huff_integer(&tables[3].table,&mut reader,&mut left)?{
+                        1=>{},
+                        n if n>1=>return Err(Error::Unsupported("JBIG2 multiple Huffman symbol aggregation")),
+                        _=>return Err(Error::Invalid("JBIG2 Huffman refinement instance count")),
+                    }
+                    charge_work(&mut left,u64::from(bits))?;
+                    let mut id=0u32;
+                    for _ in 0..bits{id=(id<<1)|u32::from(reader.bit()?);}
+                    if id>=plan.imported+s.index{return Err(Error::Invalid("JBIG2 Huffman refinement forward symbol"));}
+                    let dx=refinement_huff_integer(&offset,&mut reader,&mut left)?;
+                    let dy=refinement_huff_integer(&offset,&mut reader,&mut left)?;
+                    // The fixed B.1 RSIZE is not the selected collective
+                    // BMSIZE table. Skip arbitrary alignment bits.
+                    let n=usize::try_from(refinement_huff_integer(&size,&mut reader,&mut left)?)
+                        .map_err(|_|Error::Invalid("JBIG2 Huffman refinement negative block size"))?;
+                    if n<2{return Err(Error::Invalid("JBIG2 Huffman refinement short block"));}
+                    let rounded=reader.position().div_ceil(8);
+                    charge_work(&mut left,(rounded*8-reader.position())as u64)?;
+                    let start=base.checked_add(rounded).ok_or(Error::Limit("JBIG2 Huffman refinement block offset"))?;
+                    let end=start.checked_add(n).ok_or(Error::Limit("JBIG2 Huffman refinement block end"))?;
+                    let block=data.get(start..end).ok_or(Error::Invalid("JBIG2 Huffman refinement block truncated"))?;
+                    let reference=if (id as usize)<imports.len(){imports[id as usize]}else{
+                        out.get(id as usize-imports.len()).ok_or(Error::Invalid("JBIG2 Huffman refinement reference"))?
+                    };
+                    let opt=refinement::RefinementOptions{width:s.width,height:s.height,dx,dy,typical_prediction:false};
+                    let work=refinement::work_bound(template,opt)?;
+                    charge_work(&mut left,n as u64)?;
+                    charge_work(&mut left,work)?;
+                    let area=usize::try_from(u64::from(s.width)*u64::from(s.height))
+                        .map_err(|_|Error::Limit("JBIG2 Huffman refinement decisions"))?;
+                    decisions=decisions.checked_sub(area).ok_or(Error::Limit("JBIG2 Huffman refinement decisions"))?;
+                    let mut qm=super::qm::Decoder::new(block,area)?;
+                    let decoded=refinement::decode_bitmap(reference,&neighborhood,opt,&mut gr,&mut qm,work)?;
+                    // Termination was checked on the exact declared slice.
+                    // Resume Huffman at the declared end, not MQ read-ahead.
+                    base=end;
+                    let rest=&data[base..];
+                    reader=BitReader::new(rest,rest.len()*8)?;
+                    entropy_bytes=entropy_bytes.checked_add(n).ok_or(Error::Limit("JBIG2 Huffman refinement entropy bytes"))?;
+                    out.push(decoded.bitmap);packed=next;
+                }
+            }
+        }
+    }
+    let indices=export_indices(plan.imported,h.new_symbols,h.exported,limits.export_runs,||{
+        refinement_huff_value(&size,&mut reader,&mut left)
+    })?;
+    if reader.remaining()>7{return Err(Error::Invalid("JBIG2 Huffman refinement trailing bytes"));}
+    charge_work(&mut left,reader.remaining()as u64)?;
+    Ok(HuffmanRefinementDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
+        blocks:state.decoded(),entropy_bytes,pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left})
+}
+
+#[cfg(test)]
+mod huffman_refinement_tests{
+    use super::*;
+    // Independent JS Annex E encoder with two fresh QM streams and a
+    // shared GR bank. B.4/B.2/B.1/B.15 fields packed independently.
+    // Both templates: 3x2 [160,64], then 4x2 [192,48], 14 decisions.
+    const T0:&[u8]=&[184,4,176,96,187,255,172,130,202,64,221,127,255,172,252,3];
+    const T1:&[u8]=&[184,4,176,96,187,255,172,130,202,64,220,127,255,172,252,3];
+    const CUSTOM_A:&[u8]=&[0x42,0,0,0,0,0,1,1,0x10,0x49,0x23,0x81,0x80];
+    fn body(t:u8,data:&[u8])->Vec<u8>{
+        let mut v=vec![t<<4,3];if t==0{v.extend([255;4]);}
+        v.extend([0,0,0,3,0,0,0,2]);v.extend(data);v
+    }
+    fn make_plan(data:&[u8])->Plan{
+        let (header,_)=parse(data).unwrap();let start=header.data_offset;
+        Plan{header,imported:1,dictionaries:vec![],tables:Some([4,2,1,1].map(|n|
+            SelectedTable{source:TableSource::Standard(n),table:huffman::standard::table(n).unwrap()})),
+            context_source:None,encoded:start..data.len()}
+    }
+    fn src()->Bitmap{Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap()}
+    fn check(d:&HuffmanRefinementDictionary){
+        assert_eq!((d.classes,d.blocks,d.entropy_bytes,d.pixel_decisions,d.packed_bytes),(1,2,7,14,4));
+        assert_eq!(d.exported_indices,[0,1,2]);
+        assert_eq!(d.new_symbols[0].packed(),[160,64]);assert_eq!(d.new_symbols[1].packed(),[192,48]);
+        assert_eq!((d.new_symbols[0].width(),d.new_symbols[0].height()),(3,2));
+        assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(4,2));
+    }
+    #[test]
+    fn huffman_refinement_both_templates(){
+        for (t,entropy) in [(0,T0),(1,T1)]{
+            let b=body(t,entropy);
+            check(&decode_huffman_single_refinement(&make_plan(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap());
+        }
+    }
+    #[test]
+    fn huffman_refinement_custom_selected_agginst(){
+        let mut b=body(1,T1);b[1]|=0x80;
+        let mut p=make_plan(&b);
+        p.tables.as_mut().unwrap()[3]=SelectedTable{source:TableSource::Custom(1),table:huffman::parse_custom(CUSTOM_A).unwrap().into_table()};
+        check(&decode_huffman_single_refinement(&p,&b,&[&src()],ArithmeticLimits::default()).unwrap());
+        // Slot 2 is not consulted for single-refinement RSIZE.
+        p.tables.as_mut().unwrap()[2]=SelectedTable{source:TableSource::Standard(4),table:huffman::standard::table(4).unwrap()};
+        check(&decode_huffman_single_refinement(&p,&b,&[&src()],ArithmeticLimits::default()).unwrap());
+    }
+    #[test]
+    fn huffman_refinement_alignment_and_id_width(){
+        for (n,k) in [(0,1),(1,1),(2,1),(3,2),(4,2),(5,3),(MAX_SYMBOLS,20)]{
+            assert_eq!(huffman_refinement_id_bits(0,n).unwrap(),k);
+        }
+        assert!(huffman_refinement_id_bits(MAX_SYMBOLS,1).is_err());
+        let mut e=T1.to_vec();
+        // First header is 27 bits, second 20 bits, export suffix 16.
+        e[3]|=0x1f;e[9]|=0x0f;
+        let b=body(1,&e);
+        check(&decode_huffman_single_refinement(&make_plan(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap());
+    }
+    #[test]
+    fn huffman_refinement_bad_count_id_and_size(){
+        for (at,v,unsupported) in [(1,0,false),(1,8,true),(1,5,false),(3,0,false),(3,64,false),(3,128,false)]{
+            let mut e=T1.to_vec();e[at]=v;let b=body(1,&e);
+            let err=decode_huffman_single_refinement(&make_plan(&b),&b,&[&src()],ArithmeticLimits::default()).unwrap_err();
+            assert_eq!(matches!(err,Error::Unsupported(_)),unsupported);
+        }
+    }
+    #[test]
+    fn huffman_refinement_exact_cumulative_budgets(){
+        let b=body(1,T1);let p=make_plan(&b);let s=src();
+        let d=decode_huffman_single_refinement(&p,&b,&[&s],ArithmeticLimits::default()).unwrap();
+        let l=ArithmeticLimits{pixels:14,packed_bytes:4,work:d.work_used,decisions:14,export_runs:2};
+        assert_eq!(decode_huffman_single_refinement(&p,&b,&[&s],l).unwrap(),d);
+        for l in [ArithmeticLimits{pixels:13,..l},ArithmeticLimits{packed_bytes:3,..l},
+            ArithmeticLimits{work:l.work-1,..l},ArithmeticLimits{decisions:13,..l},
+            ArithmeticLimits{export_runs:1,..l}]{
+            assert!(decode_huffman_single_refinement(&p,&b,&[&s],l).is_err());
+        }
+    }
+    #[test]
+    fn huffman_refinement_truncation_and_markers(){
+        let s=src();let l=ArithmeticLimits::default();
+        for n in 0..T1.len(){
+            let b=body(1,&T1[..n]);assert!(decode_huffman_single_refinement(&make_plan(&b),&b,&[&s],l).is_err());
+        }
+        for (i,v) in [(6,0),(6,0x90),(13,0),(13,0x90)]{
+            let mut e=T1.to_vec();e[i]=v;let b=body(1,&e);
+            assert!(decode_huffman_single_refinement(&make_plan(&b),&b,&[&s],l).is_err());
+        }
+        let mut e=T1.to_vec();e.push(0);let b=body(1,&e);
+        assert!(decode_huffman_single_refinement(&make_plan(&b),&b,&[&s],l).is_err());
+    }
+    #[test]
+    fn huffman_refinement_modes_and_span(){
+        let b=body(1,T1);let mut p=make_plan(&b);let s=src();let l=ArithmeticLimits::default();
+        assert!(decode_huffman_single_refinement(&p,&b,&[],l).is_err());
+        p.header.context_retained=true;
+        assert!(decode_huffman_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.context_retained=false;p.header.context_used=true;
+        assert!(decode_huffman_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.context_used=false;p.header.refine_aggregate=false;
+        assert!(decode_huffman_single_refinement(&p,&b,&[&s],l).is_err());
+        p.header.refine_aggregate=true;p.encoded.end=usize::MAX;
+        assert!(decode_huffman_single_refinement(&p,&b,&[&s],l).is_err());
+    }
+}
