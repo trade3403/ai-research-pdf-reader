@@ -68,3 +68,10 @@ CI #164, d022359b89d5b05127f4814fe621438c988e29e3, https://github.com/trade3403/
 C4.4g4: same-face variable strict mask wrapper, independent exhaustive 256 two-feature ligature cases and 16 reverse mask cases, native Archivo variable-coordinate parity and disabled-feature acceptance, exact runtime budget. Four regressions; 1150/platform expected, CI pending. Conservative policy only, not external shaper equivalence. Next C4.4h1 explicit bounded script-stage scheduling foundation.
 
 Strict mask contract: at least one common root feature must be enabled across all matched input glyphs, descendants inherit the common bits and check live anchors. Backtrack/lookahead are conditions, GDEF ignored gaps stay independent, mask-disabled eligible inputs are not skipped. Binary masks support up to 64 selected feature IDs. Mask construction and runtime budgets are separate. Root-only and unmasked APIs retain prior behavior. No automatic script stages or feature values.
+
+
+CI #170, 3ddf448753e932444669d301899515c95568a448, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45867643339 : 1168/platform, 3504 total, zero failed/ignored; exact SHA and Release builds verified from three job logs.
+
+C4.4h6: native Archivo maximum-weight BMP cmap acceptance, two nonzero stage change counters required (rvrn then case), exact scalar provenance, deterministic repeat. One regression; 1169/platform expected, CI pending. Native positive two-stage gate may expose unreachable cmap coverage; do not weaken assertion if it fails. Seal only after CI. Next C4.5a bounded GPOS header/directory foundation, complex script preprocessing remains outstanding.
+
+Stage API contract: selected features partition exactly once, roots sorted within stages and repeated across stages only with their stage contributors; one persistent buffer and cumulative budgets. Trace counts changing operations, not net glyph differences; no-op matches do not count. Profiles are experimental ordering templates, no implicit feature enabling or Unicode preprocessing. Source runs require same-face cmap. No full shaper parity claim.

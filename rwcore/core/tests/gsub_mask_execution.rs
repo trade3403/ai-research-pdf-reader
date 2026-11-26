@@ -139,3 +139,31 @@ fn check(disable:bool){
     let bad=VariableGsubRequest{script:*b"hani",..req};
     assert!(f.execute_script_profile(bad,&run,&[],&[],Default::default(),Default::default(),Default::default(),100000).is_err());
 }
+
+#[test]fn archivo_native_two_positive_stages(){
+    let (font,_)=native();let c=parse_font(font,Default::default()).unwrap();let sf=c.face(0).unwrap();
+    let cmap=parse_unicode_cmap(sf,Default::default()).unwrap();
+    let f=parse_variable_gsub_face(sf,Default::default()).unwrap();
+    // Prior independent raw-font test established a positive rvrn
+    // variation record at maximum weight. Include every BMP cmap seed
+    // rather than guessing which characters expose the native coverage.
+    let mut text=String::new();
+    for code in 0..=0xffff{
+        if let Some(ch)=char::from_u32(code){
+            if cmap.glyph_for_char(ch).unwrap().is_some(){text.push(ch);}
+        }
+    }
+    let run=map_source_run(&text,&cmap,false,Default::default()).unwrap();
+    let coords=[(*b"wght",f.fvar().axis(*b"wght").unwrap().max)];
+    let req=VariableGsubRequest{script:*b"latn",language:None,enabled:&[*b"case",*b"rvrn"],coordinates:VariationUserCoordinates::Tagged(&coords)};
+    let (plan,schedule,result,blocked,trace)=f.execute_script_profile(req,&run,&[],&[],Default::default(),Default::default(),Default::default(),1000000).unwrap().unwrap();
+    assert!(plan.matched_record.is_some());
+    assert_eq!(schedule.stages().len(),2);
+    assert_eq!(trace.len(),2);
+    assert!(trace.iter().all(|t|t.changes>0),"two native positive stages required: {trace:?}");
+    assert_eq!(trace.iter().map(|t|t.changes).sum::<usize>(),result.execution.expansion.execution.changes);
+    assert_eq!(blocked,0);
+    assert_eq!(result.provenance.glyphs().len(),run.glyphs().len());
+    for (i,g) in result.provenance.glyphs().iter().enumerate(){assert_eq!(g.sources(),&[i]);}
+    assert_eq!((plan,schedule,result,blocked,trace),f.execute_script_profile(req,&run,&[],&[],Default::default(),Default::default(),Default::default(),1000000).unwrap().unwrap());
+}

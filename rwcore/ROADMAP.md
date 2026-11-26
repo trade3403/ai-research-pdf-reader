@@ -125,8 +125,9 @@ Status below is baseline at CI #96, not full Word compatibility.
 | C4.4h2 | Staged execution on persistent provenance and masks | Verified (#167) |
 | C4.4h3 | Native staged acceptance and explicit script feature ordering policy | Verified (#168) |
 | C4.4h4 | Explicit script policy profiles and positive native stage acceptance | Verified (#169) |
-| C4.4h5 | Profile integration and positive multi-stage evidence | Implemented; CI pending |
-| C4.4h6 | Native two-positive-stage evidence and contract gate | Planned |
+| C4.4h5 | Profile integration and positive multi-stage evidence | Verified (#170) |
+| C4.4h6 | Native two-positive-stage evidence and contract gate | Implemented; CI pending |
+| C4.5a | Bounded GPOS header and directory foundation | Planned |
 | C4 | Fonts and glyph shaping/layout | Planned |
 | C5 | Automatic pagination | Planned |
 | C6 | Advanced graphics and table layout | Planned |
