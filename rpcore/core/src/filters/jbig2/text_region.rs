@@ -476,3 +476,47 @@ mod refined_text_integration_tests{
         assert!(decode_arithmetic_refined(EMPTY,options(),&[],&n,100,bitmap::MAX_COMPOSE_WORK+1).is_err());
     }
 }
+
+#[cfg(test)]
+mod refined_text_vectors{
+    use super::*;
+    use super::super::refinement::{Neighborhood,Template};
+    const T0:&[u8]=&[169,113,170,191,21,40,159,255,172];
+    const T1:&[u8]=&[169,113,170,191,21,40,159,255,172];
+    const BAD_RI:&[u8]=&[169,99,255,172];
+    const BAD_DIM:&[u8]=&[169,105,177,227,255,172];
+    fn opts(n:u32)->Options{Options{width:8,height:1,default_black:false,op:ComposeOp::Or,
+        strips:1,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:n}}
+    fn run(t:Template,data:&[u8],n:u32,decisions:usize,work:u64)->Result<DecodedText>{
+        let src=Bitmap::from_packed(1,1,&[128])?;
+        decode_arithmetic_refined(data,opts(n),&[&src],&Neighborhood::nominal(t),decisions,work)
+    }
+    #[test]
+    fn refined_text_mixed_reference_pixels(){
+        for (t,data) in [(Template::T0,T0),(Template::T1,T1)]{
+            let out=run(t,data,3,70,20000).unwrap();
+            assert_eq!(out.bitmap.packed(),[192]);
+            assert_eq!((out.stats.instances,out.stats.strips,out.stats.composed_pixels),(3,1,3));
+        }
+    }
+    #[test]
+    fn refined_text_shared_gr_exact_budget(){
+        for (t,data) in [(Template::T0,T0),(Template::T1,T1)]{
+            let work=1+9*512+t.context_count() as u64+16+2*(t.bits() as u64+1);
+            let out=run(t,data,3,70,work).unwrap();
+            assert_eq!(out.stats.work_used,work);
+            assert!(run(t,data,3,70,work-1).is_err());
+            assert!(run(t,data,3,69,work).is_err());
+        }
+    }
+    #[test]
+    fn refined_text_reject_indicator(){
+        assert!(matches!(run(Template::T0,BAD_RI,1,100,20000),
+            Err(Error::Invalid("JBIG2 text refinement indicator"))));
+    }
+    #[test]
+    fn refined_text_reject_zero_dimension(){
+        assert!(matches!(run(Template::T1,BAD_DIM,1,100,20000),
+            Err(Error::Invalid("JBIG2 text refinement dimension"))));
+    }
+}
