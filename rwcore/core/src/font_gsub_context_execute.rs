@@ -614,6 +614,26 @@ pub fn execute_gsub_program_with_provenance(program:&CompiledGsubProgram<'_>,run
     Ok((result,ledger))
 }
 
+/// Opt-in ordered contraction history, with independent trace budgets.
+pub fn execute_gsub_program_with_ligature_trace(program:&CompiledGsubProgram<'_>,run:&crate::SourceRun,
+    choices:&[GsubAlternateSelection],limits:GsubProgramExecLimits,source_limits:crate::ProvenanceLimits,trace_limits:crate::LigatureTraceLimits)
+    ->Result<(GsubProgramExecResult,crate::ProvenanceLedger),Error>{
+    if run.glyphs().len()>limits.expansion.context.max_glyphs{
+        return Err(Error::Limit("gsub provenance input"));
+    }
+    let mut provenance=Some(crate::ProvenanceLedger::from_run_with_ligature_trace(run,program.glyph_count(),source_limits,trace_limits)?);
+    let mut glyphs=Vec::new();
+    glyphs.try_reserve_exact(run.glyphs().len()).map_err(|_|Error::Limit("gsub provenance allocation"))?;
+    glyphs.extend(run.glyphs().iter().map(|g|g.glyph_id));
+    let result=execute_context_inner(program,&glyphs,Some(choices),limits.expansion.context,
+        Some(limits.expansion),Some(limits),true,true,&mut provenance,None)?;
+    let ledger=provenance.ok_or(Error::Invalid("gsub provenance missing"))?;
+    if !ledger.glyphs().iter().map(|g|g.glyph_id).eq(result.expansion.execution.glyphs.iter().copied()){
+        return Err(Error::Invalid("gsub provenance divergence"));
+    }
+    Ok((result,ledger))
+}
+
 fn root_allowed(state:&State<'_>,p:usize,root_mask:u64,masking:Option<&mut RootMaskState<'_>>)->Result<bool,Error>{
     let Some(m)=masking else{return Ok(true);};
     let bits=live_bits(state,p,m)?;

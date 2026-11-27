@@ -375,3 +375,68 @@ fn stage(ids:&[u16])->ShapeStageSpec{ShapeStageSpec{features:ids.to_vec()}}
     assert_eq!(trace.iter().map(|x|x.changes).collect::<Vec<_>>(),vec![0,0]);
     assert_eq!(result.execution.expansion.execution.matches,1);assert_eq!(result.skipped_roots,1);
 }
+
+#[test]fn ligature_trace_distinct_occurrences(){
+    let (r,n)=run("ABAB");let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let bytes=fixture(&[(4,4,ligature(a,b,20))]);
+    let p=compile_gsub_program(&bytes,&[0],n,None,Default::default()).unwrap();
+    let (res,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    assert_eq!(res.ligatures,2);
+    let x=l.glyphs()[0].ligature_lineage().unwrap();let y=l.glyphs()[1].ligature_lineage().unwrap();
+    assert_eq!(x.id(),1);assert_eq!(y.id(),2);
+    assert_eq!(x.components(),&[vec![0],vec![1]]);assert_eq!(y.components(),&[vec![2],vec![3]]);
+    assert!(!x.ambiguous());assert!(!y.ambiguous());
+    assert_eq!(l.ligature_trace_stats().unwrap().0,2);
+    let (_,legacy)=execute_gsub_program_with_provenance(&p,&r,&[],Default::default(),Default::default()).unwrap();
+    assert!(legacy.glyphs().iter().all(|g|g.ligature_lineage().is_none()));
+    assert_eq!(legacy.work(),l.work());
+}
+#[test]fn ligature_trace_ignored_gap(){
+    let (r,n)=run("ACB");let a=r.glyphs()[0].glyph_id;let mark=r.glyphs()[1].glyph_id;let b=r.glyphs()[2].glyph_id;
+    let gd=[1u16,0,12,0,0,0,2,1,mark,mark,3];
+    let gb:Vec<_>=gd.iter().flat_map(|v|v.to_be_bytes()).collect();
+    let gdef=parse_gdef(&gb,n,Default::default()).unwrap();
+    let mut bytes=fixture(&[(4,4,ligature(a,b,20))]);
+    bytes[20..22].copy_from_slice(&LOOKUP_IGNORE_MARK.to_be_bytes());
+    let p=compile_gsub_program(&bytes,&[0],n,Some(&gdef),Default::default()).unwrap();
+    let (_,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    assert_eq!(l.glyphs()[0].ligature_lineage().unwrap().components(),&[vec![0],vec![2]]);
+    assert_eq!(l.glyphs()[1].sources(),&[1]);assert!(l.glyphs()[1].ligature_lineage().is_none());
+}
+#[test]fn ligature_trace_duplicate_scalar_components(){
+    let (r,n)=run("A");let a=r.glyphs()[0].glyph_id;
+    let bytes=fixture(&[(2,2,multiple(a)),(4,4,ligature(11,12,20))]);
+    let p=compile_gsub_program(&bytes,&[0,1],n,None,Default::default()).unwrap();
+    let (_,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    assert_eq!(l.glyphs()[0].sources(),&[0]);
+    assert_eq!(l.glyphs()[0].ligature_lineage().unwrap().components(),&[vec![0],vec![0]]);
+}
+#[test]fn ligature_trace_single_preserves_and_expansion_flags(){
+    let (r,n)=run("AB");let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let bytes=fixture(&[(4,4,ligature(a,b,20)),(1,1,single(20,21)),(2,2,multiple(21))]);
+    let p=compile_gsub_program(&bytes,&[0,1],n,None,Default::default()).unwrap();
+    let (_,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    assert_eq!(l.glyphs()[0].glyph_id,21);assert_eq!(l.glyphs()[0].ligature_lineage().unwrap().id(),1);
+    assert!(!l.glyphs()[0].ligature_lineage().unwrap().ambiguous());
+    let p=compile_gsub_program(&bytes,&[0,1,2],n,None,Default::default()).unwrap();
+    let (_,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    assert!(l.glyphs().iter().all(|g|g.ligature_lineage().unwrap().ambiguous()));
+}
+#[test]fn ligature_trace_nested_is_explicitly_ambiguous(){
+    let (r,n)=run("ABC");let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;let c=r.glyphs()[2].glyph_id;
+    let bytes=fixture(&[(4,4,ligature(a,b,20)),(4,4,ligature(20,c,21))]);
+    let p=compile_gsub_program(&bytes,&[0,1],n,None,Default::default()).unwrap();
+    let (_,l)=execute_gsub_program_with_ligature_trace(&p,&r,&[],Default::default(),Default::default(),Default::default()).unwrap();
+    let g=l.glyphs()[0].ligature_lineage().unwrap();
+    assert_eq!(g.id(),2);assert_eq!(g.components(),&[vec![0,1],vec![2]]);assert!(g.ambiguous());
+}
+#[test]fn ligature_trace_budget_atomic(){
+    let (r,n)=run("AB");let mut l=ProvenanceLedger::from_run_with_ligature_trace(&r,n,Default::default(),
+        LigatureTraceLimits{max_work:3,..Default::default()}).unwrap();
+    let before=l.clone();
+    assert!(matches!(l.contract(&[0,1],20),Err(Error::Limit(_))));
+    assert_eq!(l,before);
+    let mut l=ProvenanceLedger::from_run_with_ligature_trace(&r,n,Default::default(),
+        LigatureTraceLimits{max_events:0,..Default::default()}).unwrap();
+    let before=l.clone();assert!(matches!(l.contract(&[0,1],20),Err(Error::Limit(_))));assert_eq!(l,before);
+}

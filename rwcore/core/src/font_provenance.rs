@@ -17,9 +17,40 @@ impl Default for ProvenanceLimits {
 pub struct TrackedGlyph {
     pub glyph_id:u16,
     sources:Vec<usize>,
+    lineage:Option<LigatureLineage>,
 }
 impl TrackedGlyph {
     pub fn sources(&self)->&[usize]{&self.sources}
+    pub fn ligature_lineage(&self)->Option<&LigatureLineage>{self.lineage.as_ref()}
+}
+/// A contraction occurrence, not a glyph ID. Components retain ordered,
+/// possibly overlapping scalar sets. Nested contractions and expansion
+/// of a ligature are flagged ambiguous rather than flattened into anchors.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct LigatureLineage{
+    id:u32,
+    components:Vec<Vec<usize>>,
+    ambiguous:bool,
+}
+impl LigatureLineage{
+    pub fn id(&self)->u32{self.id}
+    pub fn components(&self)->&[Vec<usize>]{&self.components}
+    pub fn ambiguous(&self)->bool{self.ambiguous}
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct LigatureTraceLimits{
+    pub max_events:u32,
+    pub max_components:usize,
+    pub max_work:usize,
+}
+impl Default for LigatureTraceLimits{
+    fn default()->Self{Self{max_events:65536,max_components:4096,max_work:4194304}}
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+struct LigatureTrace{
+    limits:LigatureTraceLimits,
+    events:u32,
+    work:usize,
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub struct ProvenanceLedger {
@@ -29,6 +60,7 @@ pub struct ProvenanceLedger {
     refs:usize,
     work:usize,
     limits:ProvenanceLimits,
+    trace:Option<LigatureTrace>,
 }
 fn add(a:usize,b:usize)->Result<usize,Error>{a.checked_add(b).ok_or(Error::Limit("provenance arithmetic"))}
 fn mul(a:usize,b:usize)->Result<usize,Error>{a.checked_mul(b).ok_or(Error::Limit("provenance arithmetic"))}
@@ -48,10 +80,17 @@ impl ProvenanceLedger {
             if u32::from(g.glyph_id)>=glyph_domain||g.scalar_index>=run.scalars().len(){
                 return Err(Error::Invalid("provenance seed"));
             }
-            glyphs.push(TrackedGlyph{glyph_id:g.glyph_id,sources:copy_sources(&[g.scalar_index])?});
+            glyphs.push(TrackedGlyph{glyph_id:g.glyph_id,sources:copy_sources(&[g.scalar_index])?,lineage:None});
         }
-        Ok(Self{glyphs,scalar_count:run.scalars().len(),glyph_domain,refs:n,work:n,limits:l})
+        Ok(Self{glyphs,scalar_count:run.scalars().len(),glyph_domain,refs:n,work:n,limits:l,trace:None})
     }
+    pub fn from_run_with_ligature_trace(run:&SourceRun,glyph_domain:u32,l:ProvenanceLimits,
+        trace:LigatureTraceLimits)->Result<Self,Error>{
+        let mut ledger=Self::from_run(run,glyph_domain,l)?;
+        ledger.trace=Some(LigatureTrace{limits:trace,events:0,work:0});
+        Ok(ledger)
+    }
+    pub fn ligature_trace_stats(&self)->Option<(u32,usize)>{self.trace.as_ref().map(|t|(t.events,t.work))}
     pub fn glyphs(&self)->&[TrackedGlyph]{&self.glyphs}
     pub fn scalar_count(&self)->usize{self.scalar_count}
     pub fn reference_count(&self)->usize{self.refs}
@@ -76,11 +115,26 @@ impl ProvenanceLedger {
         let work=self.budget(n,refs,add(add(self.glyphs.len(),ids.len())?,copies)?)?;
         for &id in ids{self.check_id(id)?;}
         let mut replacement=Vec::new();reserve(&mut replacement,ids.len())?;
-        for &id in ids{replacement.push(TrackedGlyph{glyph_id:id,sources:copy_sources(&g.sources)?});}
+        let mut trace=self.trace.clone();
+        // One-to-one replacements preserve occurrence identity. Splitting a
+        // ligature creates multiple glyphs with the same history, which is
+        // not a valid unique GPOS parent identity; flag all copies ambiguous.
+        for &id in ids{
+            let lineage=if let Some(old)=&g.lineage{
+                let tr=trace.as_mut().ok_or(Error::Invalid("ligature trace missing"))?;
+                let cost=old.components.iter().try_fold(old.components.len(),|n,c|add(n,c.len()))?;
+                tr.work=add(tr.work,cost)?;
+                if tr.work>tr.limits.max_work{return Err(Error::Limit("ligature trace work"));}
+                let mut components=Vec::new();reserve(&mut components,old.components.len())?;
+                for c in &old.components{components.push(copy_sources(c)?);}
+                Some(LigatureLineage{id:old.id,components,ambiguous:old.ambiguous||ids.len()>1})
+            }else{None};
+            replacement.push(TrackedGlyph{glyph_id:id,sources:copy_sources(&g.sources)?,lineage});
+        }
         // Reserve final capacity before modifying the ledger.
         self.glyphs.try_reserve_exact(ids.len()-1).map_err(|_|Error::Limit("provenance allocation"))?;
         self.glyphs.splice(at..at+1,replacement);
-        self.refs=refs;self.work=work;Ok(())
+        self.refs=refs;self.work=work;self.trace=trace;Ok(())
     }
     /// Merge strictly ascending physical positions (at least two).
     /// First position retains the ligature; unselected gaps are preserved.
@@ -108,13 +162,29 @@ impl ProvenanceLedger {
         let mut next=Vec::new();reserve(&mut next,n)?;
         let first=positions[0];
         let mut selected=positions.iter().copied().peekable();
-        let mut merged=Some(TrackedGlyph{glyph_id:id,sources});
+        let mut trace=self.trace.clone();
+        let lineage=if let Some(tr)=trace.as_mut(){
+            if positions.len()>tr.limits.max_components{return Err(Error::Limit("ligature trace components"));}
+            tr.events=tr.events.checked_add(1).ok_or(Error::Limit("ligature trace events"))?;
+            if tr.events>tr.limits.max_events{return Err(Error::Limit("ligature trace events"));}
+            tr.work=add(tr.work,add(positions.len(),count)?)?;
+            if tr.work>tr.limits.max_work{return Err(Error::Limit("ligature trace work"));}
+            let mut components=Vec::new();reserve(&mut components,positions.len())?;
+            let mut ambiguous=false;
+            for &p in positions{
+                let g=&self.glyphs[p];
+                ambiguous|=g.lineage.is_some();
+                components.push(copy_sources(&g.sources)?);
+            }
+            Some(LigatureLineage{id:tr.events,components,ambiguous})
+        }else{None};
+        let mut merged=Some(TrackedGlyph{glyph_id:id,sources,lineage});
         for (i,g) in self.glyphs.drain(..).enumerate(){
             if selected.peek()==Some(&i){
                 selected.next();
                 if i==first{next.push(merged.take().expect("first component"));}
             }else{next.push(g);}
         }
-        self.glyphs=next;self.refs=refs;self.work=work;Ok(())
+        self.glyphs=next;self.refs=refs;self.work=work;self.trace=trace;Ok(())
     }
 }
