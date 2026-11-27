@@ -328,3 +328,6 @@ pub use font_gpos_run::*;
 
 pub mod font_gpos_attachment;
 pub use font_gpos_attachment::*;
+
+pub mod font_gpos_cursive_run;
+pub use font_gpos_cursive_run::*;
