@@ -12,6 +12,7 @@ pub mod refinement;
 pub mod text_region;
 pub mod pattern;
 pub mod halftone;
+pub mod page;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 

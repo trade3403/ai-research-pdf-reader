@@ -2294,7 +2294,7 @@ pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextS
     execute_text_segment_inspected(globals,page,&inspected,node,&dictionaries,limits,graph_work,
         bitmap::MAX_PIXELS,u64::from(MAX_INSTANCES))
 }
-fn execute_text_segment_inspected(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,
+pub(super) fn execute_text_segment_inspected(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,
     node:&super::ResolvedSegment,dictionaries:&super::dictionary::DictionarySet,limits:TextSegmentLimits,
     graph_work:u64,pixel_limit:u64,instance_limit:u64)->Result<DecodedTextSegment>{
     use super::{huffman,SegmentSource};
