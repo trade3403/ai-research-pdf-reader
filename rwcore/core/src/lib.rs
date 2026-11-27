@@ -317,3 +317,8 @@ pub use font_gpos_compile::*;
 
 pub mod font_gpos_plan;
 pub use font_gpos_plan::*;
+
+pub mod font_gpos_dependencies;
+pub use font_gpos_dependencies::{GposDependencyLimits,GposDependencySite,GposDependency,discover_gpos_dependencies};
+pub mod font_gpos_closure;
+pub use font_gpos_closure::*;

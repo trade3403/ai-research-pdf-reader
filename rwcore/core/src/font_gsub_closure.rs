@@ -51,8 +51,13 @@ fn index(id:u16,n:usize)->Result<usize,Error>{
 /// edges. A witness is diagnostic, not a reason to reject a font outright.
 pub fn analyze_gsub_dependency_closure(lookup_count:usize,sources:&[u16],
     edges:&[GsubDependency],roots:&[u16],l:GsubClosureLimits)->Result<GsubDependencyClosure,Error>{
+    analyze_layout_dependency_closure(lookup_count,sources,edges.len(),edges.iter().map(|e|(e.site.lookup_index,e.action.lookup_index)),roots,l)
+}
+/// Shared OpenType graph traversal; input edges retain their owning layout domain.
+pub(crate) fn analyze_layout_dependency_closure(lookup_count:usize,sources:&[u16],edge_count:usize,
+    edges:impl IntoIterator<Item=(u16,u16)>,roots:&[u16],l:GsubClosureLimits)->Result<GsubDependencyClosure,Error>{
     if lookup_count>65535{return Err(Error::Invalid("gsub closure lookup count"));}
-    if lookup_count>l.max_lookup_count||roots.len()>l.max_roots||edges.len()>l.max_actions{
+    if lookup_count>l.max_lookup_count||roots.len()>l.max_roots||edge_count>l.max_actions{
         return Err(Error::Limit("gsub closure input"));
     }
     if sources.len()>lookup_count||sources.windows(2).any(|w|w[0]>=w[1]){
@@ -61,9 +66,9 @@ pub fn analyze_gsub_dependency_closure(lookup_count:usize,sources:&[u16],
     let mut covered=vec![false;lookup_count];
     for &id in sources{covered[index(id,lookup_count)?]=true;}
     let mut adj=vec![Vec::<usize>::new();lookup_count];
-    for edge in edges{
-        let from=index(edge.site.lookup_index,lookup_count)?;
-        let to=index(edge.action.lookup_index,lookup_count)?;
+    for (source,target) in edges{
+        let from=index(source,lookup_count)?;
+        let to=index(target,lookup_count)?;
         if !covered[from]{return Err(Error::Invalid("gsub closure uncovered edge source"));}
         adj[from].try_reserve(1).map_err(|_|Error::Limit("gsub closure allocation"))?;
         adj[from].push(to);
