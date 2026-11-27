@@ -632,6 +632,38 @@ impl HuffmanSymbolIds{
         }
         Ok(Self{table:Table::new(&rows)?,count:lengths.len()})
     }
+    /// Read the 35 four-bit run-code lengths, then expand symbol lengths.
+    /// Leaves the reader at the next bit; the region caller owns alignment.
+    pub fn from_wire(reader:&mut crate::filters::ccitt::BitReader<'_>,count:usize)->Result<Self>{
+        use super::huffman::{Row,Range,Table,MAX_ROWS};
+        use super::integer::Integer;
+        if count==0{return Err(Error::Invalid("JBIG2 empty Huffman symbol table"));}
+        if count>MAX_ROWS{return Err(Error::Limit("JBIG2 Huffman symbol table rows"));}
+        fn bits(r:&mut crate::filters::ccitt::BitReader<'_>,n:u8)->Result<usize>{
+            let mut v=0usize;for _ in 0..n{v=(v<<1)|usize::from(r.bit()?);}Ok(v)
+        }
+        let mut rows=[Row{prefix_len:0,range:Range::Normal{base:0,extra:0}};35];
+        for (i,row) in rows.iter_mut().enumerate(){
+            *row=Row{prefix_len:bits(reader,4)? as u8,range:Range::Normal{base:i as i64,extra:0}};
+        }
+        let run=Table::new(&rows)?;
+        let mut lengths=Vec::new();
+        lengths.try_reserve_exact(count).map_err(|_|Error::Limit("JBIG2 Huffman symbol lengths"))?;
+        while lengths.len()<count{
+            let Integer::Value(code)=run.decode(reader)? else{return Err(Error::Invalid("JBIG2 symbol length code"));};
+            let (length,n)=match code{
+                0..=31=>(code as u8,1),
+                32=>(*lengths.last().ok_or(Error::Invalid("JBIG2 symbol length repeat without previous"))?,bits(reader,2)?+3),
+                33=>(0,bits(reader,3)?+3),
+                34=>(0,bits(reader,7)?+11),
+                _=>return Err(Error::Invalid("JBIG2 symbol length code")),
+            };
+            let end=lengths.len().checked_add(n).ok_or(Error::Limit("JBIG2 symbol length run"))?;
+            if end>count{return Err(Error::Invalid("JBIG2 symbol length run exceeds count"));}
+            lengths.resize(end,length);
+        }
+        Self::new(&lengths)
+    }
     pub fn count(&self)->usize{self.count}
     pub fn decode(&self,reader:&mut crate::filters::ccitt::BitReader<'_>)->Result<usize>{
         match self.table.decode(reader)?{
@@ -663,5 +695,44 @@ mod huffman_symbol_id_tests{
         assert!(t.decode(&mut BitReader::new(&[0x80],2).unwrap()).is_err());
         assert!(t.decode(&mut BitReader::new(&[0],1).unwrap()).is_err());
         assert_eq!(t.decode(&mut BitReader::new(&[0],2).unwrap()).unwrap(),1);
+    }
+}
+
+#[cfg(test)]
+mod huffman_symbol_wire_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    // Hand-built wire prefix: run alphabet ID 3=00, 32=01,
+    // 33=10, 34=11. Four-bit lengths at those indices are all 2.
+    fn wire(tail:&str)->(Vec<u8>,usize){
+        let mut bits=String::new();
+        for i in 0..35{bits.push_str(if [3,32,33,34].contains(&i){"0010"}else{"0000"});}
+        bits.push_str(tail);
+        let n=bits.len();let mut data=vec![0u8;n.div_ceil(8)];
+        for (i,b) in bits.bytes().enumerate(){if b==b'1'{data[i/8]|=128>>(i%8);}}
+        (data,n)
+    }
+    #[test]
+    fn huffman_symbol_wire_all_run_types(){
+        // literal 3; repeat previous three; zero run three; zero run eleven.
+        // Four enabled IDs have codes 000..011. Then read ID 3.
+        let (data,n)=wire("00010010000110000000011");
+        let mut r=BitReader::new(&data,n).unwrap();
+        let ids=HuffmanSymbolIds::from_wire(&mut r,18).unwrap();
+        assert_eq!(ids.count(),18);assert_eq!(r.position(),160);
+        assert_eq!(ids.decode(&mut r).unwrap(),3);assert_eq!(r.remaining(),0);
+    }
+    #[test]
+    fn huffman_symbol_wire_rejects_bad_runs(){
+        for (tail,count) in [("0100",3),("000100",3),("0010000",3),("00110000000",11)]{
+            let (data,n)=wire(tail);
+            assert!(HuffmanSymbolIds::from_wire(&mut BitReader::new(&data,n).unwrap(),count).is_err());
+        }
+        let (data,n)=wire("00010010000110000000011");
+        for end in 0..160{assert!(HuffmanSymbolIds::from_wire(&mut BitReader::new(&data,end).unwrap(),18).is_err());}
+        let mut r=BitReader::new(&data,n).unwrap();
+        assert!(HuffmanSymbolIds::from_wire(&mut r,0).is_err());
+        assert!(HuffmanSymbolIds::from_wire(&mut r,super::super::huffman::MAX_ROWS+1).is_err());
+        assert_eq!(r.position(),0);
     }
 }
