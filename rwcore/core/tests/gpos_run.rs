@@ -392,3 +392,86 @@ fn directed(p:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
     assert_eq!(x.adjustments[2].design.x_placement,90);
     assert_eq!(x.adjustments[2].design.y_placement,195);
 }
+
+fn cursive_pair_words(first:u16,second:u16,rtl:bool)->Vec<u16>{
+    let mut c=directional_cursive(rtl);
+    if first<second{c[9]=first;c[10]=second;}
+    else{c[9]=second;c[10]=first;c[3]=28;c[4]=0;c[5]=0;c[6]=22;}
+    c
+}
+#[test]fn directed_repeat_replaces_width_not_accumulates(){
+    use GposHorizontalFlow::*;
+    for (flow,rtl) in [(LeftToRight,false),(RightToLeft,true)]{
+        let mut next=directional_cursive(rtl);
+        next[12]=if rtl{(-10i16) as u16}else{120};
+        let b=fixture(&[(3,0,vec![directional_cursive(rtl)]),(3,0,vec![next])]);
+        let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+        let x=directed(&p,&[3,7],&[Default::default();2],&[(80,0);2],flow).unwrap();
+        let (owner,w)=if rtl{(1,110)}else{(0,150)};
+        assert_eq!(x.adjustments[owner].design.x_advance,w-80);
+        assert_eq!(x.edges[1].unwrap().parent,0);
+    }
+}
+#[test]fn directed_exact_pair_reversal_no_stale_cycle(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(3,1,vec![mixed_cursive()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=directed(&p,&[3,7],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.edges[0].unwrap().parent,1);assert!(x.edges[1].is_none());
+    assert_eq!(x.adjustments[0].design.x_advance,50);
+    assert_eq!(x.adjustments[0].design.y_placement,-15);
+}
+#[test]fn directed_mark_replacement_restores_advance_and_keeps_later_value(){
+    let b=fixture(&[(3,0,vec![cursive_pair_words(7,3,true)]),(1,0,vec![single(9)]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1,2],32,None,Default::default()).unwrap();
+    let x=directed(&p,&[7,3],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::RightToLeft).unwrap();
+    assert_eq!(x.adjustments[1].design.x_advance,9);
+    assert_eq!(x.design_origins,vec![(-80,0),(-169,0)]);
+    assert_eq!(x.edges[1].unwrap().design_delta,(90,180));
+    assert_eq!(x.adjustments[1].design.x_placement,179);
+}
+#[test]fn directed_new_parent_releases_old_span(){
+    let g=parse_gdef(&words(&[1,0,12,0,0,0,1,3,2,1,3]),32,Default::default()).unwrap();
+    let b=fixture(&[(3,8,vec![mixed_cursive()]),(3,0,vec![cursive_pair_words(4,7,false)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,Some(&g),Default::default()).unwrap();
+    let x=directed(&p,&[3,4,7],&[Default::default();3],&[(80,0);3],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.edges[2].unwrap().parent,1);assert!(x.edges[1].is_none());
+    assert_eq!(x.adjustments[0].design.x_advance,0);
+    assert_eq!(x.adjustments[1].design.x_advance,50);
+    assert_eq!(x.design_origins,vec![(0,0),(80,0),(210,0)]);
+}
+#[test]fn directed_overlapping_live_intervals_rejected(){
+    let g=parse_gdef(&words(&[1,0,12,0,0,0,1,3,2,1,3]),32,Default::default()).unwrap();
+    let b=fixture(&[(3,8,vec![mixed_cursive()]),(3,0,vec![cursive_pair_words(3,4,false)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,Some(&g),Default::default()).unwrap();
+    let prior=[GposRunAdjustment::default();3];
+    assert!(matches!(directed(&p,&[3,4,7],&prior,&[(80,0);3],GposHorizontalFlow::LeftToRight),Err(Error::Unsupported("mixed overlapping cursive intervals"))));
+    assert_eq!(prior,[Default::default();3]);
+}
+#[test]fn directed_adjacent_intervals_and_cycle_guard(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(3,0,vec![cursive_pair_words(7,8,false)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=directed(&p,&[3,7,8],&[Default::default();3],&[(80,0);3],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.design_origins,vec![(0,0),(130,0),(260,0)]);
+    assert_eq!(x.edges[1].unwrap().parent,0);assert_eq!(x.edges[2].unwrap().parent,1);
+    assert_eq!(x.adjustments[2].design.y_placement,30);
+    let b=fixture(&[(3,1,vec![cursive_pair_words(7,3,false)]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    assert!(matches!(directed(&p,&[7,3],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::LeftToRight),Err(Error::Invalid("gpos attachment cycle"))));
+}
+#[test]fn directed_replacement_budget_counts_removal(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(3,0,vec![mixed_cursive()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let run=|max_attachment_updates|execute_gpos_mixed_directional(&p,&[3,7],&[Default::default();2],&[(80,0);2],&[(0,0);2],&[GposLigatureSource::Unmapped;2],GposRunMode::DesignOnly,GposHorizontalFlow::LeftToRight,
+        GposMixedRunLimits{marks:GposMarkRunLimits{max_attachment_updates,..Default::default()},..Default::default()});
+    assert!(run(3).is_ok());assert!(run(2).is_err());
+}
+#[test]fn directed_device_replacement_restores_pixel_width(){
+    let c=vec![1,14,2,0,22,40,0,1,2,3,7,3,(-30i16) as u16,20,10,0,10,12,1,0x6c00,1,100,5];
+    let b=fixture(&[(3,0,vec![c]),(3,0,vec![directional_cursive(true)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=execute_gpos_mixed_directional(&p,&[3,7],&[Default::default();2],&[(80,0);2],&[(2,0),(3,0)],
+        &[GposLigatureSource::Unmapped;2],GposRunMode::DevicePixels{x_ppem:10,y_ppem:10},GposHorizontalFlow::RightToLeft,Default::default()).unwrap();
+    assert_eq!(x.adjustments[1].pixels.x_advance,-3);
+    assert_eq!(x.pixel_origins,vec![(-2,0),(-2,0)]);
+    assert_eq!(x.edges[1].unwrap().pixel_delta,(0,0));
+}

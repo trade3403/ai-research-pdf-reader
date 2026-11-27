@@ -79,11 +79,42 @@ pub struct GposContextRunLimits{
 impl Default for GposContextRunLimits{
     fn default()->Self{Self{run:Default::default(),max_depth:32,max_calls:1048576,max_actions:1048576,max_context_work:16777216}}
 }
+#[derive(Clone,Copy)]
+struct CursiveContribution{
+    end:usize,child:usize,owner:usize,design:i64,pixels:i64,
+}
+struct DirectionalLedger{
+    // Active non-overlapping half-open spans, keyed by first logical index.
+    spans:std::collections::BTreeMap<usize,CursiveContribution>,
+    child_start:Vec<Option<usize>>,
+}
+impl DirectionalLedger{
+    fn remove(&mut self,start:usize,out:&mut [GposRunAdjustment],edges:&mut [Option<GposAttachmentEdge>],children:&mut [bool],updates:&mut usize)->Result<(),Error>{
+        let c=*self.spans.get(&start).ok_or(Error::Invalid("cursive ledger missing span"))?;
+        charge(updates,1)?;
+        let d=i32::try_from(i64::from(out[c.owner].design.x_advance)-c.design).map_err(|_|Error::Limit("cursive ledger restore"))?;
+        let px=i32::try_from(i64::from(out[c.owner].pixels.x_advance)-c.pixels).map_err(|_|Error::Limit("cursive ledger restore"))?;
+        out[c.owner].design.x_advance=d;
+        out[c.owner].pixels.x_advance=px;
+        self.spans.remove(&start);
+        self.child_start[c.child]=None;
+        children[c.child]=false;
+        edges[c.child]=None;
+        // Keep subsequent local placement adjustments, not a stale resolved
+        // world placement. The next attachment may reset its moving child.
+        Ok(())
+    }
+    fn overlaps(&self,a:usize,b:usize)->bool{
+        self.spans.range(..=a).next_back().is_some_and(|(_,c)|c.end>a)
+            ||self.spans.range(a..b).next().is_some()
+    }
+}
 struct MixedCursive<'g>{
     design_advances:&'g [(i32,i32)],
     pixel_advances:&'g [(i32,i32)],
     children:Vec<bool>,
     flow:Option<GposHorizontalFlow>,
+    ledger:Option<DirectionalLedger>,
     connections:usize,
     spans:usize,
 }
@@ -123,12 +154,16 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         self.active.pop();result
     }
     fn attach(&mut self,child:usize,parent:usize,a:&GposAnchor,b:&GposAnchor)->Result<(),Error>{
-        if self.cursive.as_ref().is_some_and(|c|c.children[child]){
-            return Err(Error::Unsupported("mixed cursive parent replacement"));
-        }
         charge(&mut self.attachment_updates,1)?;
         let edge=GposAttachmentEdge::from_anchors(parent,a,b,self.mode)?;
         let edges=self.attachment_edges.as_mut().ok_or(Error::Unsupported("gpos attachment mode"))?;
+        if let Some(state)=self.cursive.as_mut(){
+            if state.children[child]{
+                let ledger=state.ledger.as_mut().ok_or(Error::Unsupported("mixed cursive parent replacement"))?;
+                let start=ledger.child_start[child].ok_or(Error::Invalid("cursive ledger child"))?;
+                ledger.remove(start,&mut self.out,edges,&mut state.children,&mut self.attachment_updates)?;
+            }
+        }
         edges[child]=Some(edge);
         // Attachment replaces prior placement; subsequent adjustments are residuals.
         self.out[child].design.x_placement=0;self.out[child].design.y_placement=0;
@@ -139,19 +174,30 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         use crate::font_gpos_cursive_run::{advance,directional_advance};
         let state=self.cursive.as_mut().ok_or(Error::Unsupported("mixed cursive mode"))?;
         let edges=self.attachment_edges.as_mut().ok_or(Error::Invalid("mixed cursive edges"))?;
-        // A prior mark edge on an endpoint would make this restricted pen
-        // constraint ambiguous. Never silently erase an attachment.
-        if [a,b].into_iter().any(|i|edges[i].is_some()&&!state.children[i]){
-            return Err(Error::Unsupported("mixed mark cursive endpoint"));
-        }
         let forward=GposAttachmentEdge::from_anchors(a,exit,entry,self.mode)?;
         let (child,edge)=if rtl{(a,GposAttachmentEdge::from_anchors(b,entry,exit,self.mode)?)}else{(b,forward)};
-        if edges[child].is_some(){
-            return Err(Error::Unsupported("mixed cursive repeated parent"));
-        }
         charge(&mut state.connections,1)?;
         charge(&mut state.spans,b-a)?;
         charge(&mut self.attachment_updates,1)?;
+        if let Some(ledger)=state.ledger.as_mut(){
+            // Last successful attachment wins for the moving child. An exact
+            // interval can also reverse its fixed end without leaving two edges.
+            if let Some(start)=ledger.child_start[child]{
+                ledger.remove(start,&mut self.out,edges,&mut state.children,&mut self.attachment_updates)?;
+            }
+            if ledger.spans.get(&a).is_some_and(|c|c.end==b){
+                ledger.remove(a,&mut self.out,edges,&mut state.children,&mut self.attachment_updates)?;
+            }
+            if ledger.overlaps(a,b){
+                return Err(Error::Unsupported("mixed overlapping cursive intervals"));
+            }
+        }else{
+            // Legacy signed-advance API retains the previous conflict policy.
+            if [a,b].into_iter().any(|i|edges[i].is_some()&&!state.children[i]){
+                return Err(Error::Unsupported("mixed mark cursive endpoint"));
+            }
+            if edges[child].is_some(){return Err(Error::Unsupported("mixed cursive repeated parent"));}
+        }
         let (owner,d)=if let Some(flow)=state.flow{
             directional_advance(state.design_advances,&self.out,a,b,child,forward.design_delta.0,false,flow)?
         }else{(a,advance(state.design_advances,&self.out,a,b,forward.design_delta.0,false)?)};
@@ -160,6 +206,13 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                 directional_advance(state.pixel_advances,&self.out,a,b,child,forward.pixel_delta.0,true,flow)?.1
             }else{advance(state.pixel_advances,&self.out,a,b,forward.pixel_delta.0,true)?})
         }else{None};
+        if let Some(ledger)=state.ledger.as_mut(){
+            let contribution=CursiveContribution{end:b,child,owner,
+                design:i64::from(d)-i64::from(self.out[owner].design.x_advance),
+                pixels:px.map_or(0,|v|i64::from(v)-i64::from(self.out[owner].pixels.x_advance))};
+            ledger.spans.insert(a,contribution);
+            ledger.child_start[child]=Some(a);
+        }
         edges[child]=Some(edge);
         state.children[child]=true;
         self.out[owner].design.x_advance=d;
@@ -417,8 +470,11 @@ pub fn execute_gpos_mixed_horizontal(
 /// corrections). Device pixels are independent, and are ignored in DesignOnly.
 /// Cursive changes the leading interval owner for LTR and the trailing owner
 /// for RTL. Anchor fixed-end selection is separately controlled by the lookup.
-/// This bounded solver does not implement full OpenType cursive chain reversal,
-/// endpoint redistribution across overlapping constraints, or script shaping.
+/// The directional path tracks each active cursive width contribution. A new
+/// attachment can replace the moving child; exact-pair reversal removes the old
+/// edge and contribution. Other overlapping live intervals are rejected.
+/// Final forest validation rejects cycles. General OpenType chain reversal,
+/// simultaneous overlapping constraints and script shaping remain separate.
 pub fn execute_gpos_mixed_directional(
     program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
@@ -450,6 +506,7 @@ fn execute_gpos_mixed_inner(
         active:Vec::new(),attachment_edges:Some(filled(n,None)?),parent_visits:limits.marks.max_parent_visits,
         attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),
         cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,flow,
+            ledger:if flow.is_some(){Some(DirectionalLedger{spans:Default::default(),child_start:filled(n,None)?})}else{None},
             connections:limits.max_connections,spans:limits.max_span_visits})};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("mixed gpos root"))?;
