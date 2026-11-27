@@ -42,3 +42,25 @@ impl ClassChainContextPositioning {
 pub fn parse_class_chain_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassChainContextPositioning,Error>{
     Ok(ClassChainContextPositioning{rules:decode_class_chain_context(b,glyph_count,lookup_count,l,true)?})
 }
+
+use crate::{ContextAction,GlyphCoverage,CoverageChainContextSubstitution,parse_coverage_chain_context_substitution};
+/// Type 8 format 3: independent Coverage per position in all three segments.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct CoverageChainContextPositioning { rules:CoverageChainContextSubstitution }
+impl CoverageChainContextPositioning {
+    pub fn backtrack(&self)->&[GlyphCoverage]{self.rules.backtrack()}
+    pub fn input(&self)->&[GlyphCoverage]{self.rules.input()}
+    pub fn lookahead(&self)->&[GlyphCoverage]{self.rules.lookahead()}
+    pub fn actions(&self)->&[ContextAction]{self.rules.actions()}
+    pub fn input_len(&self)->usize{self.rules.input_len()}
+    /// Backtrack is nearest-first; input and lookahead are forward.
+    /// The caller supplies contiguous glyphs; no filtering or execution.
+    pub fn match_at(&self,glyphs:&[u16],position:usize)->Option<ContextMatch<'_>>{
+        self.rules.match_at(glyphs,position)
+    }
+}
+/// Parse caller-identified GPOS type 8 format 3. Shared coverage offsets
+/// consume cumulative budgets per reference across all three segments.
+pub fn parse_coverage_chain_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<CoverageChainContextPositioning,Error>{
+    Ok(CoverageChainContextPositioning{rules:parse_coverage_chain_context_substitution(b,glyph_count,lookup_count,l)?})
+}

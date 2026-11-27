@@ -276,7 +276,8 @@ pub fn parse_coverage_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_
     let n=usize::from(take(b,&mut p)?);
     if n>l.max_actions{return Err(Error::Limit("chain actions"));}
     if b.len().saturating_sub(p)/4<n{return Err(Error::Invalid("chain truncated actions"));}
-    let mut actions=Vec::with_capacity(n);
+    let mut actions=Vec::new();
+    actions.try_reserve_exact(n).map_err(|_|Error::Limit("chain allocation"))?;
     for _ in 0..n{
         let sequence_index=take(b,&mut p)?;
         let lookup_index=take(b,&mut p)?;
@@ -288,7 +289,8 @@ pub fn parse_coverage_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_
     let header=p;
     let(mut records,mut expanded)=(0usize,0usize);
     let mut decode=|offsets:Vec<u16>|->Result<Vec<GlyphCoverage>,Error>{
-        let mut result=Vec::with_capacity(offsets.len());
+        let mut result=Vec::new();
+    result.try_reserve_exact(offsets.len()).map_err(|_|Error::Limit("chain allocation"))?;
         for offset in offsets{
             let at=usize::from(offset);
             if at<header||at>=b.len(){return Err(Error::Invalid("chain coverage offset"));}
