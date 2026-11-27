@@ -155,3 +155,99 @@ fn validate_plan(layout:&GposLayout,plan:&GposPlan,l:GposCompileLimits)->Result<
     Ok(indices)
 }
 
+
+use crate::{GposDependency,GposDependencyLimits,GposClosureLimits,GposDependencyClosure,analyze_gpos_dependency_closure};
+#[derive(Debug,Clone,Copy,Default)]
+pub struct GposProgramLimits{
+    pub compile:GposCompileLimits,
+    pub dependencies:GposDependencyLimits,
+    pub closure:GposClosureLimits,
+}
+/// Static compiled program. Only roots are scheduled at top level.
+/// Dependency-only targets are available by original LookupList index.
+#[derive(Debug,Clone)]
+pub struct CompiledGposProgram<'a>{
+    glyph_count:u32,
+    roots:Vec<u16>,
+    validated_plan:Option<GposPlan>,
+    lookups:Vec<CompiledGposLookup<'a>>,
+    dependencies:Vec<GposDependency>,
+    closure:GposDependencyClosure,
+}
+impl<'a> CompiledGposProgram<'a>{
+    pub fn glyph_count(&self)->u32{self.glyph_count}
+    pub fn roots(&self)->&[u16]{&self.roots}
+    pub fn validated_plan(&self)->Option<&GposPlan>{self.validated_plan.as_ref()}
+    pub fn lookups(&self)->&[CompiledGposLookup<'a>]{&self.lookups}
+    pub fn lookup(&self,id:u16)->Option<&CompiledGposLookup<'a>>{
+        self.lookups.binary_search_by_key(&id,|l|l.index()).ok().map(|i|&self.lookups[i])
+    }
+    pub fn dependencies(&self)->&[GposDependency]{&self.dependencies}
+    pub fn closure(&self)->&GposDependencyClosure{&self.closure}
+}
+fn compile_program<'a>(b:&[u8],layout:&GposLayout,roots:&[u16],glyph_count:u32,
+    gdef:Option<&'a Gdef>,l:GposProgramLimits)->Result<CompiledGposProgram<'a>,Error>{
+    validate_domain(glyph_count,gdef)?;
+    let n=layout.lookups.len();
+    if n>l.closure.max_lookup_count||roots.len()>l.closure.max_roots{
+        return Err(Error::Limit("gpos program domain"));
+    }
+    if roots.windows(2).any(|w|w[0]>=w[1]){return Err(Error::Invalid("gpos program root order"));}
+    let mut pending=BTreeSet::new();
+    let mut seen=BTreeSet::new();
+    for &id in roots{
+        if usize::from(id)>=n{return Err(Error::Invalid("gpos program root index"));}
+        pending.insert(id);seen.insert(id);
+    }
+    let cap=l.compile.max_lookups.min(l.closure.max_reachable);
+    if seen.len()>cap{return Err(Error::Limit("gpos program lookups"));}
+    let mut budget=l.compile;
+    let mut dep=l.dependencies;
+    dep.max_actions=dep.max_actions.min(l.closure.max_actions);
+    let mut compiled=BTreeMap::new();
+    let mut edges=Vec::new();
+    while let Some(id)=pending.pop_first(){
+        let mut one=compile(b,layout,&[id],glyph_count,gdef,budget)?;
+        let lookup=one.pop().ok_or(Error::Invalid("gpos program lookup"))?;
+        charge(&mut budget.max_lookups,1,"gpos program lookups")?;
+        charge(&mut budget.max_total_subtables,lookup.subtables().len(),"gpos program subtables")?;
+        for sub in lookup.subtables(){
+            if lookup.declared_kind()==9{charge(&mut budget.max_total_target_bytes,8,"gpos program bytes")?;}
+            charge(&mut budget.max_total_target_bytes,b.len()-sub.target_offset(),"gpos program bytes")?;
+        }
+        let (found,remaining)=crate::font_gpos_dependencies::discover_with_scan(std::slice::from_ref(&lookup),n,dep)?;
+        dep.max_scan_records=remaining;
+        charge(&mut dep.max_actions,found.len(),"gpos program actions")?;
+        for e in &found{
+            let target=e.action.lookup_index;
+            if seen.insert(target){
+                if seen.len()>cap{return Err(Error::Limit("gpos program lookups"));}
+                pending.insert(target);
+            }
+        }
+        edges.try_reserve(found.len()).map_err(|_|Error::Limit("gpos program allocation"))?;
+        edges.extend(found);
+        compiled.insert(id,lookup);
+    }
+    let sources:Vec<_>=compiled.keys().copied().collect();
+    // Discovery order can differ from original LookupList order.
+    // Stable sort retains every source's original ordered actions.
+    edges.sort_by_key(|e|e.site.lookup_index);
+    let closure=analyze_gpos_dependency_closure(n,&sources,&edges,roots,l.closure)?;
+    if !closure.is_complete()||closure.reachable!=sources{return Err(Error::Invalid("gpos program incomplete"));}
+    Ok(CompiledGposProgram{glyph_count,roots:roots.to_vec(),validated_plan:None,lookups:compiled.into_values().collect(),dependencies:edges,closure})
+}
+pub fn compile_gpos_program<'a>(b:&[u8],roots:&[u16],glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GposProgramLimits)->Result<CompiledGposProgram<'a>,Error>{
+    let layout=parse_gpos_layout(b,l.compile.layout)?;
+    compile_program(b,&layout,roots,glyph_count,gdef,l)
+}
+pub fn compile_gpos_plan_program<'a>(b:&[u8],plan:&GposPlan,glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GposProgramLimits)->Result<CompiledGposProgram<'a>,Error>{
+    let layout=parse_gpos_layout(b,l.compile.layout)?;
+    let roots=validate_plan(&layout,plan,l.compile)?;
+    let mut program=compile_program(b,&layout,&roots,glyph_count,gdef,l)?;
+    program.validated_plan=Some(plan.clone());
+    Ok(program)
+}
+
