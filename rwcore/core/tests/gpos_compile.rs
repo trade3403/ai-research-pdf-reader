@@ -101,3 +101,22 @@ fn compile(b:&[u8],indices:&[u16])->Result<Vec<CompiledGposLookup<'static>>,Erro
     l.flags=16;l.mark_filtering_set=Some(0);
     assert!(LookupFilter::from_gpos_lookup(&l,32,None).is_err());
 }
+
+#[test]fn real_gpos_plan_provenance(){
+    let font=parse_font(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),Default::default()).unwrap();
+    let face=font.face(0).unwrap();
+    let b=face.table(*b"GPOS").unwrap();
+    let layout=parse_gpos_layout(b,Default::default()).unwrap();
+    let g=parse_gdef(face.table(*b"GDEF").unwrap(),268,Default::default()).unwrap();
+    let s=layout.scripts.iter().find(|s|s.default_language.as_ref().is_some_and(|l|!l.features.is_empty())).unwrap();
+    let tags:Vec<_>=s.default_language.as_ref().unwrap().features.iter().map(|&i|layout.features[i as usize].tag).collect();
+    let p=build_gpos_base_plan(&layout,s.tag,None,&tags,Default::default()).unwrap().unwrap();
+    let x=compile_gpos_plan(b,&p,268,Some(&g),Default::default()).unwrap();
+    assert!(!x.is_empty());
+    assert_eq!(x.iter().map(|l|l.index()).collect::<Vec<_>>(),p.lookups.iter().map(|l|l.index).collect::<Vec<_>>());
+    let mut bad=p.clone();bad.lookups[0].features.clear();
+    assert!(compile_gpos_plan(b,&bad,268,Some(&g),Default::default()).is_err());
+    let mut bad=p.clone();bad.script=*b"zzzz";
+    assert!(compile_gpos_plan(b,&bad,268,Some(&g),Default::default()).is_err());
+    assert!(compile_gpos_plan(b,&p,268,Some(&g),GposCompileLimits{max_plan_refs:0,..Default::default()}).is_err());
+}

@@ -314,3 +314,6 @@ pub use font_gpos_extension::*;
 
 pub mod font_gpos_compile;
 pub use font_gpos_compile::*;
+
+pub mod font_gpos_plan;
+pub use font_gpos_plan::*;

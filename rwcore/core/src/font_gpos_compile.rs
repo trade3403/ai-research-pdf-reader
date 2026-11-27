@@ -101,3 +101,57 @@ pub fn compile_gpos_lookups<'a>(b:&[u8],indices:&[u16],glyph_count:u32,gdef:Opti
     let layout=parse_gpos_layout(b,l.layout)?;
     compile(b,&layout,indices,glyph_count,gdef,l)
 }
+
+use crate::GposPlan;
+use std::collections::{BTreeMap,BTreeSet};
+/// Validate the base plan's selected language, feature membership and
+/// exact lookup provenance against the supplied GPOS. A compatible plan
+/// from another font is not a cryptographic font-identity guarantee.
+/// Unavailable tags are diagnostic only, not execution inputs.
+pub fn compile_gpos_plan<'a>(b:&[u8],plan:&GposPlan,glyph_count:u32,gdef:Option<&'a Gdef>,
+    l:GposCompileLimits)->Result<Vec<CompiledGposLookup<'a>>,Error>{
+    let layout=parse_gpos_layout(b,l.layout)?;
+    let indices=validate_plan(&layout,plan,l)?;
+    compile(b,&layout,&indices,glyph_count,gdef,l)
+}
+fn validate_plan(layout:&GposLayout,plan:&GposPlan,l:GposCompileLimits)->Result<Vec<u16>,Error>{
+
+    if plan.lookups.len()>l.max_lookups||plan.features.len()>l.max_plan_refs{return Err(Error::Limit("gpos compile plan size"));}
+    if plan.features.windows(2).any(|w|w[0]>=w[1]){return Err(Error::Invalid("gpos compile feature order"));}
+    let script=layout.scripts.iter().find(|s|s.tag==plan.script).ok_or(Error::Invalid("gpos compile plan script"))?;
+    let lang=match plan.language{
+        Some(t)=>script.languages.iter().find(|(tag,_)|*tag==t).map(|(_,l)|l),
+        None=>script.default_language.as_ref(),
+    }.ok_or(Error::Invalid("gpos compile plan language"))?;
+    if plan.required_feature!=lang.required_feature||
+        lang.required_feature.is_some_and(|r|plan.features.binary_search(&r).is_err())||
+        plan.base_only_variations_present!=layout.directory.feature_variations.is_some(){
+        return Err(Error::Invalid("gpos compile plan metadata"));
+    }
+    let mut budget=l.max_plan_refs;
+    charge(&mut budget,lang.features.len(),"gpos compile plan refs")?;
+    charge(&mut budget,plan.features.len(),"gpos compile plan refs")?;
+    let allowed:BTreeSet<_>=lang.required_feature.into_iter().chain(lang.features.iter().copied()).collect();
+    let mut expected:BTreeMap<u16,BTreeSet<u16>>=BTreeMap::new();
+    for &id in &plan.features{
+        if !allowed.contains(&id){return Err(Error::Invalid("gpos compile feature membership"));}
+        let feature=layout.features.get(usize::from(id)).ok_or(Error::Invalid("gpos compile feature index"))?;
+        let lookups=feature.lookups.as_slice();
+        charge(&mut budget,lookups.len(),"gpos compile plan refs")?;
+        for &i in lookups{
+            expected.entry(i).or_default().insert(id);
+            if expected.len()>l.max_lookups{return Err(Error::Limit("gpos compile lookups"));}
+        }
+    }
+    if expected.len()!=plan.lookups.len(){return Err(Error::Invalid("gpos compile plan lookup count"));}
+    let mut indices=Vec::new();
+    for ((index,features),entry) in expected.into_iter().zip(&plan.lookups){
+        charge(&mut budget,entry.features.len(),"gpos compile plan refs")?;
+        if index!=entry.index||!features.iter().copied().eq(entry.features.iter().copied()){
+            return Err(Error::Invalid("gpos compile plan provenance"));
+        }
+        indices.push(index);
+    }
+    Ok(indices)
+}
+
