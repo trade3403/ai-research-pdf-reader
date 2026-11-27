@@ -349,10 +349,12 @@ fn protected_with(
     }
     let domain = match explicit {
         Some(domain) => domain,
-        None => engine
-            .decide(block.source, None)
-            .map_err(paragraph::Error::Plan)?
-            .domain,
+        None => {
+            engine
+                .decide(block.source, None)
+                .map_err(paragraph::Error::Plan)?
+                .domain
+        }
     };
     let plan = Plan::prepare_indexed(block.source, engine.glossary(domain))
         .map_err(paragraph::Error::Plan)?;
@@ -730,10 +732,12 @@ mod tests {
             }],
         );
         let engine = ContextEngine::builtin().unwrap();
-        assert!(protected_with(&block, &engine, Some(Domain::General), |gap, _| {
-            Ok(synthetic_gap(gap, "结果[Ref]"))
-        })
-        .is_err());
+        assert!(
+            protected_with(&block, &engine, Some(Domain::General), |gap, _| {
+                Ok(synthetic_gap(gap, "结果[Ref]"))
+            })
+            .is_err()
+        );
         assert_eq!(
             protected_with(&block, &engine, None, |_, _| Err(paragraph::Error::Limit)),
             Err(paragraph::Error::Limit)
@@ -758,10 +762,12 @@ mod tests {
                 kind: HostKind::Term,
             }],
         );
-        assert!(protected_with(&split, &engine, Some(Domain::Geotechnical), |_, _| {
-            panic!("split terminology")
-        })
-        .is_err());
+        assert!(
+            protected_with(&split, &engine, Some(Domain::Geotechnical), |_, _| {
+                panic!("split terminology")
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -774,10 +780,12 @@ mod tests {
             }],
         );
         let engine = ContextEngine::builtin().unwrap();
-        assert!(protected_with(&block, &engine, Some(Domain::General), |gap, _| {
-            Ok(synthetic_gap(gap, "结果 13"))
-        })
-        .is_err());
+        assert!(
+            protected_with(&block, &engine, Some(Domain::General), |gap, _| {
+                Ok(synthetic_gap(gap, "结果 13"))
+            })
+            .is_err()
+        );
     }
 
     #[test]

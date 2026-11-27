@@ -13,8 +13,8 @@ use rptranslate::{
     model_install,
     offline::OfflineTranslator,
     selection::{
-        self, Format, HostKind, HostSpan, LanguagePair, Location, ModelIdentity, Request, Selection,
-        Status,
+        self, Format, HostKind, HostSpan, LanguagePair, Location, ModelIdentity, Request,
+        Selection, Status,
     },
 };
 use std::{collections::BTreeMap, fs, path::Path};

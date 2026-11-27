@@ -4,6 +4,8 @@
 
 ## 最新验收记录（优先于历史状态表）
 
+2026-11-26 D3.1b [#147 / 45853203750](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45853203750) completed/failure：Linux/Windows基础检查均因rustfmt 5组差异失败（model_install_reference.rs:13、selection.rs:349/730/758/774）；[Linux日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45853203750/job/140024676248)、[Windows日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45853203750/job/140024676168)。[Linux真实模型日志](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45853203750/job/140024675912) success，FP32/INT8 PDF/Word四个SELECTION_REFERENCE PASS，原安装/生命周期均通过；INT8 242/269接受、27拒译、5221/6036词、245/317数字串、438.219108s、992.320441ms加载、122316KiB RSS，FP32 4/8；人工语义未测。Windows真实模型因前置失败跳过，基础测试未执行。本次严格按rustfmt日志修复5组，不修改算法、测试或CI门槛；待新CI全量成功后进入D3.1c。
+
 D3.1b：在selection.rs实现宿主结构字面保护：明确指定的公式、引用、需原样保留的术语、数量不进入推理；其余非空文本间隙复用原段落引擎，按原始UTF-8位置拼接，单块64宿主跨度/64结果段/256KiB输出，完整覆盖核对、全选择科研词面审计和宿主字面出现次数验证。任何间隙失败、冲突、保护跨度切断、仅宿主字面或预算超限均拒译整块，保留原文与错误；其他块继续，新增Accepted/Partial/Rejected状态。无宿主提示时保持原路径。宿主术语为原样保留而非术语翻译，内置词典冲突时拒绝；分隔式译文不等于流畅排版或人工语义。新增5跨平台单测，目标549基础+4网络=553；在已有真实安装探针复用已加载FP32/INT8，增加PDF/Word模拟来源各一条实际选段与公式/引用/术语映射，目标两平台8个SELECTION_REFERENCE PASS；未本地编译，等待CI。D3.1c再实现驻留模型会话/任务控制与合作式取消；D3.1d设跨线路接口检查点，未修改A/B/C。
 
 2026-11-26 D3.1a 实际封版：0620d32e49dca5d0e55e1a7d6d9ce7195208f9f5 / [#146 / 45824397508](https://github.com/trade3403/ai-research-pdf-reader/actions/runs/45824397508) completed/success，四实际Job成功、两条件跳过；Linux 211 workspace+59 portable，Windows 210+59，共539基础+4真实网络=543/543；4/4真实安装、4/4生命周期。Linux INT8 242/269接受、27拒译、5221/6036词、245/317数字串、251段、412.493212s、965.865972ms加载、122408KiB RSS；FP32 4/8，人工语义未测。
