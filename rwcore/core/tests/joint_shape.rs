@@ -232,3 +232,83 @@ fn stages()->[ShapeStageSpec;2]{[ShapeStageSpec{features:vec![0]},ShapeStageSpec
     assert_eq!(x.shaped.provenance.ligature_trace_stats().unwrap().0,0);
     assert_eq!(x.trace.iter().map(|t|t.changes).sum::<usize>(),x.shaped.substitution.expansion.execution.changes);
 }
+
+fn dual_gpos_fixture(a:u16)->Vec<u8>{
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,0xffff,2,0,1]{w(&mut b,v);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,2);
+    for (tag,rel) in [(b"kern",14),(b"mark",20)]{b.extend(tag);w(&mut b,rel);}
+    for v in [0,1,0,0,1,1]{w(&mut b,v);}
+    let at=b.len();set(&mut b,8,at);for v in [2,6,28]{w(&mut b,v);}
+    for (id,delta) in [(a,7),(11,13)]{for v in [1,0,1,8,1,8,4,delta,1,1,id]{w(&mut b,v);}}
+    b
+}
+fn dual_gp(b:&[u8],n:u32)->CompiledGposProgram<'_>{
+    let l=parse_gpos_layout(b,Default::default()).unwrap();
+    let p=build_gpos_base_plan(&l,*b"DFLT",None,&[*b"kern",*b"mark"],Default::default()).unwrap().unwrap();
+    compile_gpos_plan_program(b,&p,n,None,Default::default()).unwrap()
+}
+fn dual_run(r:&SourceRun,m:&FontMetrics<'_>,n:u32,se:&[FeatureMaskOverride],pe:&[FeatureMaskOverride],
+    ps:&[ShapeStageSpec],pl:JointStageLimits)->Result<DualStageShapeResult,Error>{
+    let sb=stage_fixture(r.glyphs()[0].glyph_id);let gs=stage_program(&sb,n);
+    let pb=dual_gpos_fixture(12);let gp=dual_gp(&pb,n);
+    let sm=ScalarFeatureMasks::build(gs.validated_plan().unwrap(),r.scalars().len(),se,Default::default())?;
+    let pm=GposScalarFeatureMasks::build(gp.validated_plan().unwrap(),r.scalars().len(),pe,Default::default())?;
+    execute_dual_stage_joint_shape(&gs,&gp,r,m,&[],&sm,&stages(),LTR,Default::default(),Default::default(),
+        None,JointPositionStages{masks:&pm,specs:ps,limits:pl})
+}
+fn dual_disable(feature:u16,start:usize,end:usize)->FeatureMaskOverride{
+    FeatureMaskOverride{feature,start,end,enabled:false}
+}
+#[test]fn dual_stage_independent_masks_post_substitution(){
+    let (r,m,n)=inputs("AAA");
+    let x=dual_run(&r,&m,n,&[dual_disable(1,1,2)],&[dual_disable(0,2,3)],&stages(),Default::default()).unwrap();
+    assert_eq!(x.staged.shaped.substitution.expansion.execution.glyphs,vec![12,11,12]);
+    assert_eq!(x.staged.glyph_masks,vec![3,1,3]);
+    assert_eq!(x.staged.shaped.positioning.adjustments.iter().map(|a|a.design.x_advance).collect::<Vec<_>>(),vec![7,13,0]);
+    assert_eq!(x.positioning_schedule.root_count(),2);
+    assert_eq!(x.staged.shaped.design_advances.iter().map(|p|p.0).collect::<Vec<_>>(),
+        [12,11,12].iter().map(|id|i32::from(m.glyph(*id).unwrap().advance_width)).collect::<Vec<_>>());
+}
+#[test]fn dual_stage_position_budget_partition_and_atomicity(){
+    let (r,m,n)=inputs("AA");let before=r.clone();
+    assert!(matches!(dual_run(&r,&m,n,&[],&[],&stages()[..1],Default::default()),Err(Error::Invalid(_))));
+    assert!(matches!(dual_run(&r,&m,n,&[],&[],&stages(),JointStageLimits{max_mask_work:3,..Default::default()}),Err(Error::Limit(_))));
+    assert!(dual_run(&r,&m,n,&[],&[],&stages(),JointStageLimits{max_mask_work:4,..Default::default()}).is_ok());
+    assert_eq!(r,before);
+}
+#[test]fn dual_stage_reordered_position_stages(){
+    let (r,m,n)=inputs("AA");let mut ps=stages();ps.reverse();
+    let x=dual_run(&r,&m,n,&[],&[],&ps,Default::default()).unwrap();
+    assert_eq!(x.positioning_schedule.stages()[0].features(),&[1]);
+    assert_eq!(x.staged.schedule.stages()[0].features(),&[0]);
+    assert_eq!(x.staged.shaped.positioning.adjustments[0].design.x_advance,7);
+}
+fn face_stage_request(specs:&[ShapeStageSpec])->FaceStageRequest<'_>{
+    FaceStageRequest{specs,overrides:&[],masks:Default::default(),stages:Default::default()}
+}
+#[test]fn dual_stage_same_face_native_strict_parity(){
+    let f=parse_font(FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let o=face_options();let base=shape_font_face_with_ligatures(face,"AVATAR",o,Default::default(),Default::default()).unwrap();
+    let ss=if base.substitution_plan.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:base.substitution_plan.features.clone()}]};
+    let ps=vec![ShapeStageSpec{features:base.positioning_plan.features.clone()}];
+    let x=shape_font_face_dual_stage(face,"AVATAR",o,Default::default(),face_stage_request(&ss),face_stage_request(&ps),Some(Default::default())).unwrap();
+    assert_eq!(x.source,base.source);
+    assert_eq!(x.shaped.staged.shaped.positioning,base.shaped.positioning);
+    assert_eq!(x.shaped.staged.shaped.substitution,base.shaped.substitution);
+    assert!(x.shaped.staged.shaped.positioning.adjustments.iter().any(|a|a.design.x_advance!=0));
+    assert_eq!(x.shaped.staged.shaped.provenance.ligature_trace_stats().unwrap().0,0);
+}
+#[test]fn dual_stage_same_face_empty_plans(){
+    let f=parse_font(FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let mut o=face_options();o.positioning_tags=&[];
+    let base=shape_font_face(face,"",o,Default::default()).unwrap();
+    let specs=|f:&[u16]|if f.is_empty(){vec![]}else{vec![ShapeStageSpec{features:f.to_vec()}]};
+    let ss=specs(&base.substitution_plan.features);let ps=specs(&base.positioning_plan.features);
+    let x=shape_font_face_dual_stage(face,"",o,Default::default(),face_stage_request(&ss),face_stage_request(&ps),None).unwrap();
+    assert!(x.shaped.staged.shaped.positioning.adjustments.is_empty());
+    assert!(x.shaped.staged.shaped.provenance.glyphs().is_empty());
+}
