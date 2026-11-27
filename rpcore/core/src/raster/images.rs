@@ -265,38 +265,97 @@ fn is_jbig2(d:&Dict)->bool{
     }
 }
 
+/// Parse a bounded, direct filter list. Terminal JBIG2 is allowed only
+/// in the image stream; the globals stream must use byte wrappers only.
+fn jbig2_filter_names(dict:&Dict,allow_empty:bool)->Result<(Vec<&[u8]>,bool)>{
+    match dict.get(b"Filter".as_slice()){
+        None|Some(Object::Null) if allow_empty=>Ok((Vec::new(),false)),
+        Some(Object::Name(n))=>Ok((vec![n.as_slice()],false)),
+        Some(Object::Array(a)) if !a.is_empty()&&a.len()<=8=>{
+            let names=a.iter().map(|v|match v{
+                Object::Name(n)=>Ok(n.as_slice()),
+                _=>Err(Error::Invalid("JBIG2 filter name")),
+            }).collect::<Result<Vec<_>>>()?;
+            Ok((names,true))
+        },
+        _=>Err(Error::Unsupported("JBIG2 filter structure")),
+    }
+}
+/// Resolve the parameter container and each parameter entry independently.
+/// No parameter shifting, implicit predictors or misaligned arrays.
+fn jbig2_parameters(doc:&Document<'_>,dict:&Dict,count:usize,array:bool)->Result<Vec<Object>>{
+    let params=match dict.get(b"DecodeParms".as_slice()){
+        None=>Object::Null,
+        Some(o)=>doc.dereference(o)?,
+    };
+    match params{
+        Object::Null=>Ok(vec![Object::Null;count]),
+        Object::Dict(_) if !array&&count==1=>Ok(vec![params]),
+        Object::Array(a) if array&&a.len()==count=>{
+            a.iter().map(|o|doc.dereference(o)).collect()
+        },
+        _=>Err(Error::Unsupported("JBIG2 DecodeParms structure")),
+    }
+}
+fn jbig2_byte_wrappers<'a>(data:&'a [u8],filters:&[&[u8]],params:&[Object],
+    final_cap:usize,budget:&mut Budget)->Result<std::borrow::Cow<'a,[u8]>>{
+    use std::borrow::Cow;
+    if filters.len()!=params.len(){return Err(Error::Invalid("JBIG2 prefix parameter count"));}
+    for (&name,param) in filters.iter().zip(params){
+        if !matches!(name,b"ASCIIHexDecode"|b"AHx"|b"ASCII85Decode"|b"A85"|
+            b"FlateDecode"|b"Fl"|b"RunLengthDecode"|b"RL"){
+            return Err(Error::Unsupported("JBIG2 byte wrapper filter"));
+        }
+        // These filters carry encoded JBIG2 bytes, not image rows.
+        if !matches!(param,Object::Null)&&!matches!(param,Object::Dict(p) if p.is_empty()){
+            return Err(Error::Unsupported("JBIG2 byte wrapper DecodeParms"));
+        }
+    }
+    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2 wrapped input bytes"));}
+    budget.charge(data.len())?;
+    let mut payload=Cow::Borrowed(data);
+    for (i,&name) in filters.iter().enumerate(){
+        budget.charge(payload.len())?;
+        let cap=crate::MAX_BYTES.min(super::MAX_WORK.saturating_sub(budget.work));
+        let cap=if i+1==filters.len(){cap.min(final_cap)}else{cap};
+        let mut d=Dict::new();
+        d.insert(b"Filter".to_vec(),Object::Name(name.to_vec()));
+        // Empty dictionaries are normalized to absent parameters.
+        let stream=Object::Stream{dict:d,data:payload.into_owned()};
+        let decoded=crate::filters::decode(&stream,cap)?;
+        budget.charge(decoded.len())?;
+        payload=Cow::Owned(decoded);
+    }
+    if payload.len()>final_cap{return Err(Error::Limit("JBIG2 wrapped output bytes"));}
+    Ok(payload)
+}
 /// PDF image-only JBIG2 path. T.88 black=1 is converted to PDF
 /// sample zero before applying Decode; row padding is never a pixel.
-/// Initially accept a single terminal filter (name or one-element array)
-/// and unfiltered indirect globals, with no external alpha or color key.
+/// The unique terminal JBIG2 filter and the independent globals stream
+/// may each be wrapped in bounded native lossless byte filters.
 fn load_jbig2(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     interpolate:bool,budget:&mut Budget)->Result<Image>{
     use crate::filters::jbig2::page;
-    let array=match dict.get(b"Filter".as_slice()){
-        Some(Object::Name(n)) if n==b"JBIG2Decode"=>false,
-        Some(Object::Array(a)) if a.len()==1&&matches!(&a[0],Object::Name(n) if n==b"JBIG2Decode")=>true,
-        _=>return Err(Error::Unsupported("JBIG2 filter structure")),
-    };
-    let param=match dict.get(b"DecodeParms".as_slice()){
-        None|Some(Object::Null)=>None,
-        Some(Object::Array(a)) if array&&a.len()==1=>Some(doc.dereference(&a[0])?),
-        Some(o) if !array=>Some(doc.dereference(o)?),
-        _=>return Err(Error::Unsupported("JBIG2 DecodeParms structure")),
-    };
-    let globals=match &param{
-        None|Some(Object::Null)=>Vec::new(),
-        Some(Object::Dict(p))=>{
+    let (filters,array)=jbig2_filter_names(dict,false)?;
+    if filters.last()!=Some(&b"JBIG2Decode".as_slice())||
+        filters.iter().filter(|&&n|n==b"JBIG2Decode").count()!=1{
+        return Err(Error::Unsupported("JBIG2 must be unique terminal filter"));
+    }
+    let params=jbig2_parameters(doc,dict,filters.len(),array)?;
+    let prefix=filters.len()-1;
+    let payload=jbig2_byte_wrappers(data,&filters[..prefix],&params[..prefix],crate::MAX_BYTES,budget)?;
+    let globals=match &params[prefix]{
+        Object::Null=>Vec::new(),
+        Object::Dict(p)=>{
             if p.keys().any(|k|k!=b"JBIG2Globals"){return Err(Error::Unsupported("JBIG2 DecodeParms key"));}
             match p.get(b"JBIG2Globals".as_slice()){
                 None=>Vec::new(),
                 Some(o@Object::Ref(..))=>{
                     let Object::Stream{dict,data}=doc.dereference(o)? else{return Err(Error::Invalid("JBIG2Globals stream"));};
-                    if !matches!(dict.get(b"Filter".as_slice()),None|Some(Object::Null))||
-                        !matches!(dict.get(b"DecodeParms".as_slice()),None|Some(Object::Null)){
-                        return Err(Error::Unsupported("JBIG2Globals filtered stream"));
-                    }
-                    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2Globals bytes"));}
-                    budget.charge(data.len())?;data
+                    let (names,array)=jbig2_filter_names(&dict,true)?;
+                    let params=jbig2_parameters(doc,&dict,names.len(),array)?;
+                    let cap=crate::MAX_BYTES.checked_sub(payload.len()).ok_or(Error::Limit("JBIG2 combined bytes"))?;
+                    jbig2_byte_wrappers(&data,&names,&params,cap,budget)?.into_owned()
                 }
                 _=>return Err(Error::Invalid("JBIG2Globals indirect stream")),
             }
@@ -330,7 +389,7 @@ fn load_jbig2(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     let mut limits=page::Limits::default();
     limits.page_pixels=(w*h) as u64;
     limits.work=limits.work.min(super::MAX_WORK.saturating_sub(budget.work) as u64);
-    let decoded=page::decode_pdf_page_reclaimed(&globals,data,limits)?;
+    let decoded=page::decode_pdf_page_reclaimed(&globals,&payload,limits)?;
     budget.charge(usize::try_from(decoded.stats.work_used).map_err(|_|Error::Limit("JBIG2 raster work"))?)?;
     let bitmap=decoded.bitmap;
     if (bitmap.width() as usize,bitmap.height() as usize)!=(w,h){
@@ -466,6 +525,10 @@ mod jpx_pdf_tests{
         pdf_layout_globals(data,iw,ih,w,h,fields,contents,None)
     }
     fn pdf_layout_globals(data:&[u8],iw:usize,ih:usize,w:usize,h:usize,fields:&str,contents:&str,globals:Option<&[u8]>)->Vec<u8>{
+        pdf_layout_wrapped_globals(data,iw,ih,w,h,fields,contents,globals,"",None)
+    }
+    fn pdf_layout_wrapped_globals(data:&[u8],iw:usize,ih:usize,w:usize,h:usize,fields:&str,contents:&str,
+        globals:Option<&[u8]>,globals_fields:&str,extra:Option<&str>)->Vec<u8>{
         let mut image=format!("<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} {fields} /Length {} >>\nstream\n",data.len()).into_bytes();
         image.extend(data);image.extend(b"\nendstream");
         let mut objects=vec![
@@ -476,9 +539,10 @@ mod jpx_pdf_tests{
             image
         ];
         if let Some(g)=globals{
-            let mut stream=format!("<< /Length {} >>\nstream\n",g.len()).into_bytes();
+            let mut stream=format!("<< {globals_fields} /Length {} >>\nstream\n",g.len()).into_bytes();
             stream.extend(g);stream.extend(b"\nendstream");objects.push(stream);
         }
+        if let Some(extra)=extra{objects.push(extra.as_bytes().to_vec());}
         let size=objects.len()+1;
         let mut b=b"%PDF-1.5\n".to_vec();let mut offsets=Vec::new();
         for (i,o) in objects.iter().enumerate(){
@@ -573,6 +637,82 @@ mod jpx_pdf_tests{
             assert_eq!(p,[e,e,e,255]);
         }
         assert!(render(PAGE1,64,56,"/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 1").is_err());
+    }
+
+    fn ascii_hex_wrapper(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();for b in data{out.extend(format!("{b:02x}").as_bytes());}out.push(b'>');out
+    }
+    fn rl_wrapper(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();for chunk in data.chunks(128){out.push((chunk.len()-1) as u8);out.extend(chunk);}
+        out.push(128);out
+    }
+    fn stored_zlib_wrapper(data:&[u8])->Vec<u8>{
+        assert!(data.len()<=65535);
+        let n=data.len() as u16;
+        let mut out=vec![0x78,0x01,0x01];out.extend(n.to_le_bytes());out.extend((!n).to_le_bytes());out.extend(data);
+        let (mut a,mut b)=(1u32,0u32);
+        for &v in data{a=(a+u32::from(v))%65521;b=(b+a)%65521;}
+        out.extend(((b<<16)|a).to_be_bytes());out
+    }
+    fn ascii85_wrapper(data:&[u8])->Vec<u8>{
+        let mut out=Vec::new();
+        for chunk in data.chunks(4){
+            let mut word=[0u8;4];word[..chunk.len()].copy_from_slice(chunk);
+            let mut v=u32::from_be_bytes(word);let mut digits=[0u8;5];
+            for x in digits.iter_mut().rev(){*x=(v%85) as u8+33;v/=85;}
+            out.extend(&digits[..chunk.len()+1]);
+        }
+        out.extend(b"~>");out
+    }
+    #[test]fn pdf_jbig2_wrapped_terminal_filters(){
+        let data=jbig2_fixture();let metadata="/ColorSpace /DeviceGray /BitsPerComponent 1";
+        let base=render(&data,9,2,&format!("/Filter /JBIG2Decode {metadata}")).unwrap();
+        let variants=[
+            (ascii_hex_wrapper(&data),"/Filter [/AHx /JBIG2Decode] /DecodeParms [null <<>>]"),
+            (ascii85_wrapper(&data),"/Filter [/ASCII85Decode /JBIG2Decode]"),
+            (stored_zlib_wrapper(&data),"/Filter [/Fl /JBIG2Decode] /DecodeParms [<<>> null]"),
+            (rl_wrapper(&data),"/Filter [/RunLengthDecode /JBIG2Decode]"),
+            (ascii_hex_wrapper(&rl_wrapper(&stored_zlib_wrapper(&data))),"/Filter [/AHx /RL /FlateDecode /JBIG2Decode] /DecodeParms [null null null null]"),
+        ];
+        for (wrapped,fields) in variants{
+            let image=render(&wrapped,9,2,&format!("{fields} {metadata}")).unwrap();
+            assert_eq!(image.rgba,base.rgba);
+        }
+    }
+    #[test]fn pdf_jbig2_compressed_globals_and_indirect_parameters(){
+        let fields="/Filter [/AHx /JBIG2Decode] /ColorSpace /DeviceGray /BitsPerComponent 1 /DecodeParms 7 0 R";
+        let g=ascii85_wrapper(&stored_zlib_wrapper(GLOBAL1));
+        let p=ascii_hex_wrapper(PAGE1);
+        let bytes=pdf_layout_wrapped_globals(&p,64,56,64,56,fields,"q 64 0 0 56 0 0 cm /Im Do Q",
+            Some(&g),"/Filter [/A85 /FlateDecode] /DecodeParms [null <<>>]",Some("[null << /JBIG2Globals 6 0 R >>]"));
+        let doc=Document::open(&bytes).unwrap();
+        let actual=doc.render_page(&doc.pages().unwrap()[0],super::super::Options::default(),16384).unwrap();
+        let want=crate::filters::jbig2::page::decode_pdf_page(GLOBAL1,PAGE1,Default::default()).unwrap();
+        for (i,p) in actual.rgba.chunks_exact(4).enumerate(){
+            let e=if want.bitmap.get((i%64) as u32,(i/64) as u32).unwrap(){0}else{255};assert_eq!(p,[e,e,e,255]);
+        }
+    }
+    #[test]fn pdf_jbig2_wrapped_metadata_and_budget_rejection(){
+        let data=jbig2_fixture();let wrapped=ascii_hex_wrapper(&data);
+        let meta="/ColorSpace /DeviceGray /BitsPerComponent 1";
+        for f in ["/Filter [/AHx /JBIG2Decode] /DecodeParms [null]",
+            "/Filter [/AHx /JBIG2Decode] /DecodeParms [<< /Predictor 2 >> null]",
+            "/Filter [/AHx /JBIG2Decode] /DecodeParms [null << /Predictor 1 >>]",
+            "/Filter [/JBIG2Decode /JBIG2Decode]","/Filter [/JBIG2Decode /AHx]",
+            "/Filter [/DCTDecode /JBIG2Decode]","/Filter [/AHx /JBIG2Decode] /DecodeParms <<>>"]{
+            assert!(render(&wrapped,9,2,&format!("{f} {meta}")).is_err(),"{f}");
+        }
+        assert!(render(&wrapped[..wrapped.len()-1],9,2,&format!("/Filter [/AHx /JBIG2Decode] {meta}")).is_err());
+        let mut budget=Budget{work:0,stage:"JBIG2 wrapper test"};
+        assert!(jbig2_byte_wrappers(&wrapped,&[b"AHx"],&[Object::Null],data.len()-1,&mut budget).is_err());
+        let mut budget=Budget{work:super::super::MAX_WORK-wrapped.len()*2-data.len()+1,stage:"JBIG2 wrapper test"};
+        assert!(jbig2_byte_wrappers(&wrapped,&[b"AHx"],&[Object::Null],data.len(),&mut budget).is_err());
+        let f="/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 1 /DecodeParms << /JBIG2Globals 6 0 R >>";
+        for gf in ["/Filter /JBIG2Decode","/Filter /FlateDecode /DecodeParms << /Predictor 2 >>","/Filter /AHx /DecodeParms [null]"]{
+            let bytes=pdf_layout_wrapped_globals(PAGE1,64,56,64,56,f,"q 64 0 0 56 0 0 cm /Im Do Q",Some(GLOBAL1),gf,None);
+            let doc=Document::open(&bytes).unwrap();
+            assert!(doc.render_page(&doc.pages().unwrap()[0],super::super::Options::default(),16384).is_err());
+        }
     }
     #[test]fn pdf_jbig2_invalid_metadata_and_budget(){
         let data=jbig2_fixture();
