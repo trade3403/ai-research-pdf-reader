@@ -2920,6 +2920,50 @@ mod aggregation_executor_tests{
         }
     }
     #[test]
+    fn aggregation_executor_rejects_invalid_context_provenance(){
+        let l=ExecutionLimits::default();
+        let (g,p)=retained_fixture(1);
+        // The parent is the second global segment; clear its retain flag.
+        let mut no_retain=g.clone();
+        let parent_start=seg(1,0,0,&[],SOURCE).len()+12;
+        no_retain[parent_start]&=!2;
+        assert!(matches!(execute_pdf_dictionaries_with_aggregation(&no_retain,&p,l),
+            Err(Error::Invalid("JBIG2 dictionary context not retained"))));
+        // Last dictionary, not any earlier retained dictionary, is the source.
+        let info_len=seg(3,48,1,&[],&[0;19]).len();
+        let child_body=&p[info_len+12..];
+        let mut wrong_last=p[..info_len].to_vec();
+        wrong_last.extend(seg(4,0,1,&[2,1],child_body));
+        assert!(matches!(execute_pdf_dictionaries_with_aggregation(&g,&wrong_last,l),
+            Err(Error::Invalid("JBIG2 dictionary context not retained"))));
+        let (_,other_template)=retained_fixture(0);
+        assert!(matches!(execute_pdf_dictionaries_with_aggregation(&g,&other_template,l),
+            Err(Error::Invalid("JBIG2 dictionary context parameters mismatch"))));
+        let mut changed_at=p.clone();
+        changed_at[info_len+12+2]=1;
+        assert!(matches!(execute_pdf_dictionaries_with_aggregation(&g,&changed_at,l),
+            Err(Error::Invalid("JBIG2 dictionary context parameters mismatch"))));
+    }
+    #[test]
+    fn aggregation_executor_retained_fanout(){
+        for t in [0,1]{
+            let (g,mut p)=retained_fixture(t);
+            let info_len=seg(3,48,1,&[],&[0;19]).len();
+            let body=p[info_len+12..].to_vec();
+            p.extend(seg(5,0,1,&[2],&body));
+            let d=execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits::default()).unwrap();
+            let s=d.stats();
+            assert_eq!((s.dictionaries,s.arithmetic_aggregation,s.retained_gr_contexts,s.reused_gr_contexts),(4,3,3,2));
+            assert_eq!(d.symbol(4,3).unwrap().packed(),[128]);
+            assert_eq!(d.symbol(4,3),d.symbol(5,3));
+            assert!(!std::ptr::eq(d.symbol(4,3).unwrap(),d.symbol(5,3).unwrap()));
+            assert_eq!(s.peak_context_entries,if t==0{3*8192+4+3072+4608}else{3*1024+4+3072+4608});
+            let exact=ExecutionLimits{context_entries:s.peak_context_entries,work:s.work_used,..ExecutionLimits::default()};
+            assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,exact).unwrap(),d);
+            assert!(execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits{context_entries:exact.context_entries-1,..exact}).is_err());
+        }
+    }
+    #[test]
     fn aggregation_executor_retained_exact_limits(){
         let (g,p)=retained_fixture(1);
         let d=execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits::default()).unwrap();
