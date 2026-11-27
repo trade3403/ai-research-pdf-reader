@@ -1608,15 +1608,23 @@ pub fn decode_arithmetic_single_refinement_with_context(plan:&Plan,stream:&[u8],
 /// Candidate aggregation entry: permits more than one instance per symbol.
 pub fn decode_arithmetic_aggregation(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
     limits:ArithmeticLimits)->Result<ArithmeticDictionary>{
-    Ok(decode_arithmetic_refinement_impl(plan,stream,imports,limits,None,true)?.0)
+    if plan.header.context_used||plan.header.context_retained||plan.context_source.is_some(){
+        return Err(Error::Unsupported("JBIG2 aggregation retained contexts"));
+    }
+    Ok(decode_arithmetic_aggregation_with_context(plan,stream,imports,limits,None)?.0)
+}
+/// Opt-in aggregation with immutable GR probability snapshots. Each dictionary
+/// starts a fresh QM stream, IAID and integer banks. Direct callers supply
+/// the correct ancestor; executor provenance validation is a separate gate.
+pub fn decode_arithmetic_aggregation_with_context(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits,initial:Option<&RefinementContextSnapshot>)
+    ->Result<(ArithmeticDictionary,Option<RefinementContextSnapshot>)>{
+    decode_arithmetic_refinement_impl(plan,stream,imports,limits,initial,true)
 }
 fn decode_arithmetic_refinement_impl(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
     limits:ArithmeticLimits,initial:Option<&RefinementContextSnapshot>,aggregate:bool)
     ->Result<(ArithmeticDictionary,Option<RefinementContextSnapshot>)>{
     use super::{integer::{IntegerDecoder,IaidDecoder},refinement,text_region};
-    if aggregate&&(plan.header.context_used||plan.header.context_retained||plan.context_source.is_some()){
-        return Err(Error::Unsupported("JBIG2 aggregation retained contexts"));
-    }
     let h=&plan.header;
     if h.huffman||!h.refine_aggregate{
         return Err(Error::Unsupported("JBIG2 single arithmetic refinement mode"));
@@ -1968,6 +1976,33 @@ mod retained_gr_tests{
     }
     fn ids(d:&DictionarySet,n:u32)->Vec<usize>{
         d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()
+    }
+    #[test]
+    fn aggregation_context_existing_reference_vectors(){
+        for t in [0,1]{
+            let s=src();let p=parent(t,2);let l=ArithmeticLimits::default();
+            let plan=plan_for(&p,1);
+            let (legacy,expected)=decode_arithmetic_single_refinement_with_context(&plan,&p,&[&s],l,None).unwrap();
+            let (d,snap)=decode_arithmetic_aggregation_with_context(&plan,&p,&[&s],l,None).unwrap();
+            assert_eq!(d.new_symbols,legacy.new_symbols);
+            assert_eq!(snap,expected);
+            let snap=snap.unwrap();
+            let b=body(t,3,true,CHILD);let mut plan=plan_for(&b,3);
+            let imports=[&s,&d.new_symbols[0],&d.new_symbols[1]];
+            let (child,after)=decode_arithmetic_aggregation_with_context(&plan,&b,&imports,l,Some(&snap)).unwrap();
+            assert_eq!(child.new_symbols[0].packed(),[160,64]);
+            assert_eq!(child.exported_indices,[0,1,2,3]);
+            let (legacy,expected)=decode_arithmetic_single_refinement_with_context(&plan,&b,&imports,l,Some(&snap)).unwrap();
+            assert_eq!(child.new_symbols,legacy.new_symbols);
+            assert_eq!(after,expected);
+            let exact=ArithmeticLimits{work:child.work_used,..l};
+            assert!(decode_arithmetic_aggregation_with_context(&plan,&b,&imports,exact,Some(&snap)).is_ok());
+            assert!(decode_arithmetic_aggregation_with_context(&plan,&b,&imports,ArithmeticLimits{work:child.work_used-1,..l},Some(&snap)).is_err());
+            assert!(decode_arithmetic_aggregation_with_context(&plan,&b,&imports,l,None).is_err());
+            assert!(decode_arithmetic_aggregation(&plan,&b,&imports,l).is_err());
+            plan.header.context_used=false;
+            assert!(decode_arithmetic_aggregation_with_context(&plan,&b,&imports,l,Some(&snap)).is_err());
+        }
     }
     #[test]
     fn retained_gr_both_templates_reference(){
@@ -2694,6 +2729,23 @@ mod aggregation_mixed_vectors{
             assert_eq!(d.new_symbols[0].packed(),[128]);
             assert_eq!((d.new_symbols[1].width(),d.new_symbols[1].height()),(2,1));
             assert_eq!(d.new_symbols[1].packed(),[128]);
+        }
+    }
+    #[test]
+    fn mixed_aggregation_retains_gr(){
+        for t in [0,1]{
+            let mut b=vec![8|(t<<4)|2,2,2,255];
+            if t==0{b.extend([255;4]);}
+            b.extend([0,0,0,3,0,0,0,2]);b.extend(MIXED);
+            let (header,_)=parse(&b).unwrap();let start=header.data_offset;
+            let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+            let src=Bitmap::from_packed(1,1,&[128]).unwrap();
+            let (d,snap)=decode_arithmetic_aggregation_with_context(&p,&b,&[&src],ArithmeticLimits::default(),None).unwrap();
+            assert_eq!(d,run(t,ArithmeticLimits::default()).unwrap());
+            let snap=snap.unwrap();
+            assert_eq!(snap.entries(),if t==0{8192}else{1024});
+            assert!(snap.nonzero_entries()>0);
+            assert!(decode_arithmetic_aggregation(&p,&b,&[&src],ArithmeticLimits::default()).is_err());
         }
     }
     #[test]

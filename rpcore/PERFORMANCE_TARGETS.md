@@ -34,3 +34,7 @@ HEAD 56946d71c9a1f6ebeabc7b60dbc246cdeeddc512，Run 45750135349，perf-pdfium jo
 | 300 | 4.74 / 3.64 | 6.46 / 4.48 | 15.61 / 8.25 |
 
 打开及页信息：矢量 484.29%、文本 583.27%、图像 435.97%；文本及原点 fresh/warm 214.17/217.34%。渲染有效场景全未达 50% 基础目标。日志确认四个排除场景但未读取 ZIP 内报告，故不推断具体质量失败项，不声称核验绝对延迟/RSS。微型合成样本、Python 包装、不同实现成本等限制仍适用；这些数字不构成整体引擎领先结论。后续继续以同机配对、质量优先原则，先回归 B11.3e3f；B-P1 定位光栅热点、修复 JPEG 低 DPI 差异，之后再做 SIMD/并行/GPU 优化。保留原始基准及门槛。
+
+
+## CI #623 paired observation
+HEAD 056a0fec9a69fcce485c00a4fa524353597cf7b5, run 45914075351, perf job 140229006059. 25/29 eligible; four low-DPI JPEG cases excluded. Eligible render throughput 2.97–21.13% of PDFium; vector max 4.32%, TrueType max 11.26%, JPEG max 21.13%. Inspect vector/text/image 439.76/494.67/355.08%; text extraction fresh/warm 224.30/263.40%. Shared-runner observations, no regression attribution or RSS verification. All render cases below 50%; targets unchanged.
