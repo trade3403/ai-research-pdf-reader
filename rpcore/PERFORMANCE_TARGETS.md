@@ -41,3 +41,6 @@ HEAD 056a0fec9a69fcce485c00a4fa524353597cf7b5, run 45914075351, perf job 1402290
 
 
 CI #625 run 45955913846: 25/29 eligible; render 4.18–33.85% of PDFium, vector max 5.64%, text max 16.39%, JPEG max 33.85%; four low-DPI JPEG exclusions. Runner variation not attributed to algorithm change; goals unchanged.
+
+
+CI #627 run 45960007364: 25/29 eligible, rendering 3.70–28.72% of PDFium, vector max 5.10%, text max 13.07%, JPEG max 28.72%; four low-DPI JPEG exclusions. No speedup attribution; goals unchanged.

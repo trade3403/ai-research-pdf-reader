@@ -1112,8 +1112,8 @@ impl DictionarySet{
 pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
     execute_pdf_dictionaries_impl(globals,page,limits,false)
 }
-/// Opt-in aggregation execution; retained/reused GR dictionaries keep the
-/// established single-reference path until aggregation retention is verified.
+/// Opt-in arithmetic aggregation execution, including retained/reused GR.
+/// The legacy executor continues to admit only single-reference refinement.
 pub fn execute_pdf_dictionaries_with_aggregation(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
     execute_pdf_dictionaries_impl(globals,page,limits,true)
 }
@@ -1160,8 +1160,7 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
         // Single refinement needs an additional temporary borrowed-bitmap
         // slice. Account for those pointer slots before allocating.
         let borrow_slots=if plan.header.refine_aggregate{plan.imported as usize}else{0};
-        let aggregate=enable_aggregation&&plan.header.refine_aggregate&&!plan.header.huffman
-            &&!plan.header.context_used&&!plan.header.context_retained&&plan.context_source.is_none();
+        let aggregate=enable_aggregation&&plan.header.refine_aggregate&&!plan.header.huffman;
         // At most all imports and all but the last new symbol are
         // simultaneously borrowed by one embedded text region. Reserve
         // this extra array in the cumulative slot cap before decoding.
@@ -1217,27 +1216,13 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
             let d=decode_huffman_direct(&plan,original,HuffmanLimits{pixels,packed_bytes,work:left,
                 export_runs:limits.export_runs_per_dictionary})?;
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
-        }else if aggregate{
-            let active=retained_entries.checked_add(refinement_context_entries(&plan.header,plan.imported)?)
-                .and_then(|n|n.checked_add(9*512)).ok_or(Error::Limit("JBIG2 context entries"))?;
-            if active>limits.context_entries{return Err(Error::Limit("JBIG2 context entries"));}
-            let mut imports=Vec::new();
-            imports.try_reserve_exact(borrow_slots).map_err(|_|Error::Limit("JBIG2 refinement import allocation"))?;
-            for &id in &namespace{
-                imports.push(set.bitmap(id).ok_or(Error::Invalid("JBIG2 refinement missing bitmap identity"))?);
-            }
-            let d=decode_arithmetic_aggregation(&plan,original,&imports,ArithmeticLimits{
-                pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
-                decisions:limits.decisions_per_dictionary})?;
-            set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
-            set.stats.arithmetic_aggregation+=1;
-            (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else if plan.header.refine_aggregate{
             let initial=match plan.context_source{
                 Some(id)=>Some(gr_snapshots.get(&id).ok_or(Error::Invalid("JBIG2 missing retained refinement context"))?),
                 None=>None,
             };
             let active=retained_entries.checked_add(refinement_context_entries(&plan.header,plan.imported)?)
+                .and_then(|n|n.checked_add(if aggregate{9*512}else{0}))
                 .ok_or(Error::Limit("JBIG2 context entries"))?;
             if active>limits.context_entries{return Err(Error::Limit("JBIG2 context entries"));}
             let mut imports=Vec::new();
@@ -1245,9 +1230,13 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
             for &id in &namespace{
                 imports.push(set.bitmap(id).ok_or(Error::Invalid("JBIG2 refinement missing bitmap identity"))?);
             }
-            let (d,snapshot)=decode_arithmetic_single_refinement_with_context(&plan,original,&imports,ArithmeticLimits{
-                pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
-                decisions:limits.decisions_per_dictionary},initial)?;
+            let decode_limits=ArithmeticLimits{pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
+                decisions:limits.decisions_per_dictionary};
+            let (d,snapshot)=if aggregate{
+                decode_arithmetic_aggregation_with_context(&plan,original,&imports,decode_limits,initial)?
+            }else{
+                decode_arithmetic_single_refinement_with_context(&plan,original,&imports,decode_limits,initial)?
+            };
             if initial.is_some(){
                 set.stats.reused_contexts+=1;set.stats.reused_gr_contexts+=1;
             }
@@ -1264,7 +1253,7 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
             // Borrow ends before the arena grows. Only newly decoded
             // bitmaps are moved into it by the common commit path below.
             set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
-            set.stats.single_refinement+=1;
+            if aggregate{set.stats.arithmetic_aggregation+=1;}else{set.stats.single_refinement+=1;}
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else{
             let active=retained_entries.checked_add(plan.header.template.context_count())
@@ -2902,6 +2891,44 @@ mod aggregation_executor_tests{
             assert_eq!(d.symbol(3,1).unwrap().packed(),[128]);
             let last=d.symbol(3,2).unwrap();
             assert_eq!((last.width(),last.height()),(2,1));assert_eq!(last.packed(),[128]);
+        }
+    }
+    fn retained_fixture(t:u8)->(Vec<u8>,Vec<u8>){
+        let mut g=seg(1,0,0,&[],SOURCE);
+        let mut parent=vec![8|(t<<4)|2,2,2,255];if t==0{parent.extend([255;4]);}
+        parent.extend([0,0,0,3,0,0,0,2]);parent.extend(MIXED);
+        g.extend(seg(2,0,0,&[1],&parent));
+        let mut info=Vec::new();for n in [20u32,20,300,300]{info.extend(n.to_be_bytes());}
+        info.extend([0,0,0]);let mut p=seg(3,48,1,&[],&info);
+        let mut child=vec![8|(t<<4)|3,2,2,255];if t==0{child.extend([255;4]);}
+        child.extend([0,0,0,4,0,0,0,1]);child.extend([149,20,57,186,107,255,172]);
+        p.extend(seg(4,0,1,&[2],&child));(g,p)
+    }
+    #[test]
+    fn aggregation_executor_retained_global_to_page(){
+        for t in [0,1]{
+            let (g,p)=retained_fixture(t);
+            let d=execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits::default()).unwrap();
+            let s=d.stats();
+            assert_eq!((s.dictionaries,s.arithmetic_aggregation,s.single_refinement),(3,2,0));
+            assert_eq!((s.retained_contexts,s.reused_contexts,s.retained_gr_contexts,s.reused_gr_contexts),(2,1,2,1));
+            assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(4,5,4,25));
+            assert_eq!(s.peak_context_entries,if t==0{2*8192+4+3072+4608}else{2*1024+4+3072+4608});
+            assert_eq!(d.symbol(4,3).unwrap().packed(),[128]);
+            for i in 0..3{assert!(std::ptr::eq(d.symbol(2,i).unwrap(),d.symbol(4,i).unwrap()));}
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        }
+    }
+    #[test]
+    fn aggregation_executor_retained_exact_limits(){
+        let (g,p)=retained_fixture(1);
+        let d=execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits::default()).unwrap();
+        let l=ExecutionLimits{dictionaries:3,new_symbols:4,symbol_slots:25,pixels:5,packed_bytes:4,
+            work:d.stats().work_used,export_runs_per_dictionary:2,decisions_per_dictionary:92,context_entries:9732};
+        assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap(),d);
+        for l in [ExecutionLimits{symbol_slots:24,..l},ExecutionLimits{context_entries:9731,..l},
+            ExecutionLimits{work:l.work-1,..l},ExecutionLimits{packed_bytes:3,..l}]{
+            assert!(execute_pdf_dictionaries_with_aggregation(&g,&p,l).is_err());
         }
     }
     #[test]
