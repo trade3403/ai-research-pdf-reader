@@ -736,3 +736,86 @@ mod huffman_symbol_wire_tests{
         assert_eq!(r.position(),0);
     }
 }
+
+/// Resolved Huffman text integer tables. Selectors and custom segment
+/// dependency resolution are handled separately from entropy decoding.
+pub struct HuffmanTextIntegers{
+    fs:super::huffman::Table,
+    ds:super::huffman::Table,
+    dt:super::huffman::Table,
+}
+impl HuffmanTextIntegers{
+    /// Standard table numbers, not header selector bit patterns.
+    pub fn standard(fs:u8,ds:u8,dt:u8)->Result<Self>{
+        use super::huffman::standard::table;
+        if !matches!(fs,6|7)||!matches!(ds,8|9|10)||!matches!(dt,11|12|13){
+            return Err(Error::Invalid("JBIG2 Huffman text table selection"));
+        }
+        Self::new(table(fs)?,table(ds)?,table(dt)?)
+    }
+    pub fn new(fs:super::huffman::Table,ds:super::huffman::Table,dt:super::huffman::Table)->Result<Self>{
+        // OOB capability is permitted only on the subsequent-symbol table.
+        // Inspect the enabled code/row pairs through the table API below.
+        if fs.has_oob()||!ds.has_oob()||dt.has_oob(){
+            return Err(Error::Invalid("JBIG2 Huffman text table OOB capability"));
+        }
+        Ok(Self{fs,ds,dt})
+    }
+    fn required(v:super::integer::Integer)->Result<i64>{
+        match v{super::integer::Integer::Value(n)=>Ok(n),_=>Err(Error::Invalid("JBIG2 Huffman text unexpected OOB"))}
+    }
+    pub fn first(&self,r:&mut crate::filters::ccitt::BitReader<'_>)->Result<i64>{
+        Self::required(self.fs.decode(r)?)
+    }
+    pub fn delta(&self,r:&mut crate::filters::ccitt::BitReader<'_>)->Result<super::integer::Integer>{
+        self.ds.decode(r)
+    }
+    pub fn strip(&self,r:&mut crate::filters::ccitt::BitReader<'_>)->Result<i64>{
+        Self::required(self.dt.decode(r)?)
+    }
+    pub fn curt(r:&mut crate::filters::ccitt::BitReader<'_>,strips:u8)->Result<u8>{
+        if !matches!(strips,1|2|4|8){return Err(Error::Invalid("JBIG2 Huffman text strips"));}
+        let mut n=0u8;
+        for _ in 0..strips.trailing_zeros(){n=(n<<1)|r.bit()?;}
+        Ok(n)
+    }
+}
+#[cfg(test)]
+mod huffman_text_integer_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    use super::super::{huffman::{Table,Row,Range},integer::Integer};
+    #[test]
+    fn huffman_text_integer_reference(){
+        let t=HuffmanTextIntegers::standard(6,8,11).unwrap();
+        // B.11 DT=1 (0); B.6 FS=3 (00 0000011);
+        // CURT=3 (11); B.8 DS=-1 (1010), OOB (01).
+        let mut r=BitReader::new(&[0,250,64],18).unwrap();
+        assert_eq!(t.strip(&mut r).unwrap(),1);
+        assert_eq!(t.first(&mut r).unwrap(),3);
+        assert_eq!(HuffmanTextIntegers::curt(&mut r,4).unwrap(),3);
+        assert_eq!(t.delta(&mut r).unwrap(),Integer::Value(-1));
+        assert_eq!(t.delta(&mut r).unwrap(),Integer::Oob);
+        assert_eq!(r.remaining(),0);
+    }
+    #[test]
+    fn huffman_text_integer_selection_and_bounds(){
+        for fs in [6,7]{for ds in [8,9,10]{for dt in [11,12,13]{
+            assert!(HuffmanTextIntegers::standard(fs,ds,dt).is_ok());
+        }}}
+        assert!(HuffmanTextIntegers::standard(8,8,11).is_err());
+        assert!(HuffmanTextIntegers::standard(6,6,11).is_err());
+        assert!(HuffmanTextIntegers::standard(6,8,8).is_err());
+        let normal=||Table::new(&[Row{prefix_len:1,range:Range::Normal{base:0,extra:0}}]).unwrap();
+        let oob=||Table::new(&[Row{prefix_len:1,range:Range::Oob}]).unwrap();
+        assert!(HuffmanTextIntegers::new(oob(),oob(),normal()).is_err());
+        assert!(HuffmanTextIntegers::new(normal(),normal(),normal()).is_err());
+        assert!(HuffmanTextIntegers::new(normal(),oob(),oob()).is_err());
+        let mut r=BitReader::new(&[0xe0],3).unwrap();
+        assert_eq!(HuffmanTextIntegers::curt(&mut r,1).unwrap(),0);
+        assert!(HuffmanTextIntegers::curt(&mut r,3).is_err());
+        assert_eq!(r.position(),0);
+        assert_eq!(HuffmanTextIntegers::curt(&mut r,8).unwrap(),7);
+        assert!(HuffmanTextIntegers::curt(&mut r,2).is_err());
+    }
+}

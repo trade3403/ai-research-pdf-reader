@@ -98,6 +98,7 @@ impl Table {
         Ok(Self{rows:rows.to_vec(),codes,nodes})
     }
     pub fn codes(&self)->&[Option<Code>]{&self.codes}
+    pub fn has_oob(&self)->bool{self.rows.iter().any(|r|r.prefix_len!=0&&r.range==Range::Oob)}
     /// At most 32 prefix and 32 range bits per value. The shared reader
     /// bounds total input bits. Errors may advance it; abort on error.
     pub fn decode(&self,reader:&mut BitReader<'_>)->Result<Integer>{
