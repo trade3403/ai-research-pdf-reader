@@ -614,10 +614,10 @@ mod shared_text_tests{
 }
 
 /// Canonical Huffman symbol IDs, ordered by symbol namespace index.
-/// Zero lengths disable IDs. The all-zero singleton is deliberately
-/// excluded from this scoped entry; wire-format table parsing is separate.
+/// Zero lengths disable IDs; they never encode a zero-bit singleton.
+/// Only the full payload's zero-instance path admits an unused namespace.
 pub struct HuffmanSymbolIds{
-    table:super::huffman::Table,
+    table:Option<super::huffman::Table>,
     count:usize,
 }
 impl HuffmanSymbolIds{
@@ -630,14 +630,17 @@ impl HuffmanSymbolIds{
         for (id,&prefix_len) in lengths.iter().enumerate(){
             rows.push(Row{prefix_len,range:Range::Normal{base:id as i64,extra:0}});
         }
-        Ok(Self{table:Table::new(&rows)?,count:lengths.len()})
+        Ok(Self{table:Some(Table::new(&rows)?),count:lengths.len()})
     }
     /// Read the 35 four-bit run-code lengths, then expand symbol lengths.
     /// Leaves the reader at the next bit; the region caller owns alignment.
     pub fn from_wire(reader:&mut crate::filters::ccitt::BitReader<'_>,count:usize)->Result<Self>{
+        Self::from_wire_impl(reader,count,false)
+    }
+    fn from_wire_impl(reader:&mut crate::filters::ccitt::BitReader<'_>,count:usize,allow_unused:bool)->Result<Self>{
         use super::huffman::{Row,Range,Table,MAX_ROWS};
         use super::integer::Integer;
-        if count==0{return Err(Error::Invalid("JBIG2 empty Huffman symbol table"));}
+        if count==0&&!allow_unused{return Err(Error::Invalid("JBIG2 empty Huffman symbol table"));}
         if count>MAX_ROWS{return Err(Error::Limit("JBIG2 Huffman symbol table rows"));}
         fn bits(r:&mut crate::filters::ccitt::BitReader<'_>,n:u8)->Result<usize>{
             let mut v=0usize;for _ in 0..n{v=(v<<1)|usize::from(r.bit()?);}Ok(v)
@@ -645,6 +648,12 @@ impl HuffmanSymbolIds{
         let mut rows=[Row{prefix_len:0,range:Range::Normal{base:0,extra:0}};35];
         for (i,row) in rows.iter_mut().enumerate(){
             *row=Row{prefix_len:bits(reader,4)? as u8,range:Range::Normal{base:i as i64,extra:0}};
+        }
+        // No symbol lengths to expand: still consume the complete 35-nibble
+        // alphabet and validate any enabled run codes before alignment.
+        if count==0{
+            if rows.iter().any(|r|r.prefix_len!=0){Table::new(&rows)?;}
+            return Ok(Self{table:None,count:0});
         }
         let run=Table::new(&rows)?;
         let mut lengths=Vec::new();
@@ -662,11 +671,12 @@ impl HuffmanSymbolIds{
             if end>count{return Err(Error::Invalid("JBIG2 symbol length run exceeds count"));}
             lengths.resize(end,length);
         }
+        if allow_unused&&lengths.iter().all(|&n|n==0){return Ok(Self{table:None,count});}
         Self::new(&lengths)
     }
     pub fn count(&self)->usize{self.count}
     pub fn decode(&self,reader:&mut crate::filters::ccitt::BitReader<'_>)->Result<usize>{
-        match self.table.decode(reader)?{
+        match self.table.as_ref().ok_or(Error::Invalid("JBIG2 no enabled symbol IDs"))?.decode(reader)?{
             super::integer::Integer::Value(id) if id>=0&&(id as usize)<self.count=>Ok(id as usize),
             _=>Err(Error::Invalid("JBIG2 Huffman symbol ID")),
         }
@@ -829,6 +839,7 @@ pub fn decode_huffman_direct(reader:&mut crate::filters::ccitt::BitReader<'_>,
     integers:&HuffmanTextIntegers,bit_limit:usize,work_limit:u64)->Result<DecodedText>{
     use super::integer::Integer;
     if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
+    if options.instances!=0&&ids.table.is_none(){return Err(Error::Invalid("JBIG2 no enabled symbol IDs"));}
     if bit_limit>MAX_TEXT_DECISIONS{return Err(Error::Limit("JBIG2 Huffman text bits"));}
     // Bound the reader window before decoding, not just after a field.
     // This scoped entry requires the caller to delimit its entropy span.
@@ -1000,6 +1011,7 @@ pub fn decode_huffman_refined(data:&[u8],bit_len:usize,options:Options,
     use super::{integer::Integer,refinement,qm};
     use crate::filters::ccitt::BitReader;
     if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
+    if options.instances!=0&&ids.table.is_none(){return Err(Error::Invalid("JBIG2 no enabled symbol IDs"));}
     if bit_len>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
         work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 Huffman refined text limits"));}
     let mut reader=BitReader::new(data,bit_len)?;
@@ -1312,7 +1324,7 @@ pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super
     let left=work_limit.checked_sub(overhead).ok_or(Error::Limit("JBIG2 text table work"))?;
     let (ints,refinement)=bind_text_tables(&header.selections,custom)?;
     let mut reader=BitReader::new(body,bits)?;
-    let ids=HuffmanSymbolIds::from_wire(&mut reader,symbols.len())?;
+    let ids=HuffmanSymbolIds::from_wire_impl(&mut reader,symbols.len(),header.options.instances==0)?;
     let start=reader.position().div_ceil(8);
     let entropy=body.get(start..).ok_or(Error::Invalid("JBIG2 text alignment"))?;
     let entropy_bits=entropy.len()*8;
@@ -1484,5 +1496,62 @@ mod annex_h_original_huffman_text_tests {
         assert!(execute_pdf_dictionaries(GLOBAL,&bad,ExecutionLimits::default()).is_err());
         let mut bad = page.clone(); bad[PAGE_PREFIX.len()+12]=50;
         assert!(execute_pdf_dictionaries(GLOBAL,&bad,ExecutionLimits::default()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod huffman_unused_namespace_tests {
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    fn payload(flags:u16,instances:u32,table:&[u8;18],entropy:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,8,0,0,0,4,0,0,0,0,0,0,0,0,0];
+        v.extend(flags.to_be_bytes());v.extend([0,0]);
+        v.extend(instances.to_be_bytes());v.extend(table);v.extend(entropy);v
+    }
+    #[test]
+    fn huffman_empty_namespace_default_pixels(){
+        // Synthetic zero-instance region: 35 zero run lengths, no symbol
+        // lengths, byte padding, initial HTDT=1 (B.11 code 0).
+        for (flags,expected) in [(0x11,0),(0x211,255),(0x8013,0)]{
+            let data=payload(flags,0,&[0;18],&[0]);
+            let (_,d)=decode_huffman_text_payload(&data,&[],&[],152,0,50000).unwrap();
+            assert_eq!(d.bitmap.packed(),[expected;4]);
+            assert_eq!((d.stats.instances,d.stats.strips,d.stats.composed_pixels),(0,0,0));
+            assert_eq!(decode_huffman_text_payload(&data,&[],&[],152,0,d.stats.work_used).unwrap().1,d);
+            assert!(decode_huffman_text_payload(&data,&[],&[],152,0,d.stats.work_used-1).is_err());
+            assert!(decode_huffman_text_payload(&data,&[],&[],151,0,50000).is_err());
+            for n in 0..data.len(){assert!(decode_huffman_text_payload(&data[..n],&[],&[],152,0,50000).is_err());}
+            let mut extra=data.clone();extra.push(0);
+            assert!(decode_huffman_text_payload(&extra,&[],&[],160,0,50000).is_err());
+            let mut bad=data;bad[24]=1;
+            assert!(decode_huffman_text_payload(&bad,&[],&[],152,0,50000).is_err());
+        }
+        let mut bad=[0;18];bad[0]=0x11;bad[1]=0x10; // three one-bit codes
+        assert!(decode_huffman_text_payload(&payload(0x11,0,&bad,&[0]),&[],&[],152,0,50000).is_err());
+    }
+    #[test]
+    fn huffman_unused_symbols_never_decode_zero_bit_id(){
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let mut table=[0;18];table[0]=0x10; // literal length zero has code 0
+        let data=payload(0x11,0,&table,&[0]);
+        let (_,d)=decode_huffman_text_payload(&data,&[&a],&[],152,0,50000).unwrap();
+        assert_eq!(d.bitmap.packed(),[0;4]);
+        let mut r=BitReader::new(&table,144).unwrap();
+        let ids=HuffmanSymbolIds::from_wire_impl(&mut r,1,true).unwrap();
+        assert_eq!(r.position(),141);
+        assert!(ids.decode(&mut r).is_err());assert_eq!(r.position(),141);
+        let t=HuffmanTextIntegers::standard(6,8,11).unwrap();
+        let mut opt=parse_huffman_text_header(&data).unwrap().0.options;opt.instances=1;
+        assert!(decode_huffman_direct(&mut r,opt,&[&a],&ids,&t,3,50000).is_err());
+        assert_eq!(r.position(),141);
+        assert!(decode_huffman_text_payload(&payload(0x11,1,&table,&[0,4]),&[&a],&[],160,0,50000).is_err());
+        assert!(HuffmanSymbolIds::new(&[0]).is_err());
+        // One actually enabled ID still consumes a real one-bit prefix.
+        table[0]=1;
+        let (_,d)=decode_huffman_text_payload(&payload(0x11,1,&table,&[0,4]),&[&a],&[],160,0,50000).unwrap();
+        assert_eq!(d.bitmap.packed(),[128,0,0,0]);
+        let ids=HuffmanSymbolIds::new(&[1]).unwrap();
+        assert!(ids.decode(&mut BitReader::new(&[0],0).unwrap()).is_err());
+        assert!(ids.decode(&mut BitReader::new(&[128],1).unwrap()).is_err());
     }
 }
