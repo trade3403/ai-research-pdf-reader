@@ -35,7 +35,7 @@ fn termination(data:&[u8])->Result<usize>{
     Err(Error::Invalid("JBIG2 QM missing termination"))
 }
 
-pub struct Decoder<'a>{inner:mq::Decoder<'a>,marker:usize}
+pub struct Decoder<'a>{inner:mq::Decoder<'a>,marker:usize,decisions_used:usize}
 impl<'a> Decoder<'a>{
     pub fn new(data:&'a[u8],decisions:usize)->Result<Self>{
         let marker=termination(data)?;
@@ -43,16 +43,20 @@ impl<'a> Decoder<'a>{
             Error::Limit(_)=>Error::Limit("JBIG2 QM decisions"),
             _=>Error::Invalid("JBIG2 QM initialization"),
         })?;
-        Ok(Self{inner,marker})
+        Ok(Self{inner,marker,decisions_used:0})
     }
     /// The caller supplies the context and a finite total decision budget.
     /// Normative marker fill is allowed within that budget.
     pub fn decode(&mut self,cx:&mut Context)->Result<u8>{
-        self.inner.decode(&mut cx.0).map_err(|e|match e{
+        let bit=self.inner.decode(&mut cx.0).map_err(|e|match e{
             Error::Limit(_)=>Error::Limit("JBIG2 QM decisions"),
             _=>Error::Invalid("JBIG2 QM decision"),
-        })
+        })?;
+        self.decisions_used+=1;
+        Ok(bit)
     }
+    /// Successful binary decisions, excluding failed budget checks.
+    pub fn decisions_used(&self)->usize{self.decisions_used}
     pub fn marker_offset(&self)->usize{self.marker}
     /// Number of bytes at or before the arithmetic input pointer. This
     /// includes a marker prefix if the pointer has reached it, but excludes
@@ -84,7 +88,9 @@ mod tests{
         assert_eq!(d.marker_offset(),28);assert_eq!(d.bytes_consumed(),29);
         assert!(d.at_marker_prefix());assert!(!d.used_virtual_input());
         assert_eq!((cx.state(),cx.mps()),(18,1));
+        assert_eq!(d.decisions_used(),256);
         assert!(matches!(d.decode(&mut cx),Err(Error::Limit(_))));
+        assert_eq!(d.decisions_used(),256);
     }
     #[test]fn qm_annex_h1_initial_context_trace(){
         // Table H.1 gives states and MPS values BEFORE each decision.

@@ -1009,12 +1009,12 @@ pub fn decode_huffman_refined(data:&[u8],bit_len:usize,options:Options,
     tables:&HuffmanTextRefinementTables,neighborhood:&super::refinement::Neighborhood,
     decision_limit:usize,work_limit:u64)->Result<DecodedText>{
     decode_huffman_refined_bounded(data,bit_len,options,symbols,ids,integers,tables,neighborhood,
-        decision_limit,work_limit,bitmap::MAX_PACKED_BYTES)
+        decision_limit,work_limit,bitmap::MAX_PACKED_BYTES,&mut 0)
 }
 fn decode_huffman_refined_bounded(data:&[u8],bit_len:usize,options:Options,
     symbols:&[&Bitmap],ids:&HuffmanSymbolIds,integers:&HuffmanTextIntegers,
     tables:&HuffmanTextRefinementTables,neighborhood:&super::refinement::Neighborhood,
-    decision_limit:usize,work_limit:u64,temporary_packed:usize)->Result<DecodedText>{
+    decision_limit:usize,work_limit:u64,temporary_packed:usize,decisions_used:&mut usize)->Result<DecodedText>{
     use super::{integer::Integer,refinement,qm};
     use crate::filters::ccitt::BitReader;
     if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
@@ -1079,6 +1079,7 @@ fn decode_huffman_refined_bounded(data:&[u8],bit_len:usize,options:Options,
     if reader.remaining()>7{return Err(Error::Invalid("JBIG2 Huffman refined text trailing bits"));}
     let mut out=region.finish()?;
     out.stats.work_used=out.stats.work_used.checked_add(extra).ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+    *decisions_used=decision_limit-remaining;
     Ok(out)
 }
 #[cfg(test)]
@@ -1318,15 +1319,15 @@ pub fn bind_text_tables(selections:&TextHuffmanSelections,custom:&[&super::huffm
 /// byte padding is permitted, never an additional whole byte.
 pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
     bit_limit:usize,decision_limit:usize,work_limit:u64)->Result<(HuffmanTextHeader,DecodedText)>{
-    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,None)
+    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,None,&mut 0)
 }
 /// Packed budget includes the output canvas and any one temporary refinement.
 pub fn decode_huffman_text_payload_bounded(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
     bit_limit:usize,decision_limit:usize,work_limit:u64,packed_limit:usize)->Result<(HuffmanTextHeader,DecodedText)>{
-    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,Some(packed_limit))
+    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,Some(packed_limit),&mut 0)
 }
 fn decode_huffman_text_payload_impl(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
-    bit_limit:usize,decision_limit:usize,work_limit:u64,packed_limit:Option<usize>)->Result<(HuffmanTextHeader,DecodedText)>{
+    bit_limit:usize,decision_limit:usize,work_limit:u64,packed_limit:Option<usize>,decisions_used:&mut usize)->Result<(HuffmanTextHeader,DecodedText)>{
     use crate::filters::ccitt::BitReader;
     if bit_limit>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
         work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text payload limits"));}
@@ -1363,13 +1364,13 @@ fn decode_huffman_text_payload_impl(data:&[u8],symbols:&[&Bitmap],custom:&[&supe
     let prefix_work=(start as u64)*8;
     let left=left.checked_sub(prefix_work).ok_or(Error::Limit("JBIG2 text table bits work"))?;
     let mut decoded=match (&header.neighborhood,refinement){
-        (Some(n),Some(t))=>decode_huffman_refined_bounded(entropy,entropy_bits,header.options,symbols,&ids,&ints,&t,n,decision_limit,left,temporary)?,
+        (Some(n),Some(t))=>decode_huffman_refined_bounded(entropy,entropy_bits,header.options,symbols,&ids,&ints,&t,n,decision_limit,left,temporary,decisions_used)?,
         (None,None)=>{
             let left=left.checked_sub(entropy_bits as u64).ok_or(Error::Limit("JBIG2 text entropy work"))?;
             let mut r=BitReader::new(entropy,entropy_bits)?;
             let mut d=decode_huffman_direct(&mut r,header.options,symbols,&ids,&ints,entropy_bits,left)?;
             if r.remaining()>7{return Err(Error::Invalid("JBIG2 text trailing bytes"));}
-            d.stats.work_used+=entropy_bits as u64;d
+            d.stats.work_used+=entropy_bits as u64;*decisions_used=0;d
         },
         _=>return Err(Error::Invalid("JBIG2 text refinement table presence")),
     };
@@ -1984,6 +1985,10 @@ pub fn parse_arithmetic_text_header(data:&[u8])->Result<(ArithmeticTextHeader,&[
 /// Explicit FF AC termination is required, not an entropy-integrity proof.
 pub fn decode_arithmetic_text_payload(data:&[u8],symbols:&[&Bitmap],
     decision_limit:usize,work_limit:u64,packed_limit:usize)->Result<(ArithmeticTextHeader,DecodedText)>{
+    decode_arithmetic_text_payload_counted(data,symbols,decision_limit,work_limit,packed_limit,&mut 0)
+}
+fn decode_arithmetic_text_payload_counted(data:&[u8],symbols:&[&Bitmap],
+    decision_limit:usize,work_limit:u64,packed_limit:usize,decisions_used:&mut usize)->Result<(ArithmeticTextHeader,DecodedText)>{
     use super::{integer::IaidDecoder,refinement::ContextBank,qm::Decoder};
     if symbols.len()>MAX_INSTANCES as usize||decision_limit>MAX_TEXT_DECISIONS||
         work_limit>bitmap::MAX_COMPOSE_WORK||packed_limit>bitmap::MAX_PACKED_BYTES{
@@ -2011,6 +2016,7 @@ pub fn decode_arithmetic_text_payload(data:&[u8],symbols:&[&Bitmap],
         &mut contexts,header.neighborhood.as_ref(),gr.as_mut(),available,temporary)?;
     decoded.stats.work_used=decoded.stats.work_used.checked_add(overhead)
         .ok_or(Error::Limit("JBIG2 arithmetic text payload work"))?;
+    *decisions_used=decoder.decisions_used();
     Ok((header,decoded))
 }
 
@@ -2105,6 +2111,61 @@ mod annex_h_original_arithmetic_text_tests{
     ];
     fn join(prefix:&[u8],text:&[u8])->Vec<u8>{
         let mut page=prefix.to_vec();page.extend_from_slice(text);page
+    }
+    #[test]
+    fn text_regions_mixed_modes_order_and_cumulative_caps(){
+        let mut page=join(PAGE2,TEXT2);
+        // Rebind the original Huffman text payload to equivalent arithmetic
+        // dictionary 9. Synthetic graph wrapper; original entropy unchanged.
+        let mut h=vec![0x00,0x00,0x00,0x03,0x07,0x42,0x00,0x02,0x01,0x00,0x00,0x00,0x31,0x00,0x00,0x00,0x25,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x01,0x00,0x0c,0x09,0x00,0x10,0x00,0x00,0x00,0x05,0x01,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0c,0x40,0x07,0x08,0x70,0x41,0xd0];
+        h[3]=11;h[4]=4;h[7]=9;h[8]=2;
+        page.extend_from_slice(&h);
+        h[3]=12;h[4]=6;page.extend_from_slice(&h);
+        let l=TextRegionsLimits::default();
+        let d=execute_pdf_text_regions(GLOBAL2,&page,l).unwrap();
+        assert_eq!(d.regions.iter().map(|r|(r.number,r.kind,r.huffman)).collect::<Vec<_>>(),
+            [(10,7,false),(11,4,true),(12,6,true)]);
+        for r in &d.regions{
+            assert_eq!(r.text.bitmap.packed(),EXPECTED);
+            let single=execute_pdf_text_segment(GLOBAL2,&page,r.number,l.text).unwrap();
+            assert_eq!(r.text,single.text);assert_eq!(r.decisions_used,single.decisions_used);
+        }
+        assert_eq!((d.pixels,d.instances,d.symbol_slots,d.huffman_bits_used),(37*8*3,15,9,384));
+        assert!(d.decisions_used>0);assert_eq!(d.decisions_used,d.regions[0].decisions_used);
+        assert_eq!(d.packed_bytes,d.dictionary_stats.packed_bytes+120);
+        let exact=TextRegionsLimits{regions:3,pixels:d.pixels,instances:d.instances,
+            text:TextSegmentLimits{work:d.work_used,packed_bytes:d.packed_bytes,
+                symbol_slots:d.symbol_slots,decisions:d.decisions_used,huffman_bits:d.huffman_bits_used,..l.text}};
+        assert_eq!(execute_pdf_text_regions(GLOBAL2,&page,exact).unwrap(),d);
+        for cap in [TextRegionsLimits{regions:2,..exact},TextRegionsLimits{pixels:exact.pixels-1,..exact},
+            TextRegionsLimits{instances:14,..exact}]{
+            assert!(execute_pdf_text_regions(GLOBAL2,&page,cap).is_err());
+        }
+        for t in [TextSegmentLimits{work:d.work_used-1,..exact.text},TextSegmentLimits{packed_bytes:d.packed_bytes-1,..exact.text},
+            TextSegmentLimits{symbol_slots:8,..exact.text},TextSegmentLimits{decisions:d.decisions_used-1,..exact.text},
+            TextSegmentLimits{huffman_bits:383,..exact.text}]{
+            assert!(execute_pdf_text_regions(GLOBAL2,&page,TextRegionsLimits{text:t,..exact}).is_err());
+        }
+        // A malformed last payload fails the whole operation.
+        let end=page.len();let last_start=end-h.len();page[last_start+13+16]=8;
+        assert!(execute_pdf_text_regions(GLOBAL2,&page,l).is_err());
+    }
+    #[test]
+    fn text_regions_refined_decisions_are_cumulative(){
+        let mut page=join(PAGE3,TEXT3);
+        let mut second=TEXT3.to_vec();second[3]=19;page.extend(second);
+        let l=TextRegionsLimits::default();
+        let d=execute_pdf_text_regions(GLOBAL3,&page,l).unwrap();
+        assert_eq!(d.regions.len(),2);assert_eq!(d.regions[0].text,d.regions[1].text);
+        assert_eq!(d.decisions_used,2*d.regions[0].decisions_used);
+        assert!(d.decisions_used>0);
+        assert_eq!(d.huffman_bits_used,0);
+        let cap=TextRegionsLimits{text:TextSegmentLimits{decisions:d.decisions_used,..l.text},..l};
+        assert_eq!(execute_pdf_text_regions(GLOBAL3,&page,cap).unwrap(),d);
+        assert!(execute_pdf_text_regions(GLOBAL3,&page,TextRegionsLimits{text:TextSegmentLimits{
+            decisions:d.decisions_used-1,..l.text},..l}).is_err());
+        let empty=execute_pdf_text_regions(GLOBAL3,PAGE3,l).unwrap();
+        assert!(empty.regions.is_empty());assert_eq!(empty.packed_bytes,empty.dictionary_stats.packed_bytes);
     }
     #[test]
     fn annex_h_arithmetic_automatic_segment_dispatch(){
@@ -2202,12 +2263,14 @@ pub struct DecodedTextSegment{
     pub number:u32,pub kind:u8,pub page:u32,pub region:bitmap::RegionInfo,
     pub huffman:bool,pub symbol_slots:usize,pub custom_tables:usize,
     pub dictionary_stats:super::dictionary::ExecutionStats,
+    /// Includes dictionary execution and this segment's setup/decode.
+    /// Batch totals count shared dictionary work only once.
     pub work_used:u64,
+    pub decisions_used:usize,
+    pub huffman_bits_used:usize,
     pub text:DecodedText,
 }
-pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextSegmentLimits)
-    ->Result<DecodedTextSegment>{
-    use super::{dictionary,huffman,SegmentSource};
+fn check_text_segment_limits(globals:&[u8],page:&[u8],limits:TextSegmentLimits)->Result<()> {
     if limits.work>bitmap::MAX_COMPOSE_WORK||limits.packed_bytes>bitmap::MAX_PACKED_BYTES||
         limits.symbol_slots>MAX_INSTANCES as usize||limits.decisions>MAX_TEXT_DECISIONS||
         limits.huffman_bits>MAX_TEXT_DECISIONS{
@@ -2215,9 +2278,28 @@ pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextS
     }
     let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 text segment input"))?;
     if input as u64>limits.work{return Err(Error::Limit("JBIG2 text segment work"));}
+    Ok(())
+}
+pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextSegmentLimits)
+    ->Result<DecodedTextSegment>{
+    use super::dictionary;
+    check_text_segment_limits(globals,page,limits)?;
     let inspected=super::inspect_pdf_streams(globals,page)?;
-    let stream=|src|match src{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
     let node=inspected.graph.iter().find(|n|n.number==number).ok_or(Error::Invalid("JBIG2 text segment missing"))?;
+    let graph_work=inspected.graph.len() as u64;
+    let mut dl=limits.dictionaries;
+    dl.work=dl.work.min(limits.work.checked_sub(graph_work).ok_or(Error::Limit("JBIG2 text segment work"))?);
+    dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes);
+    let dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&inspected)?;
+    execute_text_segment_inspected(globals,page,&inspected,node,&dictionaries,limits,graph_work,
+        bitmap::MAX_PIXELS,u64::from(MAX_INSTANCES))
+}
+fn execute_text_segment_inspected(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,
+    node:&super::ResolvedSegment,dictionaries:&super::dictionary::DictionarySet,limits:TextSegmentLimits,
+    graph_work:u64,pixel_limit:u64,instance_limit:u64)->Result<DecodedTextSegment>{
+    use super::{huffman,SegmentSource};
+    let stream=|src|match src{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
+    let number=node.number;
     let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 text segment location"))?;
     if !matches!(segment.kind,4|6|7)||node.location.source!=SegmentSource::Page{
         return Err(Error::Invalid("JBIG2 text segment kind"));
@@ -2225,13 +2307,19 @@ pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextS
     let data=stream(node.location.source).get(segment.payload.clone()).ok_or(Error::Invalid("JBIG2 text segment span"))?;
     let flags=data.get(17..19).ok_or(Error::Invalid("JBIG2 text segment flags"))?;
     let is_huffman=flags[1]&1!=0;
-    let (region,expected_custom)=if is_huffman{
-        let (h,_)=parse_huffman_text_header(data)?;(h.region,h.selections.custom_count)
+    let (region,instances,expected_custom,huffman_bits)=if is_huffman{
+        let (h,body)=parse_huffman_text_header(data)?;
+        let bits=body.len().checked_mul(8).ok_or(Error::Limit("JBIG2 text payload bits"))?;
+        if bits>limits.huffman_bits{return Err(Error::Limit("JBIG2 text payload bits"));}
+        (h.region,h.options.instances,h.selections.custom_count,bits)
     }else{
-        let (h,_)=parse_arithmetic_text_header(data)?;(h.region,0)
+        let (h,_)=parse_arithmetic_text_header(data)?;(h.region,h.options.instances,0,0)
     };
+    if u64::from(region.width)*u64::from(region.height)>pixel_limit||u64::from(instances)>instance_limit{
+        return Err(Error::Limit("JBIG2 cumulative text pixels or instances"));
+    }
     let mut custom_count=0usize;
-    let mut setup_work=(inspected.graph.len() as u64).checked_add(node.dependencies.len() as u64)
+    let mut setup_work=graph_work.checked_add(node.dependencies.len() as u64)
         .ok_or(Error::Limit("JBIG2 text segment work"))?;
     for &loc in &node.dependencies{
         let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 text dependency"))?;
@@ -2248,10 +2336,6 @@ pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextS
         }
     }
     if custom_count!=expected_custom{return Err(Error::Invalid("JBIG2 text custom table count"));}
-    let mut dl=limits.dictionaries;
-    dl.work=dl.work.min(limits.work.checked_sub(setup_work).ok_or(Error::Limit("JBIG2 text segment work"))?);
-    dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes);
-    let dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&inspected)?;
     let stats=dictionaries.stats();
     let mut count=0usize;
     let cap=limits.symbol_slots.min(if is_huffman{huffman::MAX_ROWS}else{MAX_INSTANCES as usize});
@@ -2280,13 +2364,92 @@ pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextS
                 .ok_or(Error::Invalid("JBIG2 text custom span"))?)?);
         }
     }
+    let mut decisions_used=0;
     let text=if is_huffman{
         let refs:Vec<_>=custom.iter().collect(); // at most eight tables
-        decode_huffman_text_payload_bounded(data,&symbols,&refs,limits.huffman_bits,limits.decisions,left,packed)?.1
+        decode_huffman_text_payload_impl(data,&symbols,&refs,limits.huffman_bits,limits.decisions,left,Some(packed),&mut decisions_used)?.1
     }else{
-        decode_arithmetic_text_payload(data,&symbols,limits.decisions,left,packed)?.1
+        decode_arithmetic_text_payload_counted(data,&symbols,limits.decisions,left,packed,&mut decisions_used)?.1
     };
     Ok(DecodedTextSegment{number,kind:segment.kind,page:segment.page,region,huffman:is_huffman,
         symbol_slots:count,custom_tables:custom_count,dictionary_stats:stats,
-        work_used:stats.work_used+setup_work+text.stats.work_used,text})
+        work_used:stats.work_used+setup_work+text.stats.work_used,decisions_used,huffman_bits_used:huffman_bits,text})
+}
+
+/// Batch limits: text.work and packed_bytes include dictionary decoding,
+/// all retained text outputs, and active temporary refinement. Text slots,
+/// decisions and Huffman bits are cumulative across text regions only;
+/// dictionary-specific caps remain in text.dictionaries.
+#[derive(Debug,Clone,Copy)]
+pub struct TextRegionsLimits{
+    pub text:TextSegmentLimits,
+    pub regions:usize,
+    pub pixels:u64,
+    pub instances:u64,
+}
+impl Default for TextRegionsLimits{
+    fn default()->Self{Self{text:TextSegmentLimits::default(),regions:super::MAX_SEGMENTS,
+        pixels:bitmap::MAX_PIXELS,instances:u64::from(MAX_INSTANCES)}}
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedTextRegions{
+    pub regions:Vec<DecodedTextSegment>,
+    pub dictionary_stats:super::dictionary::ExecutionStats,
+    pub work_used:u64,
+    pub packed_bytes:usize,
+    pub pixels:u64,
+    pub instances:u64,
+    pub symbol_slots:usize,
+    pub decisions_used:usize,
+    pub huffman_bits_used:usize,
+}
+/// Decode every type 4/6/7 in original graph order using one dictionary
+/// arena. Keep all output regions (including intermediate ones) and abort
+/// atomically on failure. No page compositing, retention flags, or other
+/// region decoding; unrelated dictionaries are still executed.
+pub fn execute_pdf_text_regions(globals:&[u8],page:&[u8],limits:TextRegionsLimits)->Result<DecodedTextRegions>{
+    use super::dictionary;
+    check_text_segment_limits(globals,page,limits.text)?;
+    if limits.regions>super::MAX_SEGMENTS||limits.pixels>bitmap::MAX_PIXELS||
+        limits.instances>u64::from(MAX_INSTANCES){
+        return Err(Error::Limit("JBIG2 text regions limits"));
+    }
+    let inspected=super::inspect_pdf_streams(globals,page)?;
+    // Count and execute in two linear scans, no per-segment graph search.
+    let graph_work=(inspected.graph.len() as u64)*2;
+    let count=inspected.graph.iter().filter(|n|inspected.segment(n.location)
+        .is_some_and(|s|matches!(s.kind,4|6|7))).count();
+    if count>limits.regions{return Err(Error::Limit("JBIG2 text region count"));}
+    let mut dl=limits.text.dictionaries;
+    dl.work=dl.work.min(limits.text.work.checked_sub(graph_work).ok_or(Error::Limit("JBIG2 text regions work"))?);
+    dl.packed_bytes=dl.packed_bytes.min(limits.text.packed_bytes);
+    let dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&inspected)?;
+    let stats=dictionaries.stats();
+    let mut out=DecodedTextRegions{regions:Vec::new(),dictionary_stats:stats,
+        work_used:stats.work_used+graph_work,packed_bytes:stats.packed_bytes,
+        pixels:0,instances:0,symbol_slots:0,decisions_used:0,huffman_bits_used:0};
+    out.regions.try_reserve_exact(count).map_err(|_|Error::Limit("JBIG2 text regions allocation"))?;
+    for node in &inspected.graph{
+        let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 text segment location"))?;
+        if !matches!(segment.kind,4|6|7){continue;}
+        let remaining=TextSegmentLimits{
+            work:limits.text.work.checked_sub(out.work_used).ok_or(Error::Limit("JBIG2 text regions work"))?+stats.work_used,
+            packed_bytes:limits.text.packed_bytes-out.packed_bytes+stats.packed_bytes,
+            symbol_slots:limits.text.symbol_slots-out.symbol_slots,
+            decisions:limits.text.decisions-out.decisions_used,
+            huffman_bits:limits.text.huffman_bits-out.huffman_bits_used,
+            ..limits.text
+        };
+        let d=execute_text_segment_inspected(globals,page,&inspected,node,&dictionaries,remaining,0,
+            limits.pixels-out.pixels,limits.instances-out.instances)?;
+        out.work_used+=d.work_used-stats.work_used;
+        out.packed_bytes+=d.text.bitmap.packed().len();
+        out.pixels+=u64::from(d.region.width)*u64::from(d.region.height);
+        out.instances+=u64::from(d.text.stats.instances);
+        out.symbol_slots+=d.symbol_slots;
+        out.decisions_used+=d.decisions_used;
+        out.huffman_bits_used+=d.huffman_bits_used;
+        out.regions.push(d);
+    }
+    Ok(out)
 }
