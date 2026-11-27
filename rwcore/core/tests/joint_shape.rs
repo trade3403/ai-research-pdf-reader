@@ -154,3 +154,81 @@ fn face_options()->FaceShapeOptions<'static>{
         x-=w.0+a.design.x_advance;assert_eq!(origin.0,x);
     }
 }
+
+// Two independent GSUB features, each one direct lookup: A -> 11 -> 12.
+// Build actual ScriptList/FeatureList/LookupList bytes with two stages.
+fn stage_fixture(a:u16)->Vec<u8>{
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,0xffff,2,0,1]{w(&mut b,v);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,2);
+    for (tag,rel) in [(b"ccmp",14),(b"liga",20)]{b.extend(tag);w(&mut b,rel);}
+    for v in [0,1,0,0,1,1]{w(&mut b,v);}
+    let at=b.len();set(&mut b,8,at);for v in [2,6,28]{w(&mut b,v);}
+    for (from,to) in [(a,11),(11,12)]{
+        for v in [1,0,1,8,2,8,1,to,1,1,from]{w(&mut b,v);}
+    }
+    b
+}
+fn stage_program(b:&[u8],n:u32)->CompiledGsubProgram<'_>{
+    let layout=parse_gsub_layout(b,Default::default()).unwrap();
+    let p=build_gsub_base_plan(&layout,*b"DFLT",None,&[*b"ccmp",*b"liga"],Default::default()).unwrap().unwrap();
+    compile_gsub_plan_program(b,&p,n,None,Default::default()).unwrap()
+}
+fn stages()->[ShapeStageSpec;2]{[ShapeStageSpec{features:vec![0]},ShapeStageSpec{features:vec![1]}]}
+#[test]fn staged_joint_order_and_final_metrics(){
+    let (r,m,n)=inputs("AA");let sb=stage_fixture(r.glyphs()[0].glyph_id);let gs=stage_program(&sb,n);
+    let pb=position(12,17);let gp=compile_gpos_program(&pb,&[0],n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(gs.validated_plan().unwrap(),2,&[],Default::default()).unwrap();
+    let x=execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&stages(),LTR,Default::default(),Default::default(),None).unwrap();
+    assert_eq!(x.shaped.substitution.expansion.execution.glyphs,vec![12,12]);
+    assert_eq!(x.trace.iter().map(|t|t.changes).collect::<Vec<_>>(),vec![2,2]);
+    assert_eq!(x.shaped.design_advances,vec![(i32::from(m.glyph(12).unwrap().advance_width),0);2]);
+    assert!(x.shaped.positioning.adjustments.iter().all(|a|a.design.x_advance==17));
+    let mut rev=stages();rev.reverse();
+    let y=execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&rev,LTR,Default::default(),Default::default(),None).unwrap();
+    assert_eq!(y.shaped.substitution.expansion.execution.glyphs,vec![11,11]);
+    assert!(y.shaped.positioning.adjustments.iter().all(|a|a.design.x_advance==0));
+}
+#[test]fn staged_joint_mask_range_and_gpos_namespace(){
+    let (r,m,n)=inputs("AA");let sb=stage_fixture(r.glyphs()[0].glyph_id);let gs=stage_program(&sb,n);
+    let pb=position(11,19);let gp=compile_gpos_program(&pb,&[0],n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(gs.validated_plan().unwrap(),2,
+        &[FeatureMaskOverride{feature:1,start:1,end:2,enabled:false}],Default::default()).unwrap();
+    let x=execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&stages(),RTL,Default::default(),Default::default(),None).unwrap();
+    assert_eq!(x.shaped.substitution.expansion.execution.glyphs,vec![12,11]);
+    assert_eq!(x.glyph_masks,vec![3,1]);assert!(x.skipped_roots>0);
+    assert_eq!(x.shaped.positioning.adjustments[1].design.x_advance,19);
+    assert_eq!(x.shaped.provenance.glyphs()[1].sources(),&[1]);
+}
+#[test]fn staged_joint_limits_and_partition(){
+    let (r,m,n)=inputs("AA");let sb=stage_fixture(r.glyphs()[0].glyph_id);let gs=stage_program(&sb,n);
+    let pb=empty();let gp=compile_gpos_program(&pb,&[],n,None,Default::default()).unwrap();
+    let masks=ScalarFeatureMasks::build(gs.validated_plan().unwrap(),2,&[],Default::default()).unwrap();
+    let x=execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&stages(),LTR,Default::default(),Default::default(),None).unwrap();
+    let before=r.clone();
+    assert!(matches!(execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&stages(),LTR,Default::default(),
+        JointStageLimits{max_mask_work:x.mask_work-1,..Default::default()},None),Err(Error::Limit(_))));
+    assert!(matches!(execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&stages()[..1],LTR,Default::default(),Default::default(),None),Err(Error::Invalid(_))));
+    assert_eq!(r,before);
+}
+#[test]fn staged_joint_native_trace_opt_in(){
+    let (r,m,n)=inputs("AVATAR");let f=parse_font(FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let sb=face.table(*b"GSUB").unwrap();let pb=face.table(*b"GPOS").unwrap();
+    let gd=parse_gdef(face.table(*b"GDEF").unwrap(),n,Default::default()).unwrap();
+    let sl=parse_gsub_layout(sb,Default::default()).unwrap();let pl=parse_gpos_layout(pb,Default::default()).unwrap();
+    let sp=build_gsub_base_plan(&sl,*b"latn",None,&[*b"liga"],Default::default()).unwrap().unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"latn",None,&[*b"kern"],Default::default()).unwrap().unwrap();
+    let gs=compile_gsub_plan_program(sb,&sp,n,Some(&gd),Default::default()).unwrap();
+    let gp=compile_gpos_plan_program(pb,&pp,n,Some(&gd),Default::default()).unwrap();
+    let specs=if sp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:sp.features.clone()}]};
+    let masks=ScalarFeatureMasks::build(&sp,r.scalars().len(),&[],Default::default()).unwrap();
+    let x=execute_staged_joint_shape(&gs,&gp,&r,&m,&[],&masks,&specs,LTR,Default::default(),Default::default(),Some((&gd,Default::default()))).unwrap();
+    let y=execute_joint_shape_with_ligatures(&gs,&gp,&r,&m,&gd,&[],LTR,Default::default(),Default::default()).unwrap();
+    assert_eq!(x.shaped.positioning,y.positioning);
+    assert_eq!(x.shaped.substitution,y.substitution);
+    assert_eq!(x.shaped.provenance.ligature_trace_stats().unwrap().0,0);
+    assert_eq!(x.trace.iter().map(|t|t.changes).sum::<usize>(),x.shaped.substitution.expansion.execution.changes);
+}

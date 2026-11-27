@@ -59,6 +59,15 @@ fn execute_joint_shape_inner(
     run:&SourceRun,metrics:&FontMetrics<'_>,choices:&[GsubAlternateSelection],
     flow:GposHorizontalFlow,limits:JointShapeLimits,ligatures:Option<(&Gdef,JointLigatureLimits)>,
 )->Result<JointShapeResult,Error>{
+    let sl=joint_preflight(gsub,gpos,run,metrics,limits,ligatures)?;
+    let (substitution,provenance)=if let Some((_,l))=ligatures{
+        execute_gsub_program_with_ligature_trace(gsub,run,choices,sl,limits.provenance,l.trace)?
+    }else{execute_gsub_program_with_provenance(gsub,run,choices,sl,limits.provenance)?};
+    finish_joint_shape(gpos,metrics,substitution,provenance,flow,limits,ligatures)
+}
+fn joint_preflight(gsub:&CompiledGsubProgram<'_>,gpos:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,limits:JointShapeLimits,
+    ligatures:Option<(&Gdef,JointLigatureLimits)>)->Result<GsubProgramExecLimits,Error>{
     let domain=u32::from(metrics.maxp().glyph_count);
     if gsub.glyph_count()!=domain||gpos.glyph_count()!=domain{
         return Err(Error::Invalid("joint shape glyph domain"));
@@ -82,9 +91,13 @@ fn execute_joint_shape_inner(
         sl.expansion.context.max_glyphs=sl.expansion.context.max_glyphs.min(l.mapping.max_glyphs);
         if run.scalars().len()>l.mapping.max_scalars{return Err(Error::Limit("joint ligature scalars"));}
     }
-    let (substitution,provenance)=if let Some((_,l))=ligatures{
-        execute_gsub_program_with_ligature_trace(gsub,run,choices,sl,limits.provenance,l.trace)?
-    }else{execute_gsub_program_with_provenance(gsub,run,choices,sl,limits.provenance)?};
+    Ok(sl)
+}
+fn finish_joint_shape(gpos:&CompiledGposProgram<'_>,metrics:&FontMetrics<'_>,
+    substitution:GsubProgramExecResult,provenance:ProvenanceLedger,flow:GposHorizontalFlow,
+    limits:JointShapeLimits,ligatures:Option<(&Gdef,JointLigatureLimits)>)->Result<JointShapeResult,Error>{
+    let cap=limits.max_output_glyphs.min(limits.gpos.marks.context.run.max_glyphs)
+        .min(limits.gpos.attachments.max_glyphs).min(limits.intervals.max_glyphs);
     if ligatures.is_none()&&substitution.ligatures>0&&gpos.lookups().iter().any(|l|l.effective_kind()==6){
         return Err(Error::Unsupported("joint shape mark component lineage"));
     }
@@ -212,4 +225,48 @@ fn shape_font_face_inner(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:F
     }else{execute_joint_shape(&gs,&gp,&source,&metrics,o.alternates,o.flow,l.joint)?};
     Ok(FaceShapeResult{source,substitution_plan,positioning_plan,
         units_per_em:metrics.head().units_per_em,shaped})
+}
+
+/// Stage scheduling and scalar mask execution budgets, independent of the
+/// post-substitution GPOS budgets in JointShapeLimits.
+#[derive(Debug,Clone,Copy)]
+pub struct JointStageLimits{
+    pub schedule:ShapeStageLimits,
+    pub max_mask_work:usize,
+}
+impl Default for JointStageLimits{
+    fn default()->Self{Self{schedule:Default::default(),max_mask_work:4194304}}
+}
+#[derive(Debug)]
+pub struct StagedJointShapeResult{
+    pub shaped:JointShapeResult,
+    pub schedule:ShapeStageSchedule,
+    pub trace:Vec<ShapeStageTrace>,
+    pub glyph_masks:Vec<u64>,
+    pub skipped_roots:usize,
+    pub blocked_inputs:usize,
+    pub mask_work:usize,
+}
+/// Execute explicit GSUB stages in one atomic glyph/provenance buffer,
+/// then GPOS once over the final glyph stream. GSUB masks remain in the
+/// GSUB feature namespace; they do NOT gate GPOS lookups. The optional
+/// simple ligature path shares the strict joint attachment policy.
+pub fn execute_staged_joint_shape(
+    gsub:&CompiledGsubProgram<'_>,gpos:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,choices:&[GsubAlternateSelection],
+    masks:&ScalarFeatureMasks,specs:&[ShapeStageSpec],flow:GposHorizontalFlow,
+    limits:JointShapeLimits,stages:JointStageLimits,
+    ligatures:Option<(&Gdef,JointLigatureLimits)>,
+)->Result<StagedJointShapeResult,Error>{
+    let sl=joint_preflight(gsub,gpos,run,metrics,limits,ligatures)?;
+    let (schedule,result,blocked_inputs,trace)=if let Some((_,l))=ligatures{
+        execute_staged_gsub_with_ligature_trace(gsub,run,choices,masks,specs,stages.schedule,
+            sl,limits.provenance,stages.max_mask_work,l.trace)?
+    }else{
+        execute_staged_gsub_traced(gsub,run,choices,masks,specs,stages.schedule,
+            sl,limits.provenance,stages.max_mask_work)?
+    };
+    let MaskedGsubResult{execution,provenance,glyph_masks,skipped_roots,mask_work}=result;
+    let shaped=finish_joint_shape(gpos,metrics,execution,provenance,flow,limits,ligatures)?;
+    Ok(StagedJointShapeResult{shaped,schedule,trace,glyph_masks,skipped_roots,blocked_inputs,mask_work})
 }
