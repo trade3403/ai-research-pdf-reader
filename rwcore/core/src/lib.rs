@@ -325,3 +325,6 @@ pub use font_gpos_closure::*;
 
 pub mod font_gpos_run;
 pub use font_gpos_run::*;
+
+pub mod font_gpos_attachment;
+pub use font_gpos_attachment::*;
