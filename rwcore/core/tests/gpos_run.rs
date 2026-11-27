@@ -129,3 +129,45 @@ fn context_run(b:&[u8],roots:&[u16],g:&[u16],l:GposContextRunLimits)->Result<Vec
     let x=context_run(&b,&[0],&[3,3,3],Default::default()).unwrap();
     assert_eq!(x[0].design.x_advance,10);assert_eq!(x[1].design.x_placement,5);assert_eq!(x[2],GposRunAdjustment::default());
 }
+
+fn mark_base()->Vec<u16>{vec![1,12,20,2,26,48,1,2,3,4,1,1,7,2,0,10,1,16,1,10,20,1,30,40,1,6,0,1,100,200]}
+fn mark_mark()->Vec<u16>{vec![1,12,20,2,28,50,1,2,3,4,1,2,3,7,2,0,10,1,16,1,10,20,1,30,40,2,10,0,16,22,1,100,200,1,65526,30,1,50,65516]}
+fn mark_gdef()->Gdef{parse_gdef(&words(&[1,0,12,0,0,0,1,3,5,3,3,0,0,1]),32,Default::default()).unwrap()}
+#[test]fn mark_base_skips_classified_mark_and_resolves(){
+    let g=mark_gdef();let b=fixture(&[(4,0,vec![mark_base()])]);let p=compile_gpos_program(&b,&[0],32,Some(&g),Default::default()).unwrap();
+    let x=execute_gpos_marks(&p,&[7,4,3],&[Default::default();3],GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.edges[2].unwrap().parent,0);assert!(x.edges[1].is_none());
+    let v=x.resolve(&[(0,0),(100,0),(100,0)],&[(0,0);3],Default::default()).unwrap();
+    assert_eq!((v[2].design.x_placement,v[2].design.y_placement),(-10,180));
+}
+#[test]fn mark_to_mark_chain_and_later_residual(){
+    let g=mark_gdef();let b=fixture(&[(4,0,vec![mark_base()]),(6,0,vec![mark_mark()]),(1,0,vec![single(9)])]);
+    let p=compile_gpos_program(&b,&[0,1,2],32,Some(&g),Default::default()).unwrap();
+    let x=execute_gpos_marks(&p,&[7,3,3],&[Default::default();3],GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.edges[1].unwrap().parent,0);assert_eq!(x.edges[2].unwrap().parent,1);
+    let v=x.resolve(&[(0,0),(100,0),(109,0)],&[(0,0);3],Default::default()).unwrap();
+    assert_eq!((v[2].design.x_placement,v[2].design.y_placement),(71,360));assert_eq!(v[2].design.x_advance,9);
+}
+#[test]fn mark_parent_barrier_and_missing_gdef(){
+    let b=fixture(&[(4,0,vec![mark_base()])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let x=execute_gpos_marks(&p,&[7,5,3],&[Default::default();3],GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert!(x.edges[2].is_none());
+    let x=execute_gpos_marks(&p,&[7,3],&[Default::default();2],GposRunMode::DesignOnly,Default::default()).unwrap();assert_eq!(x.edges[1].unwrap().parent,0);
+}
+#[test]fn mark_nested_extension_and_budget(){
+    let g=mark_gdef();let mut ext=vec![1,4,0,8];ext.extend(mark_base());
+    let c=vec![3,1,1,12,0,1,1,1,3];
+    let b=fixture(&[(7,0,vec![c]),(9,0,vec![ext])]);let p=compile_gpos_program(&b,&[0],32,Some(&g),Default::default()).unwrap();
+    let prior=[Default::default();2];let mode=GposRunMode::DesignOnly;
+    let l=GposMarkRunLimits{max_parent_visits:1,max_attachment_updates:1,..Default::default()};
+    assert_eq!(execute_gpos_marks(&p,&[7,3],&prior,mode,l).unwrap().edges[1].unwrap().parent,0);
+    assert!(execute_gpos_marks(&p,&[7,3],&prior,mode,GposMarkRunLimits{max_parent_visits:0,..l}).is_err());
+    assert!(execute_gpos_marks(&p,&[7,3],&prior,mode,GposMarkRunLimits{max_attachment_updates:0,..l}).is_err());
+    assert!(execute_gpos_context(&p,&[7,3],&prior,mode,Default::default()).is_err());
+}
+#[test]fn mark_attachment_replaces_prior_placement(){
+    let b=fixture(&[(4,0,vec![mark_base()])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let mut prior=[GposRunAdjustment::default();2];prior[1].design.x_placement=55;prior[1].design.x_advance=4;
+    let x=execute_gpos_marks(&p,&[7,3],&prior,GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.residuals[1].design.x_placement,0);assert_eq!(x.residuals[1].design.x_advance,4);assert_eq!(prior[1].design.x_placement,55);
+}

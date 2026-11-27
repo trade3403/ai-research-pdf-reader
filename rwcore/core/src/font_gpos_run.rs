@@ -83,6 +83,9 @@ struct ContextRunner<'p,'g,'d>{
     program:&'p CompiledGposProgram<'d>,glyphs:&'g [u16],out:Vec<GposRunAdjustment>,mode:GposRunMode,
     limits:GposContextRunLimits,visits:usize,attempts:usize,calls:usize,actions:usize,work:usize,
     active:Vec<(u16,usize)>,
+    attachment_edges:Option<Vec<Option<GposAttachmentEdge>>>,
+    parent_visits:usize,
+    attachment_updates:usize,
 }
 impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
     fn filtered(&mut self,lookup:&CompiledGposLookup<'_>)->Result<(Vec<usize>,Vec<u16>),Error>{
@@ -109,6 +112,27 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         let result=self.apply_at(lookup,ids,stream,pos);
         self.active.pop();result
     }
+    fn attach(&mut self,child:usize,parent:usize,a:&GposAnchor,b:&GposAnchor)->Result<(),Error>{
+        charge(&mut self.attachment_updates,1)?;
+        let edge=GposAttachmentEdge::from_anchors(parent,a,b,self.mode)?;
+        let edges=self.attachment_edges.as_mut().ok_or(Error::Unsupported("gpos attachment mode"))?;
+        edges[child]=Some(edge);
+        // Attachment replaces prior placement; subsequent adjustments are residuals.
+        self.out[child].design.x_placement=0;self.out[child].design.y_placement=0;
+        self.out[child].pixels.x_placement=0;self.out[child].pixels.y_placement=0;
+        Ok(())
+    }
+    fn mark_parent(&mut self,lookup:&CompiledGposLookup<'_>,ids:&[usize],pos:usize,mark_to_mark:bool)->Result<Option<usize>,Error>{
+        for &i in ids[..pos].iter().rev(){
+            charge(&mut self.parent_visits,1)?;
+            let class=lookup.filter().glyph_class(self.glyphs[i]).ok_or(Error::Invalid("gpos parent glyph"))?;
+            if !mark_to_mark&&class==GdefGlyphClass::Mark{continue;}
+            // Do not jump over an eligible incompatible non-mark/mark.
+            if mark_to_mark&&matches!(class,GdefGlyphClass::Base|GdefGlyphClass::Ligature|GdefGlyphClass::Component){return Ok(None);}
+            return Ok(Some(i));
+        }
+        Ok(None)
+    }
     fn apply_at(&mut self,lookup:&CompiledGposLookup<'_>,ids:&[usize],stream:&[u16],pos:usize)->Result<usize,Error>{
         let a=ids[pos];
         for sub in lookup.subtables(){
@@ -133,6 +157,20 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                     if let Some((d,px))=got{
                         self.out[a]=GposRunAdjustment{design:d[0],pixels:px[0]};self.out[b]=GposRunAdjustment{design:d[1],pixels:px[1]};
                         return Ok(if second==0{1}else{2});
+                    }continue;
+                }
+                MarkBase(p)=>{
+                    if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
+                    if p.mark(stream[pos]).is_none(){continue;}
+                    if let Some(parent)=self.mark_parent(lookup,ids,pos,false)?{
+                        if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
+                    }continue;
+                }
+                MarkMark(p)=>{
+                    if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
+                    if p.mark1(stream[pos]).is_none(){continue;}
+                    if let Some(parent)=self.mark_parent(lookup,ids,pos,true)?{
+                        if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
                     }continue;
                 }
                 Context(p)=>{if let Some(rs)=p.rules(stream[pos]){for r in rs{charge(&mut self.work,1+r.remaining.len())?;}}p.match_at(stream,pos)}
@@ -168,11 +206,56 @@ pub fn execute_gpos_context(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|7|8){return Err(Error::Unsupported("gpos context run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos context allocation"))?;out.extend_from_slice(prior);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new()};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos context root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
         let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
     }
     Ok(runner.out)
+}
+
+#[derive(Debug,Clone,Copy)]
+pub struct GposMarkRunLimits{
+    pub context:GposContextRunLimits,
+    pub max_parent_visits:usize,
+    pub max_attachment_updates:usize,
+}
+impl Default for GposMarkRunLimits{
+    fn default()->Self{Self{context:Default::default(),max_parent_visits:16777216,max_attachment_updates:1048576}}
+}
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GposMarkRun{
+    pub residuals:Vec<GposRunAdjustment>,
+    pub edges:Vec<Option<GposAttachmentEdge>>,
+}
+impl GposMarkRun{
+    /// Origins must include final advance changes and exclude placement.
+    /// In DesignOnly mode callers should supply zero pixel origins and residuals.
+    pub fn resolve(&self,design_origins:&[(i32,i32)],pixel_origins:&[(i32,i32)],limits:GposAttachmentLimits)->Result<Vec<GposRunAdjustment>,Error>{
+        resolve_gpos_attachments(&self.edges,design_origins,pixel_origins,&self.residuals,limits)
+    }
+}
+/// Execute effective types 1,2,4,6,7,8 in logical order, including nested
+/// mark actions. MarkToBase skips classified marks; MarkToMark stops at an
+/// eligible non-mark. With no GDEF class, nearest eligible occurrence is
+/// checked against coverage (no speculative backward coverage search).
+/// Ligature component provenance, cursive advances, and mark ligature-id
+/// compatibility are not handled here. Last successful attachment replaces
+/// earlier edge and placement; later adjustments are local residuals.
+pub fn execute_gpos_marks(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],mode:GposRunMode,limits:GposMarkRunLimits)->Result<GposMarkRun,Error>{
+    let l=limits.context;
+    if glyphs.len()!=prior.len(){return Err(Error::Invalid("gpos run length mismatch"));}
+    if glyphs.len()>l.run.max_glyphs||program.roots().len()>l.run.max_roots{return Err(Error::Limit("gpos run size"));}
+    if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
+    for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|4|6|7|8){return Err(Error::Unsupported("gpos mark run kind"));}}
+    let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;out.extend_from_slice(prior);
+    let mut edges=Vec::new();edges.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;edges.resize(prior.len(),None);
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates};
+    for &root in program.roots(){
+        let lookup=program.lookup(root).ok_or(Error::Invalid("gpos mark root"))?;
+        let (ids,stream)=runner.filtered(lookup)?;
+        let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
+    }
+    Ok(GposMarkRun{residuals:runner.out,edges:runner.attachment_edges.ok_or(Error::Invalid("gpos mark edges"))?})
 }

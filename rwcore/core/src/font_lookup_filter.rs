@@ -65,6 +65,10 @@ impl<'a> LookupFilter<'a>{
         if !(1..=9).contains(&lookup.kind){return Err(Error::Invalid("lookup kind"));}
         Self::new(lookup.flags,lookup.mark_filtering_set,glyph_count,gdef)
     }
+    pub fn glyph_class(&self,glyph:u16)->Option<GdefGlyphClass>{
+        if u32::from(glyph)>=self.glyph_count{return None;}
+        Some(self.gdef.and_then(|g|g.glyph_class(glyph)).unwrap_or(GdefGlyphClass::Unclassified))
+    }
     pub fn flags(&self)->u16{self.flags}
     pub fn right_to_left(&self)->bool{self.flags&LOOKUP_RIGHT_TO_LEFT!=0}
     pub fn mark_attachment_type(&self)->u16{(self.flags&LOOKUP_MARK_ATTACHMENT_MASK)>>8}
