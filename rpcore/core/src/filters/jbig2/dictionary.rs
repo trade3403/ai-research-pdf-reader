@@ -1074,6 +1074,8 @@ pub struct ExecutionStats{
     pub huffman_single_refinement:u32,
     /// Arithmetic dictionaries dispatched in aggregation mode (not instance count).
     pub arithmetic_aggregation:u32,
+    /// Huffman dictionaries dispatched through the opt-in aggregation path.
+    pub huffman_aggregation:u32,
     pub new_symbols:u32,
     pub symbol_slots:usize,
     pub pixels:u64,
@@ -1110,20 +1112,25 @@ impl DictionarySet{
 /// Any error discards the entire result. The work budget is a conservative
 /// algorithmic accounting unit, not a memory/RSS or wall-clock guarantee.
 pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
-    execute_pdf_dictionaries_impl(globals,page,limits,true)
+    execute_pdf_dictionaries_impl(globals,page,limits,true,false)
 }
 /// Explicit legacy single-reference execution. Use this entry for callers
 /// that require the previous exact work, symbol-slot and context budgets.
 /// No retry or implicit fallback is performed by either entry.
 pub fn execute_pdf_dictionaries_single_reference(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
-    execute_pdf_dictionaries_impl(globals,page,limits,false)
+    execute_pdf_dictionaries_impl(globals,page,limits,false,false)
 }
 /// Explicit arithmetic aggregation execution, equivalent to the default,
 /// including retained/reused GR.
 pub fn execute_pdf_dictionaries_with_aggregation(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
-    execute_pdf_dictionaries_impl(globals,page,limits,true)
+    execute_pdf_dictionaries_impl(globals,page,limits,true,false)
 }
-fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits,enable_aggregation:bool)->Result<DictionarySet>{
+/// Opt-in arithmetic and Huffman aggregation. Reserves extra borrowed
+/// namespace slots for Huffman refinement dictionaries; default unchanged.
+pub fn execute_pdf_dictionaries_with_huffman_aggregation(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
+    execute_pdf_dictionaries_impl(globals,page,limits,true,true)
+}
+fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits,enable_aggregation:bool,enable_huffman_aggregation:bool)->Result<DictionarySet>{
     if limits.dictionaries>MAX_EXEC_DICTIONARIES||limits.new_symbols>MAX_SYMBOLS||
         limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
         limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
@@ -1170,7 +1177,8 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
         // At most all imports and all but the last new symbol are
         // simultaneously borrowed by one embedded text region. Reserve
         // this extra array in the cumulative slot cap before decoding.
-        let aggregate_slots=if aggregate&&plan.header.new_symbols!=0{total-1}else{0};
+        let huff_aggregate=enable_huffman_aggregation&&plan.header.refine_aggregate&&plan.header.huffman;
+        let aggregate_slots=if (aggregate||huff_aggregate)&&plan.header.new_symbols!=0{total-1}else{0};
         let slots=set.stats.symbol_slots.checked_add(total).and_then(|n|n.checked_add(plan.header.exported as usize))
             .and_then(|n|n.checked_add(borrow_slots)).and_then(|n|n.checked_add(aggregate_slots))
             .ok_or(Error::Limit("JBIG2 dictionary symbol slots"))?;
@@ -1200,9 +1208,13 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
             for &id in &namespace{
                 imports.push(set.bitmap(id).ok_or(Error::Invalid("JBIG2 refinement missing bitmap identity"))?);
             }
-            let (d,snapshot)=decode_huffman_single_refinement_with_context(&plan,original,&imports,ArithmeticLimits{
-                pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
-                decisions:limits.decisions_per_dictionary},initial)?;
+            let decode_limits=ArithmeticLimits{pixels,packed_bytes,work:left,export_runs:limits.export_runs_per_dictionary,
+                decisions:limits.decisions_per_dictionary};
+            let (d,snapshot)=if huff_aggregate{
+                decode_huffman_aggregation_with_context(&plan,original,&imports,decode_limits,initial)?
+            }else{
+                decode_huffman_single_refinement_with_context(&plan,original,&imports,decode_limits,initial)?
+            };
             if initial.is_some(){
                 set.stats.reused_contexts+=1;set.stats.reused_gr_contexts+=1;
             }
@@ -1215,8 +1227,9 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
                 set.stats.retained_contexts+=1;set.stats.retained_gr_contexts+=1;
             }
             set.stats.peak_context_entries=set.stats.peak_context_entries.max(active);
-            set.stats.single_refinement+=1;
-            set.stats.huffman_single_refinement+=1;
+            if huff_aggregate{set.stats.huffman_aggregation+=1;}else{
+                set.stats.single_refinement+=1;set.stats.huffman_single_refinement+=1;
+            }
             (d.new_symbols,d.exported_indices,d.packed_bytes,d.work_used)
         }else if plan.header.huffman{
             let d=decode_huffman_direct(&plan,original,HuffmanLimits{pixels,packed_bytes,work:left,
@@ -2177,8 +2190,10 @@ pub struct HuffmanRefinementDictionary{
     pub new_symbols:Vec<Bitmap>,
     pub exported_indices:Vec<u32>,
     pub classes:u32,
+    /// Decoded new symbols (legacy field name), not number of QM substreams.
     pub blocks:u32,
     pub entropy_bytes:usize,
+    /// Actual QM pixel decisions, including temporary refined instances.
     pub pixel_decisions:u64,
     pub packed_bytes:usize,
     pub work_used:u64,
@@ -2228,7 +2243,19 @@ pub fn decode_huffman_single_refinement(plan:&Plan,stream:&[u8],imports:&[&Bitma
 pub fn decode_huffman_single_refinement_with_context(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
     limits:ArithmeticLimits,initial:Option<&HuffmanRefinementContextSnapshot>)
     ->Result<(HuffmanRefinementDictionary,Option<HuffmanRefinementContextSnapshot>)>{
-    use super::refinement;
+    decode_huffman_refinement_impl(plan,stream,imports,limits,initial,false)
+}
+/// Opt-in Table 17 aggregate and Table 18 single refinement using one GR bank.
+/// Snapshot provenance remains the responsibility of the segment executor.
+pub fn decode_huffman_aggregation_with_context(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits,initial:Option<&HuffmanRefinementContextSnapshot>)
+    ->Result<(HuffmanRefinementDictionary,Option<HuffmanRefinementContextSnapshot>)>{
+    decode_huffman_refinement_impl(plan,stream,imports,limits,initial,true)
+}
+fn decode_huffman_refinement_impl(plan:&Plan,stream:&[u8],imports:&[&Bitmap],
+    limits:ArithmeticLimits,initial:Option<&HuffmanRefinementContextSnapshot>,aggregate:bool)
+    ->Result<(HuffmanRefinementDictionary,Option<HuffmanRefinementContextSnapshot>)>{
+    use super::{refinement,text_region};
     let h=&plan.header;
     if !h.huffman||!h.refine_aggregate{
         return Err(Error::Unsupported("JBIG2 single Huffman refinement mode"));
@@ -2287,7 +2314,25 @@ pub fn decode_huffman_single_refinement_with_context(plan:&Plan,stream:&[u8],imp
                     if next>limits.packed_bytes{return Err(Error::Limit("JBIG2 Huffman refinement packed budget"));}
                     match refinement_huff_integer(&tables[3].table,&mut reader,&mut left)?{
                         1=>{},
-                        n if n>1=>return Err(Error::Unsupported("JBIG2 multiple Huffman symbol aggregation")),
+                        n if n>1=>{
+                            if !aggregate{return Err(Error::Unsupported("JBIG2 multiple Huffman symbol aggregation"));}
+                            let instances=u32::try_from(n).map_err(|_|Error::Limit("JBIG2 Huffman aggregate instances"))?;
+                            if instances>text_region::MAX_INSTANCES{return Err(Error::Limit("JBIG2 Huffman aggregate instances"));}
+                            let available=plan.imported+s.index;
+                            charge_work(&mut left,u64::from(available))?;
+                            let mut refs=Vec::new();
+                            refs.try_reserve_exact(available as usize).map_err(|_|Error::Limit("JBIG2 Huffman aggregate references"))?;
+                            refs.extend(imports.iter().copied());refs.extend(out.iter());
+                            if refs.len()!=available as usize{return Err(Error::Invalid("JBIG2 Huffman aggregate namespace"));}
+                            let decoded=text_region::decode_huffman_aggregate_bitmap(&mut reader,s.width,s.height,
+                                instances,&refs,total,&neighborhood,&mut gr,decisions,left.min(bitmap::MAX_COMPOSE_WORK),
+                                limits.packed_bytes-next)?;
+                            charge_work(&mut left,decoded.decoded.stats.work_used)?;
+                            decisions=decisions.checked_sub(decoded.pixel_decisions).ok_or(Error::Limit("JBIG2 Huffman aggregate decisions"))?;
+                            entropy_bytes=entropy_bytes.checked_add(decoded.entropy_bytes).ok_or(Error::Limit("JBIG2 Huffman aggregate entropy bytes"))?;
+                            out.push(decoded.decoded.bitmap);packed=next;
+                            continue;
+                        },
                         _=>return Err(Error::Invalid("JBIG2 Huffman refinement instance count")),
                     }
                     charge_work(&mut left,u64::from(bits))?;
@@ -2336,7 +2381,7 @@ pub fn decode_huffman_single_refinement_with_context(plan:&Plan,stream:&[u8],imp
     charge_work(&mut left,reader.remaining()as u64)?;
     let snapshot=if h.context_retained{Some(HuffmanRefinementContextSnapshot{neighborhood,bank:gr})}else{None};
     Ok((HuffmanRefinementDictionary{new_symbols:out,exported_indices:indices,classes:state.classes,
-        blocks:state.decoded(),entropy_bytes,pixel_decisions:state.pixels(),packed_bytes:packed,work_used:limits.work-left},snapshot))
+        blocks:state.decoded(),entropy_bytes,pixel_decisions:(limits.decisions-decisions) as u64,packed_bytes:packed,work_used:limits.work-left},snapshot))
 }
 
 #[cfg(test)]
@@ -3094,6 +3139,51 @@ mod aggregation_executor_tests{
             ExecutionLimits{context_entries:8707,..l},ExecutionLimits{work:l.work-1,..l},
             ExecutionLimits{decisions_per_dictionary:91,..l}]{
             assert!(execute_pdf_dictionaries_with_aggregation(&g,&p,l).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod huffman_aggregation_dictionary_tests{
+    use super::*;
+    // Raw Huffman 1x1 black global symbol from prior independent fixture.
+    const SOURCE:&[u8]=&[0,1,0,0,0,1,0,0,0,1,95,128,128,0,64];
+    // B.4 DH=1, B.2 DW=3, B.1 aggregate count=2;
+    // Table 17 initial DT=1, DT=1, FS=0, ID=0 RI=0,
+    // DS=2 ID=0 RI=0 OOB; width OOB; export 0,2.
+    const DIRECT:&[u8]=&[112,16,0,52,63,128,64];
+    fn seg(id:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,id,kind,(refs.len()as u8)<<5];
+        v.extend(refs);v.push(page);v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn body(t:u8)->Vec<u8>{
+        let mut v=vec![t<<4,3];if t==0{v.extend([255;4]);}
+        v.extend([0,0,0,2,0,0,0,1]);v.extend(DIRECT);v
+    }
+    #[test]
+    fn huffman_aggregation_opt_in_executor_pixels_and_limits(){
+        for t in [0,1]{
+            let g=seg(1,0,0,&[],SOURCE);
+            let mut info=Vec::new();for n in [20u32,20,300,300]{info.extend(n.to_be_bytes());}
+            info.extend([0,0,0]);let mut p=seg(2,48,1,&[],&info);
+            p.extend(seg(3,0,1,&[1],&body(t)));
+            let l=ExecutionLimits{decisions_per_dictionary:0,..ExecutionLimits::default()};
+            assert!(matches!(execute_pdf_dictionaries(&g,&p,l),Err(Error::Unsupported(_))));
+            let d=execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,l).unwrap();
+            let stats=d.stats();
+            assert_eq!(d.symbol(3,1).unwrap().packed(),[160]);
+            assert_eq!((d.symbol(3,1).unwrap().width(),d.symbol(3,1).unwrap().height()),(3,1));
+            assert!(std::ptr::eq(d.symbol(1,0).unwrap(),d.symbol(3,0).unwrap()));
+            assert_eq!((stats.dictionaries,stats.huffman_aggregation,stats.huffman_single_refinement),(2,1,0));
+            assert_eq!((stats.new_symbols,stats.pixels,stats.packed_bytes,stats.symbol_slots),(2,4,2,8));
+            let exact=ExecutionLimits{pixels:stats.pixels,packed_bytes:stats.packed_bytes,
+                work:stats.work_used,symbol_slots:stats.symbol_slots,context_entries:stats.peak_context_entries,..l};
+            assert_eq!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,exact).unwrap(),d);
+            for cap in [ExecutionLimits{pixels:3,..exact},ExecutionLimits{packed_bytes:1,..exact},
+                ExecutionLimits{work:exact.work-1,..exact},ExecutionLimits{symbol_slots:7,..exact},
+                ExecutionLimits{context_entries:exact.context_entries-1,..exact}]{
+                assert!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,cap).is_err());
+            }
         }
     }
 }

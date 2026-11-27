@@ -1819,3 +1819,39 @@ mod huffman_aggregate_bitmap_tests{
         assert!(run(6,2,d.decoded.stats.work_used-1).is_err());
     }
 }
+
+#[cfg(test)]
+mod huffman_aggregate_shared_gr_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    use super::super::refinement::{ContextBank,Neighborhood,Template};
+    #[test]
+    fn huffman_aggregate_two_qm_blocks_shared_gr(){
+        // 9d3 independent QM vectors, IDs widened to two bits, two
+        // imported symbols and one not-yet-decoded symbol. Final OOB
+        // followed by a 3-bit caller sentinel, not text payload padding.
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap();
+        let b=Bitmap::from_packed(3,2,&[160,64]).unwrap();
+        for template in [Template::T0,Template::T1]{
+            let n=Neighborhood::nominal(template);
+            let mut data=vec![0,7,142,58,163,187,255,172,211,169,72];
+            data.extend([if template==Template::T0{221}else{220},127,255,172]);
+            data.push(0x68); // OOB 01, sentinel 101.
+            let run=|decisions,work,packed|->Result<HuffmanAggregateBitmap>{
+                let mut r=BitReader::new(&data,14*8+5)?;
+                let mut gr=ContextBank::new(template)?;
+                let d=decode_huffman_aggregate_bitmap(&mut r,8,4,2,&[&a,&b],3,&n,&mut gr,decisions,work,packed)?;
+                assert_eq!(r.position(),14*8+2);
+                assert_eq!([r.bit()?,r.bit()?,r.bit()?],[1,0,1]);
+                Ok(d)
+            };
+            let d=run(14,40000,2).unwrap();
+            assert_eq!(d.decoded.bitmap.packed(),[172,67,0,0]);
+            assert_eq!((d.pixel_decisions,d.entropy_bytes),(14,7));
+            assert_eq!(run(14,d.decoded.stats.work_used,2).unwrap(),d);
+            assert!(run(13,40000,2).is_err());
+            assert!(run(14,40000,1).is_err());
+            assert!(run(14,d.decoded.stats.work_used-1,2).is_err());
+        }
+    }
+}
