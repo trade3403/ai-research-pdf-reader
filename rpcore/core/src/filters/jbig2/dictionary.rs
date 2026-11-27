@@ -1347,6 +1347,14 @@ mod executor_tests{
         set.dictionary(id).unwrap().iter().map(|s|s.index()).collect()
     }
     #[test]
+    fn aggregation_executor_legacy_direct_parity(){
+        let (g,p)=fixture();let l=ExecutionLimits::default();
+        let legacy=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap(),legacy);
+        let tight=ExecutionLimits{work:legacy.stats().work_used,symbol_slots:legacy.stats().symbol_slots,..l};
+        assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,tight).unwrap(),legacy);
+    }
+    #[test]
     fn executor_mixed_official_pixels(){
         let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!((d.stats().dictionaries,d.stats().huffman,d.stats().arithmetic),(5,4,1));
@@ -1991,6 +1999,30 @@ mod retained_gr_tests{
             assert!(decode_arithmetic_aggregation(&plan,&b,&imports,l).is_err());
             plan.header.context_used=false;
             assert!(decode_arithmetic_aggregation_with_context(&plan,&b,&imports,l,Some(&snap)).is_err());
+        }
+    }
+    #[test]
+    fn aggregation_executor_legacy_retained_parity(){
+        for t in [0,1]{
+            for flags in [1,3]{
+                let (g,p)=fixture(t,flags);
+                let l=ExecutionLimits::default();
+                let legacy=execute_pdf_dictionaries(&g,&p,l).unwrap();
+                let aggregate=execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap();
+                assert_eq!(legacy.arena,aggregate.arena);
+                assert_eq!(legacy.exports,aggregate.exports);
+                let a=legacy.stats();let z=aggregate.stats();
+                assert_eq!((a.dictionaries,a.new_symbols,a.pixels,a.packed_bytes,a.retained_gr_contexts,a.reused_gr_contexts),
+                    (z.dictionaries,z.new_symbols,z.pixels,z.packed_bytes,z.retained_gr_contexts,z.reused_gr_contexts));
+                assert_eq!(z.arithmetic_aggregation,2);
+                assert_eq!(z.single_refinement,0);
+                assert_eq!(z.peak_context_entries,a.peak_context_entries+9*512);
+                assert_eq!(z.symbol_slots,a.symbol_slots+5);
+                assert_eq!(z.work_used,a.work_used+2*9*512+5);
+                let tight=ExecutionLimits{context_entries:a.peak_context_entries,..l};
+                assert!(execute_pdf_dictionaries(&g,&p,tight).is_ok());
+                assert!(execute_pdf_dictionaries_with_aggregation(&g,&p,tight).is_err());
+            }
         }
     }
     #[test]

@@ -47,3 +47,6 @@ CI #627 run 45960007364: 25/29 eligible, rendering 3.70–28.72% of PDFium, vect
 
 
 CI #629 run 45961925370: 25/29 eligible, rendering 3.35–26.65% of PDFium, vector max 4.95%, text max 12.46%, JPEG max 26.65%; four low-DPI JPEG exclusions. Targets unchanged.
+
+
+CI #631 run 45964000554: 25/29 eligible, rendering 3.28–23.22% of PDFium; vector max 4.65%, text max 11.34%, JPEG max 23.22%. Four low-DPI JPEG exclusions. Goals unchanged.
