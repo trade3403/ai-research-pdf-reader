@@ -163,7 +163,7 @@ fn paint(row:&mut[u8],start:u32,end:u32,black:bool){
 /// alignment between rows, uncompressed extension, multi-strip TIFF parser,
 /// error recovery or PDF-specific EndOfBlock policy is implemented here.
 pub fn decode_mmr(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
-    decode_mmr_inner(data,width,height,work_limit,false)
+    decode_mmr_inner(data,width,height,work_limit,false,false)
 }
 /// T.88 6.2.6: for a single bitmap with a known byte count, EOFB
 /// is optional. Accept either exact row data plus up to seven alignment
@@ -171,9 +171,16 @@ pub fn decode_mmr(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrIma
 /// are ignored (T.88 does not prescribe their value). Reject any other
 /// full trailing bytes, a deliberately strict subset of optional EOFB.
 pub fn decode_mmr_known_length(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
-    decode_mmr_inner(data,width,height,work_limit,true)
+    decode_mmr_inner(data,width,height,work_limit,true,false)
 }
-fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb:bool)->Result<MmrImage>{
+/// Decode one explicitly terminated, byte-aligned plane at the beginning
+/// of a concatenated T.88 Gray-plane stream. EOFB mandatory; arbitrary
+/// alignment bits allowed. The next plane is untouched. Work includes only
+/// this plane's consumed bits, not the remaining suffix.
+pub(crate) fn decode_mmr_plane_prefix(data:&[u8],width:u32,height:u32,work_limit:u64)->Result<MmrImage>{
+    decode_mmr_inner(data,width,height,work_limit,false,true)
+}
+fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb:bool,prefix:bool)->Result<MmrImage>{
     if width==0||height==0{return Err(Error::Invalid("CCITT MMR dimensions"));}
     let area=u64::from(width)*u64::from(height);
     if width>MAX_RUN||height>MAX_RUN||area>MAX_MMR_PIXELS{return Err(Error::Limit("CCITT MMR dimensions"));}
@@ -181,11 +188,13 @@ fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb
     let len=stride.checked_mul(height as usize).ok_or(Error::Limit("CCITT MMR bytes"))?;
     if len>MAX_MMR_BYTES{return Err(Error::Limit("CCITT MMR bytes"));}
     let bit_len=data.len().checked_mul(8).ok_or(Error::Limit("CCITT MMR input"))?;
-    let mut reader=BitReader::new(data,bit_len)?;
     let mut left=work_limit.min(MAX_MMR_WORK);
-    // Charge the worst-case painting and transition scan, all input bits,
-    // and a conservative per-mode search/dispatch allowance below.
-    charge(&mut left,area*2+bit_len as u64)?;
+    // Prefix path bounds the reader by remaining work; charge actual
+    // consumption after each row mode and the mandatory marker/alignment.
+    // Legacy complete-image paths retain their exact input-bit charge.
+    charge(&mut left,area*2)?;
+    let mut reader=BitReader::new(data,if prefix{bit_len.min(left as usize)}else{bit_len})?;
+    if !prefix{charge(&mut left,bit_len as u64)?;}
     let mut packed=Vec::new();
     packed.try_reserve_exact(len).map_err(|_|Error::Limit("CCITT MMR allocation"))?;
     packed.resize(len,0);
@@ -196,6 +205,7 @@ fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb
         let mut x=0u32;let mut black=false;let mut initial=true;
         while x<width{
             charge(&mut left,32)?;
+            let start=reader.position();
             let (b1,b2)=reference_pair(&refs,x,black,initial,width);
             match reader.mode()?{
                 Mode::Pass=>{
@@ -219,6 +229,7 @@ fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb
                 }
                 Mode::EndOfBlock=>return Err(Error::Invalid("CCITT MMR early EOFB")),
             }
+            if prefix{charge(&mut left,(reader.position()-start) as u64)?;}
             initial=false;
         }
         // Rebuild canonical changing elements from actual pixels: zero
@@ -229,15 +240,22 @@ fn decode_mmr_inner(data:&[u8],width:u32,height:u32,work_limit:u64,optional_eofb
             if bit!=previous{refs.push(x);previous=bit;}
         }
     }
+    let marker_start=reader.position();
     let eofb_present=if optional_eofb&&reader.remaining()<=7{false}else{
         if reader.mode()?!=Mode::EndOfBlock{return Err(Error::Invalid("CCITT MMR missing EOFB"));}
         true
     };
     let encoded_bits=reader.position();
-    if reader.remaining()>7{return Err(Error::Invalid("CCITT MMR trailing bytes"));}
-    while reader.remaining()!=0{
-        let bit=reader.bit()?;
-        if !optional_eofb&&bit!=0{return Err(Error::Invalid("CCITT MMR nonzero padding"));}
+    if prefix{
+        let aligned=encoded_bits.div_ceil(8)*8;
+        charge(&mut left,(aligned-marker_start) as u64)?;
+        reader.take_aligned_bytes(0)?;
+    }else{
+        if reader.remaining()>7{return Err(Error::Invalid("CCITT MMR trailing bytes"));}
+        while reader.remaining()!=0{
+            let bit=reader.bit()?;
+            if !optional_eofb&&bit!=0{return Err(Error::Invalid("CCITT MMR nonzero padding"));}
+        }
     }
     Ok(MmrImage{width,height,stride,packed,mode_counts,encoded_bits,eofb_present})
 }

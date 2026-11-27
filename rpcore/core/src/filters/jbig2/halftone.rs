@@ -1,6 +1,6 @@
 //! Native T.88 (2000) 6.6, 7.4.5 and Annex C halftone region.
 //! Arithmetic payloads use one QM stream and one generic probability bank
-//! across MSB-first Gray-coded planes. MMR multi-plane framing is deferred.
+//! across MSB-first Gray-coded planes. MMR planes have mandatory EOFB.
 use crate::{Error,Result,MAX_BYTES};
 use super::{bitmap::{self,Bitmap,ComposeBudget,ComposeOp,RegionInfo},generic::{Neighborhood,Template},pattern::PatternDictionary,qm};
 
@@ -67,6 +67,8 @@ impl Default for Limits{
 pub struct DecodedHalftone{
     pub header:Header,pub bitmap:Bitmap,pub indices:Vec<u16>,pub planes:u8,
     pub decisions:usize,pub skipped_cells:u64,pub composed_pixels:u64,
+    /// Byte spans of each MMR plane, including EOFB and alignment; empty for QM.
+    pub mmr_plane_bytes:Vec<usize>,
     /// Logical index bytes + current plane + output; excludes borrowed dictionary
     /// and context metadata. Conservative simultaneous bitmap/index bound.
     pub peak_packed_bytes:usize,pub work_used:u64,
@@ -145,18 +147,71 @@ pub fn decode_arithmetic(data:&[u8],dict:&PatternDictionary,limits:Limits)->Resu
                 let cx=neighborhood.context(&plane,n,m)?;
                 plane.set(n,m,decoder.decode(&mut bank[cx])?!=0)?;
             }}
-            for m in 0..h.grid.height{for n in 0..h.grid.width{
-                let i=m as usize*h.grid.width as usize+n as usize;
-                let coded=u16::from(plane.get(n,m).ok_or(Error::Invalid("JBIG2 halftone plane pixel"))?);
-                let previous=indices[i];
-                indices[i]=(previous<<1)|(coded^(previous&1));
-            }}
+            accumulate_gray(&h,&mut indices,plane.packed(),plane.stride())?;
         }
         decoder.decisions_used()
     };
     let (bitmap,composed_pixels)=compose(&h,dict,&indices,left)?;
     Ok(DecodedHalftone{header:h,bitmap,indices,planes,decisions,skipped_cells:skipped,
-        composed_pixels,peak_packed_bytes:peak as usize,work_used:setup+composed_pixels})
+        composed_pixels,mmr_plane_bytes:Vec::new(),peak_packed_bytes:peak as usize,work_used:setup+composed_pixels})
+}
+
+fn accumulate_gray(h:&Header,indices:&mut[u16],packed:&[u8],stride:usize)->Result<()>{
+    for m in 0..h.grid.height as usize{for n in 0..h.grid.width as usize{
+        let i=m*h.grid.width as usize+n;
+        let byte=*packed.get(m*stride+n/8).ok_or(Error::Invalid("JBIG2 halftone plane pixel"))?;
+        let coded=u16::from((byte>>(7-n%8))&1);
+        let previous=indices[i];indices[i]=(previous<<1)|(coded^(previous&1));
+    }}
+    Ok(())
+}
+/// Dispatch the complete halftone region payload in either coding mode.
+pub fn decode(data:&[u8],dict:&PatternDictionary,limits:Limits)->Result<DecodedHalftone>{
+    match parse(data)?.0.coding{
+        Coding::Mmr=>decode_mmr(data,dict,limits),
+        Coding::Arithmetic(_)=>decode_arithmetic(data,dict,limits),
+    }
+}
+/// Decode concatenated mandatory-EOFB MMR planes, resetting the white
+/// reference row for each. No sentinel scan or speculative decoding.
+pub fn decode_mmr(data:&[u8],dict:&PatternDictionary,limits:Limits)->Result<DecodedHalftone>{
+    use crate::filters::ccitt;
+    if limits.grid_cells>MAX_GRID_CELLS||limits.pixels>bitmap::MAX_PIXELS||
+        limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.decisions>MAX_DECISIONS||
+        limits.work>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 halftone limits"));}
+    let (h,body)=parse(data)?;
+    if h.coding!=Coding::Mmr{return Err(Error::Unsupported("JBIG2 halftone arithmetic planes"));}
+    let cells=u64::from(h.grid.width)*u64::from(h.grid.height);
+    let pixels=u64::from(h.region.width)*u64::from(h.region.height);
+    if cells>limits.grid_cells||pixels>limits.pixels{return Err(Error::Limit("JBIG2 halftone cells or pixels"));}
+    let planes=plane_count(dict.header.count)?;
+    let plane_bytes=if planes==0{0}else{u64::from(h.grid.width).div_ceil(8)*u64::from(h.grid.height)};
+    let canvas=u64::from(h.region.width).div_ceil(8)*u64::from(h.region.height);
+    let peak=cells*2+plane_bytes+canvas;
+    if peak>limits.packed_bytes as u64{return Err(Error::Limit("JBIG2 halftone packed budget"));}
+    let setup=data.len() as u64+pixels+cells*4+cells*u64::from(planes)*4;
+    let mut left=limits.work.checked_sub(setup).ok_or(Error::Limit("JBIG2 halftone work"))?;
+    let mut indices=Vec::new();
+    indices.try_reserve_exact(cells as usize).map_err(|_|Error::Limit("JBIG2 halftone indices"))?;
+    indices.resize(cells as usize,0u16);
+    let mut sizes=Vec::new();
+    sizes.try_reserve_exact(planes as usize).map_err(|_|Error::Limit("JBIG2 halftone plane slots"))?;
+    let mut offset=0usize;
+    for _ in 0..planes{
+        let suffix=body.get(offset..).ok_or(Error::Invalid("JBIG2 halftone plane span"))?;
+        let plane=ccitt::decode_mmr_plane_prefix(suffix,h.grid.width,h.grid.height,left)?;
+        let bytes=plane.encoded_bits.div_ceil(8);
+        let cost=cells*2+bytes as u64*8+32*plane.mode_counts.iter().sum::<u64>();
+        left=left.checked_sub(cost).ok_or(Error::Limit("JBIG2 halftone MMR work"))?;
+        offset=offset.checked_add(bytes).ok_or(Error::Limit("JBIG2 halftone plane span"))?;
+        sizes.push(bytes);
+        accumulate_gray(&h,&mut indices,&plane.packed,plane.stride)?;
+    }
+    if offset!=body.len(){return Err(Error::Invalid("JBIG2 halftone trailing plane bytes"));}
+    let (bitmap,composed_pixels)=compose(&h,dict,&indices,left)?;
+    Ok(DecodedHalftone{header:h,bitmap,indices,planes,decisions:0,skipped_cells:0,
+        composed_pixels,mmr_plane_bytes:sizes,peak_packed_bytes:peak as usize,
+        work_used:limits.work-left+composed_pixels})
 }
 
 #[cfg(test)]
@@ -206,6 +261,64 @@ mod tests{
         127,255,255,255,
         68,102,102,127,
     ];
+    // Original Annex H.1 segments 5 and 6, printed pp.131–133.
+    const MMR_DICT:&[u8]=&[1,4,4,0,0,0,15,32,209,132,97,24,69,242,249,124,143,17,195,158,69,242,249,125,66,133,10,170,132,98,47,238,236,68,98,34,53,42,10,131,185,220,238,119,128];
+    const MMR_REGION:&[u8]=&[0,0,0,32,0,0,0,36,0,0,0,16,0,0,0,15,0,1,0,0,0,8,0,0,0,9,0,0,0,0,0,0,0,0,4,0,0,0,170,170,170,170,128,8,0,128,54,213,85,107,90,212,0,64,4,46,233,82,210,210,210,138,165,74,0,32,2,35,224,149,36,180,146,138,74,146,84,146,210,74,41,42,73,64,4,0,64];
+    #[test]
+    fn halftone_annex_h_mmr_planes_and_arithmetic_parity(){
+        let dict=pattern::decode(MMR_DICT,pattern::Limits::default()).unwrap();
+        let d=decode(MMR_REGION,&dict,Limits::default()).unwrap();
+        let a=decode(REGION,&dict,Limits::default()).unwrap();
+        assert_eq!(d.bitmap.packed(),EXPECTED);assert_eq!(d.bitmap,a.bitmap);
+        assert_eq!(d.indices,a.indices);assert_eq!(d.mmr_plane_bytes,[8,9,12,20]);
+        assert_eq!((d.planes,d.decisions,d.skipped_cells,d.composed_pixels),(4,0,0,1152));
+        assert_eq!(d.peak_packed_bytes,297);
+        let exact=Limits{grid_cells:72,pixels:1152,packed_bytes:297,decisions:0,work:d.work_used};
+        assert_eq!(decode(MMR_REGION,&dict,exact).unwrap(),d);
+        for cap in [Limits{grid_cells:71,..exact},Limits{pixels:1151,..exact},
+            Limits{packed_bytes:296,..exact},Limits{work:exact.work-1,..exact}]{
+            assert!(decode(MMR_REGION,&dict,cap).is_err());
+        }
+        for end in 0..MMR_REGION.len(){assert!(decode(&MMR_REGION[..end],&dict,exact).is_err(),"prefix {end}");}
+        let mut extra=MMR_REGION.to_vec();extra.push(0);
+        assert!(decode(&extra,&dict,Limits::default()).is_err());
+        let mut bad=MMR_REGION.to_vec();bad[45]=0; // first EOFB terminal bit
+        assert!(decode(&bad,&dict,Limits::default()).is_err());
+        let mut padding=MMR_REGION.to_vec();padding[45]|=127;
+        assert_eq!(decode(&padding,&dict,exact).unwrap(),d);
+    }
+    #[test]
+    fn halftone_mmr_raw_planes_exact_boundaries(){
+        use crate::filters::ccitt::decode_mmr_plane_prefix;
+        let body=&MMR_REGION[38..];let mut offset=0;
+        for (j,size) in [8usize,9,12,20].into_iter().enumerate(){
+            let p=decode_mmr_plane_prefix(&body[offset..],8,9,10000).unwrap();
+            assert_eq!(p.encoded_bits.div_ceil(8),size);
+            assert!(p.eofb_present);
+            // Independently calculate raw Gray-code planes of the H.11 grid.
+            let expected:Vec<u8>=(0..9u8).map(|m|(0..8u8).fold(0,|row,n|{
+                let v=m+n;row|(((v^(v>>1))>>(3-j))&1)<<(7-n)
+            })).collect();
+            assert_eq!(p.packed,expected);
+            let cost=144+size as u64*8+32*p.mode_counts.iter().sum::<u64>();
+            assert_eq!(decode_mmr_plane_prefix(&body[offset..],8,9,cost).unwrap(),p);
+            assert!(decode_mmr_plane_prefix(&body[offset..],8,9,cost-1).is_err());
+            assert!(decode_mmr_plane_prefix(&body[offset..offset+size-1],8,9,10000).is_err());
+            offset+=size;
+        }
+        assert_eq!(offset,body.len());
+    }
+    #[test]
+    fn halftone_mmr_zero_planes_and_wrong_mode(){
+        let one=pattern::decode(&[1,1,1,0,0,0,0,128],pattern::Limits::default()).unwrap();
+        let mut data=MMR_REGION[..38].to_vec();
+        let d=decode(&data,&one,Limits{decisions:0,..Limits::default()}).unwrap();
+        assert_eq!(d.planes,0);assert!(d.mmr_plane_bytes.is_empty());
+        assert_eq!(d.bitmap.packed(),[0;144]);
+        data.push(0);assert!(decode(&data,&one,Limits::default()).is_err());
+        assert!(decode_mmr(REGION,&one,Limits::default()).is_err());
+        assert!(decode_arithmetic(MMR_REGION,&one,Limits::default()).is_err());
+    }
     #[test]
     fn halftone_annex_h_arithmetic_shared_planes(){
         let dict=pattern::decode(DICT,pattern::Limits::default()).unwrap();
