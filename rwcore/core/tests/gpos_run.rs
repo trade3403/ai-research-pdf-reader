@@ -171,3 +171,48 @@ fn mark_gdef()->Gdef{parse_gdef(&words(&[1,0,12,0,0,0,1,3,5,3,3,0,0,1]),32,Defau
     let x=execute_gpos_marks(&p,&[7,3],&prior,GposRunMode::DesignOnly,Default::default()).unwrap();
     assert_eq!(x.residuals[1].design.x_placement,0);assert_eq!(x.residuals[1].design.x_advance,4);assert_eq!(prior[1].design.x_placement,55);
 }
+
+fn mark_ligature()->Vec<u16>{vec![1,12,20,2,26,48,1,2,3,4,1,1,7,2,0,10,1,16,1,10,20,1,30,40,1,4,2,10,0,16,22,1,100,200,1,300,400,1,500,600]}
+#[test]fn ligature_component_occurrence_mapping(){
+    use GposLigatureSource::*;
+    let b=fixture(&[(5,0,vec![mark_ligature()])]);let g=mark_gdef();
+    let p=compile_gpos_program(&b,&[0],32,Some(&g),Default::default()).unwrap();
+    let sources=[Ligature{id:1,components:2},Mark{id:1,component:0},Mark{id:1,component:1}];
+    let x=execute_gpos_ligature_marks(&p,&[7,3,4],&[Default::default();3],&sources,GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.edges[1].unwrap().design_delta,(90,180));
+    assert_eq!(x.edges[2].unwrap().design_delta,(470,560));
+    assert_eq!(x.edges[2].unwrap().parent,0);
+}
+#[test]fn ligature_fallback_and_null_anchor(){
+    use GposLigatureSource::*;
+    let b=fixture(&[(5,0,vec![mark_ligature()])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let prior=[Default::default();2];let m=GposRunMode::DesignOnly;
+    let x=execute_gpos_ligature_marks(&p,&[7,4],&prior,&[Unmapped,Unmapped],m,Default::default()).unwrap();
+    assert_eq!(x.edges[1].unwrap().design_delta,(470,560));
+    let x=execute_gpos_ligature_marks(&p,&[7,4],&prior,&[Ligature{id:1,components:2},Mark{id:1,component:0}],m,Default::default()).unwrap();
+    assert!(x.edges[1].is_none());
+    assert!(execute_gpos_marks(&p,&[7,4],&prior,m,Default::default()).is_err());
+}
+#[test]fn ligature_invalid_sources_rejected(){
+    use GposLigatureSource::*;
+    let b=fixture(&[(5,0,vec![mark_ligature()])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    for sources in [[Ligature{id:1,components:2},Mark{id:2,component:0}],
+        [Ligature{id:1,components:2},Mark{id:1,component:2}],
+        [Ligature{id:1,components:3},Mark{id:1,component:0}],
+        [Ligature{id:1,components:2},Ligature{id:1,components:2}]]{
+        assert!(execute_gpos_ligature_marks(&p,&[7,3],&[Default::default();2],&sources,GposRunMode::DesignOnly,Default::default()).is_err());
+    }
+}
+#[test]fn mark_source_identity_compatibility(){
+    use GposLigatureSource::*;
+    assert!(gpos_mark_sources_compatible(Unmapped,Unmapped));
+    assert!(gpos_mark_sources_compatible(Mark{id:1,component:0},Mark{id:1,component:0}));
+    assert!(!gpos_mark_sources_compatible(Mark{id:1,component:0},Mark{id:1,component:1}));
+    assert!(!gpos_mark_sources_compatible(Mark{id:1,component:0},Mark{id:2,component:0}));
+    assert!(!gpos_mark_sources_compatible(Unmapped,Mark{id:1,component:0}));
+}
+#[test]fn ligature_foreign_identity_uses_last_component(){
+    use GposLigatureSource::*;
+    assert_eq!(select_gpos_ligature_component(Ligature{id:1,components:2},Mark{id:2,component:0},2).unwrap(),1);
+    assert!(select_gpos_ligature_component(Ligature{id:1,components:2},Mark{id:1,component:2},2).is_err());
+}

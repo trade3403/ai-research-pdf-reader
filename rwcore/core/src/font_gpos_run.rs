@@ -86,6 +86,7 @@ struct ContextRunner<'p,'g,'d>{
     attachment_edges:Option<Vec<Option<GposAttachmentEdge>>>,
     parent_visits:usize,
     attachment_updates:usize,
+    ligatures:Option<&'g [GposLigatureSource]>,
 }
 impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
     fn filtered(&mut self,lookup:&CompiledGposLookup<'_>)->Result<(Vec<usize>,Vec<u16>),Error>{
@@ -166,10 +167,22 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                         if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
                     }continue;
                 }
+                MarkLigature(p)=>{
+                    if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
+                    if p.mark(stream[pos]).is_none(){continue;}
+                    if let Some(parent)=self.mark_parent(lookup,ids,pos,false)?{
+                        if let Some(count)=p.component_count(self.glyphs[parent]){
+                            let sources=self.ligatures.ok_or(Error::Unsupported("gpos ligature provenance"))?;
+                            let component=select_gpos_ligature_component(sources[parent],sources[a],count)?;
+                            if let Some((pa,ca))=p.pair(self.glyphs[parent],component,stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
+                        }
+                    }continue;
+                }
                 MarkMark(p)=>{
                     if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
                     if p.mark1(stream[pos]).is_none(){continue;}
                     if let Some(parent)=self.mark_parent(lookup,ids,pos,true)?{
+                        if self.ligatures.is_some_and(|sources|!gpos_mark_sources_compatible(sources[parent],sources[a])){continue;}
                         if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
                     }continue;
                 }
@@ -206,7 +219,7 @@ pub fn execute_gpos_context(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|7|8){return Err(Error::Unsupported("gpos context run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos context allocation"))?;out.extend_from_slice(prior);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0,ligatures:None};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos context root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
@@ -244,14 +257,63 @@ impl GposMarkRun{
 /// compatibility are not handled here. Last successful attachment replaces
 /// earlier edge and placement; later adjustments are local residuals.
 pub fn execute_gpos_marks(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],mode:GposRunMode,limits:GposMarkRunLimits)->Result<GposMarkRun,Error>{
+    execute_gpos_marks_inner(program,glyphs,prior,mode,limits,None)
+}
+/// Explicit caller-provided source mapping. Ligature identity is occurrence-specific,
+/// not a glyph ID. Components are zero-based. Unmapped marks use the last component.
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Default)]
+pub enum GposLigatureSource{
+    #[default] Unmapped,
+    Ligature{id:u32,components:usize},
+    Mark{id:u32,component:usize},
+}
+pub fn select_gpos_ligature_component(parent:GposLigatureSource,mark:GposLigatureSource,count:usize)->Result<usize,Error>{
+    if count==0{return Err(Error::Invalid("gpos ligature empty components"));}
+    if let GposLigatureSource::Ligature{id,components}=parent{
+        if id==0||components!=count{return Err(Error::Invalid("gpos ligature component count"));}
+        if let GposLigatureSource::Mark{id:mid,component}=mark{
+            if mid==id{
+                if component>=count{return Err(Error::Invalid("gpos ligature component index"));}
+                return Ok(component);
+            }
+        }
+    }
+    Ok(count-1)
+}
+pub fn gpos_mark_sources_compatible(parent:GposLigatureSource,child:GposLigatureSource)->bool{
+    match (parent,child){
+        (GposLigatureSource::Unmapped,GposLigatureSource::Unmapped)=>true,
+        (GposLigatureSource::Mark{id:a,component:x},GposLigatureSource::Mark{id:b,component:y})=>a==b&&x==y,
+        _=>false,
+    }
+}
+/// Validate unique ligature occurrence IDs and all mapped marks before execution.
+/// A source can precede or follow its mark in logical order. No source inference.
+pub fn execute_gpos_ligature_marks(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],sources:&[GposLigatureSource],mode:GposRunMode,limits:GposMarkRunLimits)->Result<GposMarkRun,Error>{
+    if sources.len()!=glyphs.len(){return Err(Error::Invalid("gpos ligature source length"));}
+    if sources.len()>limits.context.run.max_glyphs{return Err(Error::Limit("gpos ligature sources"));}
+    let mut map=std::collections::BTreeMap::new();
+    for &source in sources{
+        if let GposLigatureSource::Ligature{id,components}=source{
+            if id==0||components==0||components>65535||map.insert(id,components).is_some(){return Err(Error::Invalid("gpos ligature identity"));}
+        }
+    }
+    for &source in sources{
+        if let GposLigatureSource::Mark{id,component}=source{
+            if !map.get(&id).is_some_and(|&n|component<n){return Err(Error::Invalid("gpos ligature mark source"));}
+        }
+    }
+    execute_gpos_marks_inner(program,glyphs,prior,mode,limits,Some(sources))
+}
+fn execute_gpos_marks_inner(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],mode:GposRunMode,limits:GposMarkRunLimits,ligatures:Option<&[GposLigatureSource]>)->Result<GposMarkRun,Error>{
     let l=limits.context;
     if glyphs.len()!=prior.len(){return Err(Error::Invalid("gpos run length mismatch"));}
     if glyphs.len()>l.run.max_glyphs||program.roots().len()>l.run.max_roots{return Err(Error::Limit("gpos run size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
-    for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|4|6|7|8){return Err(Error::Unsupported("gpos mark run kind"));}}
+    for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|4|6|7|8)&&!(lookup.effective_kind()==5&&ligatures.is_some()){return Err(Error::Unsupported("gpos mark run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;out.extend_from_slice(prior);
     let mut edges=Vec::new();edges.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;edges.resize(prior.len(),None);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates,ligatures};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos mark root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
