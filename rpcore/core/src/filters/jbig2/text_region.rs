@@ -1008,6 +1008,13 @@ pub fn decode_huffman_refined(data:&[u8],bit_len:usize,options:Options,
     symbols:&[&Bitmap],ids:&HuffmanSymbolIds,integers:&HuffmanTextIntegers,
     tables:&HuffmanTextRefinementTables,neighborhood:&super::refinement::Neighborhood,
     decision_limit:usize,work_limit:u64)->Result<DecodedText>{
+    decode_huffman_refined_bounded(data,bit_len,options,symbols,ids,integers,tables,neighborhood,
+        decision_limit,work_limit,bitmap::MAX_PACKED_BYTES)
+}
+fn decode_huffman_refined_bounded(data:&[u8],bit_len:usize,options:Options,
+    symbols:&[&Bitmap],ids:&HuffmanSymbolIds,integers:&HuffmanTextIntegers,
+    tables:&HuffmanTextRefinementTables,neighborhood:&super::refinement::Neighborhood,
+    decision_limit:usize,work_limit:u64,temporary_packed:usize)->Result<DecodedText>{
     use super::{integer::Integer,refinement,qm};
     use crate::filters::ccitt::BitReader;
     if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
@@ -1040,6 +1047,9 @@ pub fn decode_huffman_refined(data:&[u8],bit_len:usize,options:Options,
                 let end=base.checked_add(span.end).ok_or(Error::Limit("JBIG2 Huffman text block end"))?;
                 let block=data.get(start..end).ok_or(Error::Invalid("JBIG2 Huffman text truncated block"))?;
                 let opt=refinement_geometry(src,fields.dw,fields.dh,fields.dx,fields.dy)?;
+                if u64::from(opt.width).div_ceil(8)*u64::from(opt.height)>temporary_packed as u64{
+                    return Err(Error::Limit("JBIG2 Huffman text temporary packed budget"));
+                }
                 let area=usize::try_from(u64::from(opt.width)*u64::from(opt.height))
                     .map_err(|_|Error::Limit("JBIG2 Huffman text decisions"))?;
                 remaining=remaining.checked_sub(area).ok_or(Error::Limit("JBIG2 Huffman text decisions"))?;
@@ -1308,10 +1318,25 @@ pub fn bind_text_tables(selections:&TextHuffmanSelections,custom:&[&super::huffm
 /// byte padding is permitted, never an additional whole byte.
 pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
     bit_limit:usize,decision_limit:usize,work_limit:u64)->Result<(HuffmanTextHeader,DecodedText)>{
+    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,None)
+}
+/// Packed budget includes the output canvas and any one temporary refinement.
+pub fn decode_huffman_text_payload_bounded(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
+    bit_limit:usize,decision_limit:usize,work_limit:u64,packed_limit:usize)->Result<(HuffmanTextHeader,DecodedText)>{
+    decode_huffman_text_payload_impl(data,symbols,custom,bit_limit,decision_limit,work_limit,Some(packed_limit))
+}
+fn decode_huffman_text_payload_impl(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
+    bit_limit:usize,decision_limit:usize,work_limit:u64,packed_limit:Option<usize>)->Result<(HuffmanTextHeader,DecodedText)>{
     use crate::filters::ccitt::BitReader;
     if bit_limit>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
         work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text payload limits"));}
     let (header,body)=parse_huffman_text_header(data)?;
+    let temporary=if let Some(cap)=packed_limit{
+        if cap>bitmap::MAX_PACKED_BYTES{return Err(Error::Limit("JBIG2 Huffman text packed budget"));}
+        let canvas=(header.region.width as usize).div_ceil(8).checked_mul(header.region.height as usize)
+            .ok_or(Error::Limit("JBIG2 Huffman text packed canvas"))?;
+        cap.checked_sub(canvas).ok_or(Error::Limit("JBIG2 Huffman text packed canvas"))?
+    }else{bitmap::MAX_PACKED_BYTES};
     // Bound caller-provided namespaces before even traversing custom rows.
     if custom.len()!=header.selections.custom_count||custom.len()>8{
         return Err(Error::Invalid("JBIG2 text custom table count"));
@@ -1338,7 +1363,7 @@ pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super
     let prefix_work=(start as u64)*8;
     let left=left.checked_sub(prefix_work).ok_or(Error::Limit("JBIG2 text table bits work"))?;
     let mut decoded=match (&header.neighborhood,refinement){
-        (Some(n),Some(t))=>decode_huffman_refined(entropy,entropy_bits,header.options,symbols,&ids,&ints,&t,n,decision_limit,left)?,
+        (Some(n),Some(t))=>decode_huffman_refined_bounded(entropy,entropy_bits,header.options,symbols,&ids,&ints,&t,n,decision_limit,left,temporary)?,
         (None,None)=>{
             let left=left.checked_sub(entropy_bits as u64).ok_or(Error::Limit("JBIG2 text entropy work"))?;
             let mut r=BitReader::new(entropy,entropy_bits)?;
@@ -1407,6 +1432,28 @@ mod huffman_payload_dictionary_integration_tests{
         v.extend([0,4]);v
     }
     #[test]
+    fn huffman_segment_custom_table_binding(){
+        // Type 53 constant zero, normal prefix zero. Custom FS selector.
+        let mut globals=seg(1,0,0,DICT);
+        globals.extend(seg(2,53,0,&[0,0,0,0,0,0,0,0,1,0x80]));
+        let mut info=Vec::new();for n in [8u32,6,300,300]{info.extend(n.to_be_bytes());}
+        info.extend([0,0,0]);let mut page=seg(3,48,1,&info);
+        let mut data=payload();data[20]=3;
+        // Initial DT=1, DT=1, custom FS=0, ID=0, OOB=01.
+        data.truncate(data.len()-2);data.push(4);
+        let mut region=vec![0,0,0,4,7,0x40,2,1,1];
+        region.extend((data.len() as u32).to_be_bytes());region.extend(&data);
+        page.extend(region);
+        let d=execute_pdf_text_segment(&globals,&page,4,TextSegmentLimits::default()).unwrap();
+        assert_eq!((d.custom_tables,d.symbol_slots),(1,2));
+        assert_eq!(d.text.bitmap.packed(),[120,132,128,128,132,120]);
+        // Missing selected custom table, and a table supplied to arithmetic.
+        let mut bad=page.clone();bad[30+6]=1;
+        assert!(execute_pdf_text_segment(&globals,&bad,4,TextSegmentLimits::default()).is_err());
+        let mut bad=page;bad[30+13+18]&=!1;
+        assert!(execute_pdf_text_segment(&globals,&bad,4,TextSegmentLimits::default()).is_err());
+    }
+    #[test]
     fn huffman_payload_annex_dictionary_join(){
         let globals=seg(1,0,0,DICT);
         let mut info=Vec::new();for n in [8u32,6,300,300]{info.extend(n.to_be_bytes());}
@@ -1421,6 +1468,18 @@ mod huffman_payload_dictionary_integration_tests{
         let n=data.len();data[n-1]|=0x10;
         let (_,out)=decode_huffman_text_payload(&data,&[a,b],&[],160,0,40000).unwrap();
         assert_eq!(out.bitmap.packed(),[120,4,124,132,132,124]);
+    }
+    #[test]
+    fn huffman_payload_refined_packed_budget(){
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap();
+        let mut data=vec![0,0,0,8,0,0,0,4,0,0,0,0,0,0,0,0,0];
+        data.extend(0x8013u16.to_be_bytes());data.extend(0x1540u16.to_be_bytes());
+        data.extend(1u32.to_be_bytes());
+        let mut table=[0u8;18];table[0]=1;data.extend(table);
+        data.extend([0,15,28,117,70,187,255,172,64]);
+        let (_,out)=decode_huffman_text_payload_bounded(&data,&[&a],&[],216,6,60000,6).unwrap();
+        assert_eq!(out.bitmap.packed(),[160,64,0,0]);
+        assert!(decode_huffman_text_payload_bounded(&data,&[&a],&[],216,6,60000,5).is_err());
     }
     #[test]
     fn huffman_payload_refined_both_templates(){
@@ -1465,6 +1524,21 @@ mod annex_h_original_huffman_text_tests {
         let mut page = PAGE_PREFIX.to_vec();
         page.extend_from_slice(TEXT);
         page
+    }
+    #[test]
+    fn annex_h_huffman_automatic_segment_dispatch(){
+        let page=page();let l=TextSegmentLimits::default();
+        let d=execute_pdf_text_segment(GLOBAL,&page,3,l).unwrap();
+        assert!(d.huffman);assert_eq!(d.symbol_slots,3);assert_eq!(d.custom_tables,0);
+        assert_eq!(d.text.bitmap.packed(),EXPECTED);
+        let cap=TextSegmentLimits{work:d.work_used,packed_bytes:d.dictionary_stats.packed_bytes+40,..l};
+        assert_eq!(execute_pdf_text_segment(GLOBAL,&page,3,cap).unwrap(),d);
+        assert!(execute_pdf_text_segment(GLOBAL,&page,3,TextSegmentLimits{packed_bytes:cap.packed_bytes-1,..cap}).is_err());
+        assert!(execute_pdf_text_segment(GLOBAL,&page,3,TextSegmentLimits{symbol_slots:2,..l}).is_err());
+        assert!(execute_pdf_text_segment(GLOBAL,&page,3,TextSegmentLimits{huffman_bits:191,..l}).is_err());
+        let mut bad=page.clone();bad[PAGE_PREFIX.len()+7]=99;
+        assert!(execute_pdf_text_segment(GLOBAL,&bad,3,l).is_err());
+        assert!(execute_pdf_text_segment(GLOBAL,&page,2,l).is_err());
     }
     #[test]
     fn annex_h_original_huffman_text_pixels() {
@@ -2033,6 +2107,22 @@ mod annex_h_original_arithmetic_text_tests{
         let mut page=prefix.to_vec();page.extend_from_slice(text);page
     }
     #[test]
+    fn annex_h_arithmetic_automatic_segment_dispatch(){
+        for (global,prefix,segment,number) in [(GLOBAL2,PAGE2,TEXT2,10),(GLOBAL3,PAGE3,TEXT3,18)]{
+            let page=join(prefix,segment);
+            let l=TextSegmentLimits::default();
+            let d=execute_pdf_text_segment(global,&page,number,l).unwrap();
+            assert!(!d.huffman);assert_eq!(d.kind,7);assert_eq!(d.symbol_slots,3);
+            assert_eq!(d.text.bitmap.packed(),EXPECTED);
+            assert_eq!(execute_pdf_text_segment(global,&page,number,TextSegmentLimits{work:d.work_used,..l}).unwrap(),d);
+            for cap in [TextSegmentLimits{work:d.work_used-1,..l},TextSegmentLimits{symbol_slots:2,..l},
+                TextSegmentLimits{packed_bytes:d.dictionary_stats.packed_bytes+39,..l},TextSegmentLimits{decisions:0,..l}]{
+                assert!(execute_pdf_text_segment(global,&page,number,cap).is_err());
+            }
+            assert!(execute_pdf_text_segment(global,&page,number+1,l).is_err());
+        }
+    }
+    #[test]
     fn annex_h_arithmetic_original_direct_region(){
         let page=join(PAGE2,TEXT2);
         let d=execute_pdf_dictionaries(GLOBAL2,&page,ExecutionLimits::default()).unwrap();
@@ -2088,4 +2178,115 @@ mod annex_h_original_arithmetic_text_tests{
             assert!(execute_pdf_dictionaries(global,&bad,ExecutionLimits::default()).is_err());
         }
     }
+}
+
+/// Decode one referenced text segment from original embedded streams.
+/// No caller-supplied graph, bitmap identities, or custom tables. Other
+/// region payloads are not executed; no page composition or retention.
+#[derive(Debug,Clone,Copy)]
+pub struct TextSegmentLimits{
+    pub dictionaries:super::dictionary::ExecutionLimits,
+    pub work:u64,
+    pub packed_bytes:usize,
+    pub symbol_slots:usize,
+    pub decisions:usize,
+    pub huffman_bits:usize,
+}
+impl Default for TextSegmentLimits{
+    fn default()->Self{Self{dictionaries:super::dictionary::ExecutionLimits::default(),
+        work:bitmap::MAX_COMPOSE_WORK,packed_bytes:bitmap::MAX_PACKED_BYTES,
+        symbol_slots:MAX_INSTANCES as usize,decisions:MAX_TEXT_DECISIONS,huffman_bits:MAX_TEXT_DECISIONS}}
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct DecodedTextSegment{
+    pub number:u32,pub kind:u8,pub page:u32,pub region:bitmap::RegionInfo,
+    pub huffman:bool,pub symbol_slots:usize,pub custom_tables:usize,
+    pub dictionary_stats:super::dictionary::ExecutionStats,
+    pub work_used:u64,
+    pub text:DecodedText,
+}
+pub fn execute_pdf_text_segment(globals:&[u8],page:&[u8],number:u32,limits:TextSegmentLimits)
+    ->Result<DecodedTextSegment>{
+    use super::{dictionary,huffman,SegmentSource};
+    if limits.work>bitmap::MAX_COMPOSE_WORK||limits.packed_bytes>bitmap::MAX_PACKED_BYTES||
+        limits.symbol_slots>MAX_INSTANCES as usize||limits.decisions>MAX_TEXT_DECISIONS||
+        limits.huffman_bits>MAX_TEXT_DECISIONS{
+        return Err(Error::Limit("JBIG2 text segment limits"));
+    }
+    let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 text segment input"))?;
+    if input as u64>limits.work{return Err(Error::Limit("JBIG2 text segment work"));}
+    let inspected=super::inspect_pdf_streams(globals,page)?;
+    let stream=|src|match src{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
+    let node=inspected.graph.iter().find(|n|n.number==number).ok_or(Error::Invalid("JBIG2 text segment missing"))?;
+    let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 text segment location"))?;
+    if !matches!(segment.kind,4|6|7)||node.location.source!=SegmentSource::Page{
+        return Err(Error::Invalid("JBIG2 text segment kind"));
+    }
+    let data=stream(node.location.source).get(segment.payload.clone()).ok_or(Error::Invalid("JBIG2 text segment span"))?;
+    let flags=data.get(17..19).ok_or(Error::Invalid("JBIG2 text segment flags"))?;
+    let is_huffman=flags[1]&1!=0;
+    let (region,expected_custom)=if is_huffman{
+        let (h,_)=parse_huffman_text_header(data)?;(h.region,h.selections.custom_count)
+    }else{
+        let (h,_)=parse_arithmetic_text_header(data)?;(h.region,0)
+    };
+    let mut custom_count=0usize;
+    let mut setup_work=(inspected.graph.len() as u64).checked_add(node.dependencies.len() as u64)
+        .ok_or(Error::Limit("JBIG2 text segment work"))?;
+    for &loc in &node.dependencies{
+        let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 text dependency"))?;
+        match dep.kind{
+            0=>{},
+            53 if is_huffman=>{
+                custom_count+=1;
+                if custom_count>expected_custom{return Err(Error::Invalid("JBIG2 text custom table count"));}
+                setup_work=setup_work.checked_add((dep.payload.len() as u64).checked_mul(64)
+                    .ok_or(Error::Limit("JBIG2 text custom table work"))?)
+                    .ok_or(Error::Limit("JBIG2 text custom table work"))?;
+            },
+            _=>return Err(Error::Invalid("JBIG2 text dependency kind")),
+        }
+    }
+    if custom_count!=expected_custom{return Err(Error::Invalid("JBIG2 text custom table count"));}
+    let mut dl=limits.dictionaries;
+    dl.work=dl.work.min(limits.work.checked_sub(setup_work).ok_or(Error::Limit("JBIG2 text segment work"))?);
+    dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes);
+    let dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&inspected)?;
+    let stats=dictionaries.stats();
+    let mut count=0usize;
+    let cap=limits.symbol_slots.min(if is_huffman{huffman::MAX_ROWS}else{MAX_INSTANCES as usize});
+    for &loc in &node.dependencies{
+        let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 text dependency"))?;
+        if dep.kind==0{
+            count=count.checked_add(dictionaries.dictionary(dep.number).ok_or(Error::Invalid("JBIG2 text missing dictionary"))?.len())
+                .ok_or(Error::Limit("JBIG2 text symbol slots"))?;
+            if count>cap{return Err(Error::Limit("JBIG2 text symbol slots"));}
+        }
+    }
+    setup_work=setup_work.checked_add(count as u64).ok_or(Error::Limit("JBIG2 text segment work"))?;
+    let left=limits.work.checked_sub(stats.work_used).and_then(|v|v.checked_sub(setup_work))
+        .ok_or(Error::Limit("JBIG2 text segment work"))?;
+    let packed=limits.packed_bytes.checked_sub(stats.packed_bytes).ok_or(Error::Limit("JBIG2 text segment packed budget"))?;
+    let mut symbols=Vec::new();symbols.try_reserve_exact(count).map_err(|_|Error::Limit("JBIG2 text symbol allocation"))?;
+    let mut custom=Vec::new();custom.try_reserve_exact(custom_count).map_err(|_|Error::Limit("JBIG2 text custom allocation"))?;
+    for &loc in &node.dependencies{
+        let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 text dependency"))?;
+        if dep.kind==0{
+            for &id in dictionaries.dictionary(dep.number).ok_or(Error::Invalid("JBIG2 text missing dictionary"))?{
+                symbols.push(dictionaries.bitmap(id).ok_or(Error::Invalid("JBIG2 text symbol identity"))?);
+            }
+        }else{
+            custom.push(huffman::parse_custom(stream(loc.source).get(dep.payload.clone())
+                .ok_or(Error::Invalid("JBIG2 text custom span"))?)?);
+        }
+    }
+    let text=if is_huffman{
+        let refs:Vec<_>=custom.iter().collect(); // at most eight tables
+        decode_huffman_text_payload_bounded(data,&symbols,&refs,limits.huffman_bits,limits.decisions,left,packed)?.1
+    }else{
+        decode_arithmetic_text_payload(data,&symbols,limits.decisions,left,packed)?.1
+    };
+    Ok(DecodedTextSegment{number,kind:segment.kind,page:segment.page,region,huffman:is_huffman,
+        symbol_slots:count,custom_tables:custom_count,dictionary_stats:stats,
+        work_used:stats.work_used+setup_work+text.stats.work_used,text})
 }

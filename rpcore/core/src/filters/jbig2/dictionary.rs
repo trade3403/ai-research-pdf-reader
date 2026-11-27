@@ -1131,6 +1131,12 @@ pub fn execute_pdf_dictionaries_with_huffman_aggregation(globals:&[u8],page:&[u8
     execute_pdf_dictionaries_impl(globals,page,limits,true,true)
 }
 fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits,enable_aggregation:bool,enable_huffman_aggregation:bool)->Result<DictionarySet>{
+    let inspected=super::inspect_pdf_streams(globals,page)?;
+    execute_pdf_dictionaries_inspected(globals,page,limits,enable_aggregation,enable_huffman_aggregation,&inspected)
+}
+/// Internal graph must have been parsed from these exact input streams.
+pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits:ExecutionLimits,
+    enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection)->Result<DictionarySet>{
     if limits.dictionaries>MAX_EXEC_DICTIONARIES||limits.new_symbols>MAX_SYMBOLS||
         limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
         limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
@@ -1141,7 +1147,6 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
     let mut left=limits.work;
     let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 dictionary input"))?;
     charge_work(&mut left,input as u64)?;
-    let inspected=super::inspect_pdf_streams(globals,page)?;
     let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
     let mut set=DictionarySet{arena:Vec::new(),exports:BTreeMap::new(),stats:ExecutionStats::default()};
     let mut snapshots:BTreeMap<u32,BitmapContextSnapshot>=BTreeMap::new();
