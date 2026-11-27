@@ -68,7 +68,7 @@ fn compile<'a>(b:&[u8],layout:&GposLayout,indices:&[u16],glyph_count:u32,
     out.try_reserve_exact(indices.len()).map_err(|_|Error::Limit("gpos compile allocation"))?;
     for &index in indices{
         let lookup=layout.lookups.get(usize::from(index)).ok_or(Error::Invalid("gpos compile lookup index"))?;
-        let filter=LookupFilter::from_gsub_lookup(lookup,glyph_count,gdef)?;
+        let filter=LookupFilter::from_gpos_lookup(lookup,glyph_count,gdef)?;
         if lookup.subtables.is_empty(){return Err(Error::Invalid("gpos compile empty lookup"));}
         if lookup.subtables.len()>l.max_subtables_per_lookup{return Err(Error::Limit("gpos compile per lookup subtables"));}
         charge(&mut count_budget,lookup.subtables.len(),"gpos compile subtables")?;

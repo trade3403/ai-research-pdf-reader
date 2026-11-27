@@ -59,6 +59,12 @@ impl<'a> LookupFilter<'a>{
         if !(1..=8).contains(&lookup.kind){return Err(Error::Invalid("lookup kind"));}
         Self::new(lookup.flags,lookup.mark_filtering_set,glyph_count,gdef)
     }
+    /// GPOS has its own lookup kind domain (1..=9), including Type 9 extension.
+    /// LookupFlag semantics and GDEF validation are shared with GSUB.
+    pub fn from_gpos_lookup(lookup:&crate::GposLookup,glyph_count:u32,gdef:Option<&'a Gdef>)->Result<Self,Error>{
+        if !(1..=9).contains(&lookup.kind){return Err(Error::Invalid("lookup kind"));}
+        Self::new(lookup.flags,lookup.mark_filtering_set,glyph_count,gdef)
+    }
     pub fn flags(&self)->u16{self.flags}
     pub fn right_to_left(&self)->bool{self.flags&LOOKUP_RIGHT_TO_LEFT!=0}
     pub fn mark_attachment_type(&self)->u16{(self.flags&LOOKUP_MARK_ATTACHMENT_MASK)>>8}

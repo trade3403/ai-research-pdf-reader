@@ -90,3 +90,14 @@ fn compile(b:&[u8],indices:&[u16])->Result<Vec<CompiledGposLookup<'static>>,Erro
     let x=compile_gpos_lookups(&b,&[0],32,Some(&g),Default::default()).unwrap();
     assert_eq!(x[0].filter().mark_filtering_set(),Some(0));
 }
+
+#[test]fn positioning_filter_kind_domain(){
+    let mut l=GposLookup{kind:9,flags:0,subtables:vec![0],mark_filtering_set:None};
+    assert!(LookupFilter::from_gpos_lookup(&l,32,None).is_ok());
+    assert!(LookupFilter::from_gsub_lookup(&l,32,None).is_err());
+    for k in [0,10,65535]{l.kind=k;assert!(LookupFilter::from_gpos_lookup(&l,32,None).is_err());}
+    l.kind=9;l.flags=0x20;
+    assert!(LookupFilter::from_gpos_lookup(&l,32,None).is_err());
+    l.flags=16;l.mark_filtering_set=Some(0);
+    assert!(LookupFilter::from_gpos_lookup(&l,32,None).is_err());
+}
