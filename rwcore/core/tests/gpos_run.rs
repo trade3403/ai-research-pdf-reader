@@ -284,3 +284,111 @@ fn mixed(p:&CompiledGposProgram<'_>,glyphs:&[u16],l:GposMixedRunLimits)->Result<
     assert_eq!(x.edges,old.edges);
     assert_eq!(x.adjustments,old.resolve(&x.design_origins,&x.pixel_origins,Default::default()).unwrap());
 }
+
+fn directional_cursive(rtl:bool)->Vec<u16>{
+    let mut c=mixed_cursive();
+    if rtl{c[12]=(-30i16) as u16;c[15]=100;}
+    c
+}
+fn directed(p:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],nominal:&[(i32,i32)],flow:GposHorizontalFlow)->Result<GposCursiveRun,Error>{
+    let n=glyphs.len();
+    execute_gpos_mixed_directional(p,glyphs,prior,nominal,&vec![(0,0);n],
+        &vec![GposLigatureSource::Unmapped;n],GposRunMode::DesignOnly,flow,Default::default())
+}
+#[test]fn directed_ltr_and_rtl_independent_lookup_flag(){
+    use GposHorizontalFlow::*;
+    for (flow,rtl) in [(LeftToRight,false),(RightToLeft,true)]{
+        for flag in [0,1]{
+            let b=fixture(&[(3,flag,vec![directional_cursive(rtl)])]);
+            let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+            let x=directed(&p,&[3,7],&[Default::default();2],&[(80,0);2],flow).unwrap();
+            let expected=if rtl{[0,50]}else{[50,0]};
+            assert_eq!([x.adjustments[0].design.x_advance,x.adjustments[1].design.x_advance],expected);
+            assert_eq!(x.design_origins,if rtl{vec![(-80,0),(-210,0)]}else{vec![(0,0),(130,0)]});
+            let child=if flag==0{1}else{0};
+            assert_eq!(x.edges[child].unwrap().parent,1-child);
+            assert_eq!(x.adjustments[child].design.y_placement,if flag==0{15}else{-15});
+        }
+    }
+}
+#[test]fn directed_rtl_skipped_mark_preserves_middle_width(){
+    let g=parse_gdef(&words(&[1,0,12,0,0,0,1,3,2,1,3]),32,Default::default()).unwrap();
+    let b=fixture(&[(3,8,vec![directional_cursive(true)])]);
+    let p=compile_gpos_program(&b,&[0],32,Some(&g),Default::default()).unwrap();
+    let mut prior=[GposRunAdjustment::default();3];prior[1].design.x_advance=5;
+    let x=directed(&p,&[3,4,7],&prior,&[(80,0),(20,0),(80,0)],GposHorizontalFlow::RightToLeft).unwrap();
+    assert_eq!(x.design_origins,vec![(-80,0),(-105,0),(-210,0)]);
+    assert_eq!(x.adjustments[2].design.x_advance,25);
+    assert_eq!(x.adjustments[1],prior[1]);assert!(x.edges[1].is_none());
+    assert_eq!(x.edges[2].unwrap().parent,0);
+}
+#[test]fn directed_math_reference_grid(){
+    // Independent reference: explicitly search a small width domain for
+    // coincident physical anchor coordinates, using the untouched fixed
+    // endpoint placement and zero child placement. No production helper.
+    use GposHorizontalFlow::*;
+    for (flow,rtl) in [(LeftToRight,false),(RightToLeft,true)]{
+        for flag in [0,1]{
+            let b=fixture(&[(3,flag,vec![directional_cursive(rtl)])]);
+            let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+            let (exit,entry)=if rtl{(-30,100)}else{(100,-30)};
+            for pa in [-8,0,11]{for pb in [-6,0,13]{for na in [0,30,80]{for nb in [0,40,90]{
+                let mut prior=[GposRunAdjustment::default();2];prior[0].design.x_placement=pa;prior[1].design.x_placement=pb;
+                let fixed_a=if flag==0{pa}else{0};let fixed_b=if flag==0{0}else{pb};
+                let mut candidates=Vec::new();
+                for width in 0..=200{
+                    let (xa,xb)=if rtl{(-na,-na-width)}else{(0,width)};
+                    if xa+fixed_a+exit==xb+fixed_b+entry{candidates.push(width);}
+                }
+                assert_eq!(candidates.len(),1);
+                let x=directed(&p,&[3,7],&prior,&[(na,0),(nb,0)],flow).unwrap();
+                let (owner,nominal)=if rtl{(1,nb)}else{(0,na)};
+                assert_eq!(nominal+x.adjustments[owner].design.x_advance,candidates[0]);
+                assert_eq!(x.adjustments[1-owner].design.x_advance,0);
+                assert_eq!(x.adjustments[0].design.x_placement,fixed_a);
+                assert_eq!(x.adjustments[1].design.x_placement,fixed_b);
+                assert_eq!(x.design_origins[0].0+fixed_a+exit,x.design_origins[1].0+fixed_b+entry);
+            }}}}
+        }
+    }
+}
+#[test]fn directed_device_correction_independent(){
+    let c=vec![1,14,2,0,22,40,0,1,2,3,7,3,(-30i16) as u16,20,10,0,10,12,1,0x6c00,1,100,5];
+    let b=fixture(&[(3,0,vec![c])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let x=execute_gpos_mixed_directional(&p,&[3,7],&[Default::default();2],&[(80,0);2],&[(2,0),(3,0)],
+        &[GposLigatureSource::Unmapped;2],GposRunMode::DevicePixels{x_ppem:10,y_ppem:10},GposHorizontalFlow::RightToLeft,Default::default()).unwrap();
+    assert_eq!(x.adjustments[1].design.x_advance,50);
+    assert_eq!(x.adjustments[1].pixels.x_advance,-4);
+    assert_eq!(x.pixel_origins,vec![(-2,0),(-1,0)]);
+    assert_eq!(x.edges[1].unwrap().pixel_delta,(1,0));
+    assert_eq!(x.adjustments[1].pixels.x_placement,0);
+}
+#[test]fn directed_terminal_overflow_and_atomic_input(){
+    use GposHorizontalFlow::*;
+    let b=fixture(&[(1,0,vec![single(9)])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let prior=[GposRunAdjustment::default()];
+    for flow in [LeftToRight,RightToLeft]{
+        assert!(directed(&p,&[3],&prior,&[(i32::MAX,0)],flow).is_err());
+        assert_eq!(prior,[GposRunAdjustment::default()]);
+    }
+    assert!(directed(&p,&[3],&prior,&[],RightToLeft).is_err());
+}
+#[test]fn directed_nested_extension_keeps_logical_index(){
+    let context=vec![3,1,1,12,0,1,1,1,3];
+    let mut ext=vec![1,3,0,8];ext.extend(directional_cursive(true));
+    let b=fixture(&[(7,0,vec![context]),(9,1,vec![ext])]);
+    let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let x=directed(&p,&[3,7],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::RightToLeft).unwrap();
+    assert_eq!(x.edges[0].unwrap().parent,1);
+    assert_eq!(x.design_origins,vec![(-80,0),(-210,0)]);
+    assert_eq!(x.adjustments[1].design.x_advance,50);
+}
+#[test]fn directed_mark_chain_resolves_physical_origins(){
+    let b=fixture(&[(3,0,vec![directional_cursive(true)]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=directed(&p,&[3,7,3],&[Default::default();3],&[(80,0),(80,0),(0,0)],GposHorizontalFlow::RightToLeft).unwrap();
+    assert_eq!(x.edges[2].unwrap().parent,1);
+    assert_eq!(x.design_origins,vec![(-80,0),(-210,0),(-210,0)]);
+    assert_eq!(x.adjustments[2].design.x_placement,90);
+    assert_eq!(x.adjustments[2].design.y_placement,195);
+}

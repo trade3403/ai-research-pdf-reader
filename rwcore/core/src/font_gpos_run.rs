@@ -83,6 +83,7 @@ struct MixedCursive<'g>{
     design_advances:&'g [(i32,i32)],
     pixel_advances:&'g [(i32,i32)],
     children:Vec<bool>,
+    flow:Option<GposHorizontalFlow>,
     connections:usize,
     spans:usize,
 }
@@ -135,7 +136,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         Ok(())
     }
     fn connect_cursive(&mut self,a:usize,b:usize,exit:&GposAnchor,entry:&GposAnchor,rtl:bool)->Result<(),Error>{
-        use crate::font_gpos_cursive_run::advance;
+        use crate::font_gpos_cursive_run::{advance,directional_advance};
         let state=self.cursive.as_mut().ok_or(Error::Unsupported("mixed cursive mode"))?;
         let edges=self.attachment_edges.as_mut().ok_or(Error::Invalid("mixed cursive edges"))?;
         // A prior mark edge on an endpoint would make this restricted pen
@@ -151,17 +152,21 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         charge(&mut state.connections,1)?;
         charge(&mut state.spans,b-a)?;
         charge(&mut self.attachment_updates,1)?;
-        let d=advance(state.design_advances,&self.out,a,b,forward.design_delta.0,false)?;
+        let (owner,d)=if let Some(flow)=state.flow{
+            directional_advance(state.design_advances,&self.out,a,b,child,forward.design_delta.0,false,flow)?
+        }else{(a,advance(state.design_advances,&self.out,a,b,forward.design_delta.0,false)?)};
         let px=if matches!(self.mode,GposRunMode::DevicePixels{..}){
-            Some(advance(state.pixel_advances,&self.out,a,b,forward.pixel_delta.0,true)?)
+            Some(if let Some(flow)=state.flow{
+                directional_advance(state.pixel_advances,&self.out,a,b,child,forward.pixel_delta.0,true,flow)?.1
+            }else{advance(state.pixel_advances,&self.out,a,b,forward.pixel_delta.0,true)?})
         }else{None};
         edges[child]=Some(edge);
         state.children[child]=true;
-        self.out[a].design.x_advance=d;
+        self.out[owner].design.x_advance=d;
         self.out[child].design.x_placement=0;
         self.out[child].design.y_placement=0;
         if let Some(px)=px{
-            self.out[a].pixels.x_advance=px;
+            self.out[owner].pixels.x_advance=px;
             self.out[child].pixels.x_placement=0;
             self.out[child].pixels.y_placement=0;
         }
@@ -403,7 +408,30 @@ pub fn execute_gpos_mixed_horizontal(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,limits:GposMixedRunLimits,
 )->Result<GposCursiveRun,Error>{
-    use crate::font_gpos_cursive_run::origins;
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,None)
+}
+
+/// Explicit physical horizontal flow. The glyph stream remains in logical
+/// order, even in RTL; there is no bidi analysis or reordering here.
+/// Both nominal arrays hold physical widths (signed values allowed for
+/// corrections). Device pixels are independent, and are ignored in DesignOnly.
+/// Cursive changes the leading interval owner for LTR and the trailing owner
+/// for RTL. Anchor fixed-end selection is separately controlled by the lookup.
+/// This bounded solver does not implement full OpenType cursive chain reversal,
+/// endpoint redistribution across overlapping constraints, or script shaping.
+pub fn execute_gpos_mixed_directional(
+    program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
+    design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
+    mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,
+)->Result<GposCursiveRun,Error>{
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow))
+}
+fn execute_gpos_mixed_inner(
+    program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
+    design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
+    mode:GposRunMode,limits:GposMixedRunLimits,flow:Option<GposHorizontalFlow>,
+)->Result<GposCursiveRun,Error>{
+    use crate::font_gpos_cursive_run::{origins,directional_origins};
     let n=glyphs.len();
     let l=limits.marks.context;
     if prior.len()!=n||design_advances.len()!=n||pixel_advances.len()!=n{return Err(Error::Invalid("mixed gpos length"));}
@@ -421,7 +449,7 @@ pub fn execute_gpos_mixed_horizontal(
         attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,
         active:Vec::new(),attachment_edges:Some(filled(n,None)?),parent_visits:limits.marks.max_parent_visits,
         attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),
-        cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,
+        cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,flow,
             connections:limits.max_connections,spans:limits.max_span_visits})};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("mixed gpos root"))?;
@@ -429,9 +457,13 @@ pub fn execute_gpos_mixed_horizontal(
         let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
     }
     let edges=runner.attachment_edges.ok_or(Error::Invalid("mixed gpos edges"))?;
-    let design_origins=origins(design_advances,&runner.out,false)?;
+    let pen=|nominal:&[(i32,i32)],pixel:bool|match flow{
+        Some(flow)=>directional_origins(nominal,&runner.out,pixel,flow),
+        None=>origins(nominal,&runner.out,pixel),
+    };
+    let design_origins=pen(design_advances,false)?;
     let pixel_origins=if matches!(mode,GposRunMode::DesignOnly){filled(n,(0,0))?}
-        else{origins(pixel_advances,&runner.out,true)?};
+        else{pen(pixel_advances,true)?};
     let mut adjustments=resolve_gpos_attachments(&edges,&design_origins,&pixel_origins,&runner.out,limits.attachments)?;
     if matches!(mode,GposRunMode::DesignOnly){for (a,p) in adjustments.iter_mut().zip(prior){a.pixels=p.pixels;}}
     Ok(GposCursiveRun{adjustments,edges,design_origins,pixel_origins})

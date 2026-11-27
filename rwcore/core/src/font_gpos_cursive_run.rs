@@ -19,6 +19,52 @@ pub struct GposCursiveRun{
     pub design_origins:Vec<(i32,i32)>,
     pub pixel_origins:Vec<(i32,i32)>,
 }
+/// Logical input order is unchanged. X advances are physical widths (with
+/// signed corrections); origins grow rightward for LTR and leftward for RTL.
+/// The RTL origin is the glyph's left-side pen after subtracting its width
+/// from a right-edge reference of zero. Y advances stay in logical order.
+/// This is independent of the OpenType Lookup RightToLeft attachment flag.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum GposHorizontalFlow{LeftToRight,RightToLeft}
+
+pub(crate) fn directional_origins(nominal:&[(i32,i32)],out:&[GposRunAdjustment],pixel:bool,flow:GposHorizontalFlow)->Result<Vec<(i32,i32)>,Error>{
+    let mut v=Vec::new();v.try_reserve_exact(out.len()).map_err(|_|Error::Limit("directional gpos origins"))?;
+    let(mut x,mut y)=(0i64,0i64);
+    for (n,a) in nominal.iter().zip(out){
+        let a=if pixel{a.pixels}else{a.design};
+        let width=i64::from(n.0)+i64::from(a.x_advance);
+        if flow==GposHorizontalFlow::RightToLeft{x=x.checked_sub(width).ok_or(Error::Limit("directional gpos pen"))?;}
+        v.push((narrow(x)?,narrow(y)?));
+        if flow==GposHorizontalFlow::LeftToRight{x=x.checked_add(width).ok_or(Error::Limit("directional gpos pen"))?;}
+        y=y.checked_add(i64::from(n.1)+i64::from(a.y_advance)).ok_or(Error::Limit("directional gpos pen"))?;
+    }
+    // Check the terminal pen as well, including a one-glyph run.
+    narrow(x)?;narrow(y)?;
+    Ok(v)
+}
+
+/// Solve the physical anchor separation equation with the selected child
+/// placement replaced by zero. For LTR the width interval is [a,b); for RTL
+/// it is (a,b]. Preserve all intermediate widths and the other endpoint.
+/// The direction selects the owner of the adjustment, not the fixed anchor.
+pub(crate) fn directional_advance(nominal:&[(i32,i32)],out:&[GposRunAdjustment],a:usize,b:usize,child:usize,delta:i32,pixel:bool,flow:GposHorizontalFlow)->Result<(usize,i32),Error>{
+    let value=|i:usize|if pixel{out[i].pixels}else{out[i].design};
+    let pa=if a==child{0}else{value(a).x_placement};
+    let pb=if b==child{0}else{value(b).x_placement};
+    let separation=i64::from(delta)+i64::from(pa)-i64::from(pb);
+    let (owner,width)=match flow{
+        GposHorizontalFlow::LeftToRight=>(a,separation),
+        GposHorizontalFlow::RightToLeft=>(b,-separation),
+    };
+    let mut middle=0i64;
+    for i in a+1..b{
+        middle=middle.checked_add(i64::from(nominal[i].0)+i64::from(value(i).x_advance))
+            .ok_or(Error::Limit("directional gpos interval"))?;
+    }
+    let adjustment=width.checked_sub(middle).and_then(|v|v.checked_sub(i64::from(nominal[owner].0)))
+        .ok_or(Error::Limit("directional gpos interval"))?;
+    Ok((owner,narrow(adjustment)?))
+}
 fn charge(left:&mut usize,n:usize)->Result<(),Error>{*left=left.checked_sub(n).ok_or(Error::Limit("cursive run work"))?;Ok(())}
 fn narrow(v:i64)->Result<i32,Error>{i32::try_from(v).map_err(|_|Error::Limit("cursive run coordinate"))}
 pub(crate) fn origins(nominal:&[(i32,i32)],out:&[GposRunAdjustment],pixel:bool)->Result<Vec<(i32,i32)>,Error>{
