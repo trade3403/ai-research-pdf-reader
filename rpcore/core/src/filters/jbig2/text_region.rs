@@ -1836,12 +1836,21 @@ mod huffman_aggregate_shared_gr_tests{
             let n=Neighborhood::nominal(template);
             let mut data=vec![0,7,142,58,163,187,255,172,211,169,72];
             data.extend([if template==Template::T0{221}else{220},127,255,172]);
+            // 5-byte header + 3-byte QM + 3-byte header + 4-byte QM.
+            // The second block ends at byte 15, not byte 14.
+            assert_eq!(data.len(),15);
+            let end=data.len()*8;
             data.push(0x68); // OOB 01, sentinel 101.
+            // Previous fixture's erroneous bit limit cut the second QM block.
+            let mut truncated=BitReader::new(&data,end-3).unwrap();
+            let mut gr=ContextBank::new(template).unwrap();
+            assert!(matches!(decode_huffman_aggregate_bitmap(&mut truncated,8,4,2,&[&a,&b],3,
+                &n,&mut gr,14,40000,2),Err(Error::Invalid("CCITT truncated aligned bytes"))));
             let run=|decisions,work,packed|->Result<HuffmanAggregateBitmap>{
-                let mut r=BitReader::new(&data,14*8+5)?;
+                let mut r=BitReader::new(&data,end+5)?;
                 let mut gr=ContextBank::new(template)?;
                 let d=decode_huffman_aggregate_bitmap(&mut r,8,4,2,&[&a,&b],3,&n,&mut gr,decisions,work,packed)?;
-                assert_eq!(r.position(),14*8+2);
+                assert_eq!(r.position(),end+2);
                 assert_eq!([r.bit()?,r.bit()?,r.bit()?],[1,0,1]);
                 Ok(d)
             };
