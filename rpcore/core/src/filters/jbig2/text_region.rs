@@ -819,3 +819,91 @@ mod huffman_text_integer_tests{
         assert!(HuffmanTextIntegers::curt(&mut r,2).is_err());
     }
 }
+
+/// Decode a non-refining Huffman text region with already resolved tables
+/// and symbol IDs. The reader starts at the first HTDT, after any wire
+/// table alignment. Its exact bit limit bounds entropy input separately
+/// from the region's pixel/placement work limit.
+pub fn decode_huffman_direct(reader:&mut crate::filters::ccitt::BitReader<'_>,
+    options:Options,symbols:&[&Bitmap],ids:&HuffmanSymbolIds,
+    integers:&HuffmanTextIntegers,bit_limit:usize,work_limit:u64)->Result<DecodedText>{
+    use super::integer::Integer;
+    if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
+    if bit_limit>MAX_TEXT_DECISIONS{return Err(Error::Limit("JBIG2 Huffman text bits"));}
+    // Bound the reader window before decoding, not just after a field.
+    // This scoped entry requires the caller to delimit its entropy span.
+    if reader.remaining()>bit_limit{return Err(Error::Limit("JBIG2 Huffman text bits"));}
+    let initial=integers.strip(reader)?;
+    let mut region=Region::new(options,initial,work_limit)?;
+    while region.remaining_instances()!=0{
+        let dt=integers.strip(reader)?;
+        let fs=integers.first(reader)?;
+        region.begin_strip(dt,fs)?;
+        let mut offset=None;
+        loop{
+            let curt=HuffmanTextIntegers::curt(reader,options.strips)?;
+            let id=ids.decode(reader)?;
+            let symbol=symbols.get(id).ok_or(Error::Invalid("JBIG2 Huffman text symbol ID"))?;
+            region.place(offset,curt,symbol)?;
+            match integers.delta(reader)?{
+                Integer::Oob=>{region.end_strip()?;break;}
+                Integer::Value(n)=>{
+                    if region.remaining_instances()==0{return Err(Error::Invalid("JBIG2 Huffman text excess instances"));}
+                    offset=Some(n);
+                }
+            }
+        }
+    }
+    region.finish()
+}
+
+#[cfg(test)]
+mod huffman_direct_text_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    fn options(n:u32)->Options{Options{width:8,height:4,default_black:false,
+        op:ComposeOp::Or,strips:2,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:n}}
+    // Independent bit syntax: initial DT=1; strip DT=1 FS=1,
+    // CURT=0 ID=0; DS=2 CURT=1 ID=1; OOB;
+    // strip DT=1 FS=0 CURT=0 ID=0 OOB.
+    // B.11 DT=1:0, B.6 FS=1:000000001, FS=0:000000000,
+    // B.8 DS=2:11010, OOB:01. IDs use one bit each.
+    const GOOD:&[u8]=&[0,38,180,0,16];
+    const N:usize=36;
+    fn run(data:&[u8],bits:usize,n:u32,cap:usize,work:u64)->Result<DecodedText>{
+        let a=Bitmap::from_packed(1,1,&[128])?;
+        let b=Bitmap::from_packed(2,1,&[192])?;
+        let ids=HuffmanSymbolIds::new(&[1,1])?;
+        let t=HuffmanTextIntegers::standard(6,8,11)?;
+        let mut r=BitReader::new(data,bits)?;
+        let d=decode_huffman_direct(&mut r,options(n),&[&a,&b],&ids,&t,cap,work)?;
+        assert_eq!(r.remaining(),0);
+        Ok(d)
+    }
+    #[test]
+    fn huffman_direct_text_two_strips_pixels(){
+        let d=run(GOOD,N,3,N,43).unwrap();
+        assert_eq!(d.bitmap.packed(),[64,24,64,0]);
+        assert_eq!(d.stats,Stats{strips:2,instances:3,work_used:43,composed_pixels:4});
+    }
+    #[test]
+    fn huffman_direct_text_exact_bounds(){
+        assert!(run(GOOD,N,3,N,42).is_err());
+        assert!(run(GOOD,N,3,N-1,43).is_err());
+        for end in 0..N{assert!(run(GOOD,end,3,N,43).is_err());}
+        assert!(run(GOOD,N,1,N,43).is_err());
+        assert!(run(GOOD,N,4,N,100).is_err());
+    }
+    #[test]
+    fn huffman_direct_text_empty_and_namespace(){
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let ids=HuffmanSymbolIds::new(&[1]).unwrap();
+        let t=HuffmanTextIntegers::standard(6,8,11).unwrap();
+        let mut r=BitReader::new(&[0],1).unwrap();
+        assert!(decode_huffman_direct(&mut r,options(0),&[],&ids,&t,1,32).is_err());
+        assert_eq!(r.position(),0);
+        let d=decode_huffman_direct(&mut r,options(0),&[&a],&ids,&t,1,32).unwrap();
+        assert_eq!(d.bitmap.packed(),[0;4]);assert_eq!(d.stats.work_used,32);
+        assert_eq!(r.remaining(),0);
+    }
+}
