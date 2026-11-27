@@ -27,14 +27,14 @@ def table(data, tag):
             start, length = u32(data,p+8), u32(data,p+12)
             return data[start:start+length]
     return None
-def native_latin_tags(data):
+def native_script_tags(data, script):
     b = table(data, b"GPOS")
     if b is None:
         return set()
     sl, fl = u16(b, 4), u16(b, 6)
     scripts = {b[p:p+4]: sl+u16(b,p+4)
                for p in range(sl+2,sl+2+6*u16(b,sl),6)}
-    s = scripts.get(b"latn", scripts.get(b"DFLT"))
+    s = scripts.get(script, scripts.get(b"DFLT"))
     if s is None or not u16(b,s):
         return set()
     lang = s+u16(b,s)
@@ -59,7 +59,7 @@ def main():
         for name in FONTS:
             path = args.font_dir / name
             data = path.read_bytes()
-            tags = native_latin_tags(data)
+            tags = native_script_tags(data, b"latn")
             font = {"name": name, "sha256": hashlib.sha256(data).hexdigest(),
                     "native_tags": sorted(t.decode("ascii") for t in tags),
                     "admitted": [], "excluded": []}

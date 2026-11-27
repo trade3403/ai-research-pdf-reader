@@ -60,7 +60,7 @@ class HB:
         bind("buffer_get_glyph_infos", C.POINTER(Info), ptr, C.POINTER(uint))
         bind("buffer_get_glyph_positions", C.POINTER(Position), ptr, C.POINTER(uint))
 
-    def shape(self, data, text, kern, mark=False, mkmk=False):
+    def shape(self, data, text, kern, mark=False, mkmk=False, rtl=False, curs=None):
         blob = self.blob_create(data, len(data), 0, None, None)  # duplicate
         face = self.face_create(blob, 0)
         font = self.font_create(face)
@@ -73,11 +73,13 @@ class HB:
             self.font_set_scale(font, upem, upem)
             raw = text.encode("utf-8")
             self.buffer_add_utf8(buf, raw, len(raw), 0, len(raw))
-            self.buffer_set_direction(buf, 4)  # HB_DIRECTION_LTR
-            self.buffer_set_script(buf, self.script_from_string(b"Latn", -1))
+            self.buffer_set_direction(buf, 5 if rtl else 4)  # HB_DIRECTION_RTL / LTR
+            self.buffer_set_script(buf, self.script_from_string(b"Arab" if rtl else b"Latn", -1))
             self.buffer_set_language(buf, self.language_from_string(b"und", -1))
             values = {"kern": int(kern), "liga": 0, "clig": 0, "calt": 0,
                       "rlig": 0, "dlig": 0, "hlig": 0, "mark": int(mark), "mkmk": int(mkmk)}
+            if curs is not None:
+                values["curs"] = int(curs)
             features = (Feature * len(values))(*[
                 Feature(int.from_bytes(tag.encode("ascii"), "big"), value, 0, 0xFFFFFFFF)
                 for tag, value in values.items()])

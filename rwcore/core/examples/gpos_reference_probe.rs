@@ -8,9 +8,14 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     let path=args.next().ok_or("usage: gpos_reference_probe FONT GLYPH_IDS ...")?;
     let mut groups=args.peekable();
     let stack=groups.peek().is_some_and(|s|s=="--stack");
-    let mark=stack||groups.peek().is_some_and(|s|s=="--mark");
-    if mark{groups.next();}
-    let tags:Vec<[u8;4]>=if stack{vec![*b"mark",*b"mkmk"]}else if mark{vec![*b"mark"]}else{vec![*b"kern"]};
+    let rtl_mark=groups.peek().is_some_and(|s|s=="--rtl-mark");
+    let rtl_cursive=groups.peek().is_some_and(|s|s=="--rtl-cursive");
+    let rtl=rtl_mark||rtl_cursive;
+    let mark=stack||rtl_mark||groups.peek().is_some_and(|s|s=="--mark");
+    if mark||rtl_cursive{groups.next();}
+    let tags:Vec<[u8;4]>=if rtl_cursive{vec![*b"curs"]}else if stack{vec![*b"mark",*b"mkmk"]}else if mark{vec![*b"mark"]}else{vec![*b"kern"]};
+    let script=if rtl{*b"arab"}else{*b"latn"};
+    let flow=if rtl{GposHorizontalFlow::RightToLeft}else{GposHorizontalFlow::LeftToRight};
     let bytes=std::fs::read(path)?;
     let font=parse_font(&bytes,Default::default())?;
     let face=font.face(0).ok_or("font face")?;
@@ -18,12 +23,12 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     let n=u32::from(read_u16(face.table(*b"maxp").ok_or("missing maxp")?,4));
     let gd=face.table(*b"GDEF").map(|g|parse_gdef(g,n,Default::default())).transpose()?;
     let layout=parse_gpos_layout(b,Default::default())?;
-    let on=build_gpos_base_plan(&layout,*b"latn",None,&tags,Default::default())?.ok_or("missing latn plan")?;
-    let off=build_gpos_base_plan(&layout,*b"latn",None,&[],Default::default())?.ok_or("missing base plan")?;
+    let on=build_gpos_base_plan(&layout,script,None,&tags,Default::default())?.ok_or("missing latn plan")?;
+    let off=build_gpos_base_plan(&layout,script,None,&[],Default::default())?.ok_or("missing base plan")?;
     if tags.iter().any(|tag|on.unavailable_tags.contains(tag)){return Err("missing native GPOS feature".into());}
     let p=compile_gpos_plan_program(b,&on,n,gd.as_ref(),Default::default())?;
     let q=compile_gpos_plan_program(b,&off,n,gd.as_ref(),Default::default())?;
-    if p.lookups().iter().chain(q.lookups()).any(|l|if mark{!matches!(l.effective_kind(),1|2|4|5|6|7|8)}else{!matches!(l.effective_kind(),1|2)}){
+    if p.lookups().iter().chain(q.lookups()).any(|l|if rtl_cursive{!matches!(l.effective_kind(),1|2|3|7|8)}else if mark{!matches!(l.effective_kind(),1|2|4|5|6|7|8)}else{!matches!(l.effective_kind(),1|2)}){
         return Err("unsupported reference lookup kind".into());
     }
     let h=face.table(*b"hhea").ok_or("missing hhea")?;
@@ -33,7 +38,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     for group in groups{
         // For Mark, HB supplies the mark-disabled baseline advances, so
         // Unicode mark-width normalization is not misattributed to GPOS.
-        let (ids,baseline):(Vec<u16>,Option<Vec<(i32,i32)>>)=if mark{
+        let (ids,baseline):(Vec<u16>,Option<Vec<(i32,i32)>>)=if mark||rtl_cursive{
             let mut ids=Vec::new();let mut widths=Vec::new();
             for item in group.split(','){
                 let (id,w)=item.split_once(':').ok_or("expected glyph:width")?;
@@ -47,7 +52,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         let zero=vec![(0,0);ids.len()];
         let sources=vec![GposLigatureSource::Unmapped;ids.len()];
         let run=|program:&CompiledGposProgram<'_>|execute_gpos_mixed_joint(program,&ids,&prior,&nominal,&zero,&sources,
-            GposRunMode::DesignOnly,GposHorizontalFlow::LeftToRight,Default::default(),Default::default());
+            GposRunMode::DesignOnly,flow,Default::default(),Default::default());
         let a=run(&p)?;let z=run(&q)?;
         let mut row=Vec::new();
         for (x,y) in a.adjustments.iter().zip(&z.adjustments){
