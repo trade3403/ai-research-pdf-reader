@@ -1,9 +1,9 @@
 //! Bounded native page executor for embedded, known-height, unstriped
-//! T.88 direct regions. All unsupported segment kinds fail closed.
-//! No independent refinement regions, intermediate buffers or retention
-//! lifecycle yet. The symbol dictionary arena is decoded once up front.
+//! T.88 direct and refinement regions. All unsupported segment kinds fail closed.
+//! Auxiliary region buffers follow T.88 8.2; general segment retention flags
+//! are not yet executed. The symbol dictionary arena is decoded once up front.
 use crate::{Error,Result};
-use super::{bitmap::{self,Bitmap,ComposeBudget,ComposeOp},dictionary,generic,pattern,halftone,text_region,PageInfo,SegmentSource};
+use super::{bitmap::{self,Bitmap,ComposeBudget,ComposeOp},dictionary,generic,pattern,halftone,text_region,refinement,PageInfo,SegmentSource};
 use std::collections::BTreeMap;
 
 #[derive(Debug,Clone,Copy)]
@@ -12,7 +12,7 @@ pub struct Limits{
     pub regions:usize,pub page_pixels:u64,pub region_pixels:u64,
     pub patterns:u32,pub pattern_pixels:u64,pub grid_cells:u64,
     pub text_slots:usize,pub text_instances:u64,pub huffman_bits:usize,
-    /// Across pattern, generic, text and halftone regions; symbol
+    /// Across pattern, generic, text, halftone and refinement regions; symbol
     /// dictionary entropy retains its independent per-dictionary cap.
     pub decisions:usize,pub packed_bytes:usize,pub work:u64,
 }
@@ -29,10 +29,12 @@ pub struct Stats{
     pub dictionaries:dictionary::ExecutionStats,pub pattern_dictionaries:usize,
     pub patterns:u32,pub pattern_pixels:u64,pub grid_cells:u64,
     pub generic_regions:usize,pub text_regions:usize,pub halftone_regions:usize,
+    pub refinement_regions:usize,pub intermediate_regions:usize,
+    pub auxiliary_consumed:usize,pub peak_auxiliary_bytes:usize,
     pub region_pixels:u64,pub text_slots:usize,pub text_instances:u64,
     pub huffman_bits:usize,pub decisions:usize,pub composed_pixels:u64,pub work_used:u64,
-    /// Retained packed page and dictionary images. Transient output and
-    /// scratch are constrained before each decode but not retained.
+    /// Retained packed page, dictionary images and any live auxiliary buffers.
+    /// Transient output and scratch are constrained before each decode.
     pub retained_packed_bytes:usize,
 }
 #[derive(Debug,PartialEq,Eq)]
@@ -43,10 +45,10 @@ fn charge(stats:&mut Stats,limit:u64,n:u64)->Result<()>{
     stats.work_used=next;Ok(())
 }
 fn packed(w:u32,h:u32)->usize{(w as usize).div_ceil(8)*h as usize}
-/// Decode and compose immediate text (6/7), halftone (22/23), and generic
-/// (38/39) regions in graph order. Honor page default pixel and external
-/// operator permissions (7.4.8.5). Reject conflicting direct operators
-/// when override is disallowed, rather than silently changing pixels.
+/// Decode direct and refinement regions in graph order. Intermediate
+/// outputs are never painted until an immediate refinement consumes them.
+/// Honor page default pixel and external operator permissions (7.4.8.5),
+/// including mandatory REPLACE for page-reference refinement.
 /// No caller-supplied graph. Unknown/unsupported kinds fail before decoding.
 pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
     if limits.regions>super::MAX_SEGMENTS||limits.page_pixels>bitmap::MAX_PIXELS||
@@ -63,7 +65,6 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
     let graph=super::inspect_pdf_streams(globals,page)?;
     let info=graph.page.clone();
     if info.flags&128!=0{return Err(Error::Invalid("JBIG2 page reserved flag"));}
-    if info.flags&32!=0{return Err(Error::Unsupported("JBIG2 page auxiliary buffers"));}
     let height=info.height.ok_or(Error::Unsupported("JBIG2 page unknown height"))?;
     let area=u64::from(info.width)*u64::from(height);
     let page_bytes=packed(info.width,height);
@@ -80,13 +81,24 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
             16=>{
                 if !node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 pattern references"));}
             },
-            6|7|22|23|38|39=>{
+            4|6|7|20|22|23|36|38|39|40|42|43=>{
                 count+=1;
                 let data=page.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 page region span"))?;
                 let (region,_)=bitmap::parse_region(data)?;
-                if !override_allowed&&region.op!=default_op{return Err(Error::Invalid("JBIG2 page combination override"));}
-                if matches!(seg.kind,38|39)&&!node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 generic references"));}
-                if matches!(seg.kind,22|23)&&(node.dependencies.len()!=1||
+                let intermediate=matches!(seg.kind,4|20|36|40);
+                let refined=matches!(seg.kind,40|42|43);
+                if intermediate&&info.flags&32==0{return Err(Error::Invalid("JBIG2 page auxiliary flag"));}
+                if refined&&info.flags&2==0{return Err(Error::Invalid("JBIG2 page refinement flag"));}
+                let page_reference=refined&&node.dependencies.is_empty();
+                if page_reference{
+                    if intermediate||region.op!=ComposeOp::Replace{return Err(Error::Invalid("JBIG2 page refinement reference"));}
+                }else if !override_allowed&&region.op!=default_op{return Err(Error::Invalid("JBIG2 page combination override"));}
+                if refined&&!page_reference&&(node.dependencies.len()!=1||
+                    graph.segment(node.dependencies[0]).is_none_or(|d|!matches!(d.kind,4|20|36|40))){
+                    return Err(Error::Invalid("JBIG2 refinement dependency kind"));
+                }
+                if matches!(seg.kind,36|38|39)&&!node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 generic references"));}
+                if matches!(seg.kind,20|22|23)&&(node.dependencies.len()!=1||
                     graph.segment(node.dependencies[0]).is_none_or(|d|d.kind!=16)){
                     return Err(Error::Invalid("JBIG2 halftone dictionary reference"));
                 }
@@ -104,9 +116,11 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
         retained_packed_bytes:page_bytes+ds.packed_bytes,..Stats::default()};
     let mut canvas=Bitmap::new(info.width,height,info.flags&4!=0)?;
     let mut patterns=BTreeMap::<u32,pattern::PatternDictionary>::new();
+    let mut auxiliary=BTreeMap::<u32,(bitmap::RegionInfo,Bitmap)>::new();
+    let mut auxiliary_bytes=0usize;
     for node in &graph.graph{
         let seg=graph.segment(node.location).ok_or(Error::Invalid("JBIG2 page segment"))?;
-        if !matches!(seg.kind,16|6|7|22|23|38|39){continue;}
+        if !matches!(seg.kind,16|4|6|7|20|22|23|36|38|39|40|42|43){continue;}
         let stream=match node.location.source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
         let data=stream.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 page payload span"))?;
         let work=limits.work-stats.work_used;
@@ -126,7 +140,7 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
         let pixels=u64::from(region.width)*u64::from(region.height);
         if pixels>limits.region_pixels-stats.region_pixels{return Err(Error::Limit("JBIG2 page region pixels"));}
         let image=match seg.kind{
-            6|7=>{
+            4|6|7=>{
                 let d=text_region::execute_text_segment_inspected(globals,page,&graph,node,&dictionaries,
                     text_region::TextSegmentLimits{dictionaries:dl,work:work+ds.work_used,
                         packed_bytes:available+ds.packed_bytes,symbol_slots:limits.text_slots-stats.text_slots,
@@ -136,7 +150,7 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
                 stats.text_regions+=1;stats.text_slots+=d.symbol_slots;stats.text_instances+=u64::from(d.text.stats.instances);
                 stats.huffman_bits+=d.huffman_bits_used;stats.decisions+=d.decisions_used;d.text.bitmap
             },
-            22|23=>{
+            20|22|23=>{
                 let dep=graph.segment(node.dependencies[0]).ok_or(Error::Invalid("JBIG2 page halftone reference"))?;
                 let dict=patterns.get(&dep.number).ok_or(Error::Invalid("JBIG2 page pattern dictionary"))?;
                 let d=halftone::decode(data,dict,halftone::Limits{grid_cells:limits.grid_cells-stats.grid_cells,
@@ -145,7 +159,7 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
                 stats.halftone_regions+=1;stats.decisions+=d.decisions;
                 stats.grid_cells+=u64::from(d.header.grid.width)*u64::from(d.header.grid.height);d.bitmap
             },
-            38|39=>{
+            36|38|39=>{
                 let (h,payload)=generic::parse(data)?;
                 let len=packed(region.width,region.height);
                 // MMR conversion holds source and destination at once.
@@ -173,15 +187,51 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
                 charge(&mut stats,limits.work,cost+overhead)?;
                 stats.generic_regions+=1;d.bitmap
             },
+            40|42|43=>{
+                let len=packed(region.width,region.height);
+                let d=if let Some(&loc)=node.dependencies.first(){
+                    let dep=graph.segment(loc).ok_or(Error::Invalid("JBIG2 refinement dependency"))?;
+                    // The old auxiliary remains live during decode: target
+                    // must fit in additional packed budget.
+                    if len>available{return Err(Error::Limit("JBIG2 auxiliary refinement packed budget"));}
+                    let (r,src)=auxiliary.get(&dep.number).ok_or(Error::Invalid("JBIG2 consumed auxiliary buffer"))?;
+                    let d=refinement::decode_segment(seg,stream,
+                        refinement::RegionReference::Auxiliary{segment:dep,region:*r,bitmap:src},
+                        work,decisions)?;
+                    let (_,old)=auxiliary.remove(&dep.number).ok_or(Error::Invalid("JBIG2 auxiliary removal"))?;
+                    let released=old.packed().len();
+                    auxiliary_bytes-=released;stats.retained_packed_bytes-=released;
+                    stats.auxiliary_consumed+=1;
+                    d
+                }else{
+                    // Current-page crop and target coexist. Enforce caller
+                    // cap, not just the lower-level global hard limit.
+                    if len*2>available{return Err(Error::Limit("JBIG2 page refinement packed budget"));}
+                    refinement::decode_segment(seg,stream,
+                        refinement::RegionReference::Page{number:info.page,bitmap:&canvas},work,decisions)?
+                };
+                charge(&mut stats,limits.work,d.stats.work_bound)?;
+                stats.decisions+=d.stats.decisions;stats.refinement_regions+=1;
+                d.bitmap
+            },
             _=>return Err(Error::Unsupported("JBIG2 page region kind")),
         };
         stats.region_pixels+=pixels;
+        if matches!(seg.kind,4|20|36|40){
+            let bytes=image.packed().len();
+            auxiliary_bytes+=bytes;stats.retained_packed_bytes+=bytes;
+            stats.peak_auxiliary_bytes=stats.peak_auxiliary_bytes.max(auxiliary_bytes);
+            stats.intermediate_regions+=1;
+            auxiliary.insert(seg.number,(region,image));
+            continue;
+        }
         let left=limits.work-stats.work_used;
         let mut budget=ComposeBudget::new(left)?;
         canvas.compose_region(&image,region,&mut budget)?;
         let used=left-budget.remaining();
         charge(&mut stats,limits.work,used)?;stats.composed_pixels+=used;
     }
+    if !auxiliary.is_empty(){return Err(Error::Invalid("JBIG2 unconsumed auxiliary buffers"));}
     Ok(DecodedPage{info,bitmap:canvas,stats})
 }
 
@@ -308,6 +358,83 @@ mod tests{
         p.extend(seg(2,38,&[],&white(3,1,0,0,4)));
         assert!(decode_pdf_page(&[],&p,l).is_err());
     }
+
+    fn refine_body(w:u32,h:u32,x:u32,y:u32,op:u8,flags:u8,at:&[u8],entropy:&[u8])->Vec<u8>{
+        let mut b=Vec::new();for n in [w,h,x,y]{b.extend(n.to_be_bytes());}
+        b.extend([op,flags]);b.extend(at);b.extend(entropy);b
+    }
+    fn source_region(x:u32,y:u32)->Vec<u8>{
+        // Independently encoded MMR rows [0,124,124,124,0,0] at width 7.
+        refine_body(7,6,x,y,0,1,&[],&[145,207,248,224])
+    }
+    #[test]
+    fn page_auxiliary_refinement_exact_pixels_and_budget(){
+        let mut p=info(7,6,0x22);
+        let src=source_region(0,0);
+        assert_eq!(generic::decode_region(&src,10000).unwrap().bitmap.packed(),[0,124,124,124,0,0]);
+        p.extend(seg(2,36,&[],&src));
+        let r=refine_body(7,6,0,0,0,0,&[255;4],&[192,34,140,221,147,255,172]);
+        p.extend(seg(3,43,&[2],&r));
+        let d=decode_pdf_page(&[],&p,Limits::default()).unwrap();
+        assert_eq!(d.bitmap.packed(),[170,56,56,198,170,84]);
+        assert_eq!((d.stats.generic_regions,d.stats.refinement_regions,d.stats.intermediate_regions,
+            d.stats.auxiliary_consumed,d.stats.peak_auxiliary_bytes,d.stats.retained_packed_bytes),(1,1,1,1,6,6));
+        assert_eq!((d.stats.region_pixels,d.stats.composed_pixels,d.stats.decisions),(84,42,42));
+        let exact=Limits{packed_bytes:18,work:d.stats.work_used,decisions:42,region_pixels:84,regions:2,..Limits::default()};
+        assert_eq!(decode_pdf_page(&[],&p,exact).unwrap(),d);
+        for cap in [Limits{packed_bytes:17,..exact},Limits{work:exact.work-1,..exact},
+            Limits{decisions:41,..exact},Limits{region_pixels:83,..exact},Limits{regions:1,..exact}]{
+            assert!(decode_pdf_page(&[],&p,cap).is_err());
+        }
+        let mut duplicate=p.clone();duplicate.extend(seg(4,43,&[2],&r));
+        assert!(decode_pdf_page(&[],&duplicate,Limits::default()).is_err());
+        let mut mismatch=info(7,6,0x62);mismatch.extend(seg(2,36,&[],&src));
+        let mut bad=r.clone();bad[16]=2;mismatch.extend(seg(3,43,&[2],&bad));
+        assert!(decode_pdf_page(&[],&mismatch,Limits::default()).is_err());
+    }
+    #[test]
+    fn page_auxiliary_chain_transfers_and_final_consumption(){
+        let mut p=info(9,1,0x26); // black page; white auxiliary is not drawn until final refinement
+        p.extend(seg(2,36,&[],&white(9,1,0,0,0)));
+        let r=refine_body(9,1,0,0,0,3,&[],&[255,172]);
+        p.extend(seg(3,40,&[2],&r));
+        assert!(decode_pdf_page(&[],&p,Limits::default()).is_err()); // dangling
+        let mut stale=p.clone();stale.extend(seg(4,42,&[2],&r));
+        assert!(decode_pdf_page(&[],&stale,Limits::default()).is_err());
+        p.extend(seg(4,42,&[3],&r));
+        let d=decode_pdf_page(&[],&p,Limits::default()).unwrap();
+        assert_eq!(d.bitmap.packed(),[255,128]); // OR with white
+        assert_eq!((d.stats.refinement_regions,d.stats.intermediate_regions,d.stats.auxiliary_consumed,
+            d.stats.peak_auxiliary_bytes,d.stats.decisions,d.stats.composed_pixels),(2,2,2,2,2,9));
+        for flags in [0x06,0x24]{
+            let mut bad=p.clone();bad[27]=flags;
+            assert!(decode_pdf_page(&[],&bad,Limits::default()).is_err());
+        }
+    }
+    #[test]
+    fn page_current_crop_refinement_order_and_budget(){
+        let mut p=info(13,11,2); // no operator override; page reference REPLACE is mandatory regardless
+        p.extend(seg(2,39,&[],&source_region(3,2)));
+        let r=refine_body(7,6,3,2,4,2,&[255,0,0,0],&[62,159,39,101,31,255,172]);
+        p.extend(seg(3,43,&[],&r));
+        let d=decode_pdf_page(&[],&p,Limits::default()).unwrap();
+        let mut expected=vec![0u8;22];
+        for (y,row) in [170u8,170,254,170,84,0].into_iter().enumerate(){
+            for x in 0..7{if row&(128>>x)!=0{
+                let px=x+3;expected[(y+2)*2+px/8]|=128>>(px%8);
+            }}
+        }
+        assert_eq!(d.bitmap.packed(),expected);assert_eq!(d.stats.decisions,38);
+        assert_eq!((d.stats.refinement_regions,d.stats.auxiliary_consumed,d.stats.composed_pixels),(1,0,84));
+        let exact=Limits{packed_bytes:34,decisions:38,work:d.stats.work_used,..Limits::default()};
+        assert_eq!(decode_pdf_page(&[],&p,exact).unwrap(),d);
+        assert!(decode_pdf_page(&[],&p,Limits{packed_bytes:33,..exact}).is_err());
+        assert!(decode_pdf_page(&[],&p,Limits{decisions:37,..exact}).is_err());
+        let mut after=p.clone();after.extend(seg(4,39,&[],&source_region(3,2)));
+        assert_ne!(decode_pdf_page(&[],&after,Limits::default()).unwrap().bitmap,d.bitmap);
+        let mut bad=info(13,11,2);let mut r=r;r[11]=12;bad.extend(seg(2,43,&[],&r));
+        assert!(decode_pdf_page(&[],&bad,Limits::default()).is_err());
+    }
     #[test]
     fn page_unsupported_and_bad_dependencies_fail_closed(){
         let l=Limits::default();
@@ -315,9 +442,9 @@ mod tests{
             let mut p=info(8,1,0);p.extend(seg(2,kind,&[],&[]));
             assert!(decode_pdf_page(&[],&p,l).is_err());
         }
-        for flags in [32,128]{
-            assert!(decode_pdf_page(&[],&info(8,1,flags),l).is_err());
-        }
+        // Auxiliary permission alone does not require allocating a buffer.
+        assert!(decode_pdf_page(&[],&info(8,1,32),l).is_ok());
+        assert!(decode_pdf_page(&[],&info(8,1,128),l).is_err());
         let mut p=info(8,1,0);p.extend(seg(2,16,&[],PATTERN));p.extend(seg(3,38,&[2],&white(8,1,0,0,0)));
         assert!(decode_pdf_page(&[],&p,l).is_err());
         let mut p=mixed();let end=p.len();p[end-12]=0;
