@@ -1864,3 +1864,147 @@ mod huffman_aggregate_shared_gr_tests{
         }
     }
 }
+
+/// Known-length arithmetic text segment payload (T.88 7.4.3).
+/// No Huffman selector word or symbol-ID code-length table is present.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ArithmeticTextHeader{
+    pub region:bitmap::RegionInfo,
+    pub options:Options,
+    pub neighborhood:Option<super::refinement::Neighborhood>,
+}
+pub fn parse_arithmetic_text_header(data:&[u8])->Result<(ArithmeticTextHeader,&[u8])>{
+    use super::{generic::Offset,refinement::{Neighborhood,Template}};
+    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2 arithmetic text segment bytes"));}
+    let (region,rest)=bitmap::parse_region(data)?;
+    let h=rest.get(..2).ok_or(Error::Invalid("JBIG2 arithmetic text flags truncated"))?;
+    let flags=u16::from_be_bytes([h[0],h[1]]);
+    if flags&1!=0{return Err(Error::Unsupported("JBIG2 Huffman text header"));}
+    let refine=flags&2!=0;
+    let template=Template::from_code((flags>>15)as u8)?;
+    if !refine&&template==Template::T1{return Err(Error::Invalid("JBIG2 text unused refinement template"));}
+    let rest=&rest[2..];
+    let n=if refine{template.adaptive_count()*2}else{0};
+    let at=rest.get(..n).ok_or(Error::Invalid("JBIG2 arithmetic text adaptive flags truncated"))?;
+    let neighborhood=if refine{
+        let mut offsets=[Offset{x:0,y:0};2];
+        for (i,p) in at.chunks_exact(2).enumerate(){offsets[i]=Offset{x:p[0]as i8,y:p[1]as i8};}
+        Some(Neighborhood::new(template,&offsets[..n/2])?)
+    }else{None};
+    let rest=&rest[n..];
+    let count=rest.get(..4).ok_or(Error::Invalid("JBIG2 arithmetic text instance count truncated"))?;
+    let instances=u32::from_be_bytes([count[0],count[1],count[2],count[3]]);
+    if instances>MAX_INSTANCES{return Err(Error::Limit("JBIG2 text instances"));}
+    let ds=((flags>>10)&31) as i8;
+    let options=Options{width:region.width,height:region.height,default_black:flags&0x200!=0,
+        op:ComposeOp::from_code(((flags>>7)&3)as u8)?,strips:1u8<<((flags>>2)&3),
+        corner:Corner::from_code(((flags>>4)&3)as u8)?,transposed:flags&64!=0,
+        ds_offset:if ds>=16{ds-32}else{ds},instances};
+    Ok((ArithmeticTextHeader{region,options,neighborhood},&rest[4..]))
+}
+/// Complete known-length arithmetic text payload. Caller resolves the
+/// imported namespace in segment-reference order. Work charges input
+/// scanning, all allocated syntax/IAID/GR contexts and bitmap operations;
+/// entropy decisions have an independent hard cap. Packed budget covers
+/// output canvas plus the one live temporary refined bitmap, not imports.
+/// Explicit FF AC termination is required, not an entropy-integrity proof.
+pub fn decode_arithmetic_text_payload(data:&[u8],symbols:&[&Bitmap],
+    decision_limit:usize,work_limit:u64,packed_limit:usize)->Result<(ArithmeticTextHeader,DecodedText)>{
+    use super::{integer::IaidDecoder,refinement::ContextBank,qm::Decoder};
+    if symbols.len()>MAX_INSTANCES as usize||decision_limit>MAX_TEXT_DECISIONS||
+        work_limit>bitmap::MAX_COMPOSE_WORK||packed_limit>bitmap::MAX_PACKED_BYTES{
+        return Err(Error::Limit("JBIG2 arithmetic text payload limits"));
+    }
+    let (header,body)=parse_arithmetic_text_header(data)?;
+    if header.options.instances!=0&&symbols.is_empty(){
+        return Err(Error::Invalid("JBIG2 text empty symbol namespace"));
+    }
+    let count=symbols.len() as u32;
+    let width=if count<=1{0}else{(32-(count-1).leading_zeros()) as u8};
+    let canvas=(header.region.width as usize).div_ceil(8).checked_mul(header.region.height as usize)
+        .ok_or(Error::Limit("JBIG2 arithmetic text packed canvas"))?;
+    let temporary=packed_limit.checked_sub(canvas).ok_or(Error::Limit("JBIG2 arithmetic text packed canvas"))?;
+    let context_work=(1u64<<width)+9*512+
+        header.neighborhood.as_ref().map_or(0,|n|n.template().context_count() as u64);
+    let overhead=context_work.checked_add(data.len() as u64)
+        .ok_or(Error::Limit("JBIG2 arithmetic text payload work"))?;
+    let available=work_limit.checked_sub(overhead).ok_or(Error::Limit("JBIG2 arithmetic text payload work"))?;
+    let mut decoder=Decoder::new(body,decision_limit)?;
+    let mut ids=IaidDecoder::new(width)?;
+    let mut contexts=ArithmeticTextContexts::new();
+    let mut gr=match &header.neighborhood{Some(n)=>Some(ContextBank::new(n.template())?),None=>None};
+    let mut decoded=decode_arithmetic_shared_bounded(header.options,symbols,&mut decoder,&mut ids,
+        &mut contexts,header.neighborhood.as_ref(),gr.as_mut(),available,temporary)?;
+    decoded.stats.work_used=decoded.stats.work_used.checked_add(overhead)
+        .ok_or(Error::Limit("JBIG2 arithmetic text payload work"))?;
+    Ok((header,decoded))
+}
+
+#[cfg(test)]
+mod arithmetic_text_payload_tests{
+    use super::*;
+    use super::super::refinement::Template;
+    // Same independently encoded QM reference vectors as the earlier
+    // entropy-only tests, now with explicit complete binary region headers.
+    const DIRECT:&[u8]=&[147,150,68,103,175,63,255,172];
+    const REFINED:&[u8]=&[169,113,170,191,21,40,159,255,172];
+    fn payload(width:u32,height:u32,flags:u16,at:&[u8],instances:u32,entropy:&[u8])->Vec<u8>{
+        let mut v=Vec::new();
+        for n in [width,height,3,4]{v.extend(n.to_be_bytes());}
+        v.push(2); // external XOR differs from the internal composition operator
+        v.extend(flags.to_be_bytes());v.extend(at);v.extend(instances.to_be_bytes());v.extend(entropy);v
+    }
+    #[test]
+    fn arithmetic_payload_direct_header_and_exact_budgets(){
+        let data=payload(8,4,0x14,&[],3,DIRECT);
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let refs=[&a,&a,&a];
+        let (h,d)=decode_arithmetic_text_payload(&data,&refs,50,20000,4).unwrap();
+        assert_eq!((h.region.x,h.region.y,h.region.op),(3,4,ComposeOp::Xor));
+        assert_eq!(h.options,Options{width:8,height:4,default_black:false,op:ComposeOp::Or,
+            strips:2,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:3});
+        assert!(h.neighborhood.is_none());assert_eq!(d.bitmap.packed(),[16,64,128,0]);
+        assert_eq!(d.stats.work_used,decode_arithmetic(DIRECT,h.options,&refs,50,100).unwrap().stats.work_used+
+            4+9*512+data.len() as u64);
+        assert_eq!(decode_arithmetic_text_payload(&data,&refs,50,d.stats.work_used,4).unwrap().1,d);
+        assert!(decode_arithmetic_text_payload(&data,&refs,50,d.stats.work_used-1,4).is_err());
+        assert!(decode_arithmetic_text_payload(&data,&refs,49,20000,4).is_err());
+        assert!(decode_arithmetic_text_payload(&data,&refs,50,20000,3).is_err());
+        for n in 0..data.len(){assert!(decode_arithmetic_text_payload(&data[..n],&refs,50,20000,4).is_err());}
+        let mut bad=data.clone();bad.push(0);
+        assert!(decode_arithmetic_text_payload(&bad,&refs,50,20000,4).is_err());
+        assert!(decode_arithmetic_text_payload(&data,&[],50,20000,4).is_err());
+    }
+    #[test]
+    fn arithmetic_payload_refined_templates_and_temporary_budget(){
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        for (flags,at,template) in [(0x12u16,&[255;4][..],Template::T0),(0x8012,&[][..],Template::T1)]{
+            let data=payload(8,1,flags,at,3,REFINED);
+            let (h,d)=decode_arithmetic_text_payload(&data,&[&a],70,30000,2).unwrap();
+            let n=h.neighborhood.as_ref().unwrap();assert_eq!(n.template(),template);
+            assert_eq!(d.bitmap.packed(),[192]);
+            let old=decode_arithmetic_refined(REFINED,h.options,&[&a],n,70,30000).unwrap();
+            assert_eq!(d.stats.work_used,old.stats.work_used+data.len() as u64);
+            assert_eq!(decode_arithmetic_text_payload(&data,&[&a],70,d.stats.work_used,2).unwrap().1,d);
+            assert!(decode_arithmetic_text_payload(&data,&[&a],70,d.stats.work_used,1).is_err());
+            assert!(decode_arithmetic_text_payload(&data,&[&a],69,30000,2).is_err());
+            assert!(decode_arithmetic_text_payload(&data,&[&a],70,d.stats.work_used-1,2).is_err());
+            for end in 0..data.len(){assert!(decode_arithmetic_text_payload(&data[..end],&[&a],70,30000,2).is_err());}
+        }
+    }
+    #[test]
+    fn arithmetic_payload_header_fields_and_rejections(){
+        let data=payload(8,4,0x7ffe,&[255;4],3,&[0xa5]);
+        let (h,body)=parse_arithmetic_text_header(&data).unwrap();
+        assert_eq!(body,[0xa5]);assert_eq!(h.options.ds_offset,-1);
+        assert_eq!(h.options.strips,8);assert_eq!(h.options.corner,Corner::TopRight);
+        assert_eq!(h.options.op,ComposeOp::Xnor);assert!(h.options.transposed&&h.options.default_black);
+        assert_eq!(h.neighborhood.unwrap().template(),Template::T0);
+        for n in 0..27{assert!(parse_arithmetic_text_header(&data[..n]).is_err());}
+        for (flags,at,count) in [(1,&[][..],1),(0x8000,&[][..],1),(2,&[0;4][..],1),(0,&[][..],MAX_INSTANCES+1)]{
+            assert!(parse_arithmetic_text_header(&payload(8,4,flags,at,count,&[])).is_err());
+        }
+        let mut bad=data;bad[16]=8;
+        assert!(parse_arithmetic_text_header(&bad).is_err());
+    }
+}
