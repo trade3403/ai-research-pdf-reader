@@ -302,3 +302,6 @@ pub use font_gpos_mark_ligature::*;
 
 pub mod font_gpos_mark_mark;
 pub use font_gpos_mark_mark::*;
+
+pub mod font_gpos_context;
+pub use font_gpos_context::*;

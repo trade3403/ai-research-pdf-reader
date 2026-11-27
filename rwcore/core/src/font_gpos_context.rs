@@ -1,0 +1,23 @@
+//! GPOS lookup type 7 format 1, glyph-based positioning context.
+//! OpenType uses the same sequence-rule grammar as GSUB type 5.
+//! This API matches a caller-supplied contiguous sequence and returns ordered
+//! positioning lookup references; it does not execute lookups or filter glyphs.
+use crate::{Error,ContextLimits,ContextRule,ContextMatch,ContextSubstitution,parse_context_substitution};
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ContextPositioning { rules:ContextSubstitution }
+impl ContextPositioning {
+    pub fn len(&self)->usize{self.rules.len()}
+    pub fn is_empty(&self)->bool{self.rules.is_empty()}
+    pub fn rule_sets(&self)->&[Option<Vec<ContextRule>>]{self.rules.rule_sets()}
+    pub fn rules(&self,glyph:u16)->Option<&[ContextRule]>{self.rules.rules(glyph)}
+    pub fn match_prefix(&self,glyphs:&[u16])->Option<ContextMatch<'_>>{self.rules.match_prefix(glyphs)}
+    /// Match at an explicit glyph position, without modifying the input.
+    pub fn match_at(&self,glyphs:&[u16],start:usize)->Option<ContextMatch<'_>>{
+        self.match_prefix(glyphs.get(start..)?)
+    }
+}
+/// lookup_count is the number of lookups in the owning GPOS LookupList,
+/// not the GSUB lookup count. The caller must identify lookup type 7.
+pub fn parse_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ContextPositioning,Error>{
+    Ok(ContextPositioning{rules:parse_context_substitution(b,glyph_count,lookup_count,l)?})
+}

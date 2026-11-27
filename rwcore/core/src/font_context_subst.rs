@@ -64,7 +64,8 @@ pub fn parse_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:C
 }
 
 fn parse_context_sets(b:&[u8],n:usize,offset_base:usize,header:usize,symbol_bound:u32,lookup_count:usize,l:ContextLimits)->Result<Vec<Option<Vec<ContextRule>>>,Error>{
-    let mut sets=Vec::with_capacity(n);
+    let mut sets=Vec::new();
+        sets.try_reserve_exact(n).map_err(|_|Error::Limit("context allocation"))?;
     let(mut rules_total,mut input_total,mut actions_total)=(0,0,0);
     for i in 0..n{
         let at=usize::from(word(b,offset_base+2*i)?);
@@ -74,7 +75,8 @@ fn parse_context_sets(b:&[u8],n:usize,offset_base:usize,header:usize,symbol_boun
         charge(&mut rules_total,count,l.max_rules)?;
         let set_header=2+2*count;
         if at+set_header>b.len(){return Err(Error::Invalid("context truncated set"));}
-        let mut rules=Vec::with_capacity(count);
+        let mut rules=Vec::new();
+        rules.try_reserve_exact(count).map_err(|_|Error::Limit("context allocation"))?;
         for j in 0..count{
             let rel=usize::from(word(b,at+2+2*j)?);
             if rel<set_header{return Err(Error::Invalid("context rule offset"));}
@@ -87,13 +89,15 @@ fn parse_context_sets(b:&[u8],n:usize,offset_base:usize,header:usize,symbol_boun
             charge(&mut actions_total,actions,l.max_actions)?;
             let start=p+4+2*(input-1);
             if start+4*actions>b.len(){return Err(Error::Invalid("context truncated rule"));}
-            let mut remaining=Vec::with_capacity(input-1);
+            let mut remaining=Vec::new();
+        remaining.try_reserve_exact(input-1).map_err(|_|Error::Limit("context allocation"))?;
             for k in 0..input-1{
                 let id=word(b,p+4+2*k)?;
                 if u32::from(id)>=symbol_bound{return Err(Error::Invalid("context input glyph"));}
                 remaining.push(id);
             }
-            let mut refs=Vec::with_capacity(actions);
+            let mut refs=Vec::new();
+        refs.try_reserve_exact(actions).map_err(|_|Error::Limit("context allocation"))?;
             for k in 0..actions{
                 let q=start+4*k;
                 let sequence_index=word(b,q)?;
