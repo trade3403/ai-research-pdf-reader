@@ -235,6 +235,21 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
     Ok(DecodedPage{info,bitmap:canvas,stats})
 }
 
+/// Strict opt-in lifetime validation before native page decoding. Both
+/// passes share one work cap. General dictionary allocation is still
+/// conservative; this audit does not pretend to physically evict them.
+#[derive(Debug,PartialEq,Eq)]
+pub struct AuditedPage{
+    pub decoded:DecodedPage,pub retention:super::retention::Audit,pub work_used:u64,
+}
+pub fn decode_pdf_page_audited(globals:&[u8],page:&[u8],mut limits:Limits)->Result<AuditedPage>{
+    let retention=super::retention::audit_pdf_streams(globals,page,limits.work)?;
+    limits.work=limits.work.checked_sub(retention.work_used).ok_or(Error::Limit("JBIG2 audited page work"))?;
+    let decoded=decode_pdf_page(globals,page,limits)?;
+    let work_used=retention.work_used+decoded.stats.work_used;
+    Ok(AuditedPage{decoded,retention,work_used})
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -434,6 +449,36 @@ mod tests{
         assert_ne!(decode_pdf_page(&[],&after,Limits::default()).unwrap().bitmap,d.bitmap);
         let mut bad=info(13,11,2);let mut r=r;r[11]=12;bad.extend(seg(2,43,&[],&r));
         assert!(decode_pdf_page(&[],&bad,Limits::default()).is_err());
+    }
+
+    #[test]
+    fn page_mixed_intermediate_sources_and_retention_audit(){
+        let mut p=info(27,1,0x66);
+        let mut text=Vec::new();for n in [9u32,1,0,0]{text.extend(n.to_be_bytes());}
+        text.push(4);text.extend(0x11u16.to_be_bytes());text.extend([0,0]);
+        text.extend([0;4]);text.extend([0;19]);
+        let mut a=seg(2,4,&[],&text);a[5]|=1;p.extend(a);
+        let mut dict=seg(3,16,&[],&[1,1,1,0,0,0,0,128]);dict[5]|=1;p.extend(dict);
+        let mut half=Vec::new();for n in [9u32,1,9,0]{half.extend(n.to_be_bytes());}
+        half.extend([4,1]);for n in [9u32,1,0,0]{half.extend(n.to_be_bytes());}
+        half.extend([1,0,0,0]);
+        let mut a=seg(4,20,&[3],&half);a[5]|=1;p.extend(a);
+        let mut a=seg(5,36,&[],&white(9,1,18,0,4));a[5]|=1;p.extend(a);
+        for (id,dep,x) in [(6,2,0),(7,4,9),(8,5,18)]{
+            let r=refine_body(9,1,x,0,4,3,&[],&[255,172]);
+            p.extend(seg(id,43,&[dep],&r));
+        }
+        let d=decode_pdf_page_audited(&[],&p,Limits::default()).unwrap();
+        assert_eq!(d.decoded.bitmap.packed(),[0;4]);
+        let s=d.decoded.stats;
+        assert_eq!((s.text_regions,s.halftone_regions,s.generic_regions,s.refinement_regions),(1,1,1,3));
+        assert_eq!((s.intermediate_regions,s.auxiliary_consumed,s.peak_auxiliary_bytes,s.composed_pixels,s.decisions),(3,3,6,27,3));
+        assert_eq!((d.retention.retained,d.retention.released,d.retention.live_page_at_end),(4,4,0));
+        assert_eq!(decode_pdf_page_audited(&[],&p,Limits{work:d.work_used,..Limits::default()}).unwrap(),d);
+        assert!(decode_pdf_page_audited(&[],&p,Limits{work:d.work_used-1,..Limits::default()}).is_err());
+        let mut bad=p;bad[35]&=0xfe; // segment 2's retain-self flag
+        assert!(decode_pdf_page_audited(&[],&bad,Limits::default()).is_err());
+        assert_eq!(decode_pdf_page(&[],&bad,Limits::default()).unwrap().bitmap.packed(),[0;4]);
     }
     #[test]
     fn page_unsupported_and_bad_dependencies_fail_closed(){
@@ -645,6 +690,15 @@ mod annex_h_full_page_tests{
         }
         let bad=GLOBAL1.to_vec();
         assert!(decode_pdf_page(&bad,PAGE3,Limits::default()).is_err());
+    }
+
+    #[test]
+    fn annex_h_original_full_page_retention_audit(){
+        for (g,p,refs,globals) in [(GLOBAL1,PAGE1,3,1),(GLOBAL1,PAGE2,3,0),(GLOBAL3,PAGE3,2,0)]{
+            let l=Limits::default();let d=decode_pdf_page_audited(g,p,l).unwrap();
+            assert_eq!(d.decoded,decode_pdf_page(g,p,l).unwrap());
+            assert_eq!((d.retention.references,d.retention.live_globals_at_end,d.retention.live_page_at_end),(refs,globals,0));
+        }
     }
     #[test]
     fn annex_h_original_sequential_file_structure(){

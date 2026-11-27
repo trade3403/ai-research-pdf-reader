@@ -13,6 +13,7 @@ pub mod text_region;
 pub mod pattern;
 pub mod halftone;
 pub mod page;
+pub mod retention;
 use crate::{Error,Result,MAX_BYTES};
 use std::{collections::{BTreeMap,BTreeSet},ops::Range};
 
