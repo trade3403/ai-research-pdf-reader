@@ -1144,3 +1144,120 @@ mod huffman_refined_multi_tests{
         }
     }
 }
+
+/// T.88 (2000) 7.4.3.1.2, 7.4.3.1.6. Custom indices are in
+/// referred table segment order, not the complete referred segment list.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum TextTableChoice{Standard(u8),Custom(usize)}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct TextHuffmanSelections{
+    pub integers:[TextTableChoice;3],
+    pub refinement:Option<[TextTableChoice;5]>,
+    pub custom_count:usize,
+}
+impl TextHuffmanSelections{
+    pub fn parse(flags:u16,refine:bool)->Result<Self>{
+        if flags&0x8000!=0||(!refine&&flags&0x7fc0!=0){
+            return Err(Error::Invalid("JBIG2 text Huffman reserved flags"));
+        }
+        let mut custom_count=0usize;
+        let mut select=|shift:u8,base:u8,allow_two:bool|->Result<TextTableChoice>{
+            match ((flags>>shift)&3) as u8{
+                3=>{let i=custom_count;custom_count+=1;Ok(TextTableChoice::Custom(i))},
+                2 if !allow_two=>Err(Error::Invalid("JBIG2 text Huffman selector")),
+                n=>Ok(TextTableChoice::Standard(base+n)),
+            }
+        };
+        let integers=[select(0,6,false)?,select(2,8,true)?,select(4,11,true)?];
+        let refinement=if refine{
+            let mut fields=[select(6,14,false)?,select(8,14,false)?,
+                select(10,14,false)?,select(12,14,false)?,TextTableChoice::Standard(1)];
+            if flags&0x4000!=0{fields[4]=TextTableChoice::Custom(custom_count);custom_count+=1;}
+            Some(fields)
+        }else{None};
+        Ok(Self{integers,refinement,custom_count})
+    }
+}
+/// Parse the fixed text header before the variable symbol ID code table.
+/// Arithmetic text and colored-region extensions are outside this entry.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct HuffmanTextHeader{
+    pub region:bitmap::RegionInfo,
+    pub options:Options,
+    pub selections:TextHuffmanSelections,
+    pub neighborhood:Option<super::refinement::Neighborhood>,
+}
+pub fn parse_huffman_text_header(data:&[u8])->Result<(HuffmanTextHeader,&[u8])>{
+    use super::{generic::Offset,refinement::{Neighborhood,Template}};
+    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2 text segment bytes"));}
+    let (region,rest)=bitmap::parse_region(data)?;
+    let h=rest.get(..4).ok_or(Error::Invalid("JBIG2 text flags truncated"))?;
+    let flags=u16::from_be_bytes([h[0],h[1]]);
+    if flags&1==0{return Err(Error::Unsupported("JBIG2 arithmetic text header"));}
+    let refine=flags&2!=0;
+    let template=Template::from_code((flags>>15)as u8)?;
+    if !refine&&template==Template::T1{return Err(Error::Invalid("JBIG2 text unused refinement template"));}
+    let selections=TextHuffmanSelections::parse(u16::from_be_bytes([h[2],h[3]]),refine)?;
+    let rest=&rest[4..];
+    let n=if refine{template.adaptive_count()*2}else{0};
+    let at=rest.get(..n).ok_or(Error::Invalid("JBIG2 text adaptive flags truncated"))?;
+    let neighborhood=if refine{
+        let mut offsets=[Offset{x:0,y:0};2];
+        for (i,p) in at.chunks_exact(2).enumerate(){offsets[i]=Offset{x:p[0]as i8,y:p[1]as i8};}
+        Some(Neighborhood::new(template,&offsets[..n/2])?)
+    }else{None};
+    let rest=&rest[n..];
+    let count=rest.get(..4).ok_or(Error::Invalid("JBIG2 text instance count truncated"))?;
+    let instances=u32::from_be_bytes([count[0],count[1],count[2],count[3]]);
+    if instances>MAX_INSTANCES{return Err(Error::Limit("JBIG2 text instances"));}
+    let ds=((flags>>10)&31) as i8;
+    let options=Options{width:region.width,height:region.height,default_black:flags&0x200!=0,
+        op:ComposeOp::from_code(((flags>>7)&3)as u8)?,strips:1u8<<((flags>>2)&3),
+        corner:Corner::from_code(((flags>>4)&3)as u8)?,transposed:flags&64!=0,
+        ds_offset:if ds>=16{ds-32}else{ds},instances};
+    Ok((HuffmanTextHeader{region,options,selections,neighborhood},&rest[4..]))
+}
+
+#[cfg(test)]
+mod huffman_text_header_tests{
+    use super::*;
+    use TextTableChoice::{Standard,Custom};
+    fn header(flags:u16,huff:u16,at:&[u8],count:u32)->Vec<u8>{
+        let mut v=vec![0,0,0,8,0,0,0,4,0,0,0,1,0,0,0,2,0];
+        v.extend(flags.to_be_bytes());v.extend(huff.to_be_bytes());
+        v.extend(at);v.extend(count.to_be_bytes());v.push(0xa5);v
+    }
+    #[test]
+    fn huffman_text_header_annex_h_flags(){
+        let data=header(0x0c09,0x0010,&[],5);
+        let (h,rest)=parse_huffman_text_header(&data).unwrap();
+        assert_eq!(h.options,Options{width:8,height:4,default_black:false,op:ComposeOp::Or,
+            strips:4,corner:Corner::BottomLeft,transposed:false,ds_offset:3,instances:5});
+        assert_eq!(h.selections.integers,[Standard(6),Standard(8),Standard(12)]);
+        assert_eq!(h.selections.custom_count,0);assert_eq!(rest,[0xa5]);assert!(h.neighborhood.is_none());
+    }
+    #[test]
+    fn huffman_text_header_custom_order_and_templates(){
+        let data=header(0x7fff,0x7fff,&[255;4],3);
+        let (h,rest)=parse_huffman_text_header(&data).unwrap();
+        assert_eq!(h.selections.integers,[Custom(0),Custom(1),Custom(2)]);
+        assert_eq!(h.selections.refinement,Some([Custom(3),Custom(4),Custom(5),Custom(6),Custom(7)]));
+        assert_eq!(h.selections.custom_count,8);
+        assert_eq!(h.options.ds_offset,-1);assert_eq!(h.options.strips,8);
+        assert!(h.options.transposed&&h.options.default_black);
+        assert_eq!(h.neighborhood.unwrap().template(),super::super::refinement::Template::T0);
+        assert_eq!(rest,[0xa5]);
+        let data=header(0x8003,0,&[],1);
+        assert_eq!(parse_huffman_text_header(&data).unwrap().0.neighborhood.unwrap().template(),super::super::refinement::Template::T1);
+    }
+    #[test]
+    fn huffman_text_header_rejects_reserved_and_truncated(){
+        for flags in [0x8000,2,0x40,0x4000]{assert!(TextHuffmanSelections::parse(flags,false).is_err());}
+        for shift in [0,6,8,10,12]{assert!(TextHuffmanSelections::parse(2<<shift,true).is_err());}
+        let data=header(3,0,&[255;4],1);
+        for n in 0..29{assert!(parse_huffman_text_header(&data[..n]).is_err());}
+        assert!(parse_huffman_text_header(&header(0x8001,0,&[],1)).is_err());
+        assert!(parse_huffman_text_header(&header(1,0,&[],MAX_INSTANCES+1)).is_err());
+        assert!(parse_huffman_text_header(&header(3,0,&[0;4],1)).is_err());
+    }
+}
