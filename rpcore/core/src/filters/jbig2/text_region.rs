@@ -1312,6 +1312,13 @@ pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super
     if bit_limit>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
         work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text payload limits"));}
     let (header,body)=parse_huffman_text_header(data)?;
+    // Bound caller-provided namespaces before even traversing custom rows.
+    if custom.len()!=header.selections.custom_count||custom.len()>8{
+        return Err(Error::Invalid("JBIG2 text custom table count"));
+    }
+    if symbols.len()>super::huffman::MAX_ROWS{
+        return Err(Error::Limit("JBIG2 Huffman symbol table rows"));
+    }
     let bits=body.len().checked_mul(8).ok_or(Error::Limit("JBIG2 text payload bits"))?;
     if bits>bit_limit{return Err(Error::Limit("JBIG2 text payload bits"));}
     // Conservative table construction charge: each row has up to 32
@@ -1553,5 +1560,108 @@ mod huffman_unused_namespace_tests {
         let ids=HuffmanSymbolIds::new(&[1]).unwrap();
         assert!(ids.decode(&mut BitReader::new(&[0],0).unwrap()).is_err());
         assert!(ids.decode(&mut BitReader::new(&[128],1).unwrap()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod huffman_selector_conformance_tests {
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    use super::super::{huffman::{parse_custom,CustomTable},integer::Integer};
+
+    #[test]
+    fn huffman_selector_exhaustive_flags(){
+        // Independent explicit mapping, T.88 (02/2000) 7.4.3.1.2.
+        // 0 = forbidden; -1 = custom; positive = Annex B table.
+        let map=[[6,7,0,-1],[8,9,10,-1],[11,12,13,-1],
+            [14,15,0,-1],[14,15,0,-1],[14,15,0,-1],[14,15,0,-1]];
+        for refine in [false,true]{
+            let mut accepted=0;
+            for flags in 0..=u16::MAX{
+                let fields=if refine{7}else{3};
+                let mut valid=flags&0x8000==0&&(refine||flags&0x7fc0==0);
+                let mut expected=[TextTableChoice::Standard(1);8];
+                let mut next=0;
+                for i in 0..fields{
+                    let n=map[i][usize::from((flags>>(2*i))&3)];
+                    match n{
+                        0=>valid=false,
+                        -1=>{expected[i]=TextTableChoice::Custom(next);next+=1;},
+                        n=>expected[i]=TextTableChoice::Standard(n as u8),
+                    }
+                }
+                if refine&&flags&0x4000!=0{expected[7]=TextTableChoice::Custom(next);next+=1;}
+                let actual=TextHuffmanSelections::parse(flags,refine);
+                if !valid{assert!(actual.is_err(),"flags {flags:04x}, refine {refine}");continue;}
+                let actual=actual.unwrap();accepted+=1;
+                assert_eq!(actual.integers,[expected[0],expected[1],expected[2]]);
+                assert_eq!(actual.refinement,if refine{Some([expected[3],expected[4],expected[5],expected[6],expected[7]])}else{None});
+                assert_eq!(actual.custom_count,next);
+            }
+            assert_eq!(accepted,if refine{7776}else{48});
+        }
+    }
+
+    // Independent wire syntax: one normal value, prefix 0, no extensions.
+    // If DS, add OOB at prefix 1. Distinct normal values detect table swaps.
+    fn constant(value:i32,oob:bool)->CustomTable{
+        let mut bytes=vec![u8::from(oob)];
+        bytes.extend(value.to_be_bytes());
+        bytes.extend((value+1).to_be_bytes());
+        bytes.push(if oob{0x88}else{0x80});
+        parse_custom(&bytes).unwrap()
+    }
+    #[test]
+    fn huffman_all_custom_fields_order_and_oob(){
+        let owned=[constant(2,false),constant(3,true),constant(1,false),
+            constant(-2,false),constant(1,false),constant(-1,false),
+            constant(0,false),constant(3,false)];
+        let mut custom:Vec<_>=owned.iter().collect();
+        let s=TextHuffmanSelections::parse(0x7fff,true).unwrap();
+        let (ints,refinement)=bind_text_tables(&s,&custom).unwrap();
+        let mut r=BitReader::new(&[0x10],4).unwrap(); // FS 0, DS 0, DT 0, OOB 1
+        assert_eq!(ints.first(&mut r).unwrap(),2);
+        assert_eq!(ints.delta(&mut r).unwrap(),Integer::Value(3));
+        assert_eq!(ints.strip(&mut r).unwrap(),1);
+        assert_eq!(ints.delta(&mut r).unwrap(),Integer::Oob);
+        assert_eq!(r.remaining(),0);
+        let mut r=BitReader::new(&[0x80],6).unwrap(); // RI then five zero prefixes
+        assert_eq!(refinement.unwrap().read(&mut r).unwrap(),Some(
+            HuffmanTextRefinementFields{dw:-2,dh:1,dx:-1,dy:0,bytes:3}));
+        assert_eq!(r.remaining(),0);
+        assert!(bind_text_tables(&s,&custom[..7]).is_err());
+        custom.push(&owned[0]);assert!(bind_text_tables(&s,&custom).is_err());custom.pop();
+        for i in [0,2,3,4,5,6,7]{
+            custom.swap(1,i);assert!(bind_text_tables(&s,&custom).is_err());custom.swap(1,i);
+        }
+        let mut forged=s;forged.integers[0]=TextTableChoice::Custom(1);
+        assert!(bind_text_tables(&forged,&custom).is_err());
+    }
+    #[test]
+    fn huffman_standard_payload_selector_matrix(){
+        let symbol=Bitmap::from_packed(1,1,&[128]).unwrap();
+        // Explicit B.6/B.7 code for FS=1, B.8/B.9/B.10 OOB codes.
+        // DT=1 in B.11/B.12/B.13 is 0; single symbol ID is 0.
+        for (fs,fs_bits) in [(0u16,"000000001"),(1,"101100001")]{
+            for (ds,oob) in [(0u16,"01"),(1,"00"),(2,"10")]{
+                for dt in 0u16..3{
+                    let flags=fs|(ds<<2)|(dt<<4);
+                    let mut data=vec![0,0,0,8,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0x11];
+                    data.extend(flags.to_be_bytes());data.extend(1u32.to_be_bytes());
+                    let mut table=[0u8;18];table[0]=1;data.extend(table);
+                    let stream=format!("00{fs_bits}0{oob}");
+                    let mut entropy=vec![0u8;stream.len().div_ceil(8)];
+                    for (i,b) in stream.bytes().enumerate(){if b==b'1'{entropy[i/8]|=128>>(i%8);}}
+                    data.extend(entropy);
+                    let (_,d)=decode_huffman_text_payload(&data,&[&symbol],&[],160,0,40000).unwrap();
+                    assert_eq!(d.bitmap.packed(),[64,0,0,0],"flags {flags:04x}");
+                    assert_eq!(decode_huffman_text_payload(&data,&[&symbol],&[],160,0,d.stats.work_used).unwrap().1,d);
+                    assert!(decode_huffman_text_payload(&data,&[&symbol],&[],160,0,d.stats.work_used-1).is_err());
+                    assert!(decode_huffman_text_payload(&data,&vec![&symbol;super::super::huffman::MAX_ROWS+1],&[],160,0,40000).is_err());
+                    let extra=constant(1,false);
+                    assert!(decode_huffman_text_payload(&data,&[&symbol],&[&extra],160,0,40000).is_err());
+                }
+            }
+        }
     }
 }
