@@ -61,6 +61,16 @@ jobs:
       - name: HarfBuzz external Mark reference (test only)
         if: matrix.os == 'ubuntu-latest'
         run: python3 tools/harfbuzz_mark_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-mark-reference.json
+      - name: HarfBuzz external stacked Mark reference (test only)
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 tools/harfbuzz_stack_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-stack-reference.json
+      - name: Preserve HarfBuzz stacked Mark reference report
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwcore-harfbuzz-stack-reference
+          path: rwcore/target/harfbuzz-stack-reference.json
+          if-no-files-found: warn
       - name: Preserve HarfBuzz Mark reference report
         if: always() && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
