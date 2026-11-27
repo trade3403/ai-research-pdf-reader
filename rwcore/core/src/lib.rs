@@ -296,3 +296,6 @@ pub use font_gpos_cursive::*;
 
 pub mod font_gpos_mark_base;
 pub use font_gpos_mark_base::*;
+
+pub mod font_gpos_mark_ligature;
+pub use font_gpos_mark_ligature::*;
