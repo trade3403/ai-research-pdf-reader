@@ -1261,3 +1261,110 @@ mod huffman_text_header_tests{
         assert!(parse_huffman_text_header(&header(3,0,&[0;4],1)).is_err());
     }
 }
+
+/// Resolve only caller-validated custom table references, in referred
+/// table order. A segment graph caller must validate identity and scope.
+pub fn bind_text_tables(selections:&TextHuffmanSelections,custom:&[&super::huffman::CustomTable])
+    ->Result<(HuffmanTextIntegers,Option<HuffmanTextRefinementTables>)>{
+    use super::huffman::{Table,standard};
+    if custom.len()!=selections.custom_count||custom.len()>8{
+        return Err(Error::Invalid("JBIG2 text custom table count"));
+    }
+    let mut next=0usize;
+    let mut resolve=|choice:TextTableChoice,allowed:&[u8]|->Result<Table>{
+        match choice{
+            TextTableChoice::Standard(n) if allowed.contains(&n)=>standard::table(n),
+            TextTableChoice::Custom(i) if i==next=>{
+                let t=custom.get(i).ok_or(Error::Invalid("JBIG2 text custom table missing"))?;
+                next+=1;Table::new(t.rows())
+            }
+            _=>Err(Error::Invalid("JBIG2 text table binding order")),
+        }
+    };
+    let [fs,ds,dt]=selections.integers;
+    let integers=HuffmanTextIntegers::new(resolve(fs,&[6,7])?,resolve(ds,&[8,9,10])?,resolve(dt,&[11,12,13])?)?;
+    let refinement=if let Some([dw,dh,dx,dy,size])=selections.refinement{
+        Some(HuffmanTextRefinementTables::new([resolve(dw,&[14,15])?,resolve(dh,&[14,15])?,
+            resolve(dx,&[14,15])?,resolve(dy,&[14,15])?],resolve(size,&[1])?)?)
+    }else{None};
+    if next!=custom.len(){return Err(Error::Invalid("JBIG2 text unused custom table"));}
+    Ok((integers,refinement))
+}
+/// Scoped complete Huffman region payload decoder. Caller supplies the
+/// ordered imported symbols and custom tables, not yet a page executor.
+/// The encoded symbol table is byte-aligned before HTDT. Trailing partial
+/// byte padding is permitted, never an additional whole byte.
+pub fn decode_huffman_text_payload(data:&[u8],symbols:&[&Bitmap],custom:&[&super::huffman::CustomTable],
+    bit_limit:usize,decision_limit:usize,work_limit:u64)->Result<(HuffmanTextHeader,DecodedText)>{
+    use crate::filters::ccitt::BitReader;
+    if bit_limit>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
+        work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 text payload limits"));}
+    let (header,body)=parse_huffman_text_header(data)?;
+    let bits=body.len().checked_mul(8).ok_or(Error::Limit("JBIG2 text payload bits"))?;
+    if bits>bit_limit{return Err(Error::Limit("JBIG2 text payload bits"));}
+    // Conservative table construction charge: each row has up to 32
+    // prefix nodes. Include both code-length and custom table creation.
+    let rows=custom.iter().try_fold(symbols.len().checked_add(35+8*32)
+        .ok_or(Error::Limit("JBIG2 text table work"))?,|n,t|n.checked_add(t.rows().len())
+        .ok_or(Error::Limit("JBIG2 text table work")))?;
+    let overhead=(rows as u64).checked_mul(32).and_then(|v|v.checked_add((data.len()-body.len())as u64))
+        .ok_or(Error::Limit("JBIG2 text table work"))?;
+    let left=work_limit.checked_sub(overhead).ok_or(Error::Limit("JBIG2 text table work"))?;
+    let (ints,refinement)=bind_text_tables(&header.selections,custom)?;
+    let mut reader=BitReader::new(body,bits)?;
+    let ids=HuffmanSymbolIds::from_wire(&mut reader,symbols.len())?;
+    let start=reader.position().div_ceil(8);
+    let entropy=body.get(start..).ok_or(Error::Invalid("JBIG2 text alignment"))?;
+    let entropy_bits=entropy.len()*8;
+    let prefix_work=(start as u64)*8;
+    let left=left.checked_sub(prefix_work).ok_or(Error::Limit("JBIG2 text table bits work"))?;
+    let mut decoded=match (&header.neighborhood,refinement){
+        (Some(n),Some(t))=>decode_huffman_refined(entropy,entropy_bits,header.options,symbols,&ids,&ints,&t,n,decision_limit,left)?,
+        (None,None)=>{
+            let left=left.checked_sub(entropy_bits as u64).ok_or(Error::Limit("JBIG2 text entropy work"))?;
+            let mut r=BitReader::new(entropy,entropy_bits)?;
+            let mut d=decode_huffman_direct(&mut r,header.options,symbols,&ids,&ints,entropy_bits,left)?;
+            if r.remaining()>7{return Err(Error::Invalid("JBIG2 text trailing bytes"));}
+            d.stats.work_used+=entropy_bits as u64;d
+        },
+        _=>return Err(Error::Invalid("JBIG2 text refinement table presence")),
+    };
+    decoded.stats.work_used+=overhead+prefix_work;
+    Ok((header,decoded))
+}
+#[cfg(test)]
+mod huffman_text_payload_tests{
+    use super::*;
+    fn body()->Vec<u8>{
+        let mut v=vec![0,0,0,8,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0x15,0,0,0,0,0,3];
+        // Run table: only literal length 1 has a one-bit prefix.
+        // 140-bit table + two zero codes + two arbitrary pad bits.
+        let mut table=[0u8;18];table[0]=1;table[17]=3;
+        v.extend(table);v.extend([0,38,180,0,16]);v
+    }
+    #[test]
+    fn huffman_text_payload_direct_alignment(){
+        let data=body();
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let b=Bitmap::from_packed(2,1,&[192]).unwrap();
+        let (h,d)=decode_huffman_text_payload(&data,&[&a,&b],&[],184,0,30000).unwrap();
+        assert_eq!(h.options.strips,2);assert_eq!(d.bitmap.packed(),[64,24,64,0]);
+        assert_eq!(decode_huffman_text_payload(&data,&[&a,&b],&[],184,0,d.stats.work_used).unwrap().1,d);
+        assert!(decode_huffman_text_payload(&data,&[&a,&b],&[],184,0,d.stats.work_used-1).is_err());
+        assert!(decode_huffman_text_payload(&data,&[&a,&b],&[],183,0,30000).is_err());
+        let mut extra=data.clone();extra.push(0);
+        assert!(decode_huffman_text_payload(&extra,&[&a,&b],&[],192,0,30000).is_err());
+    }
+    #[test]
+    fn huffman_text_bind_custom_order(){
+        let custom=super::super::huffman::parse_custom(&[0x42,0,0,0,0,0,1,1,0x10,0x49,0x23,0x81,0x80]).unwrap();
+        let s=TextHuffmanSelections::parse(3,false).unwrap();
+        assert!(bind_text_tables(&s,&[&custom]).is_ok());
+        assert!(bind_text_tables(&s,&[]).is_err());
+        assert!(bind_text_tables(&s,&[&custom,&custom]).is_err());
+        let mut bad=s;bad.integers[0]=TextTableChoice::Custom(1);
+        assert!(bind_text_tables(&bad,&[&custom]).is_err());
+        let s=TextHuffmanSelections::parse(12,false).unwrap();
+        assert!(bind_text_tables(&s,&[&custom]).is_err()); // DS needs OOB.
+    }
+}
