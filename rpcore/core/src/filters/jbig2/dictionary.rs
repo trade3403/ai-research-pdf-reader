@@ -2672,6 +2672,96 @@ mod retained_huffman_gr_tests{
             assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:exact.context_entries-1,..exact}).is_err());
         }}
     }
+    // Same independent QM blocks as H0/H1, with the first symbol now
+    // encoded by Table 17 (one refined instance, one fully clipped
+    // direct instance). The second symbol uses Table 18 and references
+    // the first output. Repack only the explicit Huffman syntax.
+    fn mixed_parent(t:u8,flags:u8)->Vec<u8>{
+        // DH=2, DW=3, AGGINST=2; initial DT=1, DT=1, FS=0,
+        // ID=00 RI=1 DW=-4 DH=-4 DX=3 DY=1 RSIZE=3; byte align.
+        let mut entropy=vec![184,8,0,30,56,234,140,187,255,172];
+        // DS=2, ID=00 RI=0 (x=4 beyond 3px output), strip OOB;
+        // DW=1 AGGINST=1 ID=01 DX=-1 DY=1 RSIZE=4; byte align.
+        entropy.extend([208,96,178,144,if t==0{221}else{220},127,255,172,252,3]);
+        body(t,flags,false,&entropy)
+    }
+    #[test]
+    fn huffman_mixed_aggregation_single_and_retained_context_parity(){
+        for t in [0,1]{
+            let s=src();let l=ArithmeticLimits::default();
+            let old=parent(t,2);
+            let (reference,reference_snapshot)=decode_huffman_single_refinement_with_context(
+                &plan_for(&old,1),&old,&[&s],l,None).unwrap();
+            let mixed=mixed_parent(t,2);
+            let p=plan_for(&mixed,1);
+            let (d,snapshot)=decode_huffman_aggregation_with_context(&p,&mixed,&[&s],l,None).unwrap();
+            assert_eq!(d.new_symbols,reference.new_symbols);
+            assert_eq!(d.exported_indices,[0,1,2]);
+            assert_eq!((d.classes,d.blocks,d.entropy_bytes,d.pixel_decisions,d.packed_bytes),(1,2,7,14,4));
+            assert_eq!(snapshot,reference_snapshot);
+            let exact=ArithmeticLimits{pixels:14,packed_bytes:4,work:d.work_used,decisions:14,export_runs:2};
+            assert_eq!(decode_huffman_aggregation_with_context(&p,&mixed,&[&s],exact,None).unwrap().0,d);
+            for cap in [ArithmeticLimits{pixels:13,..exact},ArithmeticLimits{packed_bytes:3,..exact},
+                ArithmeticLimits{work:exact.work-1,..exact},ArithmeticLimits{decisions:13,..exact},
+                ArithmeticLimits{export_runs:1,..exact}]{
+                assert!(decode_huffman_aggregation_with_context(&p,&mixed,&[&s],cap,None).is_err());
+            }
+            assert!(matches!(decode_huffman_single_refinement_with_context(&p,&mixed,&[&s],l,None),Err(Error::Unsupported(_))));
+            let imports=[&s,&d.new_symbols[0],&d.new_symbols[1]];
+            let b=body(t,3,true,CHILD);
+            let (child,after)=decode_huffman_aggregation_with_context(&plan_for(&b,3),&b,&imports,l,snapshot.as_ref()).unwrap();
+            let (old_child,old_after)=decode_huffman_single_refinement_with_context(
+                &plan_for(&b,3),&b,&imports,l,reference_snapshot.as_ref()).unwrap();
+            assert_eq!(child,old_child);
+            assert_eq!(after,old_after);
+            assert_eq!(child.new_symbols[0].packed(),[160,64]);
+            let b=body(t,0,true,CHILD);
+            let reset=decode_huffman_aggregation_with_context(&plan_for(&b,3),&b,&imports,l,None).unwrap().0;
+            assert_ne!(reset.new_symbols,child.new_symbols);
+        }
+    }
+    #[test]
+    fn huffman_mixed_aggregation_global_page_snapshot_and_legacy_parity(){
+        for t in [0,1]{
+            let l=ExecutionLimits::default();
+            let (old_g,old_p)=fixture(t,1);
+            let old=execute_pdf_dictionaries_single_reference(&old_g,&old_p,l).unwrap();
+            assert_eq!(execute_pdf_dictionaries(&old_g,&old_p,l).unwrap(),old);
+            let opt=execute_pdf_dictionaries_with_huffman_aggregation(&old_g,&old_p,l).unwrap();
+            for (seg,count) in [(1,1),(2,3),(4,4)]{
+                assert_eq!(ids(&old,seg),ids(&opt,seg));
+                for i in 0..count{assert_eq!(old.symbol(seg,i),opt.symbol(seg,i));}
+            }
+            let mut g=seg(1,0,0,&[],SOURCE);
+            g.extend(seg(2,0,0,&[1],&mixed_parent(t,2)));
+            let mut p=info(3);
+            p.extend(seg(4,0,1,&[2],&body(t,3,true,CHILD)));
+            p.extend(seg(5,0,1,&[2],&body(t,1,true,CHILD)));
+            let d=execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,l).unwrap();
+            assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(ids(&d,5),[0,1,2,4]);
+            assert_eq!(d.symbol(4,3).unwrap().packed(),[160,64]);
+            assert_eq!(d.symbol(4,3),d.symbol(5,3));
+            assert!(std::ptr::eq(d.symbol(2,1).unwrap(),d.symbol(4,1).unwrap()));
+            assert!(!std::ptr::eq(d.symbol(4,3).unwrap(),d.symbol(5,3).unwrap()));
+            let stats=d.stats();
+            assert_eq!((stats.dictionaries,stats.huffman_aggregation,stats.retained_gr_contexts,stats.reused_gr_contexts),(4,3,2,2));
+            assert_eq!(stats.peak_context_entries,3*if t==0{8192}else{1024});
+            let exact=ExecutionLimits{work:stats.work_used,symbol_slots:stats.symbol_slots,
+                pixels:stats.pixels,packed_bytes:stats.packed_bytes,context_entries:stats.peak_context_entries,
+                decisions_per_dictionary:14,..l};
+            assert_eq!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,exact).unwrap(),d);
+            for cap in [ExecutionLimits{work:exact.work-1,..exact},
+                ExecutionLimits{symbol_slots:exact.symbol_slots-1,..exact},
+                ExecutionLimits{context_entries:exact.context_entries-1,..exact},
+                ExecutionLimits{decisions_per_dictionary:13,..exact}]{
+                assert!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&p,cap).is_err());
+            }
+            assert!(matches!(execute_pdf_dictionaries(&g,&p,l),Err(Error::Unsupported(_))));
+            // The last referred dictionary is not the retained parent.
+            let mut bad=info(3);bad.extend(seg(4,0,1,&[2,1],&body(t,1,true,CHILD)));
+            assert!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&bad,l).is_err());
+        }
+    }
     #[test]
     fn retained_huffman_gr_both_templates(){
         for t in [0,1]{
