@@ -45,11 +45,24 @@ jobs:
         if: ${{ hashFiles('rwcore/Cargo.lock') == '' }}
       - name: Dependency tree
         run: cargo +stable tree --locked
+      - name: Prepare native DejaVu reference font (test only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if [ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]; then
+            sudo apt-get update
+            sudo apt-get install -y fonts-dejavu-core
+          fi
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          dpkg-query -W fonts-dejavu-core || true
+          sha256sum /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          echo "RWCORE_DEJAVU_REFERENCE=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" >> "$GITHUB_ENV"
       - name: Test
         run: cargo +stable test --locked --workspace --all-targets
       - name: Report native joint ligature inventory
         if: matrix.os == 'ubuntu-latest'
-        run: cat target/native-joint-ligature.txt
+        run: |
+          cat target/native-joint-ligature.txt
+          grep -Fx 'DEJAVU_JOINT_REFERENCE cases=4 direction_checks=8 nonzero_direction_checks=8 max_absolute_error=0' target/native-joint-ligature.txt
       - name: Build
         run: cargo +stable build --locked --workspace --release
       - name: HarfBuzz external GPOS reference (test only)

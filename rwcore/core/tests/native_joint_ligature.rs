@@ -175,6 +175,56 @@ fn check(font:&[u8])->[usize;7]{
     }
     counts
 }
+// Supplemental Linux fixture from the distribution's DejaVu Sans package.
+// Explicit Arabic presentation forms isolate GSUB4 from joining analysis.
+// Expected glyphs and anchor deltas are decoded from original font bytes,
+// independently of the production lookup parser and positioner.
+fn dejavu_positive(font:&[u8])->[usize;3]{
+    let sb=table(font,b"GSUB").unwrap();let pb=table(font,b"GPOS").unwrap();
+    let gb=table(font,b"GDEF").unwrap();
+    let f=parse_font(font,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let m=parse_font_metrics(face,Default::default()).unwrap();let n=u32::from(m.maxp().glyph_count);
+    let gd=parse_gdef(gb,n,Default::default()).unwrap();let cls=classes(gb,n as usize);
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+    let gid=|ch|cmap.glyph_for_char(ch).unwrap().unwrap();
+    let a=gid('\u{fedf}');let b=gid('\u{fe8e}');let parent=gid('\u{fefb}');
+    assert_eq!(cls[parent as usize],2);
+    let sl=lookups(sb,4,7);let pl=lookups(pb,5,9);
+    let s=sl.iter().find(|l|l.flags&8!=0&&first_match(&rules(l),&[a,b])==Some((2,parent)))
+        .expect("DejaVu native lam-alef contraction");
+    let gs=compile_gsub_program(sb,&[s.id],n,Some(&gd),Default::default()).unwrap();
+    let mut counts=[0;3];
+    for ch in ['\u{64b}','\u{64e}']{
+        let mark=gid(ch);assert_eq!(cls[mark as usize],3);
+        let p=pl.iter().find(|l|eligible(parent,l.flags,&cls)&&eligible(mark,l.flags,&cls)&&
+            (0..2).all(|i|mark_pair(l,parent,mark,i).is_some_and(|(k,_)|k==2)))
+            .expect("DejaVu native mark-to-ligature anchors");
+        let gp=compile_gpos_program(pb,&[p.id],n,Some(&gd),Default::default()).unwrap();
+        let deltas=[mark_pair(p,parent,mark,0).unwrap().1,mark_pair(p,parent,mark,1).unwrap().1];
+        assert_ne!(deltas[0],deltas[1],"component anchors must distinguish ownership");
+        for (text,component) in [
+            (format!("{}{}{}",'\u{fedf}',ch,'\u{fe8e}'),0usize),
+            (format!("{}{}{}",'\u{fedf}','\u{fe8e}',ch),1usize)]{
+            let r=map_source_run(&text,&cmap,false,Default::default()).unwrap();
+            let delta=deltas[component];assert_ne!(delta,(0,0));
+            counts[0]+=1;
+            for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                let out=execute_joint_shape_with_ligatures(&gs,&gp,&r,&m,&gd,&[],flow,
+                    Default::default(),Default::default()).unwrap();
+                assert_eq!(out.substitution.expansion.execution.glyphs,vec![parent,mark]);
+                let history=out.provenance.glyphs()[0].ligature_lineage().unwrap();
+                let want=if component==0{vec![vec![0],vec![2]]}else{vec![vec![0],vec![1]]};
+                assert_eq!(history.components(),want.as_slice());
+                assert_eq!(out.design_advances,vec![(nominal(font,parent),0),(nominal(font,mark),0)]);
+                assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+                let o=out.positioning.design_origins;let adjust=out.positioning.adjustments[1].design;
+                assert_eq!((o[1].0+adjust.x_placement,o[1].1+adjust.y_placement),(o[0].0+delta.0,o[0].1+delta.1));
+                counts[1]+=1;counts[2]+=1;
+            }
+        }
+    }
+    assert_eq!(counts,[4,8,8]);counts
+}
 #[test]fn native_joint_ligature_inventory_and_geometry(){
     let mut total=[0;7];let mut report=String::from("scope=direct BMP cmap, explicit GSUB4/GPOS5 roots, trailing mark, simple lineage; both physical flows\nfields=rules,unicode_candidates,contractions,unicode_parent_intersections,admitted,exact,nonzero\n");
     for (name,font) in FONTS{
@@ -183,6 +233,13 @@ fn check(font:&[u8])->[usize;7]{
     }
     report+=&format!("TOTAL {total:?}\n");
     report+=&format!("combined_positive_evidence={}\n",total[6]>0);
+    if let Some(path)=std::env::var_os("RWCORE_DEJAVU_REFERENCE"){
+        let bytes=std::fs::read(path).expect("read supplemental DejaVu font");
+        let c=dejavu_positive(&bytes);
+        report+=&format!("DEJAVU_JOINT_REFERENCE cases={} direction_checks={} nonzero_direction_checks={} max_absolute_error=0\n",c[0],c[1],c[2]);
+    }else{
+        report+="DEJAVU_JOINT_REFERENCE not_requested (supplemental Linux gate)\n";
+    }
     let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/native-joint-ligature.txt");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path,&report).unwrap();eprintln!("{report}");
