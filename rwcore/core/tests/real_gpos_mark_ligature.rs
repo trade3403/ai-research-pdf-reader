@@ -72,8 +72,15 @@ fn check(font:&[u8])->[usize;7]{
             let mut at=p+u(b,p+6+2*j);let mut kind=u(b,p);
             if kind==9{assert_eq!(u(b,at),1);kind=u(b,at+2);at+=u(b,at+4)*65536+u(b,at+6);}
             if kind!=5{continue;}
+            let q=check_subtable(&b[at..],n);for k in 0..7{counts[k]+=q[k];}
+        }
+    }
+    counts
+}
+fn check_subtable(s:&[u8],n:usize)->[usize;7]{
+    let mut counts=[0;7];
             counts[0]+=1;
-            let s=&b[at..];assert_eq!(u(s,0),1);
+            assert_eq!(u(s,0),1);
             let marks=coverage(s,u(s,2));let ligatures=coverage(s,u(s,4));
             let classes=u(s,6);let ma=u(s,8);let la=u(s,10);
             assert_eq!(marks.len(),u(s,ma));assert_eq!(ligatures.len(),u(s,la));
@@ -136,9 +143,27 @@ fn check(font:&[u8])->[usize;7]{
             if let Some(g)=(0..n).find(|&g|mr[g].is_none()){
                 if let Some(&a)=ligatures.first(){assert_eq!(parsed.attach_design(a,0,g as u16,[(0,0);2]).unwrap(),None);}
             }
-        }
-    }
     counts
+}
+fn dejavu_raw_subtable()->Vec<u8>{
+    // Exact 370-byte GPOS slice from DejaVu Sans 2.37, lookup 5/subtable 0.
+    // Provenance and license: fixtures/dejavu_gpos_excerpt.txt.
+    let hex=include_str!("fixtures/dejavu_gpos_excerpt.hex").trim();
+    assert_eq!(hex.len(),740);
+    (0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect()
+}
+#[test]fn independent_nonzero_device_attachment(){
+    // Explicit synthetic differential: format 1 mark; format 3 component.
+    let words:[u16;30]=[1,12,18,1,24,30,1,1,3,1,1,7,1,0,14,1,4,1,10,1,10,20,3,100,200,10,0,10,12,1];
+    let mut b:Vec<u8>=words.iter().flat_map(|v|v.to_be_bytes()).collect();
+    b.extend_from_slice(&0x6c00u16.to_be_bytes());
+    let p=parse_mark_to_ligature(&b,10,Default::default()).unwrap();
+    let a=anchor(&b,44).unwrap();let m=anchor(&b,38).unwrap();
+    for (ppem,delta) in [(9,0),(10,1),(11,-2),(12,-1),(13,0)]{
+        assert_eq!(px(&a,ppem,16),Some((delta,0)));
+        assert_eq!(px(&m,ppem,16),Some((0,0)));
+        assert_eq!(p.attach_pixels(7,0,3,[(2,1),(0,3)],ppem,16).unwrap(),Some((2+delta,-2)));
+    }
 }
 #[test]fn native_mark_ligature_reference(){
     let mut total=[0;7];
@@ -155,6 +180,11 @@ fn check(font:&[u8])->[usize;7]{
     ]{
         let n=check(font);for i in 0..7{total[i]+=n[i];}
     }
+    assert!(total[..6].iter().all(|&n|n>0),"retained full-font native evidence: {total:?}");
+    let extra=check_subtable(&dejavu_raw_subtable(),6253);
+    assert!(extra.iter().all(|&n|n>0),"DejaVu raw native subtable evidence: {extra:?}");
+    eprintln!("DejaVu raw subtable evidence: {extra:?}");
+    for i in 0..7{total[i]+=extra[i];}
     assert!(total.iter().all(|&n|n>0),"native MarkToLigature positive evidence: {total:?}");
     eprintln!("native MarkToLigature [subtables, marks, multi-component ligatures, anchors, pairs, unequal pairs, pixel checks]: {total:?}");
 }
