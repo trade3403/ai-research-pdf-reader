@@ -1,0 +1,193 @@
+//! Independent raw GSUB4/GPOS5 intersection diagnostic on retained fonts.
+//! Explicit lookup roots and direct cmap input, not full script shaping.
+use rwcore::*;
+use std::collections::{BTreeMap,BTreeSet};
+type Point=(i32,i32);
+fn u(b:&[u8],p:usize)->usize{u16::from_be_bytes([b[p],b[p+1]]) as usize}
+fn d(b:&[u8],p:usize)->usize{u32::from_be_bytes(b[p..p+4].try_into().unwrap()) as usize}
+fn table<'a>(b:&'a [u8],tag:&[u8;4])->Option<&'a [u8]>{
+    for i in 0..u(b,4){let p=12+16*i;if &b[p..p+4]==tag{
+        let at=d(b,p+8);return Some(&b[at..at+d(b,p+12)]);
+    }}None
+}
+fn coverage(b:&[u8],p:usize)->Vec<u16>{
+    match u(b,p){
+        1=>(0..u(b,p+2)).map(|i|u(b,p+4+2*i) as u16).collect(),
+        2=>{let mut v=Vec::new();for i in 0..u(b,p+2){
+            let q=p+4+6*i;assert_eq!(v.len(),u(b,q+4));
+            v.extend((u(b,q)..=u(b,q+2)).map(|g|g as u16));
+        }v},
+        _=>panic!("coverage format"),
+    }
+}
+struct Lookup<'a>{id:u16,flags:usize,subs:Vec<&'a [u8]>}
+fn lookups(b:&[u8],target:usize,extension:usize)->Vec<Lookup<'_>>{
+    let list=u(b,8);let mut out=Vec::new();
+    for i in 0..u(b,list){
+        let p=list+u(b,list+2+2*i);let flags=u(b,p+2);
+        if flags & !15 !=0{continue;}
+        let mut subs=Vec::new();
+        for j in 0..u(b,p+4){
+            let mut at=p+u(b,p+6+2*j);let mut kind=u(b,p);
+            if kind==extension{kind=u(b,at+2);at+=d(b,at+4);}
+            if kind==target{subs.push(&b[at..]);}
+        }
+        if !subs.is_empty(){out.push(Lookup{id:i as u16,flags,subs});}
+    }out
+}
+fn classes(g:&[u8],n:usize)->Vec<usize>{
+    let mut c=vec![0;n];let p=u(g,4);if p==0{return c;}
+    match u(g,p){
+        1=>{let start=u(g,p+2);for i in 0..u(g,p+4){c[start+i]=u(g,p+6+2*i);}},
+        2=>{for i in 0..u(g,p+2){let q=p+4+6*i;for k in u(g,q)..=u(g,q+2){c[k]=u(g,q+4);}}},
+        _=>panic!("class format"),
+    }c
+}
+fn eligible(g:u16,flags:usize,c:&[usize])->bool{
+    match c[g as usize]{1=>flags&2==0,2=>flags&4==0,3=>flags&8==0,_=>true}
+}
+fn rules(l:&Lookup<'_>)->Vec<(Vec<u16>,u16)>{
+    let mut out=Vec::new();
+    for s in &l.subs{
+        assert_eq!(u(s,0),1);let cov=coverage(s,u(s,2));assert_eq!(cov.len(),u(s,4));
+        for (i,&first) in cov.iter().enumerate(){
+            let set=u(s,6+2*i);
+            for j in 0..u(s,set){
+                let p=set+u(s,set+2+2*j);
+                let mut input=vec![first];
+                input.extend((1..u(s,p+2)).map(|k|u(s,p+2+2*k) as u16));
+                out.push((input,u(s,p) as u16));
+            }
+        }
+    }out
+}
+fn first_match(rules:&[(Vec<u16>,u16)],input:&[u16])->Option<(usize,u16)>{
+    rules.iter().find(|(seq,_)|input.starts_with(seq)).map(|(s,g)|(s.len(),*g))
+}
+fn anchor(s:&[u8],at:usize)->Point{
+    assert!((1..=3).contains(&u(s,at)));
+    (i32::from(u(s,at+2) as i16),i32::from(u(s,at+4) as i16))
+}
+// First matching subtable, same lookup order. None for absent anchor.
+fn mark_pair(l:&Lookup<'_>,parent:u16,mark:u16,component:usize)->Option<(usize,Point)>{
+    for s in &l.subs{
+        let Ok(i)=coverage(s,u(s,2)).binary_search(&mark) else{continue;};
+        let Ok(j)=coverage(s,u(s,4)).binary_search(&parent) else{continue;};
+        let ma=u(s,8);let la=u(s,10);let a=la+u(s,la+2+2*j);let n=u(s,a);
+        if component>=n{continue;}
+        let cl=u(s,ma+2+4*i);let mo=u(s,ma+4+4*i);let po=u(s,a+2+2*(component*u(s,6)+cl));
+        if mo==0||po==0{continue;}
+        let (x,y)=anchor(s,a+po);let (mx,my)=anchor(s,ma+mo);
+        return Some((n,(x-mx,y-my)));
+    }None
+}
+fn nominal(font:&[u8],g:u16)->i32{
+    let h=table(font,b"hhea").unwrap();let m=table(font,b"hmtx").unwrap();
+    u(m,4*(g as usize).min(u(h,34)-1)) as i32
+}
+const FONTS:[(&str,&[u8]);9]=[
+    ("ABeeZee",include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf")),
+    ("ABeeZee italic",include_bytes!("fixtures/abeezee/ABeeZee-Italic.ttf")),
+    ("Alegreya Sans",include_bytes!("fixtures/alegreyasans/AlegreyaSans-Regular.ttf")),
+    ("Archivo",include_bytes!("fixtures/archivo/Archivo[wdth,wght].ttf")),
+    ("Aref Ruqaa",include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf")),
+    ("Noto Nastaliq Urdu",include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf")),
+    ("Noto Sans Mongolian",include_bytes!("fixtures/notosansmongolian/NotoSansMongolian-Regular.ttf")),
+    ("Noto Sans Devanagari",include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf")),
+    ("Padauk",include_bytes!("fixtures/padauk/Padauk-Regular.ttf")),
+];
+// counts: direct rules, eligible Unicode contraction candidates, tested
+// contractions, raw output/Type5 parent intersections, admitted attachment
+// rows, exact attachment rows, nonzero attachment rows.
+fn check(font:&[u8])->[usize;7]{
+    let mut counts=[0;7];
+    let (Some(sb),Some(pb),Some(gb))=(table(font,b"GSUB"),table(font,b"GPOS"),table(font,b"GDEF")) else{return counts;};
+    let f=parse_font(font,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let m=parse_font_metrics(face,Default::default()).unwrap();let n=u32::from(m.maxp().glyph_count);
+    let gd=parse_gdef(gb,n,Default::default()).unwrap();let cls=classes(gb,n as usize);
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+    let mut reverse=BTreeMap::new();
+    for code in 0..=0xffff{
+        if let Some(ch)=char::from_u32(code){
+            if let Some(g)=cmap.glyph_for_char(ch).unwrap(){reverse.entry(g).or_insert(ch);}
+        }
+    }
+    let sl=lookups(sb,4,7);let pl=lookups(pb,5,9);
+    let mut mark_inventory=Vec::new();
+    for p in &pl{
+        let mut parents=BTreeSet::new();let mut marks=BTreeSet::new();
+        for s in &p.subs{
+            parents.extend(coverage(s,u(s,4)));
+            marks.extend(coverage(s,u(s,2)).into_iter().filter(|&g|
+                cls[g as usize]==3&&eligible(g,p.flags,&cls)&&reverse.contains_key(&g)));
+        }
+        mark_inventory.push((parents,marks));
+    }
+    let empty=compile_gpos_program(pb,&[],n,Some(&gd),Default::default()).unwrap();
+    for s in &sl{
+        let all=rules(s);counts[0]+=all.len();
+        let mut seen=BTreeSet::new();
+        for (seq,parent) in &all{
+            if !seen.insert(seq.clone()){continue;}
+            if first_match(&all,seq)!=Some((seq.len(),*parent)){continue;}
+            if seq.len()<2||seq.len()>8||seq.iter().any(|&g|!eligible(g,s.flags,&cls)){continue;}
+            let Some(text)=seq.iter().map(|g|reverse.get(g).copied()).collect::<Option<String>>() else{continue;};
+            counts[1]+=1;
+            let r=map_source_run(&text,&cmap,false,Default::default()).unwrap();
+            let gs=compile_gsub_program(sb,&[s.id],n,Some(&gd),Default::default()).unwrap();
+            if counts[2]<32{
+                let out=execute_joint_shape(&gs,&empty,&r,&m,&[],GposHorizontalFlow::LeftToRight,Default::default()).unwrap();
+                assert_eq!(out.substitution.expansion.execution.glyphs,vec![*parent]);
+                assert_eq!(out.provenance.glyphs()[0].sources(),(0..seq.len()).collect::<Vec<_>>().as_slice());
+                assert_eq!(out.design_advances,vec![(nominal(font,*parent),0)]);
+                counts[2]+=1;
+            }
+            for (p,(parents,marks)) in pl.iter().zip(&mark_inventory){
+                if !parents.contains(parent){continue;}
+                counts[3]+=1;
+                if cls[*parent as usize]!=2||!eligible(*parent,p.flags,&cls)||seq.iter().any(|g|cls[*g as usize]==3){continue;}
+                // Deterministic bounded candidate inventory: at most two
+                // native trailing marks per direct GSUB/GPOS lookup pair.
+                for &mark in marks.iter().filter(|&&mark|{
+                    let mut input=seq.clone();
+                    if eligible(mark,s.flags,&cls){input.push(mark);}
+                    first_match(&all,&input)==Some((seq.len(),*parent))
+                }).filter(|&&mark|mark_pair(p,*parent,mark,seq.len()-1).is_some_and(|(k,_)|k==seq.len())).take(2){
+                    if counts[4]>=32{break;}
+                    let (_,delta)=mark_pair(p,*parent,mark,seq.len()-1).unwrap();
+                    let mut text=text.clone();text.push(reverse[&mark]);
+                    let r=map_source_run(&text,&cmap,false,Default::default()).unwrap();
+                    let gp=compile_gpos_program(pb,&[p.id],n,Some(&gd),Default::default()).unwrap();
+                    counts[4]+=1;
+                    for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                        let out=execute_joint_shape_with_ligatures(&gs,&gp,&r,&m,&gd,&[],flow,
+                            Default::default(),Default::default()).unwrap();
+                        assert_eq!(out.substitution.expansion.execution.glyphs,vec![*parent,mark]);
+                        assert_eq!(out.design_advances,vec![(nominal(font,*parent),0),(nominal(font,mark),0)]);
+                        assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+                        let a=out.positioning.adjustments[1].design;let o=out.positioning.design_origins;
+                        assert_eq!((o[1].0+a.x_placement,o[1].1+a.y_placement),(o[0].0+delta.0,o[0].1+delta.1));
+                    }
+                    counts[5]+=1;counts[6]+=usize::from(delta!=(0,0));
+                }
+            }
+        }
+    }
+    counts
+}
+#[test]fn native_joint_ligature_inventory_and_geometry(){
+    let mut total=[0;7];let mut report=String::from("scope=direct BMP cmap, explicit GSUB4/GPOS5 roots, trailing mark, simple lineage; both physical flows\nfields=rules,unicode_candidates,contractions,unicode_parent_intersections,admitted,exact,nonzero\n");
+    for (name,font) in FONTS{
+        let c=check(font);for i in 0..7{total[i]+=c[i];}
+        report+=&format!("{name}: {c:?}\n");
+    }
+    report+=&format!("TOTAL {total:?}\n");
+    report+=&format!("combined_positive_evidence={}\n",total[6]>0);
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/native-joint-ligature.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path,&report).unwrap();eprintln!("{report}");
+    assert!(total[0]>0&&total[1]>0&&total[2]>0,"native contraction evidence missing");
+    assert_eq!(total[4],total[5]);
+    // No fabricated positive Type5 claim when direct Unicode intersection
+    // is empty. The report explicitly distinguishes this from parity.
+}

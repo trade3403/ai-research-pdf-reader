@@ -47,6 +47,9 @@ jobs:
         run: cargo +stable tree --locked
       - name: Test
         run: cargo +stable test --locked --workspace --all-targets
+      - name: Report native joint ligature inventory
+        if: matrix.os == 'ubuntu-latest'
+        run: cat target/native-joint-ligature.txt
       - name: Build
         run: cargo +stable build --locked --workspace --release
       - name: HarfBuzz external GPOS reference (test only)
