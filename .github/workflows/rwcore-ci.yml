@@ -64,10 +64,13 @@ jobs:
       - name: HarfBuzz external stacked Mark reference (test only)
         if: matrix.os == 'ubuntu-latest'
         run: python3 tools/harfbuzz_stack_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-stack-reference.json
-      - name: HarfBuzz external Arabic RTL diagnostic (test only)
+      - name: RTL acceptance policy regression tests
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 tools/test_harfbuzz_rtl_gate.py
+      - name: HarfBuzz external Arabic RTL exact gate (test only)
         if: matrix.os == 'ubuntu-latest'
         run: python3 tools/harfbuzz_rtl_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-rtl-reference.json
-      - name: Preserve HarfBuzz Arabic RTL diagnostic
+      - name: Preserve HarfBuzz Arabic RTL reference report
         if: always() && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:

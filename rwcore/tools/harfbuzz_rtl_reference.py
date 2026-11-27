@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RTL diagnostic baseline, not an external compatibility pass gate.
+"""Strict external RTL reference gate for the admitted isolated feature scope.
 
 HB provides shaped glyph IDs and feature-off advances. Its RTL visual
 sequence is reversed into logical order before calling RWCore. Positive
@@ -38,6 +38,55 @@ def subtract(a,b):
 def max_error(a,b):
     return max((abs(x-y) for p,q in zip(a,b) for x,y in zip(p,q)),default=0)
 
+# Verified CI #221 floor, not an assertion about all possible Arabic text.
+MIN_EVIDENCE = {
+    FONTS[0]: {"mark": 25, "curs": 4},
+    FONTS[1]: {"mark": 20, "curs": 4},
+}
+def validate_gate(report):
+    """Fail closed on parity, missing evidence or inconsistent accounting."""
+    if report["candidate_count"] != 114 or report["candidate_count"] != report["admitted"] + report["excluded"]:
+        raise RuntimeError("RTL candidate coverage/accounting regression")
+    if report["admitted"] != report["compared"] + report["probe_errors"]:
+        raise RuntimeError("RTL admitted row accounting")
+    if report["compared"] != report["exact"] + report["mismatches"]:
+        raise RuntimeError("RTL compared row accounting")
+    if (report["mismatches"] or report["probe_errors"] or
+            report["max_absolute_error"] or report["max_world_error"]):
+        raise RuntimeError("RTL external precision regression")
+    fonts = {f["name"]: f for f in report["fonts"]}
+    if len(fonts) != len(report["fonts"]) or set(fonts) != set(MIN_EVIDENCE):
+        raise RuntimeError("RTL font inventory regression")
+    total = {"admitted":0, "compared":0, "exact":0, "excluded":0}
+    for name, floors in MIN_EVIDENCE.items():
+        features = {f["tag"]:f for f in fonts[name]["features"]}
+        if len(features) != len(fonts[name]["features"]) or set(features) != set(floors):
+            raise RuntimeError(f"{name}: RTL feature inventory regression")
+        for tag, floor in floors.items():
+            feature = features[tag]
+            rows = feature["rows"]
+            if len(rows) != (len(BASES)*len(MARKS) if tag=="mark" else len(CURSIVE)):
+                raise RuntimeError(f"{name} {tag}: candidate coverage regression")
+            nonzero = exact = 0
+            for row in rows:
+                if row["status"]=="excluded":
+                    if not row.get("reason"):
+                        raise RuntimeError("unexplained RTL exclusion")
+                    total["excluded"] += 1
+                    continue
+                if row["status"]!="exact" or row["max_absolute_error"] or row["max_world_error"]:
+                    raise RuntimeError(f"{name} {tag}: RTL row precision regression")
+                if row["rwcore_delta"]!=row["reference_delta"] or row["rwcore_world_delta"]!=row["reference_world_delta"]:
+                    raise RuntimeError("RTL row marked exact but values differ")
+                exact += 1
+                nonzero += int(any(x for m in row["reference_delta"] for x in m))
+            if exact < floor or nonzero < floor:
+                raise RuntimeError(f"{name} {tag}: evidence {exact}/{nonzero} below {floor}")
+            for k in ("admitted","compared","exact"):
+                total[k] += exact
+    if any(report[k]!=v for k,v in total.items()):
+        raise RuntimeError("RTL report totals differ from row evidence")
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--probe",required=True,type=Path)
@@ -46,7 +95,8 @@ def main():
     args=p.parse_args()
     hb=HB()
     report={"harfbuzz":hb.version_string().decode(),
-            "scope":"Arabic RTL isolated mark/curs feature toggle; diagnostic, not compatibility gate",
+            "scope":"Arabic RTL isolated mark/curs feature toggle; strict exact gate for admitted rows",
+            "gate_pass":False,
             "candidate_count":0,"admitted":0,"compared":0,"exact":0,"mismatches":0,
             "probe_errors":0,"excluded":0,"max_absolute_error":0,"max_world_error":0,
             "by_feature":{tag:{"admitted":0,"compared":0,"nonzero_reference":0,"exact":0,
@@ -107,10 +157,10 @@ def main():
                     world=subtract(origins(metrics),origins(off))
                     err=max_error(actual,expected)
                     werr=max_error(world,row["reference_world_delta"])
-                    row.update(status="exact" if not err else "mismatch",rwcore_delta=actual,
+                    row.update(status="exact" if not (err or werr) else "mismatch",rwcore_delta=actual,
                                rwcore_world_delta=world,max_absolute_error=err,max_world_error=werr)
                     report["compared"]+=1;stat["compared"]+=1
-                    key="exact" if not err else "mismatches"
+                    key="exact" if not (err or werr) else "mismatches"
                     report[key]+=1;stat[key]+=1
                     report["max_absolute_error"]=max(report["max_absolute_error"],err)
                     report["max_world_error"]=max(report["max_world_error"],werr)
@@ -122,9 +172,10 @@ def main():
         for tag,stat in report["by_feature"].items():
             if not stat["nonzero_reference"] or not stat["compared"]:
                 raise RuntimeError(f"insufficient external {tag} evidence: {stat}")
-        # This gate enforces evidence, not parity. Exact parity remains a
-        # separate milestone; all discrepancy rows survive in the report.
-        report["compatibility_pass"]=report["mismatches"]==0 and report["probe_errors"]==0
+        report["compatibility_pass"]=(report["mismatches"]==0 and report["probe_errors"]==0
+                                       and report["max_absolute_error"]==0 and report["max_world_error"]==0)
+        validate_gate(report)
+        report["gate_pass"]=True
     except Exception as e:
         report["error"]=str(e)
         raise
