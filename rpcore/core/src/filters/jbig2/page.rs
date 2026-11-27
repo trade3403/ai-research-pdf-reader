@@ -58,7 +58,8 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
 /// Opt-in physical reclamation after the final actual consumer in the
 /// immutable inspected page graph. No cross-image cache or changes to
 /// wire retention semantics. Dictionary decode itself still conservatively
-/// retains all imports and contexts until the dictionary pass completes.
+/// retains all bitmap imports until the dictionary pass completes; dead
+/// GB/GR context snapshots are released during that pass.
 pub fn decode_pdf_page_reclaimed(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
     decode_pdf_page_impl(globals,page,limits,true)
 }
@@ -127,7 +128,11 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool)->Re
     let mut dl=limits.dictionaries;
     dl.work=dl.work.min(limits.work-setup);
     dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes-page_bytes);
-    let mut dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&graph)?;
+    let mut dictionaries=if reclaim{
+        dictionary::execute_pdf_dictionaries_inspected_reclaimed_contexts(globals,page,dl,true,true,&graph)?
+    }else{
+        dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&graph)?
+    };
     let ds=dictionaries.stats();
     let mut stats=Stats{dictionaries:ds,work_used:setup+ds.work_used,
         retained_packed_bytes:page_bytes+ds.packed_bytes,..Stats::default()};

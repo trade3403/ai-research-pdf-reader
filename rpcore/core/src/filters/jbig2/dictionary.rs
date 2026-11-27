@@ -1086,6 +1086,9 @@ pub struct ExecutionStats{
     pub retained_gr_contexts:u32,
     pub reused_gr_contexts:u32,
     pub peak_context_entries:usize,
+    /// Physical snapshot releases in the opt-in context reclaim path.
+    pub released_contexts:u32,
+    pub released_context_entries:usize,
 }
 #[derive(Debug,PartialEq,Eq)]
 pub struct DictionarySet{
@@ -1186,8 +1189,62 @@ fn execute_pdf_dictionaries_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits
     execute_pdf_dictionaries_inspected(globals,page,limits,enable_aggregation,enable_huffman_aggregation,&inspected)
 }
 /// Internal graph must have been parsed from these exact input streams.
+/// Opt-in snapshot reclamation during the dictionary pass. Symbol identities
+/// and cumulative bitmap budgets are unchanged; only actual dead probability
+/// snapshots are dropped. Each call owns its own global/page state.
+pub fn execute_pdf_dictionaries_reclaimed_contexts(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
+    let inspected=super::inspect_pdf_streams(globals,page)?;
+    execute_pdf_dictionaries_inspected_reclaimed_contexts(globals,page,limits,true,true,&inspected)
+}
 pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits:ExecutionLimits,
     enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection)->Result<DictionarySet>{
+    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,false)
+}
+pub(super) fn execute_pdf_dictionaries_inspected_reclaimed_contexts(globals:&[u8],page:&[u8],limits:ExecutionLimits,
+    enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection)->Result<DictionarySet>{
+    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,true)
+}
+/// Compute the last actual context consumer, not the last bitmap import.
+/// The normal plan still validates the full dependency and context parameters.
+/// A header-only pass avoids decoding custom tables twice.
+fn context_consumers(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,left:&mut u64)->Result<BTreeMap<u32,usize>>{
+    let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
+    let mut consumers=BTreeMap::<u32,usize>::new();
+    for node in &inspected.graph{
+        charge_work(left,1)?;
+        let s=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 context graph node"))?;
+        if s.kind!=0{continue;}
+        charge_work(left,32+node.dependencies.len() as u64)?;
+        let data=stream(node.location.source).get(s.payload.clone()).ok_or(Error::Invalid("JBIG2 context payload"))?;
+        let (h,_)=parse(data)?;
+        if !h.context_used{continue;}
+        let mut source=None;
+        for &loc in &node.dependencies{
+            let dep=inspected.segment(loc).ok_or(Error::Invalid("JBIG2 context dependency"))?;
+            if dep.kind==0{source=Some(dep.number);}
+        }
+        let source=source.ok_or(Error::Invalid("JBIG2 missing context consumer source"))?;
+        let count=consumers.entry(source).or_default();
+        *count=count.checked_add(1).ok_or(Error::Limit("JBIG2 context consumers"))?;
+    }
+    Ok(consumers)
+}
+fn release_context(number:u32,snapshots:&mut BTreeMap<u32,BitmapContextSnapshot>,
+    gr:&mut BTreeMap<u32,RefinementContextSnapshot>,huff:&mut BTreeMap<u32,HuffmanRefinementContextSnapshot>,
+    retained:&mut usize,stats:&mut ExecutionStats)->Result<()>{
+    let mut count=0u32;
+    let mut entries=0usize;
+    if let Some(s)=snapshots.remove(&number){count+=1;entries+=s.entries();}
+    if let Some(s)=gr.remove(&number){count+=1;entries+=s.entries();}
+    if let Some(s)=huff.remove(&number){count+=1;entries+=s.entries();}
+    if count>1{return Err(Error::Invalid("JBIG2 duplicate context kind"));}
+    *retained=retained.checked_sub(entries).ok_or(Error::Invalid("JBIG2 context release underflow"))?;
+    stats.released_contexts+=count;
+    stats.released_context_entries+=entries;
+    Ok(())
+}
+fn execute_pdf_dictionaries_inspected_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits,
+    enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection,reclaim_contexts:bool)->Result<DictionarySet>{
     if limits.dictionaries>MAX_EXEC_DICTIONARIES||limits.new_symbols>MAX_SYMBOLS||
         limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
         limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
@@ -1204,6 +1261,9 @@ pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits
     let mut gr_snapshots:BTreeMap<u32,RefinementContextSnapshot>=BTreeMap::new();
     let mut huff_gr_snapshots:BTreeMap<u32,HuffmanRefinementContextSnapshot>=BTreeMap::new();
     let mut retained_entries=0usize;
+    let mut consumers=if reclaim_contexts{
+        context_consumers(globals,page,inspected,&mut left)?
+    }else{BTreeMap::new()};
     for node in &inspected.graph{
         charge_work(&mut left,1)?;
         let segment=inspected.segment(node.location).ok_or(Error::Invalid("JBIG2 dictionary graph node"))?;
@@ -1383,6 +1443,30 @@ pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits
         set.stats.symbol_slots=slots;
         set.stats.pixels+=actual_pixels;
         set.stats.packed_bytes+=actual_bytes;
+        if reclaim_contexts{
+            // Old and active banks coexist during decoding. Drop only
+            // after successful completion, never mutate a shared source.
+            if let Some(source)=plan.context_source{
+                charge_work(&mut left,1)?;
+                let count=consumers.get_mut(&source).ok_or(Error::Invalid("JBIG2 context missing consumer"))?;
+                *count=count.checked_sub(1).ok_or(Error::Invalid("JBIG2 context consumer underflow"))?;
+                if *count==0{
+                    consumers.remove(&source);
+                    release_context(source,&mut snapshots,&mut gr_snapshots,&mut huff_gr_snapshots,
+                        &mut retained_entries,&mut set.stats)?;
+                }
+            }
+            if plan.header.context_retained&&!consumers.contains_key(&segment.number){
+                charge_work(&mut left,1)?;
+                release_context(segment.number,&mut snapshots,&mut gr_snapshots,&mut huff_gr_snapshots,
+                    &mut retained_entries,&mut set.stats)?;
+            }
+        }
+    }
+    if reclaim_contexts&&(!consumers.is_empty()||retained_entries!=0||!snapshots.is_empty()||
+        !gr_snapshots.is_empty()||!huff_gr_snapshots.is_empty()||
+        set.stats.released_contexts!=set.stats.retained_contexts){
+        return Err(Error::Invalid("JBIG2 context reclamation incomplete"));
     }
     set.stats.work_used=limits.work-left;
     Ok(set)
@@ -1554,6 +1638,18 @@ mod executor_tests{
 
 
 #[cfg(test)]
+fn assert_reclaimed_context_parity(old:&DictionarySet,new:&DictionarySet){
+    assert_eq!(old.arena,new.arena);assert_eq!(old.exports,new.exports);
+    let mut expected=old.stats();let actual=new.stats();
+    assert!(actual.work_used>expected.work_used);
+    assert!(actual.peak_context_entries<=expected.peak_context_entries);
+    assert_eq!(actual.released_contexts,expected.retained_contexts);
+    expected.work_used=actual.work_used;expected.peak_context_entries=actual.peak_context_entries;
+    expected.released_contexts=actual.released_contexts;
+    expected.released_context_entries=actual.released_context_entries;
+    assert_eq!(expected,actual);
+}
+#[cfg(test)]
 mod retained_context_tests{
     use super::*;
     // Official H.1 segment 9, with retained flag set. The entropy is
@@ -1627,6 +1723,28 @@ mod retained_context_tests{
         assert_eq!(d.symbol(3,2).unwrap().packed(),[192]);
         assert_eq!(d.symbol(4,2).unwrap().packed(),[192]);
         assert!(std::ptr::eq(d.symbol(3,0).unwrap(),d.symbol(4,0).unwrap()));
+    }
+
+    #[test]
+    fn reclaim_gb_branch_and_unused_snapshot(){
+        let (g,_)=fixture();let mut child=CHILD.to_vec();child[0]|=2;
+        let mut p=info(2);p.extend(seg(3,0,1,&[1],&child));p.extend(seg(4,0,1,&[1],CHILD));
+        let l=ExecutionLimits::default();let old=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_reclaimed_contexts(&g,&p,l).unwrap();
+        assert_reclaimed_context_parity(&old,&d);
+        assert_eq!((old.stats().peak_context_entries,d.stats().peak_context_entries),(3072,2048));
+        assert_eq!((d.stats().released_contexts,d.stats().released_context_entries,d.stats().reused_contexts),(2,2048,2));
+        let exact=ExecutionLimits{context_entries:2048,work:d.stats().work_used,..l};
+        assert_eq!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,exact).unwrap(),d);
+        assert!(execute_pdf_dictionaries(&g,&p,exact).is_err());
+        assert!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{context_entries:2047,..exact}).is_err());
+        assert!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{work:exact.work-1,..exact}).is_err());
+        let mut p=info(2);p.extend(seg(3,0,1,&[],SOURCE)); // no context consumer
+        let d=execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{context_entries:1024,..l}).unwrap();
+        assert_eq!((d.stats().released_contexts,d.stats().peak_context_entries),(2,1024));
+        let mut source=SOURCE.to_vec();source[0]&=!2;
+        let (_,p)=fixture();
+        assert!(execute_pdf_dictionaries_reclaimed_contexts(&seg(1,0,0,&[],&source),&p,l).is_err());
     }
     #[test]
     fn retained_executor_budget(){
@@ -2205,6 +2323,21 @@ mod retained_gr_tests{
         assert_eq!(d.symbol(4,3),d.symbol(5,3));
         assert_eq!(d.stats().retained_gr_contexts,2);assert_eq!(d.stats().reused_gr_contexts,2);
         assert_eq!(d.stats().peak_context_entries,6148);
+    }
+
+    #[test]
+    fn reclaim_arithmetic_gr_branch(){
+        let (g,mut p)=fixture(1,3);
+        p.extend(seg(5,0,1,&[2],&body(1,1,true,CHILD)));
+        let l=ExecutionLimits::default();let old=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_reclaimed_contexts(&g,&p,l).unwrap();
+        assert_reclaimed_context_parity(&old,&d);
+        assert_eq!(old.stats().peak_context_entries-d.stats().peak_context_entries,1024);
+        assert_eq!((d.stats().released_contexts,d.stats().released_context_entries,d.stats().reused_gr_contexts),(2,2048,2));
+        let exact=ExecutionLimits{context_entries:d.stats().peak_context_entries,work:d.stats().work_used,..l};
+        assert_eq!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,exact).unwrap(),d);
+        assert!(execute_pdf_dictionaries(&g,&p,exact).is_err());
+        assert!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{context_entries:exact.context_entries-1,..exact}).is_err());
     }
     #[test]
     fn retained_gr_exact_context_and_work(){
@@ -2874,6 +3007,28 @@ mod retained_huffman_gr_tests{
             // The last referred dictionary is not the retained parent.
             let mut bad=info(3);bad.extend(seg(4,0,1,&[2,1],&body(t,1,true,CHILD)));
             assert!(execute_pdf_dictionaries_with_huffman_aggregation(&g,&bad,l).is_err());
+        }
+    }
+
+    #[test]
+    fn reclaim_huffman_gr_both_templates_and_branch(){
+        for t in [0,1]{
+            let l=ExecutionLimits::default();
+            let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&mixed_parent(t,2)));
+            let mut p=info(3);
+            p.extend(seg(4,0,1,&[2],&body(t,3,true,CHILD)));
+            p.extend(seg(5,0,1,&[2],&body(t,1,true,CHILD)));
+            let old=execute_pdf_dictionaries(&g,&p,l).unwrap();
+            let d=execute_pdf_dictionaries_reclaimed_contexts(&g,&p,l).unwrap();
+            assert_reclaimed_context_parity(&old,&d);
+            let bank=if t==0{8192}else{1024};
+            assert_eq!((old.stats().peak_context_entries,d.stats().peak_context_entries),(3*bank,2*bank));
+            assert_eq!((d.stats().released_contexts,d.stats().released_context_entries),(2,2*bank));
+            assert_eq!(d.symbol(4,3).unwrap().packed(),[160,64]);
+            let exact=ExecutionLimits{context_entries:2*bank,work:d.stats().work_used,..l};
+            assert_eq!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,exact).unwrap(),d);
+            assert!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{context_entries:2*bank-1,..exact}).is_err());
+            assert!(execute_pdf_dictionaries_reclaimed_contexts(&g,&p,ExecutionLimits{work:exact.work-1,..exact}).is_err());
         }
     }
     #[test]
