@@ -60,7 +60,8 @@ fn charge(total:&mut usize,n:usize,max:usize)->Result<(),Error>{
 }
 fn read_glyphs(b:&[u8],p:&mut usize,n:usize,bound:u32)->Result<Vec<u16>,Error>{
     if b.len().saturating_sub(*p)/2<n{return Err(Error::Invalid("chain truncated glyphs"));}
-    let mut ids=Vec::with_capacity(n);
+    let mut ids=Vec::new();
+    ids.try_reserve_exact(n).map_err(|_|Error::Limit("chain allocation"))?;
     for _ in 0..n{
         let g=take(b,p)?;
         if u32::from(g)>=bound{return Err(Error::Invalid("chain glyph"));}
@@ -87,7 +88,8 @@ pub fn parse_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
 }
 
 fn parse_chain_sets(b:&[u8],n:usize,offset_base:usize,header:usize,bounds:[u32;3],lookup_count:usize,l:ContextLimits)->Result<Vec<Option<Vec<ChainContextRule>>>,Error>{
-    let mut sets=Vec::with_capacity(n);
+    let mut sets=Vec::new();
+    sets.try_reserve_exact(n).map_err(|_|Error::Limit("chain allocation"))?;
     let(mut rules_total,mut glyph_total,mut action_total)=(0,0,0);
     for i in 0..n{
         let at=usize::from(word(b,offset_base+2*i)?);
@@ -97,7 +99,8 @@ fn parse_chain_sets(b:&[u8],n:usize,offset_base:usize,header:usize,bounds:[u32;3
         charge(&mut rules_total,count,l.max_rules)?;
         let sh=2+2*count;
         if at+sh>b.len(){return Err(Error::Invalid("chain truncated set"));}
-        let mut rules=Vec::with_capacity(count);
+        let mut rules=Vec::new();
+    rules.try_reserve_exact(count).map_err(|_|Error::Limit("chain allocation"))?;
         for j in 0..count{
             let rel=usize::from(word(b,at+2+2*j)?);
             if rel<sh{return Err(Error::Invalid("chain rule offset"));}
@@ -119,7 +122,8 @@ fn parse_chain_sets(b:&[u8],n:usize,offset_base:usize,header:usize,bounds:[u32;3
             let count=usize::from(take(b,&mut p)?);
             charge(&mut action_total,count,l.max_actions)?;
             if b.len().saturating_sub(p)/4<count{return Err(Error::Invalid("chain truncated actions"));}
-            let mut actions=Vec::with_capacity(count);
+            let mut actions=Vec::new();
+    actions.try_reserve_exact(count).map_err(|_|Error::Limit("chain allocation"))?;
             for _ in 0..count{
                 let sequence_index=take(b,&mut p)?;
                 let lookup_index=take(b,&mut p)?;

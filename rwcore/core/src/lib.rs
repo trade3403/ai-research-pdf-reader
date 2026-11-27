@@ -305,3 +305,6 @@ pub use font_gpos_mark_mark::*;
 
 pub mod font_gpos_context;
 pub use font_gpos_context::*;
+
+pub mod font_gpos_chain_context;
+pub use font_gpos_chain_context::*;
