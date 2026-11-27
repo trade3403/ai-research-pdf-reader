@@ -299,3 +299,24 @@ jobs:
       - if: always()
         run: |
           if [ -f rpcore/target/pdfium-performance/report.md ]; then cat rpcore/target/pdfium-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+
+  jbig2-corpus:
+    # Pinned external conformance images; exploratory coverage, not a scan certification.
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: /usr/bin/python3 rpcore/corpus/jbig2_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/jbig2-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-jbig2-differential
+          path: rpcore/target/jbig2-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/jbig2-report/report.md ]; then cat rpcore/target/jbig2-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
