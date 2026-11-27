@@ -337,3 +337,6 @@ pub use font_gpos_intervals::*;
 
 pub mod font_joint_shape;
 pub use font_joint_shape::*;
+
+pub mod font_ligature_mapping;
+pub use font_ligature_mapping::*;
