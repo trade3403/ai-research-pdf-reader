@@ -312,3 +312,104 @@ fn face_stage_request(specs:&[ShapeStageSpec])->FaceStageRequest<'_>{
     assert!(x.shaped.staged.shaped.positioning.adjustments.is_empty());
     assert!(x.shaped.staged.shaped.provenance.glyphs().is_empty());
 }
+
+// Explicit one-feature plan around the existing independently tested
+// lookup fixtures. Feature indices deliberately coincide across tables.
+fn dual_one_feature(tag:[u8;4],kind:u16,flag:u16,sub:&[u16])->Vec<u8>{
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,0xffff,1,0]{w(&mut b,v);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,1);b.extend(tag);w(&mut b,8);
+    for v in [0,1,0]{w(&mut b,v);}
+    let at=b.len();set(&mut b,8,at);
+    for v in [1,4,kind,flag,1,8]{w(&mut b,v);}
+    for &v in sub{w(&mut b,v);}
+    b
+}
+fn dual_edit_run(sb:&[u8],pb:&[u8],r:&SourceRun,m:&FontMetrics<'_>,n:u32,
+    se:&[FeatureMaskOverride],pe:&[FeatureMaskOverride],gd:Option<&Gdef>,
+    flow:GposHorizontalFlow,limits:JointShapeLimits,projection:usize)->Result<DualStageShapeResult,Error>{
+    let sl=parse_gsub_layout(sb,Default::default())?;
+    let pl=parse_gpos_layout(pb,Default::default())?;
+    let sp=build_gsub_base_plan(&sl,*b"DFLT",None,&[*b"liga"],Default::default())?.unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"DFLT",None,&[*b"kern"],Default::default())?.unwrap();
+    let gs=compile_gsub_plan_program(sb,&sp,n,gd,Default::default())?;
+    let gp=compile_gpos_plan_program(pb,&pp,n,gd,Default::default())?;
+    let sm=ScalarFeatureMasks::build(&sp,r.scalars().len(),se,Default::default())?;
+    let pm=GposScalarFeatureMasks::build(&pp,r.scalars().len(),pe,Default::default())?;
+    let ss=[ShapeStageSpec{features:vec![0]}];
+    execute_dual_stage_joint_shape(&gs,&gp,r,m,&[],&sm,&ss,flow,limits,Default::default(),
+        gd.map(|g|(g,JointLigatureLimits::default())),JointPositionStages{
+            masks:&pm,specs:&ss,limits:JointStageLimits{max_mask_work:projection,..Default::default()}})
+}
+#[test]fn dual_expansion_inherits_position_masks(){
+    let (r,m,n)=inputs("AA");let a=r.glyphs()[0].glyph_id;
+    let sb=dual_one_feature(*b"liga",2,0,&[1,8,1,14,1,1,a,2,11,12]);
+    // Same advance adjustment for both descendants.
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,9,1,2,11,12]);
+    for flow in [LTR,RTL]{
+        let x=dual_edit_run(&sb,&pb,&r,&m,n,&[],&[dual_disable(0,1,2)],None,flow,Default::default(),100).unwrap().staged.shaped;
+        assert_eq!(x.substitution.expansion.execution.glyphs,vec![11,12,11,12]);
+        assert_eq!(x.provenance.glyphs().iter().map(|g|g.sources()[0]).collect::<Vec<_>>(),vec![0,0,1,1]);
+        assert_eq!(x.positioning.adjustments.iter().map(|a|a.design.x_advance).collect::<Vec<_>>(),vec![9,9,0,0]);
+        assert_eq!(x.design_advances[1].0,i32::from(m.glyph(12).unwrap().advance_width));
+    }
+}
+#[test]fn dual_contraction_intersects_position_masks(){
+    let (r,m,n)=inputs("ABAB");let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let sb=dual_one_feature(*b"liga",4,0,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,10,1,1,20]);
+    for flow in [LTR,RTL]{
+        let x=dual_edit_run(&sb,&pb,&r,&m,n,&[],&[dual_disable(0,1,2)],None,flow,Default::default(),100).unwrap().staged.shaped;
+        assert_eq!(x.substitution.expansion.execution.glyphs,vec![20,20]);
+        assert_eq!(x.provenance.glyphs()[0].sources(),&[0,1]);
+        assert_eq!(x.provenance.glyphs()[1].sources(),&[2,3]);
+        assert_eq!(x.positioning.adjustments.iter().map(|a|a.design.x_advance).collect::<Vec<_>>(),vec![0,10]);
+        let w=i32::from(m.glyph(20).unwrap().advance_width);
+        assert_eq!(x.positioning.design_origins,if flow==LTR{vec![(0,0),(w,0)]}else{vec![(-w,0),(-2*w-10,0)]});
+    }
+}
+#[test]fn dual_contraction_strict_gsub_mask_independent(){
+    let (r,m,n)=inputs("ABAB");let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let sb=dual_one_feature(*b"liga",4,0,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,10,1,1,20]);
+    let x=dual_edit_run(&sb,&pb,&r,&m,n,&[dual_disable(0,1,2)],&[],None,LTR,Default::default(),100).unwrap().staged;
+    assert_eq!(x.shaped.substitution.expansion.execution.glyphs,vec![a,b,20]);
+    assert_eq!(x.shaped.positioning.adjustments[2].design.x_advance,10);
+    assert!(x.blocked_inputs>0);
+}
+#[test]fn dual_expansion_final_projection_and_output_caps(){
+    let (r,m,n)=inputs("A");let a=r.glyphs()[0].glyph_id;let before=r.clone();
+    let sb=dual_one_feature(*b"liga",2,0,&[1,8,1,14,1,1,a,2,11,12]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,9,1,1,12]);
+    assert!(matches!(dual_edit_run(&sb,&pb,&r,&m,n,&[],&[],None,LTR,Default::default(),3),Err(Error::Limit(_))));
+    assert!(dual_edit_run(&sb,&pb,&r,&m,n,&[],&[],None,LTR,Default::default(),4).is_ok());
+    assert!(matches!(dual_edit_run(&sb,&pb,&r,&m,n,&[],&[],None,LTR,
+        JointShapeLimits{max_output_glyphs:1,..Default::default()},100),Err(Error::Limit(_))));
+    assert_eq!(r,before);
+}
+#[test]fn dual_strict_component_anchors_and_masked_parent(){
+    let (r,m,n)=inputs("ACBC");let a=r.glyphs()[0].glyph_id;let c=r.glyphs()[1].glyph_id;let b=r.glyphs()[2].glyph_id;
+    let mut records=[(20u16,2u16),(c,3)];records.sort_unstable();
+    let mut w=vec![1u16,0,12,0,0,0,2,2];for (g,k) in records{w.extend([g,g,k]);}
+    let bytes:Vec<_>=w.iter().flat_map(|v|v.to_be_bytes()).collect();
+    let gd=parse_gdef(&bytes,n,Default::default()).unwrap();
+    let sb=dual_one_feature(*b"liga",4,LOOKUP_IGNORE_MARK,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=dual_one_feature(*b"kern",5,0,&[1,12,18,1,24,36,1,1,c,1,1,20,1,0,6,1,10,20,
+        1,4,2,6,12,1,100,200,1,300,400]);
+    for flow in [LTR,RTL]{
+        let x=dual_edit_run(&sb,&pb,&r,&m,n,&[],&[],Some(&gd),flow,Default::default(),100).unwrap().staged.shaped;
+        assert_eq!(x.substitution.expansion.execution.glyphs,vec![20,c,c]);
+        assert_eq!(x.provenance.glyphs()[0].ligature_lineage().unwrap().components(),&[vec![0],vec![2]]);
+        for (i,delta) in [(1,(90,180)),(2,(290,380))]{
+            let edge=x.positioning.edges[i].unwrap();assert_eq!(edge.parent,0);assert_eq!(edge.design_delta,delta);
+            let o=x.positioning.design_origins[i];let adj=x.positioning.adjustments[i].design;
+            assert_eq!((o.0+adj.x_placement,o.1+adj.y_placement),
+                (x.positioning.design_origins[0].0+delta.0,x.positioning.design_origins[0].1+delta.1));
+        }
+        let y=dual_edit_run(&sb,&pb,&r,&m,n,&[],&[dual_disable(0,2,3)],Some(&gd),flow,Default::default(),100).unwrap().staged.shaped;
+        assert!(y.positioning.edges.iter().all(Option::is_none));
+    }
+}

@@ -538,3 +538,6 @@ C4.5m4c-2b: six additional synthetic strict GPOS stage/mask regression tests in 
 
 
 CI #233: d0d2aebb7b6f3de4f6ad7c54cba8f4c71616a2cb, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46080550319, exact SHA in all three raw logs; 1487/platform, 4461 total, zero failed/ignored; Release Ubuntu 12.11s, Windows 25.24s, macOS 12.57s. All three jobs successful.
+
+
+CI #234: 333bc0a4378884ad6990d8b930886ac93c1813b0, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46082656854, exact SHA in all three raw logs; 1492/platform, 4476 total, zero failed/ignored; Release Ubuntu 15.59s, Windows 26.59s, macOS 16.06s. Linux reference steps and Python 8 tests passed.
