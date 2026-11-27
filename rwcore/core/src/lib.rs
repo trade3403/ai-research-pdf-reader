@@ -334,3 +334,6 @@ pub use font_gpos_cursive_run::*;
 
 pub mod font_gpos_intervals;
 pub use font_gpos_intervals::*;
+
+pub mod font_joint_shape;
+pub use font_joint_shape::*;
