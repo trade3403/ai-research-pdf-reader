@@ -104,6 +104,19 @@ fn check(b:&[u8],n:usize,lookups:usize)->[usize;3]{
             for k in 0..3{counts[f-1][k]+=q[k];}
         }}
     }
+    eprintln!("retained full-font native GPOS context evidence: {counts:?}");
+    for (format,hex,glyphs,lookups) in [
+        (1,include_str!("fixtures/noto_gpos_context/gurmukhi.hex"),306,11),
+        (2,include_str!("fixtures/noto_gpos_context/gujarati.hex"),798,11),
+    ]{
+        let hex=hex.trim();
+        let b:Vec<u8>=(0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect();
+        assert_eq!(u(&b,0),format);
+        let q=check(&b,glyphs,lookups);
+        assert!(q.iter().all(|&n|n>0),"native excerpt format {format}: {q:?}");
+        for k in 0..3{counts[format-1][k]+=q[k];}
+    }
+    assert!(counts[..2].iter().all(|q|q.iter().all(|&n|n>0)));
     eprintln!("native GPOS context [subtables, matches, actions] by format: {counts:?}");
     assert!(counts.iter().any(|x|x.iter().all(|&n|n>0)),"no effective native Type 7 evidence: {counts:?}");
 }
