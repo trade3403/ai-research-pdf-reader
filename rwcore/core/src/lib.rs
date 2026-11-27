@@ -331,3 +331,6 @@ pub use font_gpos_attachment::*;
 
 pub mod font_gpos_cursive_run;
 pub use font_gpos_cursive_run::*;
+
+pub mod font_gpos_intervals;
+pub use font_gpos_intervals::*;
