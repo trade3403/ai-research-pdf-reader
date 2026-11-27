@@ -37,11 +37,37 @@ pub fn execute_joint_shape(
     run:&SourceRun,metrics:&FontMetrics<'_>,choices:&[GsubAlternateSelection],
     flow:GposHorizontalFlow,limits:JointShapeLimits,
 )->Result<JointShapeResult,Error>{
+    execute_joint_shape_inner(gsub,gpos,run,metrics,choices,flow,limits,None)
+}
+/// Independent budgets for opt-in automatic ligature mapping.
+#[derive(Debug,Clone,Copy,Default)]
+pub struct JointLigatureLimits{
+    pub trace:LigatureTraceLimits,
+    pub mapping:LigatureMappingLimits,
+}
+/// Simple ordered component mapping. GDEF must belong to the same face
+/// as both compiled programs; use the same-face entry to enforce this.
+pub fn execute_joint_shape_with_ligatures(
+    gsub:&CompiledGsubProgram<'_>,gpos:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,gdef:&Gdef,choices:&[GsubAlternateSelection],
+    flow:GposHorizontalFlow,limits:JointShapeLimits,ligatures:JointLigatureLimits,
+)->Result<JointShapeResult,Error>{
+    execute_joint_shape_inner(gsub,gpos,run,metrics,choices,flow,limits,Some((gdef,ligatures)))
+}
+fn execute_joint_shape_inner(
+    gsub:&CompiledGsubProgram<'_>,gpos:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,choices:&[GsubAlternateSelection],
+    flow:GposHorizontalFlow,limits:JointShapeLimits,ligatures:Option<(&Gdef,JointLigatureLimits)>,
+)->Result<JointShapeResult,Error>{
     let domain=u32::from(metrics.maxp().glyph_count);
     if gsub.glyph_count()!=domain||gpos.glyph_count()!=domain{
         return Err(Error::Invalid("joint shape glyph domain"));
     }
-    if gpos.lookups().iter().any(|l|l.effective_kind()==5){
+    if let Some((gd,_))=ligatures{
+        if gd.glyph_count()!=domain{return Err(Error::Invalid("joint shape GDEF domain"));}
+        if gd.glyph_classes().is_none(){return Err(Error::Unsupported("joint shape missing GDEF classes"));}
+    }
+    if ligatures.is_none()&&gpos.lookups().iter().any(|l|l.effective_kind()==5){
         return Err(Error::Unsupported("joint shape ligature component lineage"));
     }
     if run.glyphs().len()>limits.max_output_glyphs{
@@ -52,8 +78,14 @@ pub fn execute_joint_shape(
     let cap=limits.max_output_glyphs.min(limits.gpos.marks.context.run.max_glyphs)
         .min(limits.gpos.attachments.max_glyphs).min(limits.intervals.max_glyphs);
     sl.expansion.context.max_glyphs=sl.expansion.context.max_glyphs.min(cap);
-    let (substitution,provenance)=execute_gsub_program_with_provenance(gsub,run,choices,sl,limits.provenance)?;
-    if substitution.ligatures>0&&gpos.lookups().iter().any(|l|l.effective_kind()==6){
+    if let Some((_,l))=ligatures{
+        sl.expansion.context.max_glyphs=sl.expansion.context.max_glyphs.min(l.mapping.max_glyphs);
+        if run.scalars().len()>l.mapping.max_scalars{return Err(Error::Limit("joint ligature scalars"));}
+    }
+    let (substitution,provenance)=if let Some((_,l))=ligatures{
+        execute_gsub_program_with_ligature_trace(gsub,run,choices,sl,limits.provenance,l.trace)?
+    }else{execute_gsub_program_with_provenance(gsub,run,choices,sl,limits.provenance)?};
+    if ligatures.is_none()&&substitution.ligatures>0&&gpos.lookups().iter().any(|l|l.effective_kind()==6){
         return Err(Error::Unsupported("joint shape mark component lineage"));
     }
     let glyphs=&substitution.expansion.execution.glyphs;
@@ -66,9 +98,15 @@ pub fn execute_joint_shape(
     for &id in glyphs{design_advances.push((i32::from(metrics.glyph(id)?.advance_width),0));}
     let mut prior=Vec::new();reserve(&mut prior,n)?;prior.resize(n,GposRunAdjustment::default());
     let mut pixels=Vec::new();reserve(&mut pixels,n)?;pixels.resize(n,(0,0));
-    let mut sources=Vec::new();reserve(&mut sources,n)?;sources.resize(n,GposLigatureSource::Unmapped);
-    let positioning=execute_gpos_mixed_joint(gpos,glyphs,&prior,&design_advances,&pixels,&sources,
-        GposRunMode::DesignOnly,flow,limits.gpos,limits.intervals)?;
+    let positioning=if let Some((gd,l))=ligatures{
+        let sources=map_gpos_ligature_sources(&provenance,gd,l.mapping)?;
+        execute_gpos_mixed_joint_strict_ligatures(gpos,glyphs,&prior,&design_advances,&pixels,&sources,
+            GposRunMode::DesignOnly,flow,limits.gpos,limits.intervals)?
+    }else{
+        let mut sources=Vec::new();reserve(&mut sources,n)?;sources.resize(n,GposLigatureSource::Unmapped);
+        execute_gpos_mixed_joint(gpos,glyphs,&prior,&design_advances,&pixels,&sources,
+            GposRunMode::DesignOnly,flow,limits.gpos,limits.intervals)?
+    };
     Ok(JointShapeResult{substitution,provenance,design_advances,positioning})
 }
 
@@ -117,6 +155,15 @@ pub struct FaceShapeResult{
 /// flags are exposed. Type 5 positioning retains the joint-core rejection.
 pub fn shape_font_face(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:FaceShapeLimits)
     ->Result<FaceShapeResult,Error>{
+    shape_font_face_inner(face,text,o,l,None)
+}
+/// Same-face opt-in mapping with mandatory GDEF glyph classes.
+pub fn shape_font_face_with_ligatures(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,
+    l:FaceShapeLimits,ligatures:JointLigatureLimits)->Result<FaceShapeResult,Error>{
+    shape_font_face_inner(face,text,o,l,Some(ligatures))
+}
+fn shape_font_face_inner(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:FaceShapeLimits,
+    ligatures:Option<JointLigatureLimits>)->Result<FaceShapeResult,Error>{
     // Fail early before font-dependent allocations if the request exceeds
     // the source byte or feature-tag budgets.
     if text.len()>l.source.max_bytes{
@@ -141,6 +188,10 @@ pub fn shape_font_face(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:Fac
         .min(l.joint.gpos.marks.context.run.max_glyphs)
         .min(l.joint.gpos.attachments.max_glyphs)
         .min(l.joint.intervals.max_glyphs);
+    if let Some(l)=ligatures{
+        source_limits.max_glyphs=source_limits.max_glyphs.min(l.mapping.max_glyphs);
+        source_limits.max_scalars=source_limits.max_scalars.min(l.mapping.max_scalars);
+    }
     let source=map_source_run(text,&cmap,o.allow_missing_glyphs,source_limits)?;
     let gd=face.table(*b"GDEF").map(|b|parse_gdef_with_mark_set_limits(b,domain,l.gdef,l.mark_sets)).transpose()?;
     let sl=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
@@ -155,7 +206,10 @@ pub fn shape_font_face(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:Fac
     }
     let gs=compile_gsub_plan_program(sb,&substitution_plan,domain,gd.as_ref(),l.substitution_program)?;
     let gp=compile_gpos_plan_program(pb,&positioning_plan,domain,gd.as_ref(),l.positioning_program)?;
-    let shaped=execute_joint_shape(&gs,&gp,&source,&metrics,o.alternates,o.flow,l.joint)?;
+    let shaped=if let Some(ll)=ligatures{
+        execute_joint_shape_with_ligatures(&gs,&gp,&source,&metrics,
+            gd.as_ref().ok_or(Error::Unsupported("face shape missing GDEF"))?,o.alternates,o.flow,l.joint,ll)?
+    }else{execute_joint_shape(&gs,&gp,&source,&metrics,o.alternates,o.flow,l.joint)?};
     Ok(FaceShapeResult{source,substitution_plan,positioning_plan,
         units_per_em:metrics.head().units_per_em,shaped})
 }

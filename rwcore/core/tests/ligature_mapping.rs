@@ -86,3 +86,74 @@ fn trace(r:&SourceRun,n:u32,gd:&Gdef,a:u16,b:u16)->ProvenanceLedger{
         }
     }
 }
+
+fn mark_ligature_bytes(c:u16)->Vec<u8>{
+    fixture(5,0,&[1,12,18,1,24,36,1,1,c,1,1,20,1,0,6,1,10,20,
+             1,4,2,6,12,1,100,200,1,300,400])
+}
+#[test]fn opt_in_joint_ligature_pipeline(){
+    let (r,m,n)=setup("ACBC");let a=r.glyphs()[0].glyph_id;let c=r.glyphs()[1].glyph_id;let b=r.glyphs()[2].glyph_id;
+    let gd=gdef(n,20,c);
+    let sb=fixture(4,LOOKUP_IGNORE_MARK,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=mark_ligature_bytes(c);
+    let gs=compile_gsub_program(&sb,&[0],n,Some(&gd),Default::default()).unwrap();
+    let gp=compile_gpos_program(&pb,&[0],n,Some(&gd),Default::default()).unwrap();
+    for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+        assert!(matches!(execute_joint_shape(&gs,&gp,&r,&m,&[],flow,Default::default()),Err(Error::Unsupported(_))));
+        let x=execute_joint_shape_with_ligatures(&gs,&gp,&r,&m,&gd,&[],flow,Default::default(),Default::default()).unwrap();
+        assert_eq!(x.substitution.expansion.execution.glyphs,vec![20,c,c]);
+        assert_eq!(x.positioning.edges[1].unwrap().design_delta,(90,180));
+        assert_eq!(x.positioning.edges[2].unwrap().design_delta,(290,380));
+        assert_eq!(x.provenance.glyphs()[0].ligature_lineage().unwrap().id(),1);
+        assert_eq!(x.design_advances[0].0,i32::from(m.glyph(20).unwrap().advance_width));
+    }
+}
+#[test]fn strict_gpos_rejects_unmapped_or_wrong_parent(){
+    let (r,_,n)=setup("ACBC");let c=r.glyphs()[1].glyph_id;
+    let gd=gdef(n,20,c);let pb=mark_ligature_bytes(c);
+    let gp=compile_gpos_program(&pb,&[0],n,Some(&gd),Default::default()).unwrap();
+    let ids=[20,20,c];let w=[(500,0),(500,0),(0,0)];
+    let a=GposLigatureSource::Ligature{id:1,components:2};
+    let b=GposLigatureSource::Ligature{id:2,components:2};
+    for mark in [GposLigatureSource::Unmapped,GposLigatureSource::Mark{id:1,component:0}]{
+        let sources=[a,b,mark];
+        assert!(execute_gpos_mixed_joint(&gp,&ids,&[GposRunAdjustment::default();3],&w,&[(0,0);3],&sources,
+            GposRunMode::DesignOnly,GposHorizontalFlow::LeftToRight,Default::default(),Default::default()).is_ok());
+        assert!(matches!(execute_gpos_mixed_joint_strict_ligatures(&gp,&ids,&[GposRunAdjustment::default();3],&w,&[(0,0);3],&sources,
+            GposRunMode::DesignOnly,GposHorizontalFlow::LeftToRight,Default::default(),Default::default()),Err(Error::Invalid(_))));
+    }
+}
+#[test]fn strict_gpos_rejects_wrong_component_count(){
+    let (r,_,n)=setup("AC");let c=r.glyphs()[1].glyph_id;
+    let gd=gdef(n,20,c);let pb=mark_ligature_bytes(c);
+    let gp=compile_gpos_program(&pb,&[0],n,Some(&gd),Default::default()).unwrap();
+    let sources=[GposLigatureSource::Ligature{id:1,components:3},GposLigatureSource::Mark{id:1,component:0}];
+    assert!(matches!(execute_gpos_mixed_joint_strict_ligatures(&gp,&[20,c],&[GposRunAdjustment::default();2],
+        &[(500,0),(0,0)],&[(0,0);2],&sources,GposRunMode::DesignOnly,GposHorizontalFlow::LeftToRight,
+        Default::default(),Default::default()),Err(Error::Invalid(_))));
+}
+#[test]fn opt_in_joint_mapping_limits(){
+    let (r,m,n)=setup("ACB");let a=r.glyphs()[0].glyph_id;let c=r.glyphs()[1].glyph_id;let b=r.glyphs()[2].glyph_id;
+    let gd=gdef(n,20,c);let sb=fixture(4,LOOKUP_IGNORE_MARK,&[1,8,1,14,1,1,a,1,4,20,2,b]);let pb=mark_ligature_bytes(c);
+    let gs=compile_gsub_program(&sb,&[0],n,Some(&gd),Default::default()).unwrap();
+    let gp=compile_gpos_program(&pb,&[0],n,Some(&gd),Default::default()).unwrap();
+    let before=r.clone();
+    for limits in [JointLigatureLimits{trace:LigatureTraceLimits{max_events:0,..Default::default()},..Default::default()},
+                   JointLigatureLimits{mapping:LigatureMappingLimits{max_scalars:2,..Default::default()},..Default::default()}]{
+        assert!(matches!(execute_joint_shape_with_ligatures(&gs,&gp,&r,&m,&gd,&[],GposHorizontalFlow::LeftToRight,
+            Default::default(),limits),Err(Error::Limit(_))));
+    }
+    assert_eq!(r,before);
+}
+#[test]fn same_face_opt_in_ligature_entry_native_kern(){
+    let f=parse_font(include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf"),Default::default()).unwrap();
+    let face=f.face(0).unwrap();
+    let tags=[*b"kern"];
+    let o=FaceShapeOptions{script:*b"latn",language:None,substitution_tags:&[],positioning_tags:&tags,
+        alternates:&[],flow:GposHorizontalFlow::LeftToRight,allow_missing_glyphs:false,require_requested_features:true};
+    let x=shape_font_face_with_ligatures(face,"AVATAR",o,Default::default(),Default::default()).unwrap();
+    let y=shape_font_face(face,"AVATAR",o,Default::default()).unwrap();
+    assert_eq!(x.shaped.positioning.adjustments,y.shaped.positioning.adjustments);
+    assert_eq!(x.shaped.positioning.design_origins,y.shaped.positioning.design_origins);
+    assert_eq!(x.shaped.provenance.ligature_trace_stats().unwrap().0,0);
+}
