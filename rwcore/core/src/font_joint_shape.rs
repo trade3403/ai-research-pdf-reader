@@ -71,3 +71,91 @@ pub fn execute_joint_shape(
         GposRunMode::DesignOnly,flow,limits.gpos,limits.intervals)?;
     Ok(JointShapeResult{substitution,provenance,design_advances,positioning})
 }
+
+/// Bounds for same-face mapping, planning, compiling and execution.
+/// Parsing and execution have separate explicit resource limits.
+#[derive(Debug,Clone,Copy,Default)]
+pub struct FaceShapeLimits{
+    pub cmap:CmapLimits,
+    pub metrics:FontMetricLimits,
+    pub source:SourceLimits,
+    pub gdef:GdefLimits,
+    pub mark_sets:MarkGlyphSetLimits,
+    pub substitution_plan:GsubPlanLimits,
+    pub positioning_plan:GposPlanLimits,
+    pub substitution_program:GsubProgramLimits,
+    pub positioning_program:GposProgramLimits,
+    pub joint:JointShapeLimits,
+}
+/// Caller explicitly selects script, language, feature tags and flow.
+/// Missing requested features are either reported or rejected; required
+/// features are selected by each table's own LangSys. No implicit shaping
+/// stages, default feature lists, bidi or normalization.
+#[derive(Debug,Clone,Copy)]
+pub struct FaceShapeOptions<'a>{
+    pub script:[u8;4],
+    pub language:Option<[u8;4]>,
+    pub substitution_tags:&'a [[u8;4]],
+    pub positioning_tags:&'a [[u8;4]],
+    pub alternates:&'a [GsubAlternateSelection],
+    pub flow:GposHorizontalFlow,
+    pub allow_missing_glyphs:bool,
+    pub require_requested_features:bool,
+}
+#[derive(Debug)]
+pub struct FaceShapeResult{
+    pub source:SourceRun,
+    pub substitution_plan:GsubPlan,
+    pub positioning_plan:GposPlan,
+    pub units_per_em:u16,
+    pub shaped:JointShapeResult,
+}
+/// Construct all layout inputs directly from one immutable FontFace.
+/// Both GSUB and GPOS tables and selectable LangSys must exist in this
+/// initial API. An empty selected feature set is valid; absent tables
+/// are not silently substituted. Variation plans are base-only and their
+/// flags are exposed. Type 5 positioning retains the joint-core rejection.
+pub fn shape_font_face(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,l:FaceShapeLimits)
+    ->Result<FaceShapeResult,Error>{
+    // Fail early before font-dependent allocations if the request exceeds
+    // the source byte or feature-tag budgets.
+    if text.len()>l.source.max_bytes{
+        return Err(Error::Limit("face shape source bytes"));
+    }
+    if o.substitution_tags.len()>l.substitution_plan.max_requested_tags||
+       o.positioning_tags.len()>l.positioning_plan.max_requested_tags{
+        return Err(Error::Limit("face shape requested tags"));
+    }
+    let sb=face.table(*b"GSUB").ok_or(Error::Unsupported("face shape missing GSUB"))?;
+    let pb=face.table(*b"GPOS").ok_or(Error::Unsupported("face shape missing GPOS"))?;
+    let metrics=parse_font_metrics(face,l.metrics)?;
+    let cmap=parse_unicode_cmap(face,l.cmap)?;
+    let domain=u32::from(metrics.maxp().glyph_count);
+    if u32::from(cmap.glyph_count())!=domain{
+        return Err(Error::Invalid("face shape glyph domain"));
+    }
+    let mut source_limits=l.source;
+    source_limits.max_glyphs=source_limits.max_glyphs.min(l.joint.max_output_glyphs)
+        .min(l.joint.gsub.expansion.context.max_glyphs)
+        .min(l.joint.provenance.max_glyphs)
+        .min(l.joint.gpos.marks.context.run.max_glyphs)
+        .min(l.joint.gpos.attachments.max_glyphs)
+        .min(l.joint.intervals.max_glyphs);
+    let source=map_source_run(text,&cmap,o.allow_missing_glyphs,source_limits)?;
+    let gd=face.table(*b"GDEF").map(|b|parse_gdef_with_mark_set_limits(b,domain,l.gdef,l.mark_sets)).transpose()?;
+    let sl=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
+    let pl=parse_gpos_layout(pb,l.positioning_program.compile.layout)?;
+    let substitution_plan=build_gsub_base_plan(&sl,o.script,o.language,o.substitution_tags,l.substitution_plan)?
+        .ok_or(Error::Unsupported("face shape no GSUB language"))?;
+    let positioning_plan=build_gpos_base_plan(&pl,o.script,o.language,o.positioning_tags,l.positioning_plan)?
+        .ok_or(Error::Unsupported("face shape no GPOS language"))?;
+    if o.require_requested_features&&(!substitution_plan.unavailable_tags.is_empty()||
+       !positioning_plan.unavailable_tags.is_empty()){
+        return Err(Error::Unsupported("face shape requested feature unavailable"));
+    }
+    let gs=compile_gsub_plan_program(sb,&substitution_plan,domain,gd.as_ref(),l.substitution_program)?;
+    let gp=compile_gpos_plan_program(pb,&positioning_plan,domain,gd.as_ref(),l.positioning_program)?;
+    let shaped=execute_joint_shape(&gs,&gp,&source,&metrics,o.alternates,o.flow,l.joint)?;
+    Ok(FaceShapeResult{source,substitution_plan,positioning_plan,
+        units_per_em:metrics.head().units_per_em,shaped})
+}

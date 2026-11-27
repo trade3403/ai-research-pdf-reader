@@ -88,3 +88,66 @@ const RTL:GposHorizontalFlow=GposHorizontalFlow::RightToLeft;
     assert_eq!(out.positioning.adjustments.len(),out.provenance.glyphs().len());
     assert!(out.positioning.adjustments.iter().any(|a|a.design.x_advance!=0));
 }
+
+fn face_options()->FaceShapeOptions<'static>{
+    FaceShapeOptions{script:*b"latn",language:None,substitution_tags:&[],
+        positioning_tags:&[*b"kern"],alternates:&[],flow:LTR,
+        allow_missing_glyphs:false,require_requested_features:true}
+}
+#[test]fn same_face_native_text_to_positioned_run(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let out=shape_font_face(face,"AVATAR",face_options(),Default::default()).unwrap();
+    assert_eq!(out.source.scalars().len(),6);
+    assert_eq!(out.units_per_em,parse_font_metrics(face,Default::default()).unwrap().head().units_per_em);
+    assert_eq!(out.positioning_plan.script,*b"latn");
+    assert!(out.positioning_plan.unavailable_tags.is_empty());
+    assert!(out.shaped.positioning.adjustments.iter().any(|a|a.design.x_advance!=0));
+    let m=parse_font_metrics(face,Default::default()).unwrap();
+    for (g,w) in out.shaped.provenance.glyphs().iter().zip(&out.shaped.design_advances){
+        assert_eq!(*w,(i32::from(m.glyph(g.glyph_id).unwrap().advance_width),0));
+    }
+}
+#[test]fn same_face_reports_unavailable_tags_or_rejects(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let mut o=face_options();o.substitution_tags=&[*b"ZZZZ"];o.positioning_tags=&[*b"kern",*b"ZZZZ"];
+    assert!(matches!(shape_font_face(face,"AV",o,Default::default()),Err(Error::Unsupported(_))));
+    o.require_requested_features=false;
+    let out=shape_font_face(face,"AV",o,Default::default()).unwrap();
+    assert_eq!(out.substitution_plan.unavailable_tags,vec![*b"ZZZZ"]);
+    assert_eq!(out.positioning_plan.unavailable_tags,vec![*b"ZZZZ"]);
+}
+#[test]fn same_face_missing_glyph_policy(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let mut o=face_options();let text="A\u{10ffff}";
+    assert!(matches!(shape_font_face(face,text,o,Default::default()),Err(Error::Invalid(_))));
+    o.allow_missing_glyphs=true;
+    let out=shape_font_face(face,text,o,Default::default()).unwrap();
+    assert!(out.source.glyphs()[1].missing);
+    assert_eq!(out.source.glyphs()[1].glyph_id,0);
+    assert_eq!(out.source.byte_range(1,2).unwrap(),1..5);
+}
+#[test]fn same_face_early_source_and_tag_limits(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let mut l=FaceShapeLimits::default();l.source.max_bytes=1;
+    assert!(matches!(shape_font_face(face,"AV",face_options(),l),Err(Error::Limit(_))));
+    let mut l=FaceShapeLimits::default();l.positioning_plan.max_requested_tags=0;
+    assert!(matches!(shape_font_face(face,"A",face_options(),l),Err(Error::Limit(_))));
+    let mut l=FaceShapeLimits::default();l.joint.max_output_glyphs=1;
+    assert!(matches!(shape_font_face(face,"AV",face_options(),l),Err(Error::Limit(_))));
+}
+#[test]fn same_face_empty_text_and_empty_selection(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let mut o=face_options();o.positioning_tags=&[];
+    let out=shape_font_face(face,"",o,Default::default()).unwrap();
+    assert!(out.source.glyphs().is_empty());
+    assert!(out.shaped.positioning.adjustments.is_empty());
+}
+#[test]fn same_face_rtl_nominal_pen_without_optional_features(){
+    let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let mut o=face_options();o.positioning_tags=&[];o.flow=RTL;
+    let out=shape_font_face(face,"AA",o,Default::default()).unwrap();
+    let mut x=0;
+    for ((w,a),origin) in out.shaped.design_advances.iter().zip(&out.shaped.positioning.adjustments).zip(&out.shaped.positioning.design_origins){
+        x-=w.0+a.design.x_advance;assert_eq!(origin.0,x);
+    }
+}
