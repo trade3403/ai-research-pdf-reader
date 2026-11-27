@@ -46,23 +46,33 @@ fn reserve<T>(v:&mut Vec<T>,n:usize)->Result<(),Error>{
 pub fn build_shape_stage_schedule(program:&CompiledGsubProgram<'_>,specs:&[ShapeStageSpec],
     limits:ShapeStageLimits)->Result<ShapeStageSchedule,Error>{
     let plan=program.validated_plan().ok_or(Error::Invalid("shape stage unvalidated plan"))?;
-    if specs.len()>limits.max_stages||plan.features.len()>limits.max_features{
+    build_schedule(&plan.features,&plan.lookups,specs,limits)
+}
+/// GPOS has its own feature IDs, even when lookup/stage record shapes coincide.
+pub fn build_gpos_stage_schedule(program:&crate::CompiledGposProgram<'_>,specs:&[ShapeStageSpec],
+    limits:ShapeStageLimits)->Result<ShapeStageSchedule,Error>{
+    let plan=program.validated_plan().ok_or(Error::Invalid("gpos stage unvalidated plan"))?;
+    build_schedule(&plan.features,&plan.lookups,specs,limits)
+}
+fn build_schedule(plan_features:&[u16],lookups:&[GsubPlannedLookup],specs:&[ShapeStageSpec],
+    limits:ShapeStageLimits)->Result<ShapeStageSchedule,Error>{
+    if specs.len()>limits.max_stages||plan_features.len()>limits.max_features{
         return Err(Error::Limit("shape stage size"));
     }
     let mut left=limits.max_work;
     charge(&mut left,specs.len(),"shape stage work")?;
-    charge(&mut left,plan.features.len(),"shape stage work")?;
-    let mut owners=Vec::new();reserve(&mut owners,plan.features.len())?;owners.resize(plan.features.len(),None);
+    charge(&mut left,plan_features.len(),"shape stage work")?;
+    let mut owners=Vec::new();reserve(&mut owners,plan_features.len())?;owners.resize(plan_features.len(),None);
     let mut stages=Vec::new();reserve(&mut stages,specs.len())?;
     for (i,s) in specs.iter().enumerate(){
         charge(&mut left,s.features.len(),"shape stage work")?;
-        if s.features.is_empty()||s.features.len()>plan.features.len()||
+        if s.features.is_empty()||s.features.len()>plan_features.len()||
             s.features.windows(2).any(|w|w[0]>=w[1]){
             return Err(Error::Invalid("shape stage feature order"));
         }
         let mut features=Vec::new();reserve(&mut features,s.features.len())?;
         for &id in &s.features{
-            let j=plan.features.binary_search(&id).map_err(|_|Error::Invalid("shape stage unknown feature"))?;
+            let j=plan_features.binary_search(&id).map_err(|_|Error::Invalid("shape stage unknown feature"))?;
             if owners[j].replace(i).is_some(){return Err(Error::Invalid("shape stage duplicate feature"));}
             features.push(id);
         }
@@ -70,11 +80,11 @@ pub fn build_shape_stage_schedule(program:&CompiledGsubProgram<'_>,specs:&[Shape
     }
     if owners.iter().any(Option::is_none){return Err(Error::Invalid("shape stage missing feature"));}
     let mut root_count=0usize;let mut reference_count=0usize;
-    for entry in &plan.lookups{
+    for entry in lookups{
         charge(&mut left,1,"shape stage work")?;
         for &id in &entry.features{
             charge(&mut left,1,"shape stage work")?;
-            let j=plan.features.binary_search(&id).map_err(|_|Error::Invalid("shape stage feature provenance"))?;
+            let j=plan_features.binary_search(&id).map_err(|_|Error::Invalid("shape stage feature provenance"))?;
             let owner=owners[j].ok_or(Error::Invalid("shape stage missing owner"))?;
             reference_count=reference_count.checked_add(1).ok_or(Error::Limit("shape stage refs"))?;
             if reference_count>limits.max_refs{return Err(Error::Limit("shape stage refs"));}

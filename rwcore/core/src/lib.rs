@@ -256,14 +256,14 @@ pub use font_gsub_context_execute::execute_gsub_with_direct_provenance;
 pub use font_gsub_context_execute::{execute_gsub_program_with_provenance,execute_gsub_program_with_ligature_trace};
 
 pub mod font_feature_masks;
-pub use font_feature_masks::{FeatureMaskLimits,FeatureMaskOverride,ScalarFeatureMasks};
+pub use font_feature_masks::{FeatureMaskLimits,FeatureMaskOverride,ScalarFeatureMasks,GposScalarFeatureMasks};
 
 pub use font_gsub_context_execute::{MaskedGsubResult,execute_gsub_program_with_masks};
 
 pub use font_gsub_context_execute::execute_gsub_program_with_strict_masks;
 
 pub mod font_shape_stages;
-pub use font_shape_stages::{ShapeStageLimits,ShapeStageSpec,ShapeStage,ShapeStageSchedule,build_shape_stage_schedule};
+pub use font_shape_stages::{ShapeStageLimits,ShapeStageSpec,ShapeStage,ShapeStageSchedule,build_shape_stage_schedule,build_gpos_stage_schedule};
 
 pub use font_gsub_context_execute::execute_staged_gsub;
 

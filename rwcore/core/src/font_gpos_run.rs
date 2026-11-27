@@ -165,6 +165,8 @@ struct ContextRunner<'p,'g,'d>{
     attachment_updates:usize,
     ligatures:Option<&'g [GposLigatureSource]>,
     strict_ligatures:bool,
+    masks:Option<&'g [u64]>,
+    active_bits:u64,
     cursive:Option<MixedCursive<'g>>,
 }
 impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
@@ -173,6 +175,14 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         let ids=lookup.filter().eligible_indices(self.glyphs,LookupFilterLimits{max_run_glyphs:self.limits.run.max_glyphs,max_eligible:self.limits.run.max_glyphs})?;
         let mut stream=Vec::new();stream.try_reserve_exact(ids.len()).map_err(|_|Error::Limit("gpos context allocation"))?;
         stream.extend(ids.iter().map(|&i|self.glyphs[i]));Ok((ids,stream))
+    }
+    fn common_bits(&mut self,ids:&[usize])->Result<u64,Error>{
+        let mut bits=self.active_bits;
+        if let Some(masks)=self.masks{
+            charge(&mut self.work,ids.len())?;
+            for &i in ids{bits&=*masks.get(i).ok_or(Error::Invalid("gpos mask index"))?;}
+        }
+        Ok(bits)
     }
     fn nested(&mut self,id:u16,original:usize)->Result<(),Error>{
         let program=self.program;
@@ -183,6 +193,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
     }
     fn at(&mut self,lookup:&CompiledGposLookup<'_>,ids:&[usize],stream:&[u16],pos:usize)->Result<usize,Error>{
         charge(&mut self.calls,1)?;
+        if self.common_bits(&[ids[pos]])?==0{return Ok(1);}
         // Hard stack cap even when caller supplies an excessive max_depth.
         if self.active.len()>=self.limits.max_depth.min(64){return Err(Error::Limit("gpos context depth"));}
         let key=(lookup.index(),ids[pos]);
@@ -313,6 +324,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                 }
                 Pair(_)|ClassPair(_)=>{
                     let Some(&b)=ids.get(pos+1)else{return Ok(1);};
+                    if self.common_bits(&[a,b])?==0{continue;}
                     let d=[self.out[a].design,self.out[b].design];let px=[self.out[a].pixels,self.out[b].pixels];
                     macro_rules! pair{($p:expr)=>{match self.mode{
                         GposRunMode::DesignOnly=>$p.apply_design(self.glyphs[a],self.glyphs[b],d)?.map(|d|(d,px)),
@@ -327,6 +339,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                 Cursive(p)=>{
                     if self.cursive.is_none(){return Err(Error::Unsupported("mixed cursive mode"));}
                     let Some(&b)=ids.get(pos+1)else{return Ok(1);};
+                    if self.common_bits(&[a,b])?==0{continue;}
                     if let Some((exit,entry))=p.pair(self.glyphs[a],self.glyphs[b]){
                         self.connect_cursive(a,b,exit,entry,lookup.filter().right_to_left())?;
                         return Ok(1);
@@ -337,6 +350,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                     if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
                     if p.mark(stream[pos]).is_none(){continue;}
                     if let Some(parent)=self.mark_parent(lookup,ids,pos,false)?{
+                        if self.common_bits(&[a,parent])?==0{continue;}
                         if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){
                             if self.strict_ligatures&&self.ligatures.is_some_and(|s|
                                 !matches!(s[a],GposLigatureSource::Unmapped)||
@@ -351,6 +365,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                     if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
                     if p.mark(stream[pos]).is_none(){continue;}
                     if let Some(parent)=self.mark_parent(lookup,ids,pos,false)?{
+                        if self.common_bits(&[a,parent])?==0{continue;}
                         if let Some(count)=p.component_count(self.glyphs[parent]){
                             let sources=self.ligatures.ok_or(Error::Unsupported("gpos ligature provenance"))?;
                             if self.strict_ligatures{
@@ -370,6 +385,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                     if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
                     if p.mark1(stream[pos]).is_none(){continue;}
                     if let Some(parent)=self.mark_parent(lookup,ids,pos,true)?{
+                        if self.common_bits(&[a,parent])?==0{continue;}
                         if self.ligatures.is_some_and(|sources|!gpos_mark_sources_compatible(sources[parent],sources[a])){continue;}
                         if let Some((pa,ca))=p.pair(self.glyphs[parent],stream[pos]){self.attach(a,parent,pa,ca)?;return Ok(1);}
                     }continue;
@@ -383,6 +399,10 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                 _=>return Err(Error::Unsupported("gpos context run target")),
             };
             if let Some(m)=matched{
+                let end=pos.checked_add(m.input_len).ok_or(Error::Limit("gpos mask input"))?;
+                let common=self.common_bits(ids.get(pos..end).ok_or(Error::Invalid("gpos mask input"))?)?;
+                if common==0{continue;}
+                let previous=self.active_bits;self.active_bits=common;
                 charge(&mut self.actions,m.actions.len())?;
                 for action in m.actions{
                     let offset=usize::from(action.sequence_index);
@@ -390,6 +410,7 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                     let original=*ids.get(pos+offset).ok_or(Error::Invalid("gpos context input"))?;
                     self.nested(action.lookup_index,original)?;
                 }
+                self.active_bits=previous;
                 return Ok(m.input_len);
             }
         }
@@ -407,7 +428,7 @@ pub fn execute_gpos_context(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|7|8){return Err(Error::Unsupported("gpos context run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos context allocation"))?;out.extend_from_slice(prior);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0,ligatures:None,strict_ligatures:false,cursive:None};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0,ligatures:None,strict_ligatures:false,masks:None,active_bits:u64::MAX,cursive:None};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos context root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
@@ -505,7 +526,7 @@ fn execute_gpos_marks_inner(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|4|6|7|8)&&!(lookup.effective_kind()==5&&ligatures.is_some()){return Err(Error::Unsupported("gpos mark run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;out.extend_from_slice(prior);
     let mut edges=Vec::new();edges.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;edges.resize(prior.len(),None);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates,ligatures,strict_ligatures:false,cursive:None};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates,ligatures,strict_ligatures:false,masks:None,active_bits:u64::MAX,cursive:None};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos mark root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
@@ -538,7 +559,7 @@ pub fn execute_gpos_mixed_horizontal(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,limits:GposMixedRunLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,None,None,false)
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,None,None,false,None)
 }
 
 /// Explicit physical horizontal flow. The glyph stream remains in logical
@@ -557,7 +578,7 @@ pub fn execute_gpos_mixed_directional(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),None,false)
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),None,false,None)
 }
 /// Opt-in deferred joint interval solve. Active cursive equations are captured
 /// at attachment time; replacements discard old equations. Subsequent value
@@ -569,7 +590,7 @@ pub fn execute_gpos_mixed_joint(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,intervals:GposIntervalLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),Some(intervals),false)
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),Some(intervals),false,None)
 }
 /// Strict automatic source path: no last-component fallback for a
 /// covered MarkToLigature pair; no conflicting mapped MarkToBase pair.
@@ -578,12 +599,45 @@ pub fn execute_gpos_mixed_joint_strict_ligatures(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,intervals:GposIntervalLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),Some(intervals),true)
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),Some(intervals),true,None)
+}
+/// Execute all selected GPOS stages on one shared attachment/interval state.
+/// Masks are projected from original scalar provenance in the GPOS namespace.
+/// Input glyph IDs are immutable. Backtrack/lookahead are conditions only.
+/// Mask-disabled participants are barriers, never additional ignored glyphs.
+/// Mask checks share max_context_work with contextual execution.
+pub fn execute_staged_gpos_joint(
+    program:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,masks:&GposScalarFeatureMasks,
+    specs:&[ShapeStageSpec],stage_limits:ShapeStageLimits,max_projection_work:usize,
+    glyphs:&[u16],prior:&[GposRunAdjustment],design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],
+    sources:&[GposLigatureSource],mode:GposRunMode,flow:GposHorizontalFlow,
+    limits:GposMixedRunLimits,intervals:GposIntervalLimits,strict_ligatures:bool,
+)->Result<(ShapeStageSchedule,GposCursiveRun),Error>{
+    let plan=program.validated_plan().ok_or(Error::Invalid("gpos masks missing plan"))?;
+    if masks.features()!=plan.features.as_slice()||masks.required_feature()!=plan.required_feature{
+        return Err(Error::Invalid("gpos mask plan"));
+    }
+    if glyphs.len()>limits.marks.context.run.max_glyphs||glyphs.len()>limits.attachments.max_glyphs||
+        glyphs.len()>intervals.max_glyphs{return Err(Error::Limit("gpos stage glyphs"));}
+    if !ledger.glyphs().iter().map(|g|g.glyph_id).eq(glyphs.iter().copied()){
+        return Err(Error::Invalid("gpos mask glyph alignment"));
+    }
+    let schedule=build_gpos_stage_schedule(program,specs,stage_limits)?;
+    if schedule.root_count()>limits.marks.context.run.max_roots{return Err(Error::Limit("gpos staged roots"));}
+    let projected=masks.project(ledger,max_projection_work)?;
+    let mut roots=Vec::new();roots.try_reserve_exact(schedule.root_count()).map_err(|_|Error::Limit("gpos staged allocation"))?;
+    for stage in schedule.stages(){
+        for r in stage.lookups(){roots.push((r.index,masks.lookup_mask(&r.features)?));}
+    }
+    let result=execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,
+        mode,limits,Some(flow),Some(intervals),strict_ligatures,Some((&projected,&roots)))?;
+    Ok((schedule,result))
 }
 fn execute_gpos_mixed_inner(
     program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,limits:GposMixedRunLimits,flow:Option<GposHorizontalFlow>,joint_limits:Option<GposIntervalLimits>,strict_ligatures:bool,
+    staged:Option<(&[u64],&[(u16,u64)])>,
 )->Result<GposCursiveRun,Error>{
     use crate::font_gpos_cursive_run::{origins,directional_origins};
     let n=glyphs.len();
@@ -603,12 +657,15 @@ fn execute_gpos_mixed_inner(
     let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,
         attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,
         active:Vec::new(),attachment_edges:Some(filled(n,None)?),parent_visits:limits.marks.max_parent_visits,
-        attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),strict_ligatures,
+        attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),strict_ligatures,masks:staged.map(|v|v.0),active_bits:u64::MAX,
         cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,flow,
             ledger:if flow.is_some()&&joint_limits.is_none(){Some(DirectionalLedger{spans:Default::default(),child_start:filled(n,None)?})}else{None},
             joint:if let Some(limits)=joint_limits{Some(JointLedger{pairs:Default::default(),child_pair:filled(n,None)?,limits})}else{None},
             connections:limits.max_connections,spans:limits.max_span_visits})};
-    for &root in program.roots(){
+    let count=staged.map_or(program.roots().len(),|v|v.1.len());
+    for i in 0..count{
+        let (root,bits)=staged.map_or_else(||(program.roots()[i],u64::MAX),|v|v.1[i]);
+        runner.active_bits=bits;
         let lookup=program.lookup(root).ok_or(Error::Invalid("mixed gpos root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
         let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}

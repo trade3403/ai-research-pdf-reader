@@ -31,30 +31,33 @@ impl ScalarFeatureMasks{
     /// All selected features initially enabled. Overrides in caller order,
     /// last wins for overlapping ranges. Required feature cannot be disabled.
     pub fn build(plan:&GsubPlan,scalar_count:usize,overrides:&[FeatureMaskOverride],l:FeatureMaskLimits)->Result<Self,Error>{
-        if plan.features.len()>64||scalar_count>l.max_scalars||overrides.len()>l.max_overrides{
+        Self::build_parts(&plan.features,plan.required_feature,scalar_count,overrides,l)
+    }
+    fn build_parts(features:&[u16],required:Option<u16>,scalar_count:usize,overrides:&[FeatureMaskOverride],l:FeatureMaskLimits)->Result<Self,Error>{
+        if features.len()>64||scalar_count>l.max_scalars||overrides.len()>l.max_overrides{
             return Err(Error::Limit("feature mask size"));
         }
-        if plan.features.windows(2).any(|w|w[0]>=w[1]){
+        if features.windows(2).any(|w|w[0]>=w[1]){
             return Err(Error::Invalid("feature mask feature order"));
         }
-        if let Some(id)=plan.required_feature{bit(&plan.features,id)?;}
+        if let Some(id)=required{bit(&features,id)?;}
         let mut left=l.max_work;
         charge(&mut left,scalar_count)?;
         for o in overrides{
             charge(&mut left,1)?;
             if o.start>o.end||o.end>scalar_count{return Err(Error::Invalid("feature mask range"));}
-            bit(&plan.features,o.feature)?;
-            if !o.enabled&&Some(o.feature)==plan.required_feature{return Err(Error::Invalid("feature mask required feature"));}
+            bit(&features,o.feature)?;
+            if !o.enabled&&Some(o.feature)==required{return Err(Error::Invalid("feature mask required feature"));}
             charge(&mut left,o.end-o.start)?;
         }
-        let all=if plan.features.len()==64{u64::MAX}else{(1u64<<plan.features.len())-1};
+        let all=if features.len()==64{u64::MAX}else{(1u64<<features.len())-1};
         let mut masks=Vec::new();masks.try_reserve_exact(scalar_count).map_err(|_|Error::Limit("feature mask allocation"))?;
         masks.resize(scalar_count,all);
         for o in overrides{
-            let b=bit(&plan.features,o.feature)?;
+            let b=bit(&features,o.feature)?;
             for m in &mut masks[o.start..o.end]{if o.enabled{*m|=b;}else{*m&=!b;}}
         }
-        Ok(Self{features:plan.features.clone(),required:plan.required_feature,masks})
+        Ok(Self{features:features.to_vec(),required:required,masks})
     }
     pub fn features(&self)->&[u16]{&self.features}
     pub fn scalar_masks(&self)->&[u64]{&self.masks}
@@ -91,4 +94,17 @@ impl ScalarFeatureMasks{
         for &id in features{mask|=bit(&self.features,id)?;}
         Ok(mask)
     }
+}
+
+/// Separate GPOS feature namespace; projection uses post-GSUB provenance.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct GposScalarFeatureMasks(ScalarFeatureMasks);
+impl GposScalarFeatureMasks{
+    pub fn build(plan:&crate::GposPlan,scalar_count:usize,overrides:&[FeatureMaskOverride],l:FeatureMaskLimits)->Result<Self,Error>{
+        Ok(Self(ScalarFeatureMasks::build_parts(&plan.features,plan.required_feature,scalar_count,overrides,l)?))
+    }
+    pub fn features(&self)->&[u16]{self.0.features()}
+    pub fn required_feature(&self)->Option<u16>{self.0.required_feature()}
+    pub fn project(&self,ledger:&ProvenanceLedger,max_work:usize)->Result<Vec<u64>,Error>{self.0.project(ledger,max_work)}
+    pub fn lookup_mask(&self,features:&[u16])->Result<u64,Error>{self.0.lookup_mask(features)}
 }
