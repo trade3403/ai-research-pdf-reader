@@ -322,3 +322,6 @@ pub mod font_gpos_dependencies;
 pub use font_gpos_dependencies::{GposDependencyLimits,GposDependencySite,GposDependency,discover_gpos_dependencies};
 pub mod font_gpos_closure;
 pub use font_gpos_closure::*;
+
+pub mod font_gpos_run;
+pub use font_gpos_run::*;
