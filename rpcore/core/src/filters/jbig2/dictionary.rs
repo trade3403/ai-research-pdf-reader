@@ -1089,7 +1089,7 @@ pub struct ExecutionStats{
 }
 #[derive(Debug,PartialEq,Eq)]
 pub struct DictionarySet{
-    arena:Vec<Bitmap>,
+    arena:Vec<Option<Bitmap>>,
     exports:BTreeMap<u32,Vec<SymbolId>>,
     stats:ExecutionStats,
 }
@@ -1098,9 +1098,60 @@ impl DictionarySet{
     pub fn dictionary(&self,segment_number:u32)->Option<&[SymbolId]>{
         self.exports.get(&segment_number).map(Vec::as_slice)
     }
-    pub fn bitmap(&self,id:SymbolId)->Option<&Bitmap>{self.arena.get(id.0)}
+    pub fn bitmap(&self,id:SymbolId)->Option<&Bitmap>{self.arena.get(id.0)?.as_ref()}
     pub fn symbol(&self,segment_number:u32,index:usize)->Option<&Bitmap>{
         self.bitmap(*self.dictionary(segment_number)?.get(index)?)
+    }
+}
+
+/// Page-only reclamation after all symbol dictionaries have been decoded.
+/// Stable SymbolIds are never reused. A bitmap remains alive until the
+/// last export slot in every still-needed dictionary is removed.
+/// Counters report actual dropped packed Vec payloads, not allocator RSS.
+#[derive(Debug,Default,Clone,Copy,PartialEq,Eq)]
+pub(super) struct Reclaimed{
+    pub dictionaries:usize,pub bitmaps:usize,pub bytes:usize,
+}
+pub(super) struct PageReclaimer{
+    references:Vec<usize>,
+}
+impl DictionarySet{
+    /// Retain only exports required by subsequent text regions. All
+    /// dictionary imports and context reuse have already completed.
+    pub(super) fn prepare_page_reclaim(&mut self,needed:&BTreeMap<u32,usize>)
+        ->Result<(PageReclaimer,Reclaimed)>{
+        let mut references=Vec::new();
+        references.try_reserve_exact(self.arena.len()).map_err(|_|Error::Limit("JBIG2 reclaim references"))?;
+        references.resize(self.arena.len(),0usize);
+        let before=self.exports.len();
+        self.exports.retain(|id,_|needed.contains_key(id));
+        let mut freed=Reclaimed{dictionaries:before-self.exports.len(),..Reclaimed::default()};
+        for ids in self.exports.values(){
+            for &id in ids{
+                let count=references.get_mut(id.0).ok_or(Error::Invalid("JBIG2 reclaim identity"))?;
+                *count=count.checked_add(1).ok_or(Error::Limit("JBIG2 reclaim references"))?;
+            }
+        }
+        for (slot,&count) in self.arena.iter_mut().zip(&references){
+            if count==0{
+                if let Some(image)=slot.take(){freed.bitmaps+=1;freed.bytes+=image.packed().len();}
+            }
+        }
+        Ok((PageReclaimer{references},freed))
+    }
+    pub(super) fn release_page_dictionary(&mut self,number:u32,state:&mut PageReclaimer)->Result<Reclaimed>{
+        let ids=self.exports.remove(&number).ok_or(Error::Invalid("JBIG2 reclaim dictionary"))?;
+        let mut freed=Reclaimed{dictionaries:1,..Reclaimed::default()};
+        for id in ids{
+            let count=state.references.get_mut(id.0).ok_or(Error::Invalid("JBIG2 reclaim identity"))?;
+            *count=count.checked_sub(1).ok_or(Error::Invalid("JBIG2 reclaim underflow"))?;
+            if *count==0{
+                let image=self.arena.get_mut(id.0).and_then(Option::take)
+                    .ok_or(Error::Invalid("JBIG2 reclaim bitmap"))?;
+                freed.bitmaps+=1;freed.bytes+=image.packed().len();
+            }
+        }
+        Ok(freed)
     }
 }
 
@@ -1322,7 +1373,7 @@ pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits
         for index in indices{
             exported.push(*namespace.get(index as usize).ok_or(Error::Invalid("JBIG2 dictionary export index"))?);
         }
-        set.arena.extend(images);
+        set.arena.extend(images.into_iter().map(Some));
         if set.exports.insert(segment.number,exported).is_some(){
             return Err(Error::Invalid("JBIG2 duplicate executed dictionary"));
         }
@@ -1389,6 +1440,26 @@ mod executor_tests{
             context_entries:old.stats().peak_context_entries,..l};
         assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),old);
         assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,exact).unwrap(),old);
+    }
+
+    #[test]
+    fn page_reclaimer_shared_identity_last_export_and_unused(){
+        let (g,p)=fixture();
+        let mut set=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let id=set.dictionary(1).unwrap()[0];
+        let shared=set.dictionary(2).unwrap()[0];
+        let mut needed=BTreeMap::new();needed.insert(5,1);needed.insert(6,1);
+        let (mut state,freed)=set.prepare_page_reclaim(&needed).unwrap();
+        assert_eq!(freed,Reclaimed{dictionaries:3,bitmaps:0,bytes:0});
+        assert!(set.dictionary(1).is_none());
+        assert_eq!(set.bitmap(id).unwrap().packed(),[240,136,136,136,240,128,128,128]);
+        assert!(std::ptr::eq(set.symbol(5,2).unwrap(),set.symbol(6,5).unwrap()));
+        assert_eq!(set.release_page_dictionary(5,&mut state).unwrap(),Reclaimed{dictionaries:1,bitmaps:0,bytes:0});
+        assert!(set.bitmap(shared).is_some());
+        assert_eq!(set.release_page_dictionary(6,&mut state).unwrap(),Reclaimed{dictionaries:1,bitmaps:5,bytes:32});
+        assert!(set.bitmap(id).is_none());assert!(set.bitmap(shared).is_none());
+        assert!(set.release_page_dictionary(6,&mut state).is_err());
+        assert_eq!(set.stats().packed_bytes,32); // cumulative accounting unchanged
     }
     #[test]
     fn executor_mixed_official_pixels(){

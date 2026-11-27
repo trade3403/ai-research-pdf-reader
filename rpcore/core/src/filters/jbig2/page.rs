@@ -36,6 +36,8 @@ pub struct Stats{
     /// Retained packed page, dictionary images and any live auxiliary buffers.
     /// Transient output and scratch are constrained before each decode.
     pub retained_packed_bytes:usize,
+    pub released_symbol_dictionaries:usize,pub released_symbol_bitmaps:usize,pub released_symbol_bytes:usize,
+    pub released_pattern_dictionaries:usize,pub released_pattern_bytes:usize,
 }
 #[derive(Debug,PartialEq,Eq)]
 pub struct DecodedPage{pub info:PageInfo,pub bitmap:Bitmap,pub stats:Stats}
@@ -51,6 +53,21 @@ fn packed(w:u32,h:u32)->usize{(w as usize).div_ceil(8)*h as usize}
 /// including mandatory REPLACE for page-reference refinement.
 /// No caller-supplied graph. Unknown/unsupported kinds fail before decoding.
 pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
+    decode_pdf_page_impl(globals,page,limits,false)
+}
+/// Opt-in physical reclamation after the final actual consumer in the
+/// immutable inspected page graph. No cross-image cache or changes to
+/// wire retention semantics. Dictionary decode itself still conservatively
+/// retains all imports and contexts until the dictionary pass completes.
+pub fn decode_pdf_page_reclaimed(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
+    decode_pdf_page_impl(globals,page,limits,true)
+}
+fn record_release(stats:&mut Stats,r:dictionary::Reclaimed){
+    stats.released_symbol_dictionaries+=r.dictionaries;
+    stats.released_symbol_bitmaps+=r.bitmaps;stats.released_symbol_bytes+=r.bytes;
+    stats.retained_packed_bytes-=r.bytes;
+}
+fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool)->Result<DecodedPage>{
     if limits.regions>super::MAX_SEGMENTS||limits.page_pixels>bitmap::MAX_PIXELS||
         limits.region_pixels>bitmap::MAX_PIXELS||limits.patterns>pattern::MAX_PATTERNS||
         limits.pattern_pixels>bitmap::MAX_PIXELS||limits.grid_cells>halftone::MAX_GRID_CELLS||
@@ -110,10 +127,32 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
     let mut dl=limits.dictionaries;
     dl.work=dl.work.min(limits.work-setup);
     dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes-page_bytes);
-    let dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&graph)?;
+    let mut dictionaries=dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&graph)?;
     let ds=dictionaries.stats();
     let mut stats=Stats{dictionaries:ds,work_used:setup+ds.work_used,
         retained_packed_bytes:page_bytes+ds.packed_bytes,..Stats::default()};
+    let mut uses=BTreeMap::<u32,usize>::new();
+    let mut reclaimer=None;
+    if reclaim{
+        // Charge graph enumeration, slot counting and release traversal.
+        // Cumulative dictionary symbol_slots upper-bounds export slots.
+        let cost=graph.graph.len() as u64*3+ds.symbol_slots as u64*3+
+            u64::from(ds.new_symbols)*2+
+            graph.graph.iter().map(|n|n.dependencies.len() as u64*3).sum::<u64>();
+        charge(&mut stats,limits.work,cost)?;
+        for node in &graph.graph{
+            let seg=graph.segment(node.location).ok_or(Error::Invalid("JBIG2 reclaim segment"))?;
+            if matches!(seg.kind,4|6|7|20|22|23){
+                for &loc in &node.dependencies{
+                    let dep=graph.segment(loc).ok_or(Error::Invalid("JBIG2 reclaim dependency"))?;
+                    if matches!(dep.kind,0|16){*uses.entry(dep.number).or_default()+=1;}
+                }
+            }
+        }
+        let (state,freed)=dictionaries.prepare_page_reclaim(&uses)?;
+        record_release(&mut stats,freed);
+        reclaimer=Some(state);
+    }
     let mut canvas=Bitmap::new(info.width,height,info.flags&4!=0)?;
     let mut patterns=BTreeMap::<u32,pattern::PatternDictionary>::new();
     let mut auxiliary=BTreeMap::<u32,(bitmap::RegionInfo,Bitmap)>::new();
@@ -134,7 +173,11 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
             stats.pattern_pixels+=u64::from(d.header.collective_width)*u64::from(d.header.height);
             stats.retained_packed_bytes+=d.packed_bytes;
             if let pattern::EntropyStats::Arithmetic{decisions}=d.entropy{stats.decisions+=decisions;}
-            patterns.insert(seg.number,d);continue;
+            if reclaim&&!uses.contains_key(&seg.number){
+                stats.released_pattern_dictionaries+=1;stats.released_pattern_bytes+=d.packed_bytes;
+                stats.retained_packed_bytes-=d.packed_bytes;
+            }else{patterns.insert(seg.number,d);}
+            continue;
         }
         let (region,_)=bitmap::parse_region(data)?;
         let pixels=u64::from(region.width)*u64::from(region.height);
@@ -216,6 +259,27 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
             },
             _=>return Err(Error::Unsupported("JBIG2 page region kind")),
         };
+        if let Some(state)=reclaimer.as_mut(){
+            if matches!(seg.kind,4|6|7|20|22|23){
+                for &loc in &node.dependencies{
+                    let dep=graph.segment(loc).ok_or(Error::Invalid("JBIG2 reclaim dependency"))?;
+                    if !matches!(dep.kind,0|16){continue;}
+                    let count=uses.get_mut(&dep.number).ok_or(Error::Invalid("JBIG2 reclaim missing use"))?;
+                    *count=count.checked_sub(1).ok_or(Error::Invalid("JBIG2 reclaim use underflow"))?;
+                    if *count==0{
+                        uses.remove(&dep.number);
+                        if dep.kind==0{
+                            let freed=dictionaries.release_page_dictionary(dep.number,state)?;
+                            record_release(&mut stats,freed);
+                        }else{
+                            let old=patterns.remove(&dep.number).ok_or(Error::Invalid("JBIG2 reclaim pattern"))?;
+                            stats.released_pattern_dictionaries+=1;stats.released_pattern_bytes+=old.packed_bytes;
+                            stats.retained_packed_bytes-=old.packed_bytes;
+                        }
+                    }
+                }
+            }
+        }
         stats.region_pixels+=pixels;
         if matches!(seg.kind,4|20|36|40){
             let bytes=image.packed().len();
@@ -232,6 +296,9 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
         charge(&mut stats,limits.work,used)?;stats.composed_pixels+=used;
     }
     if !auxiliary.is_empty(){return Err(Error::Invalid("JBIG2 unconsumed auxiliary buffers"));}
+    if reclaim&&(!uses.is_empty()||!patterns.is_empty()||stats.retained_packed_bytes!=page_bytes){
+        return Err(Error::Invalid("JBIG2 page reclamation incomplete"));
+    }
     Ok(DecodedPage{info,bitmap:canvas,stats})
 }
 
@@ -480,6 +547,25 @@ mod tests{
         assert!(decode_pdf_page_audited(&[],&bad,Limits::default()).is_err());
         assert_eq!(decode_pdf_page(&[],&bad,Limits::default()).unwrap().bitmap.packed(),[0;4]);
     }
+
+    #[test]
+    fn page_reclaimed_pattern_peak_and_unused_dictionary(){
+        let mut p=info(32,36,0);
+        p.extend(seg(2,16,&[],PATTERN));p.extend(seg(3,23,&[2],HALF));
+        p.extend(seg(4,16,&[],PATTERN));p.extend(seg(5,23,&[4],HALF));
+        p.extend(seg(6,16,&[],PATTERN)); // unused, still decoded
+        let old=decode_pdf_page(&[],&p,Limits::default()).unwrap();
+        let d=decode_pdf_page_reclaimed(&[],&p,Limits::default()).unwrap();
+        assert_eq!(d.bitmap,old.bitmap);
+        assert_eq!((d.stats.released_pattern_dictionaries,d.stats.released_pattern_bytes,d.stats.retained_packed_bytes),(3,192,144));
+        // 144 page + 64 dictionary + 297 active region, no earlier dictionary.
+        let exact=Limits{packed_bytes:505,work:d.stats.work_used,..Limits::default()};
+        assert_eq!(decode_pdf_page_reclaimed(&[],&p,exact).unwrap(),d);
+        assert!(decode_pdf_page(&[],&p,exact).is_err());
+        assert!(decode_pdf_page_reclaimed(&[],&p,Limits{packed_bytes:504,..exact}).is_err());
+        assert!(decode_pdf_page_reclaimed(&[],&p,Limits{work:exact.work-1,..exact}).is_err());
+        let mut bad=p;bad.pop();assert!(decode_pdf_page_reclaimed(&[],&bad,Limits::default()).is_err());
+    }
     #[test]
     fn page_unsupported_and_bad_dependencies_fail_closed(){
         let l=Limits::default();
@@ -699,6 +785,23 @@ mod annex_h_full_page_tests{
             assert_eq!(d.decoded,decode_pdf_page(g,p,l).unwrap());
             assert_eq!((d.retention.references,d.retention.live_globals_at_end,d.retention.live_page_at_end),(refs,globals,0));
         }
+    }
+
+    #[test]
+    fn annex_h_reclaimed_page_pixels_and_globals_isolation(){
+        for (g,p) in [(GLOBAL1,PAGE1),(GLOBAL1,PAGE2),(GLOBAL3,PAGE3),(GLOBAL1,PAGE1)]{
+            let l=Limits::default();
+            let old=decode_pdf_page(g,p,l).unwrap();
+            let d=decode_pdf_page_reclaimed(g,p,l).unwrap();
+            assert_eq!(d.bitmap,old.bitmap);assert_eq!(d.info,old.info);
+            assert_eq!(d.stats.retained_packed_bytes,d.bitmap.packed().len());
+            assert_eq!(d.stats.released_symbol_bytes,old.stats.dictionaries.packed_bytes);
+            assert_eq!(d.stats.released_symbol_bitmaps,old.stats.dictionaries.new_symbols as usize);
+            assert_eq!(d.stats.released_symbol_dictionaries,old.stats.dictionaries.dictionaries as usize);
+            assert_eq!(d.stats.released_pattern_dictionaries,old.stats.pattern_dictionaries);
+        }
+        assert!(decode_pdf_page_reclaimed(GLOBAL3,PAGE1,Limits::default()).is_err());
+        assert!(decode_pdf_page_reclaimed(&[],PAGE2,Limits::default()).is_err());
     }
     #[test]
     fn annex_h_original_sequential_file_structure(){
