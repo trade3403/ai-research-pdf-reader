@@ -2008,3 +2008,84 @@ mod arithmetic_text_payload_tests{
         assert!(parse_arithmetic_text_header(&bad).is_err());
     }
 }
+
+#[cfg(test)]
+mod annex_h_original_arithmetic_text_tests{
+    use super::*;
+    use super::super::dictionary::{execute_pdf_dictionaries,ExecutionLimits};
+    // ITU-T T.88 (02/2000) Annex H.1, printed pp.133–135,137–142.
+    // Original segments, extracted into independent embedded streams.
+    // Non-text page-2 regions omitted; no re-encoding of the original bytes.
+    // https://www.itu.int/rec/T-REC-T.88-200002-S/en
+    const GLOBAL2:&[u8]=&[0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0x00,0x01,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0xe9,0xcb,0xf4,0x00,0x26,0xaf,0x04,0xbf,0xf0,0x78,0x2f,0xe0,0x00,0x40];
+    const PAGE2:&[u8]=&[0,0,0,8,48,0,2,0,0,0,19,0,0,0,64,0,0,0,56,0,0,0,0,0,0,0,0,1,0,0,0,0,0,9,0,1,2,0,0,0,27,8,0,2,255,0,0,0,2,0,0,0,2,79,231,140,32,14,29,199,207,1,17,196,178,111,255,172];
+    const TEXT2:&[u8]=&[0,0,0,10,7,64,0,9,2,0,0,0,31,0,0,0,37,0,0,0,8,0,0,0,4,0,0,0,1,0,12,8,0,0,0,5,141,110,90,18,64,133,255,172];
+    const GLOBAL3:&[u8]=&[0,0,0,16,0,1,0,0,0,0,22,8,0,2,255,0,0,0,1,0,0,0,1,79,231,141,104,27,20,47,63,255,172];
+    const PAGE3:&[u8]=&[0,0,0,15,48,0,3,0,0,0,19,0,0,0,37,0,0,0,8,0,0,0,0,0,0,0,0,1,0,0,0,0,0,17,0,33,16,3,0,0,0,32,8,2,2,255,255,255,255,255,0,0,0,3,0,0,0,2,79,233,215,213,144,195,181,38,167,251,109,20,152,63,255,172];
+    const TEXT3:&[u8]=&[0,0,0,18,7,32,17,3,0,0,0,37,0,0,0,37,0,0,0,8,0,0,0,0,0,0,0,0,0,140,18,0,0,0,4,169,92,139,244,195,125,150,106,40,229,118,143,255,172];
+    const EXPECTED:&[u8]=&[
+        120,120,240,240,240, 132,4,136,9,8,
+        128,124,136,249,0, 128,132,137,9,0,
+        132,132,241,9,8, 120,124,128,248,240,
+        0,0,128,0,0, 0,0,128,0,0,
+    ];
+    fn join(prefix:&[u8],text:&[u8])->Vec<u8>{
+        let mut page=prefix.to_vec();page.extend_from_slice(text);page
+    }
+    #[test]
+    fn annex_h_arithmetic_original_direct_region(){
+        let page=join(PAGE2,TEXT2);
+        let d=execute_pdf_dictionaries(GLOBAL2,&page,ExecutionLimits::default()).unwrap();
+        let refs=[d.symbol(0,0).unwrap(),d.symbol(9,0).unwrap(),d.symbol(9,1).unwrap()];
+        assert_eq!(refs[0].packed(),[240,136,136,136,240,128,128,128]);
+        assert_eq!(refs[1].packed(),[120,132,128,128,132,120]);
+        assert_eq!(refs[2].packed(),[120,4,124,132,132,124]);
+        let (h,out)=decode_arithmetic_text_payload(&TEXT2[13..],&refs,2000,40000,40).unwrap();
+        assert_eq!((h.region.x,h.region.y,h.options.width,h.options.height),(4,1,37,8));
+        assert_eq!((h.options.strips,h.options.instances,h.options.ds_offset),(4,5,3));
+        assert_eq!(h.options.corner,Corner::BottomLeft);
+        assert!(h.neighborhood.is_none());
+        assert_eq!(out.bitmap.packed(),EXPECTED);
+        assert_eq!((out.stats.strips,out.stats.instances,out.stats.composed_pixels),(1,5,184));
+    }
+    #[test]
+    fn annex_h_arithmetic_original_refined_region(){
+        let page=join(PAGE3,TEXT3);
+        let d=execute_pdf_dictionaries(GLOBAL3,&page,ExecutionLimits::default()).unwrap();
+        let refs=[d.symbol(17,0).unwrap(),d.symbol(17,1).unwrap(),d.symbol(17,2).unwrap()];
+        assert_eq!(refs[0].packed(),[120,4,124,132,132,124]);
+        assert_eq!(refs[1].packed(),[120,132,128,128,132,120]);
+        assert_eq!(refs[2].packed(),[120,120,4,132,124,128,132,128,132,132,124,120]);
+        assert!(std::ptr::eq(d.symbol(16,0).unwrap(),refs[0]));
+        let (h,out)=decode_arithmetic_text_payload(&TEXT3[12..],&refs,2000,40000,64).unwrap();
+        assert_eq!((h.region.x,h.region.y,h.options.width,h.options.height),(0,0,37,8));
+        assert_eq!((h.options.strips,h.options.instances,h.options.ds_offset),(1,4,3));
+        assert_eq!(h.options.corner,Corner::TopLeft);
+        assert_eq!(h.neighborhood.unwrap().template(),super::super::refinement::Template::T1);
+        assert_eq!(out.bitmap.packed(),EXPECTED);
+        assert_eq!(out.stats.instances,4);
+    }
+    #[test]
+    fn annex_h_arithmetic_original_bounds(){
+        for (global,prefix,text,header,ids) in [
+            (GLOBAL2,PAGE2,TEXT2,13usize,[(0,0),(9,0),(9,1)]),
+            (GLOBAL3,PAGE3,TEXT3,12usize,[(17,0),(17,1),(17,2)])]{
+            let page=join(prefix,text);
+            let d=execute_pdf_dictionaries(global,&page,ExecutionLimits::default()).unwrap();
+            let refs=ids.map(|(s,i)|d.symbol(s,i).unwrap());
+            let payload=&text[header..];
+            let (_,out)=decode_arithmetic_text_payload(payload,&refs,2000,40000,64).unwrap();
+            assert_eq!(decode_arithmetic_text_payload(payload,&refs,2000,out.stats.work_used,64).unwrap().1,out);
+            assert!(decode_arithmetic_text_payload(payload,&refs,2000,out.stats.work_used-1,64).is_err());
+            assert!(decode_arithmetic_text_payload(payload,&refs,0,40000,64).is_err());
+            assert!(decode_arithmetic_text_payload(payload,&refs,2000,40000,39).is_err());
+            for n in 0..payload.len(){
+                assert!(decode_arithmetic_text_payload(&payload[..n],&refs,2000,40000,64).is_err(),"truncated at {n}");
+            }
+            let mut extra=payload.to_vec();extra.push(0);
+            assert!(decode_arithmetic_text_payload(&extra,&refs,2000,40000,64).is_err());
+            let mut bad=page.clone();bad[prefix.len()+6]=99;
+            assert!(execute_pdf_dictionaries(global,&bad,ExecutionLimits::default()).is_err());
+        }
+    }
+}
