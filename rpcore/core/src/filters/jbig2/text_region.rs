@@ -1665,3 +1665,157 @@ mod huffman_selector_conformance_tests {
         }
     }
 }
+
+/// Scoped Table 17 Huffman aggregate bitmap. Unlike a standalone text
+/// payload, this consumes only the aggregate syntax from the shared cursor,
+/// leaves following dictionary fields untouched, and borrows the GR bank.
+/// Caller reserves the output bitmap separately from temporary refinement.
+#[derive(Debug,PartialEq,Eq)]
+pub struct HuffmanAggregateBitmap{
+    pub decoded:DecodedText,
+    pub pixel_decisions:usize,
+    pub entropy_bytes:usize,
+}
+pub fn decode_huffman_aggregate_bitmap(
+    reader:&mut crate::filters::ccitt::BitReader<'_>,width:u32,height:u32,
+    instances:u32,symbols:&[&Bitmap],total_symbols:u32,
+    neighborhood:&super::refinement::Neighborhood,gr:&mut super::refinement::ContextBank,
+    decision_limit:usize,work_limit:u64,temporary_packed_limit:usize,
+)->Result<HuffmanAggregateBitmap>{
+    use super::{integer::Integer,refinement,qm};
+    if instances<2||instances>MAX_INSTANCES||symbols.is_empty()||
+        symbols.len()>=total_symbols as usize||total_symbols>super::dictionary::MAX_SYMBOLS{
+        return Err(Error::Invalid("JBIG2 Huffman aggregate namespace or count"));
+    }
+    if gr.template()!=neighborhood.template(){return Err(Error::Invalid("JBIG2 aggregate GR template"));}
+    if decision_limit>MAX_TEXT_DECISIONS||work_limit>bitmap::MAX_COMPOSE_WORK||
+        temporary_packed_limit>bitmap::MAX_PACKED_BYTES{
+        return Err(Error::Limit("JBIG2 Huffman aggregate limits"));
+    }
+    let bits=super::dictionary::huffman_refinement_id_bits(0,total_symbols)?;
+    // Worst-case syntax per instance: strip DT/FS, DS, ID, RI,
+    // four refinement deltas, RSIZE. Each integer uses <=64 bits.
+    // This reserves work without charging unrelated following fields.
+    let mut extra=64u64+u64::from(instances)*(8*64+u64::from(bits)+1);
+    let left=work_limit.checked_sub(extra).ok_or(Error::Limit("JBIG2 aggregate syntax work"))?;
+    let integers=HuffmanTextIntegers::standard(6,8,11)?;
+    let tables=HuffmanTextRefinementTables::standard([15;4])?;
+    let options=Options{width,height,default_black:false,op:ComposeOp::Or,
+        strips:1,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances};
+    let initial=integers.strip(reader)?;
+    let mut region=Region::new(options,initial,left)?;
+    let mut remaining=decision_limit;
+    let mut entropy_bytes=0usize;
+    while region.remaining_instances()!=0{
+        let dt=integers.strip(reader)?;
+        let fs=integers.first(reader)?;
+        region.begin_strip(dt,fs)?;
+        let mut offset=None;
+        loop{
+            let mut id=0usize;
+            for _ in 0..bits{id=(id<<1)|usize::from(reader.bit()?);}
+            let src=symbols.get(id).ok_or(Error::Invalid("JBIG2 Huffman aggregate forward symbol"))?;
+            if let Some(fields)=tables.read(reader)?{
+                let opt=refinement_geometry(src,fields.dw,fields.dh,fields.dx,fields.dy)?;
+                let packed=(opt.width as usize).div_ceil(8).checked_mul(opt.height as usize)
+                    .ok_or(Error::Limit("JBIG2 aggregate temporary packed bytes"))?;
+                if packed>temporary_packed_limit{return Err(Error::Limit("JBIG2 aggregate temporary packed bytes"));}
+                let area=usize::try_from(u64::from(opt.width)*u64::from(opt.height))
+                    .map_err(|_|Error::Limit("JBIG2 aggregate decisions"))?;
+                remaining=remaining.checked_sub(area).ok_or(Error::Limit("JBIG2 aggregate decisions"))?;
+                let work=refinement::work_bound(neighborhood.template(),opt)?;
+                let block_work=(fields.bytes as u64).checked_mul(8).and_then(|v|v.checked_add(7))
+                    .and_then(|v|v.checked_add(work)).ok_or(Error::Limit("JBIG2 aggregate block work"))?;
+                region.left=region.left.checked_sub(block_work).ok_or(Error::Limit("JBIG2 aggregate block work"))?;
+                extra=extra.checked_add(block_work).ok_or(Error::Limit("JBIG2 aggregate work"))?;
+                let block=reader.take_aligned_bytes(fields.bytes)?;
+                let mut decoder=qm::Decoder::new(block,area)?;
+                let decoded=refinement::decode_bitmap(src,neighborhood,opt,gr,&mut decoder,work)?;
+                region.place(offset,0,&decoded.bitmap)?;
+                entropy_bytes=entropy_bytes.checked_add(fields.bytes).ok_or(Error::Limit("JBIG2 aggregate entropy bytes"))?;
+            }else{
+                region.place(offset,0,src)?;
+            }
+            match integers.delta(reader)?{
+                Integer::Oob=>{region.end_strip()?;break;},
+                Integer::Value(n)=>{
+                    if region.remaining_instances()==0{return Err(Error::Invalid("JBIG2 aggregate excess instances"));}
+                    offset=Some(n);
+                },
+            }
+        }
+    }
+    let mut decoded=region.finish()?;
+    decoded.stats.work_used=decoded.stats.work_used.checked_add(extra).ok_or(Error::Limit("JBIG2 aggregate work"))?;
+    Ok(HuffmanAggregateBitmap{decoded,pixel_decisions:decision_limit-remaining,entropy_bytes})
+}
+
+#[cfg(test)]
+mod huffman_aggregate_bitmap_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    use super::super::refinement::{ContextBank,Neighborhood,Template};
+    fn pack(bits:&str)->Vec<u8>{
+        let mut v=vec![0;bits.len().div_ceil(8)];
+        for (i,b) in bits.bytes().enumerate(){if b==b'1'{v[i/8]|=128>>(i%8);}}
+        v
+    }
+    #[test]
+    fn huffman_aggregate_fixed_id_and_shared_cursor(){
+        // Starts three bits into a dictionary. Total namespace 4, only
+        // ID 0 available. Initial DT=1, DT=1, FS=0, ID=00 RI=0,
+        // DS=2, ID=00 RI=0, OOB; trailing 101 belongs to caller.
+        let body="00000000000";
+        let stream=format!("101{body}0001101000001101");
+        let data=pack(&stream);
+        let a=Bitmap::from_packed(1,1,&[128]).unwrap();
+        let n=Neighborhood::nominal(Template::T1);
+        let run=|limit:usize,work:u64,total:u32|->Result<(HuffmanAggregateBitmap,usize)>{
+            let mut r=BitReader::new(&data,limit)?;
+            for _ in 0..3{r.bit()?;}
+            let mut g=ContextBank::new(Template::T1)?;
+            let d=decode_huffman_aggregate_bitmap(&mut r,8,4,2,&[&a],total,&n,&mut g,0,work,0)?;
+            let end=r.position();
+            assert_eq!([r.bit()?,r.bit()?,r.bit()?],[1,0,1]);
+            Ok((d,end))
+        };
+        let (d,end)=run(stream.len(),10000,4).unwrap();
+        assert_eq!(end,stream.len()-3);
+        assert_eq!(d.decoded.bitmap.packed(),[160,0,0,0]);
+        assert_eq!(d.pixel_decisions,0);assert_eq!(d.entropy_bytes,0);
+        assert_eq!(run(stream.len(),d.decoded.stats.work_used,4).unwrap().0,d);
+        assert!(run(stream.len(),d.decoded.stats.work_used-1,4).is_err());
+        for limit in 3..end{assert!(run(limit,10000,4).is_err());}
+        // First ID is 01, forward relative to the one available symbol.
+        let bad=pack(&format!("101{body}0101101000001101"));
+        let mut r=BitReader::new(&bad,stream.len()).unwrap();
+        for _ in 0..3{r.bit().unwrap();}
+        let mut g=ContextBank::new(Template::T1).unwrap();
+        assert!(decode_huffman_aggregate_bitmap(&mut r,8,4,2,&[&a],4,&n,&mut g,0,10000,0).is_err());
+    }
+    #[test]
+    fn huffman_aggregate_refinement_and_following_fields(){
+        // Previously independently encoded QM T1 block (3x2 target).
+        // OOB then another strip with one direct symbol, then sentinel.
+        let tail="0100000000000001101";
+        let mut data=vec![0,15,28,117,70,187,255,172];
+        data.extend(pack(tail));
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap();
+        let n=Neighborhood::nominal(Template::T1);
+        let run=|decision_limit:usize,packed:usize,work:u64|->Result<HuffmanAggregateBitmap>{
+            let mut r=BitReader::new(&data,64+tail.len())?;
+            let mut g=ContextBank::new(Template::T1)?;
+            let d=decode_huffman_aggregate_bitmap(&mut r,8,8,2,&[&a],2,&n,&mut g,decision_limit,work,packed)?;
+            assert_eq!(r.position(),64+tail.len()-3);
+            assert_eq!([r.bit()?,r.bit()?,r.bit()?],[1,0,1]);
+            Ok(d)
+        };
+        let d=run(6,2,30000).unwrap();
+        assert_eq!(d.decoded.bitmap.packed(),[160,64,124,124,124,0,0,0]);
+        assert_eq!((d.pixel_decisions,d.entropy_bytes),(6,3));
+        assert_eq!(run(6,2,d.decoded.stats.work_used).unwrap(),d);
+        assert!(run(5,2,30000).is_err());
+        assert!(run(6,1,30000).is_err());
+        assert!(run(6,2,d.decoded.stats.work_used-1).is_err());
+    }
+}

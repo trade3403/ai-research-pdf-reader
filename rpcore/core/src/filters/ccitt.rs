@@ -72,6 +72,16 @@ impl<'a> BitReader<'a>{
     }
     pub fn position(&self)->usize{self.pos}
     pub fn remaining(&self)->usize{self.end-self.pos}
+    /// Advance over sub-byte alignment and an exactly bounded byte block.
+    /// Failure leaves the cursor unchanged; no byte beyond the bit end is read.
+    pub(crate) fn take_aligned_bytes(&mut self,n:usize)->Result<&'a[u8]>{
+        let start=self.pos.div_ceil(8);
+        let end=start.checked_add(n).ok_or(Error::Limit("CCITT aligned bytes"))?;
+        let bits=end.checked_mul(8).ok_or(Error::Limit("CCITT aligned bits"))?;
+        if bits>self.end{return Err(Error::Invalid("CCITT truncated aligned bytes"));}
+        let block=self.data.get(start..end).ok_or(Error::Invalid("CCITT aligned span"))?;
+        self.pos=bits;Ok(block)
+    }
     pub fn bit(&mut self)->Result<u8>{
         if self.pos>=self.end{return Err(Error::Invalid("CCITT truncated bits"));}
         let b=(self.data[self.pos/8]>>(7-self.pos%8))&1;
