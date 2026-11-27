@@ -44,7 +44,7 @@ fn check(b:&[u8],n:usize,lookups:usize)->[usize;3]{
             let glyph=if f==1{Some(parse_context_positioning(b,n as u32,lookups,Default::default()).unwrap())}else{None};
             let class=if f==2{Some(parse_class_context_positioning(b,n as u32,lookups,Default::default()).unwrap())}else{None};
             assert_eq!(if let Some(p)=&glyph{p.rule_sets()}else{class.as_ref().unwrap().rule_sets()},raw.as_slice());
-            let representatives=if f==2{let mut reps=vec![None;raw.len()];for (g,&c) in cls.iter().enumerate(){if let Some(x)=reps.get_mut(c as usize){if x.is_none(){*x=Some(g as u16);}}}reps}else{Vec::new()};
+            let representatives=if f==2{let mut reps=vec![None;cls.iter().copied().max().unwrap_or(0) as usize+1];for (g,&c) in cls.iter().enumerate(){if let Some(x)=reps.get_mut(c as usize){if x.is_none(){*x=Some(g as u16);}}}reps}else{Vec::new()};
             for g in 0..n{
                 let g=g as u16;
                 let expected=coverage.binary_search(&g).ok().and_then(|i|raw.get(if f==1{i}else{cls[g as usize] as usize})).and_then(|x|x.as_deref());

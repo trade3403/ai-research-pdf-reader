@@ -22,7 +22,8 @@ pub fn parse_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:Co
     Ok(ContextPositioning{rules:parse_context_substitution(b,glyph_count,lookup_count,l)?})
 }
 
-use crate::{ClassContextSubstitution,parse_class_context_substitution};
+use crate::ClassContextSubstitution;
+use crate::font_context_subst::decode_class_context;
 /// Type 7 format 2: covered initial glyph, then class-based sequence rules.
 /// Class zero includes in-domain glyphs not assigned an explicit class.
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -38,7 +39,7 @@ impl ClassContextPositioning {
 /// Parse a caller-identified GPOS type 7 format 2 payload. Lookup references
 /// are checked against the owning GPOS LookupList; execution is separate.
 pub fn parse_class_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassContextPositioning,Error>{
-    Ok(ClassContextPositioning{rules:parse_class_context_substitution(b,glyph_count,lookup_count,l)?})
+    Ok(ClassContextPositioning{rules:decode_class_context(b,glyph_count,lookup_count,l,true)?})
 }
 
 use crate::{ContextAction,GlyphCoverage,CoverageContextSubstitution,parse_coverage_context_substitution};

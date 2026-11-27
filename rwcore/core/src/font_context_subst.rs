@@ -139,6 +139,10 @@ impl ClassContextSubstitution{
 /// Parse class-based context format 2. Class zero includes unassigned glyphs.
 /// Lookup execution remains separate.
 pub fn parse_class_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassContextSubstitution,Error>{
+    decode_class_context(b,glyph_count,lookup_count,l,false)
+}
+/// Compatibility for real GPOS fonts that omit trailing-only class sets.
+pub(crate) fn decode_class_context(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits,allow_trailing_only:bool)->Result<ClassContextSubstitution,Error>{
     if b.len()>l.max_bytes{return Err(Error::Limit("context bytes"));}
     if word(b,0)?!=2{return Err(Error::Unsupported("class context format"));}
     let cov=usize::from(word(b,2)?);
@@ -149,8 +153,31 @@ pub fn parse_class_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usi
     let header=8+2*n;
     if cov<header||cls<header||cov>b.len()||cls>b.len(){return Err(Error::Invalid("class context offset"));}
     let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,65536)?;
-    let classes=crate::parse_glyph_class_def(&b[cls..],glyph_count,n as u32,l.max_sets,65536)?;
-    let sets=parse_context_sets(b,n,8,header,n as u32,lookup_count,l)?;
+    let classes=crate::parse_glyph_class_def(&b[cls..],glyph_count,if allow_trailing_only{65536}else{n as u32},l.max_sets,65536)?;
+    let mut symbol_bound=n as u32;
+    if allow_trailing_only{
+        // Bound classes by actual in-domain assignments, not rule-set count.
+        // Only initial coverage glyphs may index the rule-set array.
+        for g in 0..glyph_count.min(65536){
+            let c=classes.class(g as u16).ok_or(Error::Invalid("context class domain"))?;
+            symbol_bound=symbol_bound.max(u32::from(c)+1);
+            if coverage.index(g as u16).is_some()&&usize::from(c)>=n{
+                return Err(Error::Invalid("context initial class set"));
+            }
+        }
+    }
+    let sets=parse_context_sets(b,n,8,header,symbol_bound,lookup_count,l)?;
+    if allow_trailing_only{
+        // A trailing-only class must actually exist; absent classes below
+        // the existing set count keep their prior unreachable-rule semantics.
+        let mut present=vec![false;symbol_bound as usize];
+        for g in 0..glyph_count.min(65536){
+            if let Some(c)=classes.class(g as u16){present[usize::from(c)]=true;}
+        }
+        for rs in sets.iter().flatten(){for rule in rs{for &c in &rule.remaining{
+            if usize::from(c)>=n&&!present[usize::from(c)]{return Err(Error::Invalid("context trailing class undefined"));}
+        }}}
+    }
     Ok(ClassContextSubstitution{coverage,classes,sets})
 }
 

@@ -30,3 +30,17 @@ fn change(b:&mut [u8],p:usize,v:u16){b[2*p..2*p+2].copy_from_slice(&v.to_be_byte
     let m=p.match_prefix(&[8,9]).unwrap();
     assert_eq!(m.input_len,1);assert!(m.actions.is_empty());
 }
+
+#[test]fn trailing_only_class_without_rule_set(){
+    // Native Gujarati pattern: only class 1 can start, class 2 follows.
+    // Coverage {3}; ClassDef assigns 3->1 and 4->2; only two set slots.
+    let b=data(&[2,12,18,2,0,28,1,1,3,1,3,2,1,2,1,4,2,1,2,1,2]);
+    let p=parse(&b).unwrap();
+    assert_eq!(p.match_prefix(&[3,4]).unwrap().actions,&[ContextAction{sequence_index:1,lookup_index:2}]);
+    assert!(p.match_prefix(&[4,3]).is_none());
+    assert!(p.match_prefix(&[3,3]).is_none());
+    let mut bad=b.clone();change(&mut bad,13,3);
+    assert!(parse(&bad).is_err()); // rule references undefined class 2
+    let mut bad=b.clone();change(&mut bad,8,4);
+    assert!(parse(&bad).is_err()); // initial coverage cannot index omitted set
+}
