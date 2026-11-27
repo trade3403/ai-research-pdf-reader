@@ -1361,6 +1361,16 @@ mod executor_tests{
         assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,tight).unwrap(),legacy);
     }
     #[test]
+    fn default_executor_official_direct_exact_parity(){
+        let (g,p)=fixture();
+        let l=ExecutionLimits::default();
+        let old=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
+        let exact=ExecutionLimits{work:old.stats().work_used,symbol_slots:old.stats().symbol_slots,
+            context_entries:old.stats().peak_context_entries,..l};
+        assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),old);
+        assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,exact).unwrap(),old);
+    }
+    #[test]
     fn executor_mixed_official_pixels(){
         let (g,p)=fixture();let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!((d.stats().dictionaries,d.stats().huffman,d.stats().arithmetic),(5,4,1));
@@ -1479,6 +1489,15 @@ mod retained_context_tests{
     fn fixture()->(Vec<u8>,Vec<u8>){
         let g=seg(1,0,0,&[],SOURCE);
         let mut p=info(2);p.extend(seg(3,0,1,&[1],CHILD));(g,p)
+    }
+    #[test]
+    fn default_executor_retained_gb_exact_parity(){
+        let (g,p)=fixture();
+        let l=ExecutionLimits::default();
+        let old=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
+        let exact=ExecutionLimits{work:old.stats().work_used,context_entries:old.stats().peak_context_entries,..l};
+        assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),old);
+        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:exact.context_entries-1,..exact}).is_err());
     }
     #[test]
     fn retained_official_source_snapshot(){
@@ -1864,6 +1883,24 @@ mod refinement_executor_tests{
     }
     fn ids(d:&DictionarySet,n:u32)->Vec<usize>{
         d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()
+    }
+    #[test]
+    fn default_executor_single_arithmetic_reexport_parity(){
+        for t in [0,1]{
+            let (g,p)=fixture(t);let l=ExecutionLimits::default();
+            let old=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
+            let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+            assert_eq!(d.arena,old.arena);assert_eq!(d.exports,old.exports);
+            assert_eq!(d.stats().arithmetic_aggregation,1);
+            assert_eq!(d.stats().work_used,old.stats().work_used+9*512+2);
+            assert_eq!(d.stats().symbol_slots,old.stats().symbol_slots+2);
+            assert_eq!(d.stats().peak_context_entries,old.stats().peak_context_entries+9*512);
+            for i in 0..3{assert!(std::ptr::eq(d.symbol(3,i).unwrap(),d.symbol(4,i).unwrap()));}
+            let exact=ExecutionLimits{work:d.stats().work_used,symbol_slots:d.stats().symbol_slots,
+                context_entries:d.stats().peak_context_entries,..l};
+            assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),d);
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{work:exact.work-1,..exact}).is_err());
+        }
     }
     #[test]
     fn refinement_executor_mixed_templates(){
@@ -2443,6 +2480,16 @@ mod huffman_refinement_executor_tests{
     }
     fn ids(d:&DictionarySet,n:u32)->Vec<usize>{d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()}
     #[test]
+    fn default_executor_huffman_refinement_exact_parity(){
+        for t in [0,1]{
+            let (g,p)=fixture(t);let l=ExecutionLimits::default();
+            let old=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
+            let exact=ExecutionLimits{work:old.stats().work_used,symbol_slots:old.stats().symbol_slots,
+                context_entries:old.stats().peak_context_entries,..l};
+            assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),old);
+        }
+    }
+    #[test]
     fn huffman_executor_both_templates_and_identity(){
         for t in [0,1]{
             let (g,p)=fixture(t);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
@@ -2570,6 +2617,16 @@ mod retained_huffman_gr_tests{
         let mut p=info(3);p.extend(seg(4,0,1,&[2],&body(t,flags,true,CHILD)));(g,p)
     }
     fn ids(d:&DictionarySet,n:u32)->Vec<usize>{d.dictionary(n).unwrap().iter().map(|s|s.index()).collect()}
+    #[test]
+    fn default_executor_retained_huffman_gr_exact_parity(){
+        for t in [0,1]{for flags in [1,3]{
+            let (g,p)=fixture(t,flags);let l=ExecutionLimits::default();
+            let old=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
+            let exact=ExecutionLimits{work:old.stats().work_used,context_entries:old.stats().peak_context_entries,..l};
+            assert_eq!(execute_pdf_dictionaries(&g,&p,exact).unwrap(),old);
+            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:exact.context_entries-1,..exact}).is_err());
+        }}
+    }
     #[test]
     fn retained_huffman_gr_both_templates(){
         for t in [0,1]{
