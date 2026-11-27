@@ -89,9 +89,12 @@ const RTL:GposHorizontalFlow=GposHorizontalFlow::RightToLeft;
     assert!(out.positioning.adjustments.iter().any(|a|a.design.x_advance!=0));
 }
 
+static FACE_KERN_TAGS:[[u8;4];1]=[*b"kern"];
+static FACE_UNKNOWN_TAGS:[[u8;4];1]=[*b"ZZZZ"];
+static FACE_KERN_UNKNOWN_TAGS:[[u8;4];2]=[*b"kern",*b"ZZZZ"];
 fn face_options()->FaceShapeOptions<'static>{
     FaceShapeOptions{script:*b"latn",language:None,substitution_tags:&[],
-        positioning_tags:&[*b"kern"],alternates:&[],flow:LTR,
+        positioning_tags:&FACE_KERN_TAGS,alternates:&[],flow:LTR,
         allow_missing_glyphs:false,require_requested_features:true}
 }
 #[test]fn same_face_native_text_to_positioned_run(){
@@ -109,7 +112,7 @@ fn face_options()->FaceShapeOptions<'static>{
 }
 #[test]fn same_face_reports_unavailable_tags_or_rejects(){
     let font=parse_font(FONT,Default::default()).unwrap();let face=font.face(0).unwrap();
-    let mut o=face_options();o.substitution_tags=&[*b"ZZZZ"];o.positioning_tags=&[*b"kern",*b"ZZZZ"];
+    let mut o=face_options();o.substitution_tags=&FACE_UNKNOWN_TAGS;o.positioning_tags=&FACE_KERN_UNKNOWN_TAGS;
     assert!(matches!(shape_font_face(face,"AV",o,Default::default()),Err(Error::Unsupported(_))));
     o.require_requested_features=false;
     let out=shape_font_face(face,"AV",o,Default::default()).unwrap();
