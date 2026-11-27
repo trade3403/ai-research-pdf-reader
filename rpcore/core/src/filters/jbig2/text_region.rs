@@ -989,3 +989,107 @@ mod huffman_text_refinement_field_tests{
         assert!(huffman_refinement_span(0,40,usize::MAX).is_err());
     }
 }
+
+/// Refined Huffman text region with a fresh GR bank shared by all QM
+/// blocks. Input begins at HTDT, after table alignment. Each block is
+/// bounded by its declared byte length; resume at that end, not QM read-ahead.
+pub fn decode_huffman_refined(data:&[u8],bit_len:usize,options:Options,
+    symbols:&[&Bitmap],ids:&HuffmanSymbolIds,integers:&HuffmanTextIntegers,
+    tables:&HuffmanTextRefinementTables,neighborhood:&super::refinement::Neighborhood,
+    decision_limit:usize,work_limit:u64)->Result<DecodedText>{
+    use super::{integer::Integer,refinement,qm};
+    use crate::filters::ccitt::BitReader;
+    if symbols.len()!=ids.count(){return Err(Error::Invalid("JBIG2 Huffman text symbol namespace"));}
+    if bit_len>MAX_TEXT_DECISIONS||decision_limit>MAX_TEXT_DECISIONS||
+        work_limit>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 Huffman refined text limits"));}
+    let mut reader=BitReader::new(data,bit_len)?;
+    let template=neighborhood.template();
+    // Precharge the complete bounded input and GR initialization.
+    let mut extra=(bit_len as u64).checked_add(template.context_count() as u64)
+        .ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+    let region_limit=work_limit.checked_sub(extra).ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+    let mut gr=refinement::ContextBank::new(template)?;
+    let mut remaining=decision_limit;
+    let mut base=0usize;
+    let initial=integers.strip(&mut reader)?;
+    let mut region=Region::new(options,initial,region_limit)?;
+    while region.remaining_instances()!=0{
+        let dt=integers.strip(&mut reader)?;
+        let fs=integers.first(&mut reader)?;
+        region.begin_strip(dt,fs)?;
+        let mut offset=None;
+        loop{
+            let curt=HuffmanTextIntegers::curt(&mut reader,options.strips)?;
+            let id=ids.decode(&mut reader)?;
+            let src=symbols.get(id).ok_or(Error::Invalid("JBIG2 Huffman text symbol ID"))?;
+            if let Some(fields)=tables.read(&mut reader)?{
+                let span=huffman_refinement_span(reader.position(),reader.remaining(),fields.bytes)?;
+                let start=base.checked_add(span.start).ok_or(Error::Limit("JBIG2 Huffman text block start"))?;
+                let end=base.checked_add(span.end).ok_or(Error::Limit("JBIG2 Huffman text block end"))?;
+                let block=data.get(start..end).ok_or(Error::Invalid("JBIG2 Huffman text truncated block"))?;
+                let opt=refinement_geometry(src,fields.dw,fields.dh,fields.dx,fields.dy)?;
+                let area=usize::try_from(u64::from(opt.width)*u64::from(opt.height))
+                    .map_err(|_|Error::Limit("JBIG2 Huffman text decisions"))?;
+                remaining=remaining.checked_sub(area).ok_or(Error::Limit("JBIG2 Huffman text decisions"))?;
+                let work=refinement::work_bound(template,opt)?;
+                extra=extra.checked_add(work).ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+                // Reserve refinement work from the same budget as placement.
+                region.left=region.left.checked_sub(work).ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+                let mut decoder=qm::Decoder::new(block,area)?;
+                let decoded=refinement::decode_bitmap(src,neighborhood,opt,&mut gr,&mut decoder,work)?;
+                region.place(offset,curt,&decoded.bitmap)?;
+                base=end;
+                let used=base.checked_mul(8).ok_or(Error::Limit("JBIG2 Huffman text block end"))?;
+                let rest=bit_len.checked_sub(used).ok_or(Error::Invalid("JBIG2 Huffman text block end"))?;
+                reader=BitReader::new(&data[base..],rest)?;
+            }else{
+                region.place(offset,curt,src)?;
+            }
+            match integers.delta(&mut reader)?{
+                Integer::Oob=>{region.end_strip()?;break;}
+                Integer::Value(n)=>{
+                    if region.remaining_instances()==0{return Err(Error::Invalid("JBIG2 Huffman text excess instances"));}
+                    offset=Some(n);
+                }
+            }
+        }
+    }
+    if reader.remaining()>7{return Err(Error::Invalid("JBIG2 Huffman refined text trailing bits"));}
+    let mut out=region.finish()?;
+    out.stats.work_used=out.stats.work_used.checked_add(extra).ok_or(Error::Limit("JBIG2 Huffman refined text work"))?;
+    Ok(out)
+}
+#[cfg(test)]
+mod huffman_refined_integration_tests{
+    use super::*;
+    use super::super::refinement::{Neighborhood,Template};
+    fn run(data:&[u8],bits:usize,decisions:usize,work:u64)->Result<DecodedText>{
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0])?;
+        let o=Options{width:8,height:4,default_black:false,op:ComposeOp::Or,
+            strips:1,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:1};
+        let ids=HuffmanSymbolIds::new(&[1])?;
+        let ints=HuffmanTextIntegers::standard(6,8,11)?;
+        let tables=HuffmanTextRefinementTables::standard([15;4])?;
+        decode_huffman_refined(data,bits,o,&[&a],&ids,&ints,&tables,&Neighborhood::nominal(Template::T1),decisions,work)
+    }
+    // Reference block from the independently encoded dictionary T1 fixture:
+    // 7x6 source, target 3x2, dx=1,dy=-1. Text deltas compensate floor(-4/2).
+    // initial DT=1, DT=1, FS=0, ID=0, RI=1; DW=-4 DH=-4 DX=3 DY=1;
+    // RSIZE=3, pad, QM [187,255,172], DS OOB.
+    const DATA:&[u8]=&[0,15,28,117,70,187,255,172,64];
+    #[test]
+    fn huffman_refined_text_single_block(){
+        let d=run(DATA,DATA.len()*8,6,20000).unwrap();
+        assert_eq!(d.bitmap.packed(),[160,64,0,0]);
+        assert_eq!(d.stats.instances,1);
+        assert_eq!(run(DATA,DATA.len()*8,6,d.stats.work_used).unwrap(),d);
+        assert!(run(DATA,DATA.len()*8,6,d.stats.work_used-1).is_err());
+        assert!(run(DATA,DATA.len()*8,5,20000).is_err());
+    }
+    #[test]
+    fn huffman_refined_text_block_bounds(){
+        for n in 0..DATA.len(){assert!(run(&DATA[..n],n*8,6,20000).is_err());}
+        let mut bad=DATA.to_vec();let n=bad.len();bad[n-2]=0x90;
+        assert!(run(&bad,bad.len()*8,6,20000).is_err());
+    }
+}
