@@ -91,13 +91,17 @@ impl Potentials{
 /// fail on integer range/budget limits; no caller state is modified.
 /// Call independently for design and pixel units; never mix their coordinates.
 pub fn solve_gpos_interval_widths(nominal:&[i32],constraints:&[GposIntervalConstraint],flow:GposHorizontalFlow,limits:GposIntervalLimits)->Result<Vec<i32>,Error>{
+    let mut work=limits.max_work;
+    solve_gpos_interval_widths_with_work(nominal,constraints,flow,limits,&mut work)
+}
+pub(crate) fn solve_gpos_interval_widths_with_work(nominal:&[i32],constraints:&[GposIntervalConstraint],flow:GposHorizontalFlow,limits:GposIntervalLimits,work:&mut usize)->Result<Vec<i32>,Error>{
     let n=nominal.len();
     if n>limits.max_glyphs||constraints.len()>limits.max_constraints{return Err(Error::Limit("gpos interval size"));}
     for c in constraints{
         if c.start>=c.end||c.end>n{return Err(Error::Invalid("gpos interval bounds"));}
     }
     let count=n.checked_add(1).ok_or(Error::Limit("gpos interval size"))?;
-    let mut p=Potentials::new(count,limits.max_work)?;
+    let mut p=Potentials::new(count,(*work).min(limits.max_work))?;
     for c in constraints{
         if !p.constrain(c.start,c.end,c.width)?{return Err(Error::Invalid("gpos interval inconsistent"));}
     }
@@ -114,5 +118,6 @@ pub fn solve_gpos_interval_widths(nominal:&[i32],constraints:&[GposIntervalConst
         result.push(i32::try_from(sub(after,before)?).map_err(|_|Error::Limit("gpos interval width"))?);
         root=next;before=after;
     }
+    *work=p.left;
     Ok(result)
 }

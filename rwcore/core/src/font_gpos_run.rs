@@ -109,12 +109,50 @@ impl DirectionalLedger{
             ||self.spans.range(a..b).next().is_some()
     }
 }
+#[derive(Clone,Copy)]
+struct JointSpan{
+    child:usize,
+    design:GposIntervalConstraint,
+    pixels:GposIntervalConstraint,
+}
+struct JointLedger{
+    pairs:std::collections::BTreeMap<(usize,usize),JointSpan>,
+    child_pair:Vec<Option<(usize,usize)>>,
+    limits:GposIntervalLimits,
+}
+impl JointLedger{
+    fn remove(&mut self,key:(usize,usize),edges:&mut [Option<GposAttachmentEdge>],children:&mut [bool],updates:&mut usize)->Result<(),Error>{
+        charge(updates,1)?;
+        let span=self.pairs.remove(&key).ok_or(Error::Invalid("joint cursive span"))?;
+        self.child_pair[span.child]=None;children[span.child]=false;edges[span.child]=None;
+        Ok(())
+    }
+    fn solve(&self,nominal:&[(i32,i32)],out:&mut [GposRunAdjustment],pixel:bool,flow:GposHorizontalFlow,work:&mut usize)->Result<(),Error>{
+        if self.pairs.is_empty(){return Ok(());}
+        let mut widths=Vec::new();
+        widths.try_reserve_exact(out.len()).map_err(|_|Error::Limit("joint cursive allocation"))?;
+        for (n,a) in nominal.iter().zip(out.iter()){
+            let correction=if pixel{a.pixels.x_advance}else{a.design.x_advance};
+            widths.push(n.0.checked_add(correction).ok_or(Error::Limit("joint cursive nominal width"))?);
+        }
+        let mut constraints=Vec::new();
+        constraints.try_reserve_exact(self.pairs.len()).map_err(|_|Error::Limit("joint cursive allocation"))?;
+        constraints.extend(self.pairs.values().map(|s|if pixel{s.pixels}else{s.design}));
+        let solved=crate::font_gpos_intervals::solve_gpos_interval_widths_with_work(&widths,&constraints,flow,self.limits,work)?;
+        for ((n,a),width) in nominal.iter().zip(out.iter_mut()).zip(solved){
+            let correction=width.checked_sub(n.0).ok_or(Error::Limit("joint cursive adjustment"))?;
+            if pixel{a.pixels.x_advance=correction;}else{a.design.x_advance=correction;}
+        }
+        Ok(())
+    }
+}
 struct MixedCursive<'g>{
     design_advances:&'g [(i32,i32)],
     pixel_advances:&'g [(i32,i32)],
     children:Vec<bool>,
     flow:Option<GposHorizontalFlow>,
     ledger:Option<DirectionalLedger>,
+    joint:Option<JointLedger>,
     connections:usize,
     spans:usize,
 }
@@ -159,9 +197,14 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         let edges=self.attachment_edges.as_mut().ok_or(Error::Unsupported("gpos attachment mode"))?;
         if let Some(state)=self.cursive.as_mut(){
             if state.children[child]{
-                let ledger=state.ledger.as_mut().ok_or(Error::Unsupported("mixed cursive parent replacement"))?;
-                let start=ledger.child_start[child].ok_or(Error::Invalid("cursive ledger child"))?;
-                ledger.remove(start,&mut self.out,edges,&mut state.children,&mut self.attachment_updates)?;
+                if let Some(joint)=state.joint.as_mut(){
+                    let key=joint.child_pair[child].ok_or(Error::Invalid("joint cursive child"))?;
+                    joint.remove(key,edges,&mut state.children,&mut self.attachment_updates)?;
+                }else{
+                    let ledger=state.ledger.as_mut().ok_or(Error::Unsupported("mixed cursive parent replacement"))?;
+                    let start=ledger.child_start[child].ok_or(Error::Invalid("cursive ledger child"))?;
+                    ledger.remove(start,&mut self.out,edges,&mut state.children,&mut self.attachment_updates)?;
+                }
             }
         }
         edges[child]=Some(edge);
@@ -179,6 +222,24 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         charge(&mut state.connections,1)?;
         charge(&mut state.spans,b-a)?;
         charge(&mut self.attachment_updates,1)?;
+        if let Some(joint)=state.joint.as_mut(){
+            let flow=state.flow.ok_or(Error::Invalid("joint cursive flow"))?;
+            if let Some(key)=joint.child_pair[child]{
+                joint.remove(key,edges,&mut state.children,&mut self.attachment_updates)?;
+            }
+            if joint.pairs.contains_key(&(a,b)){
+                joint.remove((a,b),edges,&mut state.children,&mut self.attachment_updates)?;
+            }
+            if joint.pairs.len()>=joint.limits.max_constraints{return Err(Error::Limit("joint cursive constraints"));}
+            let value=|i:usize,pixel:bool|if i==child{0}else if pixel{self.out[i].pixels.x_placement}else{self.out[i].design.x_placement};
+            let design=GposIntervalConstraint::from_logical_pair(a,b,forward.design_delta.0,value(a,false),value(b,false),flow)?;
+            let pixels=GposIntervalConstraint::from_logical_pair(a,b,forward.pixel_delta.0,value(a,true),value(b,true),flow)?;
+            joint.pairs.insert((a,b),JointSpan{child,design,pixels});
+            joint.child_pair[child]=Some((a,b));edges[child]=Some(edge);state.children[child]=true;
+            self.out[child].design.x_placement=0;self.out[child].design.y_placement=0;
+            self.out[child].pixels.x_placement=0;self.out[child].pixels.y_placement=0;
+            return Ok(());
+        }
         if let Some(ledger)=state.ledger.as_mut(){
             // Last successful attachment wins for the moving child. An exact
             // interval can also reverse its fixed end without leaving two edges.
@@ -461,7 +522,7 @@ pub fn execute_gpos_mixed_horizontal(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,limits:GposMixedRunLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,None)
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,None,None)
 }
 
 /// Explicit physical horizontal flow. The glyph stream remains in logical
@@ -480,12 +541,24 @@ pub fn execute_gpos_mixed_directional(
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
     mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,
 )->Result<GposCursiveRun,Error>{
-    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow))
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),None)
+}
+/// Opt-in deferred joint interval solve. Active cursive equations are captured
+/// at attachment time; replacements discard old equations. Subsequent value
+/// advances are soft width preferences, placements remain local residuals.
+/// Design/pixel passes share one union/find budget. This is not equivalent to
+/// immediate OpenType advance redistribution or general chain reversal.
+pub fn execute_gpos_mixed_joint(
+    program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
+    design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
+    mode:GposRunMode,flow:GposHorizontalFlow,limits:GposMixedRunLimits,intervals:GposIntervalLimits,
+)->Result<GposCursiveRun,Error>{
+    execute_gpos_mixed_inner(program,glyphs,prior,design_advances,pixel_advances,sources,mode,limits,Some(flow),Some(intervals))
 }
 fn execute_gpos_mixed_inner(
     program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
     design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
-    mode:GposRunMode,limits:GposMixedRunLimits,flow:Option<GposHorizontalFlow>,
+    mode:GposRunMode,limits:GposMixedRunLimits,flow:Option<GposHorizontalFlow>,joint_limits:Option<GposIntervalLimits>,
 )->Result<GposCursiveRun,Error>{
     use crate::font_gpos_cursive_run::{origins,directional_origins};
     let n=glyphs.len();
@@ -493,6 +566,7 @@ fn execute_gpos_mixed_inner(
     if prior.len()!=n||design_advances.len()!=n||pixel_advances.len()!=n{return Err(Error::Invalid("mixed gpos length"));}
     if n>l.run.max_glyphs||n>limits.attachments.max_glyphs||program.roots().len()>l.run.max_roots{return Err(Error::Limit("mixed gpos size"));}
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("mixed gpos glyph"));}
+    if joint_limits.is_some_and(|l|n>l.max_glyphs){return Err(Error::Limit("joint cursive glyphs"));}
     validate_ligature_sources(sources,n,l.run.max_glyphs)?;
     for lookup in program.lookups(){if !(1..=8).contains(&lookup.effective_kind()){return Err(Error::Unsupported("mixed gpos kind"));}}
     fn filled<T:Clone>(n:usize,value:T)->Result<Vec<T>,Error>{
@@ -506,12 +580,21 @@ fn execute_gpos_mixed_inner(
         active:Vec::new(),attachment_edges:Some(filled(n,None)?),parent_visits:limits.marks.max_parent_visits,
         attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),
         cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,flow,
-            ledger:if flow.is_some(){Some(DirectionalLedger{spans:Default::default(),child_start:filled(n,None)?})}else{None},
+            ledger:if flow.is_some()&&joint_limits.is_none(){Some(DirectionalLedger{spans:Default::default(),child_start:filled(n,None)?})}else{None},
+            joint:if let Some(limits)=joint_limits{Some(JointLedger{pairs:Default::default(),child_pair:filled(n,None)?,limits})}else{None},
             connections:limits.max_connections,spans:limits.max_span_visits})};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("mixed gpos root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
         let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
+    }
+    if let Some(joint)=runner.cursive.as_ref().and_then(|c|c.joint.as_ref()){
+        let flow=flow.ok_or(Error::Invalid("joint cursive flow"))?;
+        let mut work=joint.limits.max_work;
+        joint.solve(design_advances,&mut runner.out,false,flow,&mut work)?;
+        if matches!(mode,GposRunMode::DevicePixels{..}){
+            joint.solve(pixel_advances,&mut runner.out,true,flow,&mut work)?;
+        }
     }
     let edges=runner.attachment_edges.ok_or(Error::Invalid("mixed gpos edges"))?;
     let pen=|nominal:&[(i32,i32)],pixel:bool|match flow{

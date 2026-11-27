@@ -475,3 +475,76 @@ fn cursive_pair_words(first:u16,second:u16,rtl:bool)->Vec<u16>{
     assert_eq!(x.pixel_origins,vec![(-2,0),(-2,0)]);
     assert_eq!(x.edges[1].unwrap().pixel_delta,(0,0));
 }
+
+fn joint(p:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],nominal:&[(i32,i32)],flow:GposHorizontalFlow)->Result<GposCursiveRun,Error>{
+    let n=glyphs.len();
+    execute_gpos_mixed_joint(p,glyphs,prior,nominal,&vec![(0,0);n],&vec![GposLigatureSource::Unmapped;n],
+        GposRunMode::DesignOnly,flow,Default::default(),Default::default())
+}
+#[test]fn joint_nested_intervals_both_flows(){
+    use GposHorizontalFlow::*;
+    let g=parse_gdef(&words(&[1,0,12,0,0,0,1,3,2,1,3]),32,Default::default()).unwrap();
+    for (flow,rtl) in [(LeftToRight,false),(RightToLeft,true)]{
+        let mut inner=cursive_pair_words(3,4,rtl);
+        inner[12]=if rtl{30}else{40};
+        let b=fixture(&[(3,8,vec![directional_cursive(rtl)]),(3,0,vec![inner])]);
+        let p=compile_gpos_program(&b,&[0,1],32,Some(&g),Default::default()).unwrap();
+        let x=joint(&p,&[3,4,7],&[Default::default();3],&[(80,0);3],flow).unwrap();
+        assert_eq!(x.edges[1].unwrap().parent,0);assert_eq!(x.edges[2].unwrap().parent,0);
+        assert_eq!(x.design_origins,if rtl{vec![(-80,0),(-150,0),(-210,0)]}else{vec![(0,0),(70,0),(130,0)]});
+        assert_eq!(x.adjustments[1].design.x_placement,0);assert_eq!(x.adjustments[2].design.x_placement,0);
+    }
+}
+#[test]fn joint_crossing_filtered_intervals(){
+    let g=parse_gdef(&words(&[1,0,12,0,0,0,1,3,6,1,3,0,0,1,0]),32,Default::default()).unwrap();
+    let b=fixture(&[(3,8,vec![mixed_cursive()]),(3,2,vec![cursive_pair_words(4,8,false)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,Some(&g),Default::default()).unwrap();
+    let x=joint(&p,&[3,4,7,8],&[Default::default();4],&[(80,0);4],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.edges[2].unwrap().parent,0);assert_eq!(x.edges[3].unwrap().parent,1);
+    assert_eq!(x.design_origins,vec![(0,0),(80,0),(130,0),(210,0)]);
+}
+#[test]fn joint_mark_replacement_discards_constraint(){
+    let b=fixture(&[(3,0,vec![cursive_pair_words(7,3,true)]),(1,0,vec![single(9)]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1,2],32,None,Default::default()).unwrap();
+    let x=joint(&p,&[7,3],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::RightToLeft).unwrap();
+    assert_eq!(x.adjustments[1].design.x_advance,9);
+    assert_eq!(x.edges[1].unwrap().design_delta,(90,180));assert_eq!(x.design_origins,vec![(-80,0),(-169,0)]);
+}
+#[test]fn joint_nested_extension_and_soft_value_order(){
+    let context=vec![3,1,2,16,0,1,0,2,1,1,3];
+    let mut ext=vec![1,3,0,8];ext.extend(mixed_cursive());
+    let b=fixture(&[(7,0,vec![context]),(9,0,vec![ext]),(1,0,vec![single(9)])]);
+    let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let x=joint(&p,&[3,7],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.adjustments[0].design.x_advance,50);assert_eq!(x.design_origins[1].0,130);
+    assert_eq!(x.edges[1].unwrap().parent,0);
+}
+#[test]fn joint_exact_reversal_and_cycle_guard(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(3,1,vec![mixed_cursive()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=joint(&p,&[3,7],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::LeftToRight).unwrap();
+    assert_eq!(x.edges[0].unwrap().parent,1);assert!(x.edges[1].is_none());
+    let b=fixture(&[(3,1,vec![cursive_pair_words(7,3,false)]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    assert!(matches!(joint(&p,&[7,3],&[Default::default();2],&[(80,0);2],GposHorizontalFlow::LeftToRight),Err(Error::Invalid("gpos attachment cycle"))));
+}
+#[test]fn joint_shared_device_work_and_limits(){
+    let c=vec![1,14,2,0,22,40,0,1,2,3,7,3,(-30i16) as u16,20,10,0,10,12,1,0x6c00,1,100,5];
+    let b=fixture(&[(3,0,vec![c])]);let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let prior=[GposRunAdjustment::default();2];
+    let run=|mode,intervals|execute_gpos_mixed_joint(&p,&[3,7],&prior,&[(80,0);2],&[(2,0),(3,0)],
+        &[GposLigatureSource::Unmapped;2],mode,GposHorizontalFlow::RightToLeft,Default::default(),intervals);
+    let device=GposRunMode::DevicePixels{x_ppem:10,y_ppem:10};
+    let x=run(device,Default::default()).unwrap();
+    assert_eq!(x.adjustments[1].design.x_advance,50);assert_eq!(x.adjustments[1].pixels.x_advance,-4);
+    assert_eq!(x.pixel_origins,vec![(-2,0),(-1,0)]);
+    let mut min=None;
+    for max_work in 0..100{
+        let l=GposIntervalLimits{max_work,..Default::default()};
+        if run(GposRunMode::DesignOnly,l).is_ok(){min=Some(l);break;}
+    }
+    assert!(run(device,min.unwrap()).is_err());
+    assert!(run(device,GposIntervalLimits{max_constraints:0,..Default::default()}).is_err());
+    assert!(run(device,GposIntervalLimits{max_glyphs:1,..Default::default()}).is_err());
+    assert_eq!(prior,[Default::default();2]);
+}
