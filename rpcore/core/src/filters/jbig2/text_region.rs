@@ -612,3 +612,56 @@ mod shared_text_tests{
         assert_eq!(out.bitmap.packed(),[16,64,128,0]);
     }
 }
+
+/// Canonical Huffman symbol IDs, ordered by symbol namespace index.
+/// Zero lengths disable IDs. The all-zero singleton is deliberately
+/// excluded from this scoped entry; wire-format table parsing is separate.
+pub struct HuffmanSymbolIds{
+    table:super::huffman::Table,
+    count:usize,
+}
+impl HuffmanSymbolIds{
+    pub fn new(lengths:&[u8])->Result<Self>{
+        use super::huffman::{Row,Range,Table,MAX_ROWS};
+        if lengths.len()>MAX_ROWS{return Err(Error::Limit("JBIG2 Huffman symbol table rows"));}
+        if lengths.is_empty(){return Err(Error::Invalid("JBIG2 empty Huffman symbol table"));}
+        let mut rows=Vec::new();
+        rows.try_reserve_exact(lengths.len()).map_err(|_|Error::Limit("JBIG2 Huffman symbol rows"))?;
+        for (id,&prefix_len) in lengths.iter().enumerate(){
+            rows.push(Row{prefix_len,range:Range::Normal{base:id as i64,extra:0}});
+        }
+        Ok(Self{table:Table::new(&rows)?,count:lengths.len()})
+    }
+    pub fn count(&self)->usize{self.count}
+    pub fn decode(&self,reader:&mut crate::filters::ccitt::BitReader<'_>)->Result<usize>{
+        match self.table.decode(reader)?{
+            super::integer::Integer::Value(id) if id>=0&&(id as usize)<self.count=>Ok(id as usize),
+            _=>Err(Error::Invalid("JBIG2 Huffman symbol ID")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod huffman_symbol_id_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    #[test]
+    fn huffman_symbol_ids_canonical_order(){
+        // Independent codewords: ID 1=0, ID 3=10, ID 0=110, ID 4=111.
+        let t=HuffmanSymbolIds::new(&[3,1,0,2,3]).unwrap();
+        let mut r=BitReader::new(&[0x5b,0x80],9).unwrap();
+        for id in [1,3,0,4]{assert_eq!(t.decode(&mut r).unwrap(),id);}
+        assert_eq!(r.remaining(),0);assert_eq!(t.count(),5);
+    }
+    #[test]
+    fn huffman_symbol_ids_invalid_and_truncated(){
+        for lengths in [&[][..],&[0,0],&[1,1,1],&[33]]{
+            assert!(HuffmanSymbolIds::new(lengths).is_err());
+        }
+        assert!(HuffmanSymbolIds::new(&vec![13;super::super::huffman::MAX_ROWS+1]).is_err());
+        let t=HuffmanSymbolIds::new(&[0,2]).unwrap();
+        assert!(t.decode(&mut BitReader::new(&[0x80],2).unwrap()).is_err());
+        assert!(t.decode(&mut BitReader::new(&[0],1).unwrap()).is_err());
+        assert_eq!(t.decode(&mut BitReader::new(&[0],2).unwrap()).unwrap(),1);
+    }
+}
