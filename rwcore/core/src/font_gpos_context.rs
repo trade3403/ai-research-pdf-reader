@@ -40,3 +40,22 @@ impl ClassContextPositioning {
 pub fn parse_class_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassContextPositioning,Error>{
     Ok(ClassContextPositioning{rules:parse_class_context_substitution(b,glyph_count,lookup_count,l)?})
 }
+
+use crate::{ContextAction,GlyphCoverage,CoverageContextSubstitution,parse_coverage_context_substitution};
+/// Type 7 format 3: one independent glyph coverage per input position.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct CoverageContextPositioning { rules:CoverageContextSubstitution }
+impl CoverageContextPositioning {
+    pub fn input_len(&self)->usize{self.rules.input_len()}
+    pub fn coverages(&self)->&[GlyphCoverage]{self.rules.coverages()}
+    pub fn actions(&self)->&[ContextAction]{self.rules.actions()}
+    pub fn match_prefix(&self,glyphs:&[u16])->Option<ContextMatch<'_>>{self.rules.match_prefix(glyphs)}
+    pub fn match_at(&self,glyphs:&[u16],start:usize)->Option<ContextMatch<'_>>{
+        self.match_prefix(glyphs.get(start..)?)
+    }
+}
+/// Parse caller-identified GPOS type 7 format 3. Shared coverage offsets
+/// consume cumulative budgets per reference; lookup indices refer to GPOS.
+pub fn parse_coverage_context_positioning(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<CoverageContextPositioning,Error>{
+    Ok(CoverageContextPositioning{rules:parse_coverage_context_substitution(b,glyph_count,lookup_count,l)?})
+}

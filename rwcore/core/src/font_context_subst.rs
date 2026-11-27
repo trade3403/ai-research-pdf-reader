@@ -184,7 +184,8 @@ pub fn parse_coverage_context_substitution(b:&[u8],glyph_count:u32,lookup_count:
     let action_start=6+2*n;
     let header=action_start+4*action_count;
     if header>b.len(){return Err(Error::Invalid("coverage context truncated header"));}
-    let mut actions=Vec::with_capacity(action_count);
+    let mut actions=Vec::new();
+    actions.try_reserve_exact(action_count).map_err(|_|Error::Limit("context allocation"))?;
     for i in 0..action_count{
         let p=action_start+4*i;
         let sequence_index=word(b,p)?;
@@ -194,7 +195,8 @@ pub fn parse_coverage_context_substitution(b:&[u8],glyph_count:u32,lookup_count:
         }
         actions.push(ContextAction{sequence_index,lookup_index});
     }
-    let mut coverages=Vec::with_capacity(n);
+    let mut coverages=Vec::new();
+    coverages.try_reserve_exact(n).map_err(|_|Error::Limit("context allocation"))?;
     let(mut records,mut expanded)=(0usize,0usize);
     for i in 0..n{
         let at=usize::from(word(b,6+2*i)?);
