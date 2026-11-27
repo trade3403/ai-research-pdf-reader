@@ -183,6 +183,9 @@ impl ClassChainContextSubstitution {
 /// are returned, not executed. Shared rule offsets consume the same budgets
 /// as format 1; each ClassDef is bounded separately by max_sets records.
 pub fn parse_class_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits)->Result<ClassChainContextSubstitution,Error>{
+    decode_class_chain_context(b,glyph_count,lookup_count,l,false)
+}
+pub(crate) fn decode_class_chain_context(b:&[u8],glyph_count:u32,lookup_count:usize,l:ContextLimits,allow_trailing_only:bool)->Result<ClassChainContextSubstitution,Error>{
     if b.len()>l.max_bytes{return Err(Error::Limit("chain bytes"));}
     if word(b,0)?!=2{return Err(Error::Unsupported("class chain format"));}
     let cov=usize::from(word(b,2)?);
@@ -198,9 +201,28 @@ pub fn parse_class_chain_context_substitution(b:&[u8],glyph_count:u32,lookup_cou
     }
     let coverage=parse_glyph_coverage(&b[cov..],glyph_count,l.max_sets,65536)?;
     let backtrack=crate::parse_glyph_class_def(&b[back..],glyph_count,65536,l.max_sets,65536)?;
-    let input=crate::parse_glyph_class_def(&b[input..],glyph_count,n as u32,l.max_sets,65536)?;
+    let input=crate::parse_glyph_class_def(&b[input..],glyph_count,if allow_trailing_only{65536}else{n as u32},l.max_sets,65536)?;
     let lookahead=crate::parse_glyph_class_def(&b[ahead..],glyph_count,65536,l.max_sets,65536)?;
-    let sets=parse_chain_sets(b,n,12,header,[65536,n as u32,65536],lookup_count,l)?;
+    let mut bound=n as u32;
+    let mut present=Vec::new();
+    if allow_trailing_only{
+        present.try_reserve_exact(65536).map_err(|_|Error::Limit("chain class allocation"))?;
+        present.resize(65536,false);
+        for g in 0..glyph_count.min(65536){
+            let c=input.class(g as u16).ok_or(Error::Invalid("chain input class domain"))?;
+            present[usize::from(c)]=true;
+            bound=bound.max(u32::from(c)+1);
+            if coverage.index(g as u16).is_some()&&usize::from(c)>=n{
+                return Err(Error::Invalid("chain initial class set"));
+            }
+        }
+    }
+    let sets=parse_chain_sets(b,n,12,header,[65536,bound,65536],lookup_count,l)?;
+    if allow_trailing_only{
+        for rs in sets.iter().flatten(){for r in rs{for &c in &r.remaining{
+            if usize::from(c)>=n&&!present[usize::from(c)]{return Err(Error::Invalid("chain trailing class undefined"));}
+        }}}
+    }
     Ok(ClassChainContextSubstitution{coverage,backtrack,input,lookahead,sets})
 }
 
