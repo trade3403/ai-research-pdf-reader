@@ -1072,7 +1072,7 @@ pub struct ExecutionStats{
     /// All executed single-refinement dictionaries, either coding mode.
     pub single_refinement:u32,
     pub huffman_single_refinement:u32,
-    /// Arithmetic dictionaries executed in the opt-in aggregation mode.
+    /// Arithmetic dictionaries dispatched in aggregation mode (not instance count).
     pub arithmetic_aggregation:u32,
     pub new_symbols:u32,
     pub symbol_slots:usize,
@@ -1110,10 +1110,16 @@ impl DictionarySet{
 /// Any error discards the entire result. The work budget is a conservative
 /// algorithmic accounting unit, not a memory/RSS or wall-clock guarantee.
 pub fn execute_pdf_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
+    execute_pdf_dictionaries_impl(globals,page,limits,true)
+}
+/// Explicit legacy single-reference execution. Use this entry for callers
+/// that require the previous exact work, symbol-slot and context budgets.
+/// No retry or implicit fallback is performed by either entry.
+pub fn execute_pdf_dictionaries_single_reference(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
     execute_pdf_dictionaries_impl(globals,page,limits,false)
 }
-/// Opt-in arithmetic aggregation execution, including retained/reused GR.
-/// The legacy executor continues to admit only single-reference refinement.
+/// Explicit arithmetic aggregation execution, equivalent to the default,
+/// including retained/reused GR.
 pub fn execute_pdf_dictionaries_with_aggregation(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<DictionarySet>{
     execute_pdf_dictionaries_impl(globals,page,limits,true)
 }
@@ -1349,14 +1355,14 @@ mod executor_tests{
     #[test]
     fn aggregation_executor_legacy_direct_parity(){
         let (g,p)=fixture();let l=ExecutionLimits::default();
-        let legacy=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let legacy=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
         assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap(),legacy);
         let tight=ExecutionLimits{work:legacy.stats().work_used,symbol_slots:legacy.stats().symbol_slots,..l};
         assert_eq!(execute_pdf_dictionaries_with_aggregation(&g,&p,tight).unwrap(),legacy);
     }
     #[test]
     fn executor_mixed_official_pixels(){
-        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture();let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!((d.stats().dictionaries,d.stats().huffman,d.stats().arithmetic),(5,4,1));
         assert_eq!((d.stats().new_symbols,d.stats().pixels,d.stats().packed_bytes),(5,184,32));
         assert_eq!(d.stats().symbol_slots,32);
@@ -1368,7 +1374,7 @@ mod executor_tests{
     }
     #[test]
     fn executor_order_and_shared_identity(){
-        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture();let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,1),[0]);assert_eq!(ids(&d,2),[1,2]);assert_eq!(ids(&d,4),[3,4]);
         assert_eq!(ids(&d,5),[1,2,0,3,4]);assert_eq!(ids(&d,6),[1,2,0,3,4,0]);
         assert!(std::ptr::eq(d.symbol(1,0).unwrap(),d.symbol(6,5).unwrap()));
@@ -1383,7 +1389,7 @@ mod executor_tests{
     fn executor_new_and_imported_namespace(){
         let g=seg(1,0,0,&[],FIRST);
         let mut p=info(2);p.extend(seg(3,0,1,&[1],MIXED));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,3),[0,2]);
         assert_eq!(d.symbol(3,1).unwrap().packed(),[0x80,0x40]);
         assert_eq!(d.bitmap(SymbolId(1)).unwrap().packed(),[0xa0]);
@@ -1391,10 +1397,10 @@ mod executor_tests{
     }
     #[test]
     fn executor_cumulative_limits(){
-        let (g,p)=fixture();let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture();let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         let l=ExecutionLimits{dictionaries:5,new_symbols:5,symbol_slots:32,pixels:184,
             packed_bytes:32,work:d.stats().work_used,..ExecutionLimits::default()};
-        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        assert_eq!(execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap(),d);
         for l in [
             ExecutionLimits{dictionaries:4,..l},ExecutionLimits{new_symbols:4,..l},
             ExecutionLimits{symbol_slots:31,..l},ExecutionLimits{pixels:183,..l},
@@ -1402,44 +1408,44 @@ mod executor_tests{
             ExecutionLimits{export_runs_per_dictionary:1,..l},
             ExecutionLimits{decisions_per_dictionary:71,..l},
             ExecutionLimits{symbol_slots:MAX_EXEC_SLOTS+1,..l},
-        ]{assert!(execute_pdf_dictionaries(&g,&p,l).is_err());}
+        ]{assert!(execute_pdf_dictionaries_single_reference(&g,&p,l).is_err());}
     }
     #[test]
     fn executor_custom_table_dispatch(){
         let g=seg(1,53,0,&[],A);
         let mut body=FIRST.to_vec();body[1]=0x41; // custom BMSIZE, other standard
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&body));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(d.symbol(3,0).unwrap().packed(),[240,136,136,136,240,128,128,128]);
         assert!(d.dictionary(1).is_none());
         let mut p=info(2);p.extend(seg(3,0,1,&[],&body));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn executor_bad_graph_or_payload(){
         let g=seg(1,0,0,&[],FIRST);
         let mut p=info(2);p.extend(seg(3,0,1,&[0],&reexport(1)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut p=info(2);p.extend(seg(3,0,1,&[2],&reexport(1)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&reexport(2)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut bad=TWO.to_vec();bad.pop();
         let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut bad=TWO.to_vec();bad[0]|=1; // reuse without a referred dictionary
         let mut p=info(2);p.extend(seg(3,0,1,&[],&bad));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn executor_empty_and_non_dictionary_scope(){
         let p=info(1);
-        let d=execute_pdf_dictionaries(&[],&p,ExecutionLimits{dictionaries:0,new_symbols:0,
+        let d=execute_pdf_dictionaries_single_reference(&[],&p,ExecutionLimits{dictionaries:0,new_symbols:0,
             symbol_slots:0,pixels:0,packed_bytes:0,..ExecutionLimits::default()}).unwrap();
         assert_eq!(d.stats().new_symbols,0);assert_eq!(d.stats().dictionaries,0);
         let mut p=info(1);p.extend(seg(2,0,1,&[],&[0,1,0,0,0,0,0,0,0,0]));
         p.extend(seg(3,38,1,&[],&[0xff])); // intentionally opaque region
-        let d=execute_pdf_dictionaries(&[],&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&[],&p,ExecutionLimits::default()).unwrap();
         assert_eq!(d.dictionary(2),Some(&[][..]));assert!(d.dictionary(3).is_none());
         assert_eq!(d.stats().packed_bytes,0);
     }
@@ -1505,7 +1511,7 @@ mod retained_context_tests{
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&child));
         // Branch from the original source rather than mutating its snapshot.
         p.extend(seg(4,0,1,&[1],CHILD));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(d.stats().retained_contexts,2);assert_eq!(d.stats().reused_contexts,2);
         assert_eq!(d.stats().peak_context_entries,3072);
         assert_eq!(d.symbol(3,2).unwrap().packed(),[192]);
@@ -1516,23 +1522,23 @@ mod retained_context_tests{
     fn retained_executor_budget(){
         let (g,p)=fixture();
         let l=ExecutionLimits{context_entries:2048,..ExecutionLimits::default()};
-        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
         assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts,d.stats().peak_context_entries),(1,1,2048));
         assert_eq!(d.stats().new_symbols,3);assert_eq!(d.stats().pixels,75);
         assert_eq!(d.symbol(3,2).unwrap().packed(),[192]);
         for n in [0,1023,2047,MAX_EXEC_CONTEXT_ENTRIES+1]{
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:n,..l}).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{context_entries:n,..l}).is_err());
         }
     }
     #[test]
     fn retained_missing_and_mismatched_parameters(){
         let (g,p)=fixture();
         let mut source=SOURCE.to_vec();source[0]&=!2;
-        assert!(execute_pdf_dictionaries(&seg(1,0,0,&[],&source),&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&seg(1,0,0,&[],&source),&p,ExecutionLimits::default()).is_err());
         for (index,byte) in [(0,13),(2,1)]{
             let mut child=CHILD.to_vec();child[index]=byte;
             let mut p=info(2);p.extend(seg(3,0,1,&[1],&child));
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         }
         let (_,s)=decode_arithmetic_with_context(&make_plan(SOURCE,0),SOURCE,ArithmeticLimits::default(),None).unwrap();
         let s=s.unwrap();
@@ -1545,7 +1551,7 @@ mod retained_context_tests{
         let mut no=SOURCE.to_vec();no[0]&=!2;
         g.extend(seg(2,0,0,&[],&no));
         let mut p=info(3);p.extend(seg(4,0,1,&[1,2],CHILD));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn retained_context_flag_and_snapshot_presence(){
@@ -1862,7 +1868,7 @@ mod refinement_executor_tests{
     #[test]
     fn refinement_executor_mixed_templates(){
         for t in [0,1]{
-            let (g,p)=fixture(t);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let (g,p)=fixture(t);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
             let s=d.stats();
             assert_eq!((s.dictionaries,s.huffman,s.arithmetic,s.single_refinement),(3,2,1,1));
             assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(3,56,10,17));
@@ -1874,7 +1880,7 @@ mod refinement_executor_tests{
     }
     #[test]
     fn refinement_executor_reexport_identity(){
-        let (g,p)=fixture(1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture(1);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,1),[0]);assert_eq!(ids(&d,3),[0,1,2]);assert_eq!(ids(&d,4),[0,1,2,0]);
         for i in 0..3{assert!(std::ptr::eq(d.symbol(3,i).unwrap(),d.symbol(4,i).unwrap()));}
         assert!(std::ptr::eq(d.symbol(1,0).unwrap(),d.symbol(4,3).unwrap()));
@@ -1883,35 +1889,35 @@ mod refinement_executor_tests{
     fn refinement_executor_global_chain(){
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&body(1,T1)));
         let mut p=info(3);p.extend(seg(4,0,1,&[2,1],&reexport(4)));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,2),[0,1,2]);assert_eq!(ids(&d,4),[0,1,2,0]);
         assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
     }
     #[test]
     fn refinement_executor_exact_cumulative_limits(){
-        let (g,p)=fixture(1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture(1);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         // 12-byte cap covers source raw collective plus split output peak.
         let l=ExecutionLimits{dictionaries:3,new_symbols:3,symbol_slots:17,pixels:56,
             packed_bytes:12,work:d.stats().work_used,context_entries:4100,
             export_runs_per_dictionary:2,decisions_per_dictionary:66};
-        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        assert_eq!(execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap(),d);
         for l in [
             ExecutionLimits{dictionaries:2,..l},ExecutionLimits{new_symbols:2,..l},
             ExecutionLimits{symbol_slots:16,..l},ExecutionLimits{pixels:55,..l},
             ExecutionLimits{packed_bytes:11,..l},ExecutionLimits{work:l.work-1,..l},
             ExecutionLimits{context_entries:4099,..l},ExecutionLimits{decisions_per_dictionary:65,..l},
             ExecutionLimits{export_runs_per_dictionary:1,..l},
-        ]{assert!(execute_pdf_dictionaries(&g,&p,l).is_err());}
+        ]{assert!(execute_pdf_dictionaries_single_reference(&g,&p,l).is_err());}
     }
     #[test]
     fn refinement_executor_retained_gb_coexistence(){
         let g=seg(1,0,0,&[],SOURCE);let mut p=info(2);
         p.extend(seg(3,0,1,&[],RETAINED));p.extend(seg(4,0,1,&[1],&body(1,T1)));
         let l=ExecutionLimits{context_entries:5124,..ExecutionLimits::default()};
-        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
         assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts,d.stats().peak_context_entries),(1,0,5124));
         assert_eq!(ids(&d,4),[0,3,4]);assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
     }
     #[test]
     fn refinement_executor_unsupported_modes_fail_closed(){
@@ -1920,19 +1926,19 @@ mod refinement_executor_tests{
         // still not a compatible retained refinement source.
         let mut used=body(1,T1);used[0]|=1;
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&used));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&body(1,&[124,191,255,172])));
-        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        assert!(matches!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
         // A direct Huffman dictionary cannot supply retained GR.
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&[17,3,0,0,0,1,0,0,0,0,0,64]));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn refinement_executor_bad_dependency_or_entropy(){
         let g=seg(1,0,0,&[],SOURCE);
         for (refs,entropy) in [(&[9][..],T1),(&[][..],T1),(&[1][..],&[124,219,255,172][..]),(&[1][..],&T1[..T1.len()-1]) ]{
             let mut p=info(2);p.extend(seg(3,0,1,refs,&body(1,entropy)));
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         }
     }
 }
@@ -2007,7 +2013,7 @@ mod retained_gr_tests{
             for flags in [1,3]{
                 let (g,p)=fixture(t,flags);
                 let l=ExecutionLimits::default();
-                let legacy=execute_pdf_dictionaries(&g,&p,l).unwrap();
+                let legacy=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
                 let aggregate=execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap();
                 assert_eq!(legacy.arena,aggregate.arena);
                 assert_eq!(legacy.exports,aggregate.exports);
@@ -2020,7 +2026,7 @@ mod retained_gr_tests{
                 assert_eq!(z.symbol_slots,a.symbol_slots+5);
                 assert_eq!(z.work_used,a.work_used+2*9*512+5);
                 let tight=ExecutionLimits{context_entries:a.peak_context_entries,..l};
-                assert!(execute_pdf_dictionaries(&g,&p,tight).is_ok());
+                assert!(execute_pdf_dictionaries_single_reference(&g,&p,tight).is_ok());
                 assert!(execute_pdf_dictionaries_with_aggregation(&g,&p,tight).is_err());
             }
         }
@@ -2053,7 +2059,7 @@ mod retained_gr_tests{
     fn retained_gr_executor_global_to_page(){
         for t in [0,1]{
             let (g,p)=fixture(t,1);
-            let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
             assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(d.symbol(4,3).unwrap().packed(),[160,64]);
             assert_eq!((d.stats().retained_gr_contexts,d.stats().reused_gr_contexts),(1,1));
             assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts),(1,1));
@@ -2066,7 +2072,7 @@ mod retained_gr_tests{
     fn retained_gr_immutable_branch(){
         let (g,mut p)=fixture(1,3);
         p.extend(seg(5,0,1,&[2],&body(1,1,true,CHILD)));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(ids(&d,5),[0,1,2,4]);
         assert_eq!(d.symbol(4,3),d.symbol(5,3));
         assert_eq!(d.stats().retained_gr_contexts,2);assert_eq!(d.stats().reused_gr_contexts,2);
@@ -2076,12 +2082,12 @@ mod retained_gr_tests{
     fn retained_gr_exact_context_and_work(){
         let (g,p)=fixture(1,1);
         let l=ExecutionLimits{context_entries:5124,..ExecutionLimits::default()};
-        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
         assert_eq!(d.stats().peak_context_entries,5124);
         let l=ExecutionLimits{work:d.stats().work_used,..l};
-        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{work:l.work-1,..l}).is_err());
+        assert_eq!(execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap(),d);
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{context_entries:5123,..l}).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{work:l.work-1,..l}).is_err());
     }
     #[test]
     fn retained_gr_presence_and_geometry(){
@@ -2103,14 +2109,14 @@ mod retained_gr_tests{
     fn retained_gr_last_dependency_validation(){
         let (_,p)=fixture(1,1);
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&parent(1,0)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let (g,_)=fixture(1,1);
         // Last dependency is the direct dictionary, not the retained GR
         // dictionary. Never search backward for any compatible snapshot.
         let mut p=info(3);p.extend(seg(4,0,1,&[2,1],&body(1,1,true,CHILD)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut p=info(3);p.extend(seg(4,0,1,&[2],&body(0,1,true,CHILD)));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn retained_gr_zero_bank_without_retain(){
@@ -2439,7 +2445,7 @@ mod huffman_refinement_executor_tests{
     #[test]
     fn huffman_executor_both_templates_and_identity(){
         for t in [0,1]{
-            let (g,p)=fixture(t);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let (g,p)=fixture(t);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
             let s=d.stats();
             assert_eq!((s.dictionaries,s.huffman,s.arithmetic,s.single_refinement,s.huffman_single_refinement),(3,3,0,1,1));
             assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(3,56,10,17));
@@ -2457,7 +2463,7 @@ mod huffman_refinement_executor_tests{
             g.extend(seg(2,0,0,&[1],&body(1,parent_huff,false,if parent_huff{H1}else{A1})));
             let mut p=info(3);
             p.extend(seg(4,0,1,&[2],&body(1,!parent_huff,true,if parent_huff{ACHILD}else{HCHILD})));
-            let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
             let s=d.stats();
             assert_eq!((s.dictionaries,s.huffman,s.arithmetic,s.single_refinement,s.huffman_single_refinement),(3,2,1,2,1));
             assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(4,64,12,20));
@@ -2473,22 +2479,22 @@ mod huffman_refinement_executor_tests{
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,53,0,&[],CUSTOM_A));
         let mut p=info(3);let mut b=body(1,true,false,H1);b[1]|=0x80;
         p.extend(seg(4,0,1,&[2,1],&b));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(d.stats().dictionaries,2);assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
         let mut p=info(3);p.extend(seg(4,0,1,&[1],&b));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn huffman_executor_exact_cumulative_limits(){
-        let (g,p)=fixture(1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let (g,p)=fixture(1);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         let l=ExecutionLimits{dictionaries:3,new_symbols:3,symbol_slots:17,pixels:56,packed_bytes:12,
             work:d.stats().work_used,context_entries:1024,export_runs_per_dictionary:2,decisions_per_dictionary:14};
-        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
+        assert_eq!(execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap(),d);
         for l in [ExecutionLimits{dictionaries:2,..l},ExecutionLimits{new_symbols:2,..l},
             ExecutionLimits{symbol_slots:16,..l},ExecutionLimits{pixels:55,..l},ExecutionLimits{packed_bytes:11,..l},
             ExecutionLimits{work:l.work-1,..l},ExecutionLimits{context_entries:1023,..l},
             ExecutionLimits{export_runs_per_dictionary:1,..l},ExecutionLimits{decisions_per_dictionary:13,..l}]{
-            assert!(execute_pdf_dictionaries(&g,&p,l).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,l).is_err());
         }
     }
     #[test]
@@ -2496,32 +2502,32 @@ mod huffman_refinement_executor_tests{
         let g=seg(1,0,0,&[],SOURCE);let mut p=info(2);
         p.extend(seg(3,0,1,&[],RETAINED_GB));p.extend(seg(4,0,1,&[1],&body(1,true,false,H1)));
         let l=ExecutionLimits{context_entries:2048,..ExecutionLimits::default()};
-        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();
         assert_eq!((d.stats().retained_contexts,d.stats().reused_contexts,d.stats().peak_context_entries),(1,0,2048));
         assert_eq!(ids(&d,4),[0,3,4]);assert_eq!(d.symbol(4,2).unwrap().packed(),[192,48]);
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:2047,..l}).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{context_entries:2047,..l}).is_err());
     }
     #[test]
     fn huffman_executor_unsupported_modes(){
         let g=seg(1,0,0,&[],SOURCE);
         let mut used=body(1,true,false,H1);used[0]|=1;
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&used));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         let mut e=H1.to_vec();e[1]=8;
         let mut p=info(2);p.extend(seg(3,0,1,&[1],&body(1,true,false,&e)));
-        assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+        assert!(matches!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
     }
     #[test]
     fn huffman_executor_bad_dependencies_and_block_boundaries(){
         let g=seg(1,0,0,&[],SOURCE);
         for refs in [&[][..],&[9][..]]{
             let mut p=info(2);p.extend(seg(3,0,1,refs,&body(1,true,false,H1)));
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         }
         for (i,v) in [(1,5),(3,64),(3,128),(6,0x90),(13,0)]{
             let mut e=H1.to_vec();e[i]=v;
             let mut p=info(2);p.extend(seg(3,0,1,&[1],&body(1,true,false,&e)));
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         }
     }
 }
@@ -2587,7 +2593,7 @@ mod retained_huffman_gr_tests{
     #[test]
     fn retained_huffman_gr_global_to_page(){
         for t in [0,1]{
-            let (g,p)=fixture(t,1);let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+            let (g,p)=fixture(t,1);let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
             let s=d.stats();assert_eq!((s.dictionaries,s.huffman_single_refinement,s.retained_gr_contexts,s.reused_gr_contexts),(3,2,1,1));
             assert_eq!((s.retained_contexts,s.reused_contexts),(1,1));
             assert_eq!((s.new_symbols,s.pixels,s.packed_bytes,s.symbol_slots),(4,62,12,20));
@@ -2599,7 +2605,7 @@ mod retained_huffman_gr_tests{
     #[test]
     fn retained_huffman_gr_immutable_branch(){
         let (g,mut p)=fixture(1,3);p.extend(seg(5,0,1,&[2],&body(1,1,true,CHILD)));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,4),[0,1,2,3]);assert_eq!(ids(&d,5),[0,1,2,4]);
         assert_eq!(d.symbol(4,3),d.symbol(5,3));
         assert_eq!((d.stats().retained_gr_contexts,d.stats().reused_gr_contexts,d.stats().peak_context_entries),(2,2,3072));
@@ -2608,22 +2614,22 @@ mod retained_huffman_gr_tests{
     fn retained_huffman_gr_exact_budgets(){
         let (g,p)=fixture(1,1);
         let l=ExecutionLimits{context_entries:2048,..ExecutionLimits::default()};
-        let d=execute_pdf_dictionaries(&g,&p,l).unwrap();assert_eq!(d.stats().peak_context_entries,2048);
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap();assert_eq!(d.stats().peak_context_entries,2048);
         let l=ExecutionLimits{work:d.stats().work_used,..l};
-        assert_eq!(execute_pdf_dictionaries(&g,&p,l).unwrap(),d);
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{context_entries:2047,..l}).is_err());
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits{work:l.work-1,..l}).is_err());
+        assert_eq!(execute_pdf_dictionaries_single_reference(&g,&p,l).unwrap(),d);
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{context_entries:2047,..l}).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits{work:l.work-1,..l}).is_err());
     }
     #[test]
     fn retained_huffman_gr_last_dictionary_not_table(){
         let (mut g,_)=fixture(1,1);g.extend(seg(3,53,0,&[],CUSTOM_A));
         let mut p=info(4);let mut child=body(1,1,true,CHILD);child[1]|=0x80;
         p.extend(seg(5,0,1,&[2,3],&child));
-        let d=execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).unwrap();
+        let d=execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).unwrap();
         assert_eq!(ids(&d,5),[0,1,2,3]);assert_eq!(d.symbol(5,3).unwrap().packed(),[160,64]);
         // The last *dictionary* is now the direct source, not the snapshot.
         let mut p=info(4);p.extend(seg(5,0,1,&[2,1,3],&child));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn retained_huffman_gr_modes_and_geometry(){
@@ -2641,7 +2647,7 @@ mod retained_huffman_gr_tests{
         let mut a=vec![26,2,2,255,0,0,0,3,0,0,0,2];a.extend(A1);
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&a));
         let mut p=info(3);p.extend(seg(4,0,1,&[2],&b));
-        assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
     #[test]
     fn retained_huffman_gr_empty_and_missing_snapshot(){
@@ -2654,7 +2660,7 @@ mod retained_huffman_gr_tests{
         let b=parent(1,0);let (d,snap)=decode_huffman_single_refinement_with_context(&plan_for(&b,1),&b,&[&s],l,None).unwrap();
         assert!(snap.is_none());assert_eq!(decode_huffman_single_refinement(&plan_for(&b,1),&b,&[&s],l).unwrap(),d);
         let mut g=seg(1,0,0,&[],SOURCE);g.extend(seg(2,0,0,&[1],&b));
-        let (_,p)=fixture(1,1);assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+        let (_,p)=fixture(1,1);assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
     }
 }
 
@@ -2909,10 +2915,23 @@ mod aggregation_executor_tests{
         p.extend(seg(3,0,1,&[1],&body));(g,p)
     }
     #[test]
+    fn aggregation_default_dispatch_and_legacy_opt_out(){
+        for t in [0,1]{
+            for (g,p) in [fixture(t),retained_fixture(t)]{
+                let l=ExecutionLimits::default();
+                let d=execute_pdf_dictionaries(&g,&p,l).unwrap();
+                assert_eq!(d,execute_pdf_dictionaries_with_aggregation(&g,&p,l).unwrap());
+                assert!(matches!(execute_pdf_dictionaries_single_reference(&g,&p,l),Err(Error::Unsupported(_))));
+                let tight=ExecutionLimits{context_entries:d.stats().peak_context_entries-1,..l};
+                assert!(execute_pdf_dictionaries(&g,&p,tight).is_err());
+            }
+        }
+    }
+    #[test]
     fn aggregation_executor_pixels_and_identity(){
         for t in [0,1]{
             let (g,p)=fixture(t);
-            assert!(matches!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
+            assert!(matches!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()),Err(Error::Unsupported(_))));
             let d=execute_pdf_dictionaries_with_aggregation(&g,&p,ExecutionLimits::default()).unwrap();
             let s=d.stats();
             assert_eq!((s.dictionaries,s.arithmetic_aggregation,s.single_refinement),(2,1,0));
@@ -2948,7 +2967,7 @@ mod aggregation_executor_tests{
             assert_eq!(s.peak_context_entries,if t==0{2*8192+4+3072+4608}else{2*1024+4+3072+4608});
             assert_eq!(d.symbol(4,3).unwrap().packed(),[128]);
             for i in 0..3{assert!(std::ptr::eq(d.symbol(2,i).unwrap(),d.symbol(4,i).unwrap()));}
-            assert!(execute_pdf_dictionaries(&g,&p,ExecutionLimits::default()).is_err());
+            assert!(execute_pdf_dictionaries_single_reference(&g,&p,ExecutionLimits::default()).is_err());
         }
     }
     #[test]
