@@ -71,8 +71,11 @@ pub(crate) fn decode_marks(b:&[u8],base:usize,coverage:&GlyphCoverage,classes:us
     Ok(records)
 }
 pub fn parse_mark_to_base(b:&[u8],glyph_count:u32,l:MarkPosLimits)->Result<MarkToBasePositioning,Error>{
+    decode_mark_matrix(b,glyph_count,l,"mark to base format")
+}
+pub(crate) fn decode_mark_matrix(b:&[u8],glyph_count:u32,l:MarkPosLimits,format_error:&'static str)->Result<MarkToBasePositioning,Error>{
     if b.len()>l.values.max_bytes{return Err(Error::Limit("mark bytes"));}
-    if mark_word(b,0)?!=1{return Err(Error::Unsupported("mark to base format"));}
+    if mark_word(b,0)?!=1{return Err(Error::Unsupported(format_error));}
     let mc=usize::from(mark_word(b,2)?);let bc=usize::from(mark_word(b,4)?);
     let classes=usize::from(mark_word(b,6)?);
     let ma=usize::from(mark_word(b,8)?);let ba=usize::from(mark_word(b,10)?);
