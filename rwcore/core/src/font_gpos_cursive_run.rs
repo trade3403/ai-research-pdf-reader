@@ -21,7 +21,7 @@ pub struct GposCursiveRun{
 }
 fn charge(left:&mut usize,n:usize)->Result<(),Error>{*left=left.checked_sub(n).ok_or(Error::Limit("cursive run work"))?;Ok(())}
 fn narrow(v:i64)->Result<i32,Error>{i32::try_from(v).map_err(|_|Error::Limit("cursive run coordinate"))}
-fn origins(nominal:&[(i32,i32)],out:&[GposRunAdjustment],pixel:bool)->Result<Vec<(i32,i32)>,Error>{
+pub(crate) fn origins(nominal:&[(i32,i32)],out:&[GposRunAdjustment],pixel:bool)->Result<Vec<(i32,i32)>,Error>{
     let mut v=Vec::new();v.try_reserve_exact(out.len()).map_err(|_|Error::Limit("cursive run allocation"))?;
     let(mut x,mut y)=(0i64,0i64);
     for (n,a) in nominal.iter().zip(out){
@@ -31,7 +31,7 @@ fn origins(nominal:&[(i32,i32)],out:&[GposRunAdjustment],pixel:bool)->Result<Vec
     }
     Ok(v)
 }
-fn advance(nominal:&[(i32,i32)],out:&[GposRunAdjustment],a:usize,b:usize,delta:i32,pixel:bool)->Result<i32,Error>{
+pub(crate) fn advance(nominal:&[(i32,i32)],out:&[GposRunAdjustment],a:usize,b:usize,delta:i32,pixel:bool)->Result<i32,Error>{
     // Make the pen interval equal to exit-anchor minus entry-anchor plus
     // the difference of placements. Preserve all intervening glyph advances.
     let mut rest=0i64;

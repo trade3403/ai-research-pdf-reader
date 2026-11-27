@@ -1,5 +1,5 @@
-//! Bounded GPOS single/pair root execution, preserving original glyph indices.
-//! No contextual or attachment execution yet. All results are owned and atomic.
+//! Bounded GPOS execution, preserving original glyph indices.
+//! Legacy restricted entry points and a shared horizontal mixed runner.
 use crate::*;
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum GposRunMode{DesignOnly,DevicePixels{x_ppem:u16,y_ppem:u16}}
@@ -79,6 +79,13 @@ pub struct GposContextRunLimits{
 impl Default for GposContextRunLimits{
     fn default()->Self{Self{run:Default::default(),max_depth:32,max_calls:1048576,max_actions:1048576,max_context_work:16777216}}
 }
+struct MixedCursive<'g>{
+    design_advances:&'g [(i32,i32)],
+    pixel_advances:&'g [(i32,i32)],
+    children:Vec<bool>,
+    connections:usize,
+    spans:usize,
+}
 struct ContextRunner<'p,'g,'d>{
     program:&'p CompiledGposProgram<'d>,glyphs:&'g [u16],out:Vec<GposRunAdjustment>,mode:GposRunMode,
     limits:GposContextRunLimits,visits:usize,attempts:usize,calls:usize,actions:usize,work:usize,
@@ -87,6 +94,7 @@ struct ContextRunner<'p,'g,'d>{
     parent_visits:usize,
     attachment_updates:usize,
     ligatures:Option<&'g [GposLigatureSource]>,
+    cursive:Option<MixedCursive<'g>>,
 }
 impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
     fn filtered(&mut self,lookup:&CompiledGposLookup<'_>)->Result<(Vec<usize>,Vec<u16>),Error>{
@@ -114,6 +122,9 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         self.active.pop();result
     }
     fn attach(&mut self,child:usize,parent:usize,a:&GposAnchor,b:&GposAnchor)->Result<(),Error>{
+        if self.cursive.as_ref().is_some_and(|c|c.children[child]){
+            return Err(Error::Unsupported("mixed cursive parent replacement"));
+        }
         charge(&mut self.attachment_updates,1)?;
         let edge=GposAttachmentEdge::from_anchors(parent,a,b,self.mode)?;
         let edges=self.attachment_edges.as_mut().ok_or(Error::Unsupported("gpos attachment mode"))?;
@@ -121,6 +132,39 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
         // Attachment replaces prior placement; subsequent adjustments are residuals.
         self.out[child].design.x_placement=0;self.out[child].design.y_placement=0;
         self.out[child].pixels.x_placement=0;self.out[child].pixels.y_placement=0;
+        Ok(())
+    }
+    fn connect_cursive(&mut self,a:usize,b:usize,exit:&GposAnchor,entry:&GposAnchor,rtl:bool)->Result<(),Error>{
+        use crate::font_gpos_cursive_run::advance;
+        let state=self.cursive.as_mut().ok_or(Error::Unsupported("mixed cursive mode"))?;
+        let edges=self.attachment_edges.as_mut().ok_or(Error::Invalid("mixed cursive edges"))?;
+        // A prior mark edge on an endpoint would make this restricted pen
+        // constraint ambiguous. Never silently erase an attachment.
+        if [a,b].into_iter().any(|i|edges[i].is_some()&&!state.children[i]){
+            return Err(Error::Unsupported("mixed mark cursive endpoint"));
+        }
+        let forward=GposAttachmentEdge::from_anchors(a,exit,entry,self.mode)?;
+        let (child,edge)=if rtl{(a,GposAttachmentEdge::from_anchors(b,entry,exit,self.mode)?)}else{(b,forward)};
+        if edges[child].is_some(){
+            return Err(Error::Unsupported("mixed cursive repeated parent"));
+        }
+        charge(&mut state.connections,1)?;
+        charge(&mut state.spans,b-a)?;
+        charge(&mut self.attachment_updates,1)?;
+        let d=advance(state.design_advances,&self.out,a,b,forward.design_delta.0,false)?;
+        let px=if matches!(self.mode,GposRunMode::DevicePixels{..}){
+            Some(advance(state.pixel_advances,&self.out,a,b,forward.pixel_delta.0,true)?)
+        }else{None};
+        edges[child]=Some(edge);
+        state.children[child]=true;
+        self.out[a].design.x_advance=d;
+        self.out[child].design.x_placement=0;
+        self.out[child].design.y_placement=0;
+        if let Some(px)=px{
+            self.out[a].pixels.x_advance=px;
+            self.out[child].pixels.x_placement=0;
+            self.out[child].pixels.y_placement=0;
+        }
         Ok(())
     }
     fn mark_parent(&mut self,lookup:&CompiledGposLookup<'_>,ids:&[usize],pos:usize,mark_to_mark:bool)->Result<Option<usize>,Error>{
@@ -159,6 +203,15 @@ impl<'p,'g,'d> ContextRunner<'p,'g,'d>{
                         self.out[a]=GposRunAdjustment{design:d[0],pixels:px[0]};self.out[b]=GposRunAdjustment{design:d[1],pixels:px[1]};
                         return Ok(if second==0{1}else{2});
                     }continue;
+                }
+                Cursive(p)=>{
+                    if self.cursive.is_none(){return Err(Error::Unsupported("mixed cursive mode"));}
+                    let Some(&b)=ids.get(pos+1)else{return Ok(1);};
+                    if let Some((exit,entry))=p.pair(self.glyphs[a],self.glyphs[b]){
+                        self.connect_cursive(a,b,exit,entry,lookup.filter().right_to_left())?;
+                        return Ok(1);
+                    }
+                    continue;
                 }
                 MarkBase(p)=>{
                     if self.attachment_edges.is_none(){return Err(Error::Unsupported("gpos attachment mode"));}
@@ -219,7 +272,7 @@ pub fn execute_gpos_context(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("gpos run glyph domain"));}
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|7|8){return Err(Error::Unsupported("gpos context run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos context allocation"))?;out.extend_from_slice(prior);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0,ligatures:None};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:None,parent_visits:0,attachment_updates:0,ligatures:None,cursive:None};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos context root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
@@ -290,8 +343,12 @@ pub fn gpos_mark_sources_compatible(parent:GposLigatureSource,child:GposLigature
 /// Validate unique ligature occurrence IDs and all mapped marks before execution.
 /// A source can precede or follow its mark in logical order. No source inference.
 pub fn execute_gpos_ligature_marks(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],sources:&[GposLigatureSource],mode:GposRunMode,limits:GposMarkRunLimits)->Result<GposMarkRun,Error>{
-    if sources.len()!=glyphs.len(){return Err(Error::Invalid("gpos ligature source length"));}
-    if sources.len()>limits.context.run.max_glyphs{return Err(Error::Limit("gpos ligature sources"));}
+    validate_ligature_sources(sources,glyphs.len(),limits.context.run.max_glyphs)?;
+    execute_gpos_marks_inner(program,glyphs,prior,mode,limits,Some(sources))
+}
+fn validate_ligature_sources(sources:&[GposLigatureSource],n:usize,max:usize)->Result<(),Error>{
+    if sources.len()!=n{return Err(Error::Invalid("gpos ligature source length"));}
+    if sources.len()>max{return Err(Error::Limit("gpos ligature sources"));}
     let mut map=std::collections::BTreeMap::new();
     for &source in sources{
         if let GposLigatureSource::Ligature{id,components}=source{
@@ -303,7 +360,7 @@ pub fn execute_gpos_ligature_marks(program:&CompiledGposProgram<'_>,glyphs:&[u16
             if !map.get(&id).is_some_and(|&n|component<n){return Err(Error::Invalid("gpos ligature mark source"));}
         }
     }
-    execute_gpos_marks_inner(program,glyphs,prior,mode,limits,Some(sources))
+    Ok(())
 }
 fn execute_gpos_marks_inner(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],mode:GposRunMode,limits:GposMarkRunLimits,ligatures:Option<&[GposLigatureSource]>)->Result<GposMarkRun,Error>{
     let l=limits.context;
@@ -313,11 +370,69 @@ fn execute_gpos_marks_inner(program:&CompiledGposProgram<'_>,glyphs:&[u16],prior
     for lookup in program.lookups(){if !matches!(lookup.effective_kind(),1|2|4|6|7|8)&&!(lookup.effective_kind()==5&&ligatures.is_some()){return Err(Error::Unsupported("gpos mark run kind"));}}
     let mut out=Vec::new();out.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;out.extend_from_slice(prior);
     let mut edges=Vec::new();edges.try_reserve_exact(prior.len()).map_err(|_|Error::Limit("gpos mark allocation"))?;edges.resize(prior.len(),None);
-    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates,ligatures};
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,active:Vec::new(),attachment_edges:Some(edges),parent_visits:limits.max_parent_visits,attachment_updates:limits.max_attachment_updates,ligatures,cursive:None};
     for &root in program.roots(){
         let lookup=program.lookup(root).ok_or(Error::Invalid("gpos mark root"))?;
         let (ids,stream)=runner.filtered(lookup)?;
         let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
     }
     Ok(GposMarkRun{residuals:runner.out,edges:runner.attachment_edges.ok_or(Error::Invalid("gpos mark edges"))?})
+}
+
+ 
+#[derive(Debug,Clone,Copy)]
+pub struct GposMixedRunLimits{
+    pub marks:GposMarkRunLimits,
+    pub attachments:GposAttachmentLimits,
+    pub max_connections:usize,
+    pub max_span_visits:usize,
+}
+impl Default for GposMixedRunLimits{
+    fn default()->Self{Self{marks:Default::default(),attachments:Default::default(),max_connections:1048576,max_span_visits:16777216}}
+}
+/// Bounded horizontal mixed execution. All effective GPOS types share one
+/// ordered root/nested scheduler, residual state, attachment forest and budgets.
+/// Caller-supplied logical order and signed advances use the existing horizontal
+/// constraint convention; RightToLeft controls the fixed end, not text direction.
+/// Repeated cursive child edges and replacement of a cursive parent are rejected.
+/// Mark edges on cursive endpoints are conservatively rejected. This is not full
+/// RTL redistribution, chain reversal or OpenType compatibility.
+/// DesignOnly ignores pixel origins (returned as zero) and preserves prior pixels.
+pub fn execute_gpos_mixed_horizontal(
+    program:&CompiledGposProgram<'_>,glyphs:&[u16],prior:&[GposRunAdjustment],
+    design_advances:&[(i32,i32)],pixel_advances:&[(i32,i32)],sources:&[GposLigatureSource],
+    mode:GposRunMode,limits:GposMixedRunLimits,
+)->Result<GposCursiveRun,Error>{
+    use crate::font_gpos_cursive_run::origins;
+    let n=glyphs.len();
+    let l=limits.marks.context;
+    if prior.len()!=n||design_advances.len()!=n||pixel_advances.len()!=n{return Err(Error::Invalid("mixed gpos length"));}
+    if n>l.run.max_glyphs||n>limits.attachments.max_glyphs||program.roots().len()>l.run.max_roots{return Err(Error::Limit("mixed gpos size"));}
+    if glyphs.iter().any(|&g|u32::from(g)>=program.glyph_count()){return Err(Error::Invalid("mixed gpos glyph"));}
+    validate_ligature_sources(sources,n,l.run.max_glyphs)?;
+    for lookup in program.lookups(){if !(1..=8).contains(&lookup.effective_kind()){return Err(Error::Unsupported("mixed gpos kind"));}}
+    fn filled<T:Clone>(n:usize,value:T)->Result<Vec<T>,Error>{
+        let mut v=Vec::new();v.try_reserve_exact(n).map_err(|_|Error::Limit("mixed gpos allocation"))?;v.resize(n,value);Ok(v)
+    }
+    let mut out=filled(n,GposRunAdjustment::default())?;
+    out.copy_from_slice(prior);
+    if matches!(mode,GposRunMode::DesignOnly){for a in &mut out{a.pixels=Default::default();}}
+    let mut runner=ContextRunner{program,glyphs,out,mode,limits:l,visits:l.run.max_filter_visits,
+        attempts:l.run.max_subtable_attempts,calls:l.max_calls,actions:l.max_actions,work:l.max_context_work,
+        active:Vec::new(),attachment_edges:Some(filled(n,None)?),parent_visits:limits.marks.max_parent_visits,
+        attachment_updates:limits.marks.max_attachment_updates,ligatures:Some(sources),
+        cursive:Some(MixedCursive{design_advances,pixel_advances,children:filled(n,false)?,
+            connections:limits.max_connections,spans:limits.max_span_visits})};
+    for &root in program.roots(){
+        let lookup=program.lookup(root).ok_or(Error::Invalid("mixed gpos root"))?;
+        let (ids,stream)=runner.filtered(lookup)?;
+        let mut pos=0;while pos<ids.len(){pos+=runner.at(lookup,&ids,&stream,pos)?;}
+    }
+    let edges=runner.attachment_edges.ok_or(Error::Invalid("mixed gpos edges"))?;
+    let design_origins=origins(design_advances,&runner.out,false)?;
+    let pixel_origins=if matches!(mode,GposRunMode::DesignOnly){filled(n,(0,0))?}
+        else{origins(pixel_advances,&runner.out,true)?};
+    let mut adjustments=resolve_gpos_attachments(&edges,&design_origins,&pixel_origins,&runner.out,limits.attachments)?;
+    if matches!(mode,GposRunMode::DesignOnly){for (a,p) in adjustments.iter_mut().zip(prior){a.pixels=p.pixels;}}
+    Ok(GposCursiveRun{adjustments,edges,design_origins,pixel_origins})
 }

@@ -216,3 +216,71 @@ fn mark_ligature()->Vec<u16>{vec![1,12,20,2,26,48,1,2,3,4,1,1,7,2,0,10,1,16,1,10
     assert_eq!(select_gpos_ligature_component(Ligature{id:1,components:2},Mark{id:2,component:0},2).unwrap(),1);
     assert!(select_gpos_ligature_component(Ligature{id:1,components:2},Mark{id:1,component:2},2).is_err());
 }
+
+ 
+fn mixed_cursive()->Vec<u16>{vec![1,14,2,0,22,28,0,1,2,3,7,1,100,20,1,65506,5]}
+fn mixed(p:&CompiledGposProgram<'_>,glyphs:&[u16],l:GposMixedRunLimits)->Result<GposCursiveRun,Error>{
+    let n=glyphs.len();
+    execute_gpos_mixed_horizontal(p,glyphs,&vec![Default::default();n],&vec![(80,0);n],
+        &vec![(0,0);n],&vec![GposLigatureSource::Unmapped;n],GposRunMode::DesignOnly,l)
+}
+
+#[test]fn mixed_cursive_then_mark_root(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(4,0,vec![mark_base()])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let x=mixed(&p,&[3,7,3],Default::default()).unwrap();
+    assert_eq!(x.edges[1].unwrap().parent,0);
+    assert_eq!(x.edges[2].unwrap().parent,1);
+    assert_eq!(x.design_origins[1].0,130);
+    assert_eq!(x.adjustments[1].design.y_placement,15);
+    assert_eq!(x.adjustments[2].design.y_placement,195);
+    assert_eq!(x.design_origins[2].0+x.adjustments[2].design.x_placement,220);
+}
+#[test]fn mixed_nested_cursive_extension_and_order(){
+    let context=vec![3,1,2,16,0,1,0,2,1,1,3];
+    let mut ext=vec![1,3,0,8];ext.extend(mixed_cursive());
+    let b=fixture(&[(7,0,vec![context]),(9,0,vec![ext]),(1,0,vec![single(9)])]);
+    let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let x=mixed(&p,&[3,7],Default::default()).unwrap();
+    assert_eq!(x.edges[1].unwrap().parent,0);
+    assert_eq!(x.adjustments[0].design.x_advance,59);
+    assert_eq!(x.design_origins[1].0,139);
+    assert_eq!(x.adjustments[1].design.x_placement,-9);
+    assert_eq!(x.adjustments[1].design.y_placement,15);
+}
+#[test]fn mixed_shared_budgets_and_repeated_parent(){
+    let b=fixture(&[(3,0,vec![mixed_cursive()]),(3,0,vec![mixed_cursive()])]);
+    let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    assert!(mixed(&p,&[3,7],Default::default()).is_ok());
+    for l in [GposMixedRunLimits{max_connections:0,..Default::default()},
+        GposMixedRunLimits{max_span_visits:0,..Default::default()},
+        GposMixedRunLimits{marks:GposMarkRunLimits{max_attachment_updates:0,..Default::default()},..Default::default()}]{
+        assert!(mixed(&p,&[3,7],l).is_err());
+    }
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    assert!(mixed(&p,&[3,7],Default::default()).is_err());
+}
+#[test]fn mixed_design_only_ignores_pixel_overflow(){
+    let b=fixture(&[(3,1,vec![mixed_cursive()])]);
+    let p=compile_gpos_program(&b,&[0],32,None,Default::default()).unwrap();
+    let mut prior=[GposRunAdjustment::default();2];
+    prior[0].pixels.x_advance=i32::MAX;prior[1].pixels.y_placement=i32::MIN;
+    let x=execute_gpos_mixed_horizontal(&p,&[3,7],&prior,&[(80,0);2],&[(i32::MAX,0);2],
+        &[GposLigatureSource::Unmapped;2],GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.edges[0].unwrap().parent,1);
+    assert_eq!(x.adjustments[0].pixels,prior[0].pixels);
+    assert_eq!(x.adjustments[1].pixels,prior[1].pixels);
+    assert_eq!(x.pixel_origins,vec![(0,0);2]);
+}
+#[test]fn mixed_ligature_path_matches_legacy(){
+    use GposLigatureSource::*;
+    let b=fixture(&[(5,0,vec![mark_ligature()]),(1,0,vec![single(9)])]);
+    let p=compile_gpos_program(&b,&[0,1],32,None,Default::default()).unwrap();
+    let sources=[Ligature{id:1,components:2},Mark{id:1,component:0}];
+    let prior=[Default::default();2];
+    let x=execute_gpos_mixed_horizontal(&p,&[7,3],&prior,&[(80,0);2],&[(0,0);2],
+        &sources,GposRunMode::DesignOnly,Default::default()).unwrap();
+    let old=execute_gpos_ligature_marks(&p,&[7,3],&prior,&sources,GposRunMode::DesignOnly,Default::default()).unwrap();
+    assert_eq!(x.edges,old.edges);
+    assert_eq!(x.adjustments,old.resolve(&x.design_origins,&x.pixel_origins,Default::default()).unwrap());
+}
