@@ -83,3 +83,6 @@ CI #653 run 46001668134 attempt 2: eligible rendering 3.39–23.65% of PDFium; v
 
 
 CI #655 run 46005412759: eligible rendering 3.32–24.55% of PDFium; vector max 4.79%, text max 11.51%, JPEG max 24.55%; four low-DPI JPEG exclusions. Goals unchanged.
+
+
+CI #657 run 46010272066, perf job 140543701723: 25/29 eligible, rendering 4.05–32.84% of PDFium; vector max 5.74%, text max 16.79%, JPEG max 32.84%. Four low-DPI JPEG exclusions. Inspect vector/text/image 393.87/471.28/358.15%; text extraction fresh/warm 189.08/203.09%. Artifact 15203851711 (164819 bytes). Shared-runner observation; no algorithm speedup attribution, absolute latency/RSS or archive verification. Goals unchanged.

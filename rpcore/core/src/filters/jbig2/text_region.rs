@@ -1424,3 +1424,65 @@ mod huffman_payload_dictionary_integration_tests{
         }
     }
 }
+
+#[cfg(test)]
+mod annex_h_original_huffman_text_tests {
+    use super::*;
+    use super::super::dictionary::{execute_pdf_dictionaries, ExecutionLimits};
+    // ITU-T T.88 (02/2000), Annex H.1, printed pp.121,123–129.
+    // https://www.itu.int/rec/T-REC-T.88-200002-S/en
+    // Original segment bytes, no standalone file header. Segment 0 is global,
+    // segments 1,2,3 are page-associated. Text payload offsets 0x82..0xb3.
+    const GLOBAL: &[u8] = &[0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0x00,0x01,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0xe9,0xcb,0xf4,0x00,0x26,0xaf,0x04,0xbf,0xf0,0x78,0x2f,0xe0,0x00,0x40];
+    const PAGE_PREFIX: &[u8] = &[0x00,0x00,0x00,0x01,0x30,0x00,0x01,0x00,0x00,0x00,0x13,0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x01,0x01,0x00,0x00,0x00,0x1c,0x00,0x01,0x00,0x00,0x00,0x02,0x00,0x00,0x00,0x02,0xe5,0xcd,0xf8,0x00,0x79,0xe0,0x84,0x10,0x81,0xf0,0x82,0x10,0x86,0x10,0x79,0xf0,0x00,0x80];
+    const TEXT: &[u8] = &[0x00,0x00,0x00,0x03,0x07,0x42,0x00,0x02,0x01,0x00,0x00,0x00,0x31,0x00,0x00,0x00,0x25,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x01,0x00,0x0c,0x09,0x00,0x10,0x00,0x00,0x00,0x05,0x01,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0c,0x40,0x07,0x08,0x70,0x41,0xd0];
+    const EXPECTED: &[u8] = &[
+        120,120,240,240,240, 132,4,136,9,8,
+        128,124,136,249,0, 128,132,137,9,0,
+        132,132,241,9,8, 120,124,128,248,240,
+        0,0,128,0,0, 0,0,128,0,0,
+    ]; // Figure H.5, MSB-first, zero row padding; independently transcribed.
+    fn page() -> Vec<u8> {
+        let mut page = PAGE_PREFIX.to_vec();
+        page.extend_from_slice(TEXT);
+        page
+    }
+    #[test]
+    fn annex_h_original_huffman_text_pixels() {
+        let page = page();
+        let dictionaries = execute_pdf_dictionaries(GLOBAL, &page, ExecutionLimits::default()).unwrap();
+        let p = dictionaries.symbol(0,0).unwrap();
+        let c = dictionaries.symbol(2,0).unwrap();
+        let a = dictionaries.symbol(2,1).unwrap();
+        assert_eq!(p.packed(), &[240,136,136,136,240,128,128,128]);
+        assert_eq!(c.packed(), &[120,132,128,128,132,120]);
+        assert_eq!(a.packed(), &[120,4,124,132,132,124]);
+        let (h,d) = decode_huffman_text_payload(&TEXT[13..], &[p,c,a], &[], 192, 0, 40000).unwrap();
+        assert_eq!((h.options.width,h.options.height,h.options.strips,h.options.instances,h.options.ds_offset),(37,8,4,5,3));
+        assert_eq!(h.options.corner, Corner::BottomLeft);
+        assert_eq!(h.selections.integers,[TextTableChoice::Standard(6),TextTableChoice::Standard(8),TextTableChoice::Standard(12)]);
+        assert_eq!(h.selections.custom_count,0);
+        assert_eq!(d.bitmap.packed(),EXPECTED);
+        assert_eq!((d.stats.strips,d.stats.instances,d.stats.composed_pixels),(1,5,184));
+    }
+    #[test]
+    fn annex_h_original_huffman_text_bounds() {
+        let page = page();
+        let dictionaries = execute_pdf_dictionaries(GLOBAL, &page, ExecutionLimits::default()).unwrap();
+        let symbols = [dictionaries.symbol(0,0).unwrap(),dictionaries.symbol(2,0).unwrap(),dictionaries.symbol(2,1).unwrap()];
+        let data = &TEXT[13..];
+        let (_,d) = decode_huffman_text_payload(data,&symbols,&[],192,0,40000).unwrap();
+        assert_eq!(decode_huffman_text_payload(data,&symbols,&[],192,0,d.stats.work_used).unwrap().1,d);
+        assert!(decode_huffman_text_payload(data,&symbols,&[],192,0,d.stats.work_used-1).is_err());
+        assert!(decode_huffman_text_payload(data,&symbols,&[],191,0,40000).is_err());
+        for n in 0..data.len() {
+            assert!(decode_huffman_text_payload(&data[..n],&symbols,&[],192,0,40000).is_err(),"truncation at {n}");
+        }
+        let mut extra = data.to_vec(); extra.push(0);
+        assert!(decode_huffman_text_payload(&extra,&symbols,&[],200,0,40000).is_err());
+        let mut bad = page.clone(); bad[PAGE_PREFIX.len()+7]=99;
+        assert!(execute_pdf_dictionaries(GLOBAL,&bad,ExecutionLimits::default()).is_err());
+        let mut bad = page.clone(); bad[PAGE_PREFIX.len()+12]=50;
+        assert!(execute_pdf_dictionaries(GLOBAL,&bad,ExecutionLimits::default()).is_err());
+    }
+}
