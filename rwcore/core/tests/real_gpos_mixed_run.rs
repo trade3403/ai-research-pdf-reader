@@ -1,0 +1,157 @@
+//! Real-font differential for selected native cursive/mark-base lookups.
+//! Independent raw SFNT, coverage, class and anchor decoding; no production
+//! positioner is used as the oracle. Explicit glyph IDs, default coordinates,
+//! selected lookup roots, NOT a HarfBuzz or full-script shaping comparison.
+use rwcore::*;
+fn u(b:&[u8],p:usize)->usize{u16::from_be_bytes([b[p],b[p+1]]) as usize}
+fn d(b:&[u8],p:usize)->usize{u32::from_be_bytes(b[p..p+4].try_into().unwrap()) as usize}
+fn table<'a>(b:&'a [u8],tag:&[u8;4])->Option<&'a [u8]>{
+    for i in 0..u(b,4){let p=12+16*i;if &b[p..p+4]==tag{
+        let at=d(b,p+8);return Some(&b[at..at+d(b,p+12)]);
+    }}None
+}
+fn coverage(b:&[u8],p:usize)->Vec<u16>{
+    match u(b,p){
+        1=>(0..u(b,p+2)).map(|i|u(b,p+4+2*i) as u16).collect(),
+        2=>{let mut v=Vec::new();for i in 0..u(b,p+2){
+            let q=p+4+6*i;assert_eq!(v.len(),u(b,q+4));
+            v.extend((u(b,q)..=u(b,q+2)).map(|g|g as u16));
+        }v},
+        _=>panic!("coverage format"),
+    }
+}
+fn classes(g:Option<&[u8]>,n:usize)->Vec<usize>{
+    let mut c=vec![0;n];let Some(g)=g else{return c;};let p=u(g,4);
+    if p==0{return c;}
+    match u(g,p){
+        1=>{let start=u(g,p+2);for i in 0..u(g,p+4){c[start+i]=u(g,p+6+2*i);}},
+        2=>{for i in 0..u(g,p+2){let q=p+4+6*i;for k in u(g,q)..=u(g,q+2){c[k]=u(g,q+4);}}},
+        _=>panic!("class format"),
+    }c
+}
+fn eligible(g:u16,flags:usize,c:&[usize])->bool{
+    !matches!((c[g as usize],flags), (1,f) if f&2!=0)
+    && !matches!((c[g as usize],flags),(2,f) if f&4!=0)
+    && !matches!((c[g as usize],flags),(3,f) if f&8!=0)
+}
+type Point=(i32,i32);
+fn anchor(b:&[u8],p:usize)->Option<Point>{
+    if p==0{return None;}
+    assert!((1..=3).contains(&u(b,p)));
+    Some((i32::from(u(b,p+2) as i16),i32::from(u(b,p+4) as i16)))
+}
+fn diff(a:Point,b:Point)->Point{(a.0-b.0,a.1-b.1)}
+struct Lookup<'a>{id:u16,kind:usize,flags:usize,subs:Vec<&'a [u8]>}
+fn lookups(b:&[u8])->Vec<Lookup<'_>>{
+    let list=u(b,8);let mut out=Vec::new();
+    for i in 0..u(b,list){
+        let p=list+u(b,list+2+2*i);let flags=u(b,p+2);
+        // Mark filtering sets/attachment classes need a separate oracle.
+        if flags& !15!=0{continue;}
+        let mut subs=Vec::new();let mut kind=u(b,p);
+        for j in 0..u(b,p+4){
+            let mut at=p+u(b,p+6+2*j);
+            if u(b,p)==9{kind=u(b,at+2);at+=d(b,at+4);}
+            subs.push(&b[at..]);
+        }
+        if matches!(kind,3|4){out.push(Lookup{id:i as u16,kind,flags,subs});}
+    }out
+}
+fn cursive(s:&[u8],a:u16,b:u16)->Option<Point>{
+    let cov=coverage(s,u(s,2));
+    let i=cov.binary_search(&a).ok()?;let j=cov.binary_search(&b).ok()?;
+    Some(diff(anchor(s,u(s,8+4*i))?,anchor(s,u(s,6+4*j))?))
+}
+fn mark(s:&[u8],a:u16,b:u16)->Option<Point>{
+    let m=coverage(s,u(s,2)).binary_search(&b).ok()?;
+    let base=coverage(s,u(s,4)).binary_search(&a).ok()?;
+    let ma=u(s,8);let ba=u(s,10);let class=u(s,ma+2+4*m);
+    let mo=u(s,ma+4+4*m);let bo=u(s,ba+2+2*(base*u(s,6)+class));
+    if mo==0||bo==0{return None;}
+    Some(diff(anchor(s,ba+bo)?,anchor(s,ma+mo)?))
+}
+fn pair(l:&Lookup<'_>,a:u16,b:u16)->Option<Point>{
+    l.subs.iter().find_map(|s|if l.kind==3{cursive(s,a,b)}else{mark(s,a,b)})
+}
+fn nominal(font:&[u8],g:u16)->i32{
+    let h=table(font,b"hhea").unwrap();let m=table(font,b"hmtx").unwrap();
+    u(m,4*(g as usize).min(u(h,34)-1)) as i32
+}
+fn samples(l:&Lookup<'_>,classes:&[usize])->Vec<(u16,u16,Point)>{
+    let mut out=Vec::new();
+    for s in &l.subs{
+        let right=coverage(s,u(s,2));
+        let left=if l.kind==3{right.clone()}else{coverage(s,u(s,4))};
+        // Bound candidate sampling while retaining native nonzero examples.
+        for &a in left.iter().filter(|&&g|eligible(g,l.flags,classes)).take(16){
+            if l.kind==4&&classes[a as usize]==3{continue;}
+            for &b in right.iter().filter(|&&g|eligible(g,l.flags,classes)).take(16){
+                if let Some(delta)=pair(l,a,b){
+                    if !out.iter().any(|&(x,y,_)|x==a&&y==b){out.push((a,b,delta));}
+                    if out.len()==24{return out;}
+                }
+            }
+        }
+    }out
+}
+fn check_pair(font:&[u8],p:&CompiledGposProgram<'_>,l:&Lookup<'_>,a:u16,b:u16,delta:Point,flow:GposHorizontalFlow){
+    let rtl=flow==GposHorizontalFlow::RightToLeft;
+    let n=[nominal(font,a),nominal(font,b)];
+    let mut w=n;
+    let child=if l.kind==3&&l.flags&1!=0{0}else{1};
+    let parent=1-child;
+    if l.kind==3{if rtl{w[1]=-delta.0;}else{w[0]=delta.0;}}
+    let ox=if rtl{[-w[0],-w[0]-w[1]]}else{[0,w[0]]};
+    let edge_delta=if child==0{(-delta.0,-delta.1)}else{delta};
+    let mut expected=[GposRunAdjustment::default();2];
+    for i in 0..2{expected[i].design.x_advance=w[i]-n[i];}
+    expected[child].design.x_placement=ox[parent]-ox[child]+edge_delta.0;
+    expected[child].design.y_placement=edge_delta.1;
+    let adv=[(n[0],0),(n[1],0)];let prior=[GposRunAdjustment::default();2];
+    let sources=[GposLigatureSource::Unmapped;2];
+    let x=execute_gpos_mixed_joint(p,&[a,b],&prior,&adv,&[(0,0);2],&sources,GposRunMode::DesignOnly,flow,Default::default(),Default::default()).unwrap();
+    assert_eq!(x.design_origins,vec![(ox[0],0),(ox[1],0)]);
+    assert_eq!(x.adjustments,expected.to_vec(),"lookup {} glyphs {a},{b}",l.id);
+    assert_eq!(x.edges[child],Some(GposAttachmentEdge{parent,design_delta:edge_delta,pixel_delta:(0,0)}));
+    assert!(x.edges[parent].is_none());
+    let immediate=execute_gpos_mixed_directional(p,&[a,b],&prior,&adv,&[(0,0);2],&sources,GposRunMode::DesignOnly,flow,Default::default()).unwrap();
+    assert_eq!(x,immediate);
+}
+fn check(font:&[u8],kind:usize)->[usize;3]{
+    let Some(b)=table(font,b"GPOS") else{return [0;3];};
+    let n=u(table(font,b"maxp").unwrap(),4);
+    let gd=table(font,b"GDEF");
+    let cls=classes(gd,n);
+    let gdef=gd.map(|x|parse_gdef(x,n as u32,Default::default()).unwrap());
+    let mut counts=[0;3];
+    for l in lookups(b).iter().filter(|l|l.kind==kind){
+        let cases=samples(l,&cls);
+        if cases.is_empty(){continue;}
+        let p=compile_gpos_program(b,&[l.id],n as u32,gdef.as_ref(),Default::default()).unwrap();
+        counts[0]+=1;
+        for (a,z,delta) in cases{
+            for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                check_pair(font,&p,l,a,z,delta,flow);counts[1]+=1;
+                if delta!=(0,0){counts[2]+=1;}
+            }
+        }
+    }
+    counts
+}
+const FONTS:[(&str,&[u8]);5]=[
+    ("Aref Ruqaa",include_bytes!("fixtures/arefruqaa/ArefRuqaa-Regular.ttf")),
+    ("Noto Nastaliq Urdu",include_bytes!("fixtures/notonastaliqurdu/NotoNastaliqUrdu[wght].ttf")),
+    ("Noto Sans Mongolian",include_bytes!("fixtures/notosansmongolian/NotoSansMongolian-Regular.ttf")),
+    ("Padauk",include_bytes!("fixtures/padauk/Padauk-Regular.ttf")),
+    ("ABeeZee",include_bytes!("fixtures/abeezee/ABeeZee-Regular.ttf")),
+];
+fn suite(kind:usize){
+    let mut total=[0;3];
+    for (name,font) in FONTS{
+        let c=check(font,kind);eprintln!("native GPOS {name} kind {kind}: {c:?}");
+        for i in 0..3{total[i]+=c[i];}
+    }
+    assert!(total.iter().all(|&x|x>0),"native lookup, case and nonzero coverage: {total:?}");
+}
+#[test]fn native_cursive_joint_coordinate_differential(){suite(3);}
+#[test]fn native_mark_base_joint_coordinate_differential(){suite(4);}
