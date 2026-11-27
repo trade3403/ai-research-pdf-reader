@@ -49,6 +49,22 @@ jobs:
         run: cargo +stable test --locked --workspace --all-targets
       - name: Build
         run: cargo +stable build --locked --workspace --release
+      - name: HarfBuzz external GPOS reference (test only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if ! python3 -c 'import ctypes.util; assert ctypes.util.find_library("harfbuzz")'; then
+            sudo apt-get update
+            sudo apt-get install -y libharfbuzz0b
+          fi
+          cargo +stable build --locked -p rwcore --release --example gpos_reference_probe
+          python3 tools/harfbuzz_gpos_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-gpos-reference.json
+      - name: Preserve HarfBuzz GPOS reference report
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwcore-harfbuzz-gpos-reference
+          path: rwcore/target/harfbuzz-gpos-reference.json
+          if-no-files-found: warn
       - name: Preserve resolved lockfile
         if: always()
         uses: actions/upload-artifact@v4
