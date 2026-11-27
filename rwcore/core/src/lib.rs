@@ -308,3 +308,6 @@ pub use font_gpos_context::*;
 
 pub mod font_gpos_chain_context;
 pub use font_gpos_chain_context::*;
+
+pub mod font_gpos_extension;
+pub use font_gpos_extension::*;
