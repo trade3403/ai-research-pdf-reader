@@ -60,7 +60,7 @@ class HB:
         bind("buffer_get_glyph_infos", C.POINTER(Info), ptr, C.POINTER(uint))
         bind("buffer_get_glyph_positions", C.POINTER(Position), ptr, C.POINTER(uint))
 
-    def shape(self, data, text, kern):
+    def shape(self, data, text, kern, mark=False):
         blob = self.blob_create(data, len(data), 0, None, None)  # duplicate
         face = self.face_create(blob, 0)
         font = self.font_create(face)
@@ -77,7 +77,7 @@ class HB:
             self.buffer_set_script(buf, self.script_from_string(b"Latn", -1))
             self.buffer_set_language(buf, self.language_from_string(b"und", -1))
             values = {"kern": int(kern), "liga": 0, "clig": 0, "calt": 0,
-                      "rlig": 0, "dlig": 0, "hlig": 0, "mark": 0, "mkmk": 0}
+                      "rlig": 0, "dlig": 0, "hlig": 0, "mark": int(mark), "mkmk": 0}
             features = (Feature * len(values))(*[
                 Feature(int.from_bytes(tag.encode("ascii"), "big"), value, 0, 0xFFFFFFFF)
                 for tag, value in values.items()])

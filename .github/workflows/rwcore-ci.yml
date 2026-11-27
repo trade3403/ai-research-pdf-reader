@@ -58,6 +58,16 @@ jobs:
           fi
           cargo +stable build --locked -p rwcore --release --example gpos_reference_probe
           python3 tools/harfbuzz_gpos_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-gpos-reference.json
+      - name: HarfBuzz external Mark reference (test only)
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 tools/harfbuzz_mark_reference.py --probe target/release/examples/gpos_reference_probe --report target/harfbuzz-mark-reference.json
+      - name: Preserve HarfBuzz Mark reference report
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwcore-harfbuzz-mark-reference
+          path: rwcore/target/harfbuzz-mark-reference.json
+          if-no-files-found: warn
       - name: Preserve HarfBuzz GPOS reference report
         if: always() && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
