@@ -155,3 +155,204 @@ fn suite(kind:usize){
 }
 #[test]fn native_cursive_joint_coordinate_differential(){suite(3);}
 #[test]fn native_mark_base_joint_coordinate_differential(){suite(4);}
+
+// Independently read the native anchor offsets, including the first matching
+// subtable rule. This intentionally does not reuse the production anchor API.
+fn anchor_offsets(s:&[u8],kind:usize,a:u16,b:u16)->Option<(usize,usize)>{
+    let (p,q)=if kind==3{
+        let cov=coverage(s,u(s,2));
+        let i=cov.binary_search(&a).ok()?;let j=cov.binary_search(&b).ok()?;
+        (u(s,8+4*i),u(s,6+4*j))
+    }else{
+        let m=coverage(s,u(s,2)).binary_search(&b).ok()?;
+        let base=coverage(s,u(s,4)).binary_search(&a).ok()?;
+        let ma=u(s,8);let ba=u(s,10);let class=u(s,ma+2+4*m);
+        let mo=u(s,ma+4+4*m);let bo=u(s,ba+2+2*(base*u(s,6)+class));
+        if mo==0||bo==0{return None;}
+        (ba+bo,ma+mo)
+    };
+    if p==0||q==0{None}else{Some((p,q))}
+}
+fn raw_device(s:&[u8],at:usize,ppem:u16)->Option<i32>{
+    let lo=u(s,at);let hi=u(s,at+2);let f=u(s,at+4);
+    if f==0x8000{return None;}
+    let bits=match f{1=>2,2=>4,3=>8,_=>panic!("device format")};
+    let ppem=usize::from(ppem);
+    if ppem<lo||ppem>hi{return Some(0);}
+    let start=(ppem-lo)*bits;
+    let mut v=0i32;
+    for k in start..start+bits{
+        v=2*v+i32::from((s[at+6+k/8]>>(7-k%8))&1);
+    }
+    if v>=1<<(bits-1){v-=1<<bits;}
+    Some(v)
+}
+fn anchor_pixels(s:&[u8],p:usize,x:u16,y:u16)->Option<Point>{
+    match u(s,p){
+        1=>Some((0,0)),
+        2=>None,
+        3=>{
+            let read=|off,ppem|{let rel=u(s,off);if rel==0{Some(0)}else{raw_device(s,p+rel,ppem)}};
+            Some((read(p+6,x)?,read(p+8,y)?))
+        }
+        _=>panic!("anchor format"),
+    }
+}
+fn pixel_pair(l:&Lookup<'_>,a:u16,b:u16,x:u16,y:u16)->Option<Point>{
+    for s in &l.subs{
+        if let Some((p,q))=anchor_offsets(s,l.kind,a,b){
+            return Some(diff(anchor_pixels(s,p,x,y)?,anchor_pixels(s,q,x,y)?));
+        }
+    }
+    panic!("expected native pair")
+}
+fn reference_pair(n:[i32;2],delta:Point,kind:usize,flags:usize,flow:GposHorizontalFlow)->([Point;2],[GposAdjustment;2],usize,Point){
+    let rtl=flow==GposHorizontalFlow::RightToLeft;
+    let mut w=n;
+    if kind==3{if rtl{w[1]=-delta.0;}else{w[0]=delta.0;}}
+    let origins=if rtl{[(-w[0],0),(-w[0]-w[1],0)]}else{[(0,0),(w[0],0)]};
+    let child=if kind==3&&flags&1!=0{0}else{1};
+    let edge=if child==0{(-delta.0,-delta.1)}else{delta};
+    let mut adj=[GposAdjustment::default();2];
+    for i in 0..2{adj[i].x_advance=w[i]-n[i];}
+    adj[child].x_placement=origins[1-child].0-origins[child].0+edge.0;
+    adj[child].y_placement=edge.1;
+    (origins,adj,child,edge)
+}
+#[test]fn native_mixed_device_coordinate_differential(){
+    let mut total=[0usize;4]; // supported, unresolved, nonzero, native lookup count
+    for (name,font) in FONTS{
+        let Some(b)=table(font,b"GPOS")else{continue;};
+        let n=u(table(font,b"maxp").unwrap(),4);
+        let gd=table(font,b"GDEF");let cls=classes(gd,n);
+        let gdef=gd.map(|x|parse_gdef(x,n as u32,Default::default()).unwrap());
+        let units=u(table(font,b"head").unwrap(),18) as i32;
+        let mut counts=[0usize;4];
+        for l in lookups(b){
+            let cases=samples(&l,&cls);if cases.is_empty(){continue;}
+            let p=compile_gpos_program(b,&[l.id],n as u32,gdef.as_ref(),Default::default()).unwrap();
+            counts[3]+=1;
+            for (a,z,delta) in cases{
+                let design=[nominal(font,a),nominal(font,z)];
+                let adv=[(design[0],0),(design[1],0)];
+                for (x,y) in [(9u16,12u16),(16,20),(32,48)]{
+                    // Integer pixel widths are caller-supplied, independent of design.
+                    let px=design.map(|w|(w*i32::from(x)+units/2)/units);
+                    let pixels=[(px[0],0),(px[1],0)];
+                    let raw=pixel_pair(&l,a,z,x,y);
+                    for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                        let mode=GposRunMode::DevicePixels{x_ppem:x,y_ppem:y};
+                        let got=execute_gpos_mixed_joint(&p,&[a,z],&[Default::default();2],&adv,&pixels,
+                            &[GposLigatureSource::Unmapped;2],mode,flow,Default::default(),Default::default());
+                        let Some(pd)=raw else{
+                            assert!(matches!(got,Err(Error::Unsupported(_))),"{name} lookup {} unresolved point/variation",l.id);
+                            counts[1]+=1;continue;
+                        };
+                        let got=got.unwrap();
+                        let (orig,da,child,edge)=reference_pair(design,delta,l.kind,l.flags,flow);
+                        let (porig,pa,_,pedge)=reference_pair(px,pd,l.kind,l.flags,flow);
+                        assert_eq!(got.design_origins,orig.to_vec());
+                        assert_eq!(got.pixel_origins,porig.to_vec());
+                        for i in 0..2{assert_eq!(got.adjustments[i],GposRunAdjustment{design:da[i],pixels:pa[i]});}
+                        assert_eq!(got.edges[child],Some(GposAttachmentEdge{parent:1-child,design_delta:edge,pixel_delta:pedge}));
+                        assert!(got.edges[1-child].is_none());
+                        counts[0]+=1;if pd!=(0,0){counts[2]+=1;}
+                    }
+                }
+            }
+        }
+        eprintln!("native device {name}: {counts:?}");
+        for i in 0..4{total[i]+=counts[i];}
+    }
+    // A zero device delta is a real supported pixel-coordinate case; do not
+    // claim nonzero Device-table coverage if the vendored fonts lack it.
+    assert!(total[0]>0&&total[3]>0,"native device evidence: {total:?}");
+}
+
+// Independent bounded three-glyph schedule: require precisely one cursive
+// pair (0,1) and one mark pair (1,2), with no other matches. The moving
+// cursive endpoint may be either glyph. Root order cannot change these
+// disjoint child edges. Direct world-coordinate propagation is the oracle.
+fn cursive_matches(l:&Lookup<'_>,glyphs:&[u16;3],cls:&[usize])->Vec<(usize,usize,Point)>{
+    let ids:Vec<_>=(0..3).filter(|&i|eligible(glyphs[i],l.flags,cls)).collect();
+    ids.windows(2).filter_map(|w|pair(l,glyphs[w[0]],glyphs[w[1]]).map(|d|(w[0],w[1],d))).collect()
+}
+fn mark_matches(l:&Lookup<'_>,glyphs:&[u16;3],cls:&[usize])->Vec<(usize,usize,Point)>{
+    let ids:Vec<_>=(0..3).filter(|&i|eligible(glyphs[i],l.flags,cls)).collect();
+    let mut out=Vec::new();
+    for k in 0..ids.len(){
+        let child=ids[k];
+        if let Some(&parent)=ids[..k].iter().rev().find(|&&i|cls[glyphs[i] as usize]!=3){
+            if let Some(d)=pair(l,glyphs[parent],glyphs[child]){out.push((parent,child,d));}
+        }
+    }
+    out
+}
+fn check_chain(font:&[u8],p:&CompiledGposProgram<'_>,glyphs:[u16;3],cd:Point,md:Point,flags:usize,flow:GposHorizontalFlow){
+    let n=glyphs.map(|g|nominal(font,g));let mut w=n;
+    let rtl=flow==GposHorizontalFlow::RightToLeft;
+    if rtl{w[1]=-cd.0;}else{w[0]=cd.0;}
+    let ox=if rtl{[-w[0],-w[0]-w[1],-w[0]-w[1]-w[2]]}else{[0,w[0],w[0]+w[1]]};
+    let child=if flags&1!=0{0}else{1};let parent=1-child;
+    let edge=if child==0{(-cd.0,-cd.1)}else{cd};
+    let mut da=[GposRunAdjustment::default();3];
+    for i in 0..3{da[i].design.x_advance=w[i]-n[i];}
+    da[child].design.x_placement=ox[parent]-ox[child]+edge.0;
+    da[child].design.y_placement=edge.1;
+    da[2].design.x_placement=ox[1]+da[1].design.x_placement+md.0-ox[2];
+    da[2].design.y_placement=da[1].design.y_placement+md.1;
+    let adv=n.map(|w|(w,0));
+    let got=execute_gpos_mixed_joint(p,&glyphs,&[Default::default();3],&adv,&[(0,0);3],
+        &[GposLigatureSource::Unmapped;3],GposRunMode::DesignOnly,flow,Default::default(),Default::default()).unwrap();
+    assert_eq!(got.design_origins,ox.map(|x|(x,0)).to_vec());assert_eq!(got.adjustments,da.to_vec());
+    assert_eq!(got.edges[child],Some(GposAttachmentEdge{parent,design_delta:edge,pixel_delta:(0,0)}));
+    assert_eq!(got.edges[2],Some(GposAttachmentEdge{parent:1,design_delta:md,pixel_delta:(0,0)}));
+    assert!(got.edges[parent].is_none());
+}
+#[test]fn native_two_lookup_cursive_mark_chain_differential(){
+    let mut total=0usize;
+    for (name,font) in FONTS{
+        let Some(b)=table(font,b"GPOS")else{continue;};
+        let n=u(table(font,b"maxp").unwrap(),4);let gd=table(font,b"GDEF");
+        let cls=classes(gd,n);let gdef=gd.map(|x|parse_gdef(x,n as u32,Default::default()).unwrap());
+        let ls=lookups(b);let mut count=0;
+        // For each cursive/mark lookup pair, sample from actual native
+        // base coverages, not a synthetic table or substituted glyph ID.
+        for cu in ls.iter().filter(|l|l.kind==3){
+            for ma in ls.iter().filter(|l|l.kind==4){
+                let mut candidate=None;
+                'search:for cs in &cu.subs{
+                    let cov=coverage(cs,u(cs,2));
+                    for ms in &ma.subs{
+                        let bases=coverage(ms,u(ms,4));let marks=coverage(ms,u(ms,2));
+                        for &z in cov.iter().filter(|g|bases.binary_search(g).is_ok()).take(32){
+                            if cls[z as usize]==3{continue;}
+                            for &a in cov.iter().take(32){
+                                if !eligible(a,cu.flags,&cls)||!eligible(z,cu.flags,&cls){continue;}
+                                let Some(cd)=pair(cu,a,z)else{continue;};
+                                for &m in marks.iter().take(32){
+                                    if !eligible(z,ma.flags,&cls)||!eligible(m,ma.flags,&cls){continue;}
+                                    let Some(md)=pair(ma,z,m)else{continue;};
+                                    let gs=[a,z,m];
+                                    if cursive_matches(cu,&gs,&cls)==vec![(0,1,cd)]
+                                        &&mark_matches(ma,&gs,&cls)==vec![(1,2,md)]{
+                                        candidate=Some((gs,cd,md));break 'search;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((gs,cd,md))=candidate{
+                    let mut roots=[cu.id,ma.id];roots.sort_unstable();
+                    let p=compile_gpos_program(b,&roots,n as u32,gdef.as_ref(),Default::default()).unwrap();
+                    for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                        check_chain(font,&p,gs,cd,md,cu.flags,flow);count+=1;
+                    }
+                }
+            }
+        }
+        eprintln!("native two-lookup chain {name}: {count}");total+=count;
+    }
+    assert!(total>0,"no native two-lookup chain samples");
+}
