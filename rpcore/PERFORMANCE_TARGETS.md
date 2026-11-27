@@ -38,3 +38,6 @@ HEAD 56946d71c9a1f6ebeabc7b60dbc246cdeeddc512，Run 45750135349，perf-pdfium jo
 
 ## CI #623 paired observation
 HEAD 056a0fec9a69fcce485c00a4fa524353597cf7b5, run 45914075351, perf job 140229006059. 25/29 eligible; four low-DPI JPEG cases excluded. Eligible render throughput 2.97–21.13% of PDFium; vector max 4.32%, TrueType max 11.26%, JPEG max 21.13%. Inspect vector/text/image 439.76/494.67/355.08%; text extraction fresh/warm 224.30/263.40%. Shared-runner observations, no regression attribution or RSS verification. All render cases below 50%; targets unchanged.
+
+
+CI #625 run 45955913846: 25/29 eligible; render 4.18–33.85% of PDFium, vector max 5.64%, text max 16.39%, JPEG max 33.85%; four low-DPI JPEG exclusions. Runner variation not attributed to algorithm change; goals unchanged.

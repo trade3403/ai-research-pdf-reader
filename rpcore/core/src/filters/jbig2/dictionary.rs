@@ -2732,6 +2732,42 @@ mod aggregation_mixed_vectors{
         }
     }
     #[test]
+    fn mixed_aggregation_parent_child_entropy(){
+        // Independently encoded child syntax: DH=DW=AI=1, ID=0 (2 bits),
+        // RDX=RDY=0, GR=1, width OOB, export runs 0/4.
+        // Only the centre GR context inherits (state 6, MPS 1).
+        const CHILD:&[u8]=&[149,20,57,186,107,255,172];
+        for t in [0,1]{
+            let mut b=vec![8|(t<<4)|2,2,2,255];
+            if t==0{b.extend([255;4]);}
+            b.extend([0,0,0,3,0,0,0,2]);b.extend(MIXED);
+            let (header,_)=parse(&b).unwrap();let start=header.data_offset;
+            let p=Plan{header,imported:1,dictionaries:vec![],tables:None,context_source:None,encoded:start..b.len()};
+            let src=Bitmap::from_packed(1,1,&[128]).unwrap();
+            let l=ArithmeticLimits::default();
+            let (parent,snap)=decode_arithmetic_aggregation_with_context(&p,&b,&[&src],l,None).unwrap();
+            let snap=snap.unwrap();
+            let centre=if t==0{16}else{8};
+            assert_eq!(snap.bank.entries()[centre],super::super::qm::Context::new(6,1).unwrap());
+            let mut child=vec![8|(t<<4)|3,2,2,255];
+            if t==0{child.extend([255;4]);}
+            child.extend([0,0,0,4,0,0,0,1]);child.extend(CHILD);
+            let (header,_)=parse(&child).unwrap();let start=header.data_offset;
+            let mut p=Plan{header,imported:3,dictionaries:vec![],tables:None,context_source:None,encoded:start..child.len()};
+            let imports=[&src,&parent.new_symbols[0],&parent.new_symbols[1]];
+            let exact=ArithmeticLimits{decisions:38,..l};
+            let (d,after)=decode_arithmetic_aggregation_with_context(&p,&child,&imports,exact,Some(&snap)).unwrap();
+            assert_eq!(d.exported_indices,[0,1,2,3]);
+            assert_eq!(d.new_symbols[0].packed(),[128]);
+            assert_ne!(after.unwrap(),snap);
+            assert!(decode_arithmetic_aggregation_with_context(&p,&child,&imports,ArithmeticLimits{decisions:37,..l},Some(&snap)).is_err());
+            p.header.context_used=false;
+            if let Ok((reset,_))=decode_arithmetic_aggregation_with_context(&p,&child,&imports,exact,None){
+                assert!(reset.new_symbols!=d.new_symbols||reset.exported_indices!=d.exported_indices);
+            }
+        }
+    }
+    #[test]
     fn mixed_aggregation_retains_gr(){
         for t in [0,1]{
             let mut b=vec![8|(t<<4)|2,2,2,255];
