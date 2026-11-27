@@ -256,11 +256,107 @@ fn load_jpx(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     Ok(Image{w,h,rgb,alpha:None,stencil:false,interpolate})
 }
 
+
+fn is_jbig2(d:&Dict)->bool{
+    match d.get(b"Filter".as_slice()){
+        Some(Object::Name(n))=>n==b"JBIG2Decode",
+        Some(Object::Array(a))=>a.iter().any(|v|matches!(v,Object::Name(n) if n==b"JBIG2Decode")),
+        _=>false,
+    }
+}
+
+/// PDF image-only JBIG2 path. T.88 black=1 is converted to PDF
+/// sample zero before applying Decode; row padding is never a pixel.
+/// Initially accept a single terminal filter (name or one-element array)
+/// and unfiltered indirect globals, with no external alpha or color key.
+fn load_jbig2(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
+    interpolate:bool,budget:&mut Budget)->Result<Image>{
+    use crate::filters::jbig2::page;
+    let array=match dict.get(b"Filter".as_slice()){
+        Some(Object::Name(n)) if n==b"JBIG2Decode"=>false,
+        Some(Object::Array(a)) if a.len()==1&&matches!(&a[0],Object::Name(n) if n==b"JBIG2Decode")=>true,
+        _=>return Err(Error::Unsupported("JBIG2 filter structure")),
+    };
+    let param=match dict.get(b"DecodeParms".as_slice()){
+        None|Some(Object::Null)=>None,
+        Some(Object::Array(a)) if array&&a.len()==1=>Some(doc.dereference(&a[0])?),
+        Some(o) if !array=>Some(doc.dereference(o)?),
+        _=>return Err(Error::Unsupported("JBIG2 DecodeParms structure")),
+    };
+    let globals=match &param{
+        None|Some(Object::Null)=>Vec::new(),
+        Some(Object::Dict(p))=>{
+            if p.keys().any(|k|k!=b"JBIG2Globals"){return Err(Error::Unsupported("JBIG2 DecodeParms key"));}
+            match p.get(b"JBIG2Globals".as_slice()){
+                None=>Vec::new(),
+                Some(o@Object::Ref(..))=>{
+                    let Object::Stream{dict,data}=doc.dereference(o)? else{return Err(Error::Invalid("JBIG2Globals stream"));};
+                    if !matches!(dict.get(b"Filter".as_slice()),None|Some(Object::Null))||
+                        !matches!(dict.get(b"DecodeParms".as_slice()),None|Some(Object::Null)){
+                        return Err(Error::Unsupported("JBIG2Globals filtered stream"));
+                    }
+                    if data.len()>crate::MAX_BYTES{return Err(Error::Limit("JBIG2Globals bytes"));}
+                    budget.charge(data.len())?;data
+                }
+                _=>return Err(Error::Invalid("JBIG2Globals indirect stream")),
+            }
+        }
+        _=>return Err(Error::Invalid("JBIG2 DecodeParms dictionary")),
+    };
+    let stencil=flag(dict,b"ImageMask")?;
+    if dict.contains_key(b"Mask".as_slice())||dict.contains_key(b"SMaskInData".as_slice())||
+        !matches!(dict.get(b"SMask".as_slice()),None|Some(Object::Name(_))){
+        return Err(Error::Unsupported("JBIG2 external mask"));
+    }
+    if let Some(Object::Name(n))=dict.get(b"SMask".as_slice()){
+        if stencil||n!=b"None"{return Err(Error::Unsupported("JBIG2 soft mask"));}
+    }
+    if stencil{
+        if dict.contains_key(b"ColorSpace".as_slice())||
+            (dict.contains_key(b"BitsPerComponent".as_slice())&&bits(dict)?!=1){
+            return Err(Error::Invalid("JBIG2 stencil dictionary"));
+        }
+    }else{
+        if bits(dict)?!=1||device(&doc.dereference(dict.get(b"ColorSpace".as_slice())
+            .ok_or(Error::Invalid("JBIG2 color space"))?)?)?!=1{
+            return Err(Error::Unsupported("JBIG2 PDF samples"));
+        }
+    }
+    let pair=pairs(dict,1)?[0];
+    if stencil&&pair!=[0.,1.]&&pair!=[1.,0.]{return Err(Error::Invalid("JBIG2 stencil Decode"));}
+    // Reserve conversion work and constrain the native executor by remaining
+    // raster work. The executor itself charges input, graph and decode work.
+    budget.charge(w*h)?;
+    let mut limits=page::Limits::default();
+    limits.page_pixels=(w*h) as u64;
+    limits.work=limits.work.min(super::MAX_WORK.saturating_sub(budget.work) as u64);
+    let decoded=page::decode_pdf_page_reclaimed(&globals,data,limits)?;
+    budget.charge(usize::try_from(decoded.stats.work_used).map_err(|_|Error::Limit("JBIG2 raster work"))?)?;
+    let bitmap=decoded.bitmap;
+    if (bitmap.width() as usize,bitmap.height() as usize)!=(w,h){
+        return Err(Error::Invalid("JBIG2/PDF dimensions mismatch"));
+    }
+    let mut rgb=Vec::with_capacity(if stencil{0}else{w*h*3});
+    let mut alpha=if stencil{Some(Vec::with_capacity(w*h))}else{None};
+    for row in bitmap.packed().chunks_exact(bitmap.stride()){
+        for x in 0..w{
+            let sample=if row[x/8]&(0x80>>(x%8))!=0{0}else{1};
+            let v=channel(sample,1,pair);
+            if let Some(a)=&mut alpha{a.push(255-v);}else{rgb.extend([v;3]);}
+        }
+    }
+    Ok(Image{w,h,rgb,alpha,stencil,interpolate})
+}
+
 pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut IccCache,intent:crate::icc::RenderingIntent)->Result<Image>{
     let o=doc.resolve(id.0,id.1)?;let Object::Stream{dict,..}=&o else{return Err(Error::Invalid("image stream"));};
     if !matches!(dict.get(b"Subtype".as_slice()),Some(Object::Name(n)) if n==b"Image"){return Err(Error::Invalid("image subtype"));}
     let interpolate=flag(dict,b"Interpolate")?;
     let(w,h)=dimensions(dict)?;
+    if is_jbig2(dict){
+        let Object::Stream{data,..}=&o else{return Err(Error::Invalid("JBIG2 image stream"));};
+        return load_jbig2(doc,dict,data,w,h,interpolate,budget);
+    }
     if is_jpx(dict){
         let Object::Stream{data,..}=&o else{return Err(Error::Invalid("JPX image stream"));};
         return load_jpx(doc,dict,data,w,h,interpolate,budget);
@@ -367,28 +463,136 @@ mod jpx_pdf_tests{
         pdf_layout(data,w,h,w,h,fields,&contents)
     }
     fn pdf_layout(data:&[u8],iw:usize,ih:usize,w:usize,h:usize,fields:&str,contents:&str)->Vec<u8>{
+        pdf_layout_globals(data,iw,ih,w,h,fields,contents,None)
+    }
+    fn pdf_layout_globals(data:&[u8],iw:usize,ih:usize,w:usize,h:usize,fields:&str,contents:&str,globals:Option<&[u8]>)->Vec<u8>{
         let mut image=format!("<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} {fields} /Length {} >>\nstream\n",data.len()).into_bytes();
         image.extend(data);image.extend(b"\nendstream");
-        let objects=[
+        let mut objects=vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
             format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Resources << /XObject << /Im 5 0 R >> >> /Contents 4 0 R >>").into_bytes(),
             format!("<< /Length {} >>\nstream\n{contents}\nendstream",contents.len()).into_bytes(),
             image
         ];
+        if let Some(g)=globals{
+            let mut stream=format!("<< /Length {} >>\nstream\n",g.len()).into_bytes();
+            stream.extend(g);stream.extend(b"\nendstream");objects.push(stream);
+        }
+        let size=objects.len()+1;
         let mut b=b"%PDF-1.5\n".to_vec();let mut offsets=Vec::new();
         for (i,o) in objects.iter().enumerate(){
             offsets.push(b.len());b.extend(format!("{} 0 obj\n",i+1).as_bytes());b.extend(o);b.extend(b"\nendobj\n");
         }
-        let x=b.len();b.extend(b"xref\n0 6\n0000000000 65535 f \n");
+        let x=b.len();b.extend(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
         for off in offsets{b.extend(format!("{off:010} 00000 n \n").as_bytes());}
-        b.extend(format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes());b
+        b.extend(format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes());b
     }
     fn render(data:&[u8],w:usize,h:usize,fields:&str)->Result<super::super::Bitmap>{
         let bytes=pdf(data,w,h,fields);
         let doc=Document::open(&bytes)?;let pages=doc.pages()?;
         doc.render_page(&pages[0],super::super::Options::default(),4096)
     }
+
+    fn jbig2_segment(n:u8,kind:u8,body:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,n,kind,0,1];
+        v.extend((body.len() as u32).to_be_bytes());v.extend(body);v
+    }
+    fn jbig2_fixture()->Vec<u8>{
+        let mut info=Vec::new();for n in [9u32,2,0,0]{info.extend(n.to_be_bytes());}
+        info.extend([0x44,0,0]); // black page, operator override
+        let mut p=jbig2_segment(1,48,&info);
+        let mut region=Vec::new();for n in [5u32,1,0,0]{region.extend(n.to_be_bytes());}
+        region.extend([4,1,0x80]); // white MMR row, replace five pixels
+        p.extend(jbig2_segment(2,39,&region));p
+    }
+    #[test]fn pdf_jbig2_gray_polarity_and_padding(){
+        let data=jbig2_fixture();
+        let want=[255u8,255,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0,0];
+        for (filter,reverse) in [("/Filter /JBIG2Decode",false),
+            ("/Filter [/JBIG2Decode] /DecodeParms [<< >>]",false),
+            ("/Filter /JBIG2Decode /Decode [1 0]",true)]{
+            let fields=format!("{filter} /ColorSpace /DeviceGray /BitsPerComponent 1");
+            let a=render(&data,9,2,&fields).unwrap();
+            assert_eq!((a.width,a.height),(9,2));
+            for (p,e) in a.rgba.chunks_exact(4).zip(want){
+                let e=if reverse{255-e}else{e};assert_eq!(p,[e,e,e,255]);
+            }
+        }
+    }
+    #[test]fn pdf_jbig2_stencil_polarity(){
+        let data=jbig2_fixture();
+        let bytes=pdf_layout(&data,9,2,9,2,"/Filter /JBIG2Decode /ImageMask true",
+            "q 1 0 0 rg 9 0 0 2 0 0 cm /Im Do Q");
+        let doc=Document::open(&bytes).unwrap();
+        let a=doc.render_page(&doc.pages().unwrap()[0],super::super::Options::default(),4096).unwrap();
+        for (i,p) in a.rgba.chunks_exact(4).enumerate(){
+            assert_eq!(p,if i<5{[255,255,255,255]}else{[255,0,0,255]});
+        }
+    }
+    // Original T.88 Annex H page 1 and globals, already independently
+    // pixel-validated in page::annex_h_full_page_tests.
+    const GLOBAL1:&[u8]=&[
+        0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0x00,0x01,0x00,0x00,0x00,
+        0x01,0x00,0x00,0x00,0x01,0xe9,0xcb,0xf4,0x00,0x26,0xaf,0x04,0xbf,0xf0,0x78,0x2f,
+        0xe0,0x00,0x40,
+    ];
+    const PAGE1:&[u8]=&[
+        0x00,0x00,0x00,0x01,0x30,0x00,0x01,0x00,0x00,0x00,0x13,0x00,0x00,0x00,0x40,0x00,
+        0x00,0x00,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,
+        0x00,0x02,0x00,0x01,0x01,0x00,0x00,0x00,0x1c,0x00,0x01,0x00,0x00,0x00,0x02,0x00,
+        0x00,0x00,0x02,0xe5,0xcd,0xf8,0x00,0x79,0xe0,0x84,0x10,0x81,0xf0,0x82,0x10,0x86,
+        0x10,0x79,0xf0,0x00,0x80,0x00,0x00,0x00,0x03,0x07,0x42,0x00,0x02,0x01,0x00,0x00,
+        0x00,0x31,0x00,0x00,0x00,0x25,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x04,0x00,0x00,
+        0x00,0x01,0x00,0x0c,0x09,0x00,0x10,0x00,0x00,0x00,0x05,0x01,0x10,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0c,0x40,0x07,0x08,
+        0x70,0x41,0xd0,0x00,0x00,0x00,0x04,0x27,0x00,0x01,0x00,0x00,0x00,0x2c,0x00,0x00,
+        0x00,0x36,0x00,0x00,0x00,0x2c,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x0b,0x00,0x01,
+        0x26,0xa0,0x71,0xce,0xa7,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+        0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xf8,0xf0,0x00,0x00,0x00,0x05,0x10,0x01,
+        0x01,0x00,0x00,0x00,0x2d,0x01,0x04,0x04,0x00,0x00,0x00,0x0f,0x20,0xd1,0x84,0x61,
+        0x18,0x45,0xf2,0xf9,0x7c,0x8f,0x11,0xc3,0x9e,0x45,0xf2,0xf9,0x7d,0x42,0x85,0x0a,
+        0xaa,0x84,0x62,0x2f,0xee,0xec,0x44,0x62,0x22,0x35,0x2a,0x0a,0x83,0xb9,0xdc,0xee,
+        0x77,0x80,0x00,0x00,0x00,0x06,0x17,0x20,0x05,0x01,0x00,0x00,0x00,0x57,0x00,0x00,
+        0x00,0x20,0x00,0x00,0x00,0x24,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x0f,0x00,0x01,
+        0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x04,0x00,0x00,0x00,0xaa,0xaa,0xaa,0xaa,0x80,0x08,0x00,0x80,0x36,0xd5,0x55,0x6b,
+        0x5a,0xd4,0x00,0x40,0x04,0x2e,0xe9,0x52,0xd2,0xd2,0xd2,0x8a,0xa5,0x4a,0x00,0x20,
+        0x02,0x23,0xe0,0x95,0x24,0xb4,0x92,0x8a,0x4a,0x92,0x54,0x92,0xd2,0x4a,0x29,0x2a,
+        0x49,0x40,0x04,0x00,0x40,0x00,0x00,0x00,0x07,0x31,0x00,0x01,0x00,0x00,0x00,0x00,
+    ];
+    #[test]fn pdf_jbig2_indirect_globals(){
+        let want=crate::filters::jbig2::page::decode_pdf_page(GLOBAL1,PAGE1,Default::default()).unwrap();
+        let fields="/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 1 /DecodeParms << /JBIG2Globals 6 0 R >>";
+        let bytes=pdf_layout_globals(PAGE1,64,56,64,56,fields,"q 64 0 0 56 0 0 cm /Im Do Q",Some(GLOBAL1));
+        let doc=Document::open(&bytes).unwrap();
+        let a=doc.render_page(&doc.pages().unwrap()[0],super::super::Options::default(),16384).unwrap();
+        assert_eq!((a.width,a.height),(64,56));
+        for (i,p) in a.rgba.chunks_exact(4).enumerate(){
+            let e=if want.bitmap.get((i%64) as u32,(i/64) as u32).unwrap(){0}else{255};
+            assert_eq!(p,[e,e,e,255]);
+        }
+        assert!(render(PAGE1,64,56,"/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 1").is_err());
+    }
+    #[test]fn pdf_jbig2_invalid_metadata_and_budget(){
+        let data=jbig2_fixture();
+        let f="/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 1";
+        for extra in ["/DecodeParms << /JBIG2Globals 6 0 R >>",
+            "/DecodeParms << /JBIG2Globals 5 0 R >>","/DecodeParms << /JBIG2Globals 42 >>",
+            "/DecodeParms << /Other 1 >>","/DecodeParms [null]","/Mask [0 1]","/SMaskInData 1"]{
+            assert!(render(&data,9,2,&format!("{f} {extra}")).is_err(),"{extra}");
+        }
+        assert!(render(&data,8,2,f).is_err());
+        assert!(render(&data,18,1,f).is_err());
+        assert!(render(&data,9,2,"/Filter [/JBIG2Decode /AHx] /ColorSpace /DeviceGray /BitsPerComponent 1").is_err());
+        assert!(render(&data,9,2,"/Filter /JBIG2Decode /ColorSpace /DeviceGray /BitsPerComponent 8").is_err());
+        assert!(render(&data[..data.len()-1],9,2,f).is_err());
+        let bytes=pdf(&data,9,2,f);let doc=Document::open(&bytes).unwrap();
+        assert!(crate::filters::decode(&doc.resolve(5,0).unwrap(),64).is_err());
+        let mut budget=Budget{work:super::super::MAX_WORK-1,stage:"JBIG2 test budget"};
+        assert!(load(&doc,(5,0),&mut budget,&mut IccCache::default(),crate::icc::RenderingIntent::RelativeColorimetric).is_err());
+    }
+
     #[test]fn pdf_jpx_raw_gray(){
         let a=render(&hex(GRAY),4,4,"/Filter /JPXDecode /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0]").unwrap();
         assert_eq!((a.width,a.height),(4,4));
