@@ -907,3 +907,85 @@ mod huffman_direct_text_tests{
         assert_eq!(r.remaining(),0);
     }
 }
+
+/// Resolved refinement delta and block-size tables. The four deltas
+/// can independently select Annex B.14/B.15 or a resolved custom table.
+pub struct HuffmanTextRefinementTables{
+    deltas:[super::huffman::Table;4],
+    size:super::huffman::Table,
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HuffmanTextRefinementFields{
+    pub dw:i64,pub dh:i64,pub dx:i64,pub dy:i64,pub bytes:usize,
+}
+impl HuffmanTextRefinementTables{
+    pub fn standard(numbers:[u8;4])->Result<Self>{
+        use super::huffman::standard::table;
+        if numbers.iter().any(|&n|!matches!(n,14|15)){
+            return Err(Error::Invalid("JBIG2 Huffman text refinement table selection"));
+        }
+        Self::new([table(numbers[0])?,table(numbers[1])?,table(numbers[2])?,table(numbers[3])?],table(1)?)
+    }
+    pub fn new(deltas:[super::huffman::Table;4],size:super::huffman::Table)->Result<Self>{
+        if deltas.iter().any(|t|t.has_oob())||size.has_oob(){
+            return Err(Error::Invalid("JBIG2 Huffman text refinement OOB table"));
+        }
+        Ok(Self{deltas,size})
+    }
+    /// One RI bit followed by RDW/RDH/RDX/RDY and RSIZE when set.
+    /// No alignment or block bytes are consumed here.
+    pub fn read(&self,r:&mut crate::filters::ccitt::BitReader<'_>)->Result<Option<HuffmanTextRefinementFields>>{
+        if r.bit()?==0{return Ok(None);}
+        let mut v=[0i64;4];
+        for (out,t) in v.iter_mut().zip(&self.deltas){
+            *out=HuffmanTextIntegers::required(t.decode(r)?)?;
+        }
+        let bytes=usize::try_from(HuffmanTextIntegers::required(self.size.decode(r)?)?)
+            .map_err(|_|Error::Invalid("JBIG2 Huffman text negative refinement size"))?;
+        if bytes<2{return Err(Error::Invalid("JBIG2 Huffman text short refinement block"));}
+        Ok(Some(HuffmanTextRefinementFields{dw:v[0],dh:v[1],dx:v[2],dy:v[3],bytes}))
+    }
+}
+/// Resolve a declared byte-aligned refinement payload in the SAME input
+/// window as the reader. This helper only calculates bounds; the caller
+/// consumes alignment and bytes or creates a new reader at the end.
+pub fn huffman_refinement_span(bit_position:usize,remaining_bits:usize,bytes:usize)
+    ->Result<std::ops::Range<usize>>{
+    if bytes<2{return Err(Error::Invalid("JBIG2 Huffman text short refinement block"));}
+    let start=bit_position.div_ceil(8);
+    let end=start.checked_add(bytes).ok_or(Error::Limit("JBIG2 Huffman text refinement end"))?;
+    let end_bits=end.checked_mul(8).ok_or(Error::Limit("JBIG2 Huffman text refinement bits"))?;
+    let limit=bit_position.checked_add(remaining_bits).ok_or(Error::Limit("JBIG2 Huffman text input bits"))?;
+    if end_bits>limit{return Err(Error::Invalid("JBIG2 Huffman text truncated refinement block"));}
+    Ok(start..end)
+}
+#[cfg(test)]
+mod huffman_text_refinement_field_tests{
+    use super::*;
+    use crate::filters::ccitt::BitReader;
+    #[test]
+    fn huffman_text_refinement_fields_reference(){
+        let t=HuffmanTextRefinementTables::standard([14,15,14,15]).unwrap();
+        // RI=1, N:-2=100, O:+1=101, N:-1=101, O:0=0,
+        // B.1 size=3:00011. 16 bits, followed by a 3-byte QM block.
+        let data=[203,67,0xbb,0xff,0xac];
+        let mut r=BitReader::new(&data,40).unwrap();
+        assert_eq!(t.read(&mut r).unwrap(),Some(HuffmanTextRefinementFields{dw:-2,dh:1,dx:-1,dy:0,bytes:3}));
+        assert_eq!(r.position(),16);
+        assert_eq!(huffman_refinement_span(r.position(),r.remaining(),3).unwrap(),2..5);
+    }
+    #[test]
+    fn huffman_text_refinement_field_bounds(){
+        let t=HuffmanTextRefinementTables::standard([14;4]).unwrap();
+        let mut r=BitReader::new(&[0],1).unwrap();
+        assert_eq!(t.read(&mut r).unwrap(),None);assert_eq!(r.remaining(),0);
+        assert!(HuffmanTextRefinementTables::standard([13;4]).is_err());
+        // RI=1, four zero deltas, size 1.
+        assert!(t.read(&mut BitReader::new(&[128,64],10).unwrap()).is_err());
+        assert_eq!(huffman_refinement_span(13,27,3).unwrap(),2..5);
+        assert!(huffman_refinement_span(13,26,3).is_err());
+        assert!(huffman_refinement_span(13,27,1).is_err());
+        assert!(huffman_refinement_span(usize::MAX,1,2).is_err());
+        assert!(huffman_refinement_span(0,40,usize::MAX).is_err());
+    }
+}
