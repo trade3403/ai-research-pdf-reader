@@ -1093,3 +1093,54 @@ mod huffman_refined_integration_tests{
         assert!(run(&bad,bad.len()*8,6,20000).is_err());
     }
 }
+
+#[cfg(test)]
+mod huffman_refined_multi_tests{
+    use super::*;
+    use super::super::refinement::{Neighborhood,Template};
+    // Repacked Huffman fields around the two independently encoded QM
+    // blocks from dictionary::huffman_refinement_tests. The second
+    // reference is an imported copy of the first target, not a dynamic ID.
+    // First target 3x2 [160,64], second 4x2 [192,48].
+    // Third symbol is unrefined, at x=0,y=2.
+    fn fixture(template:Template)->Vec<u8>{
+        let mut data=vec![0,15,28,117,70,187,255,172,215,82,144];
+        data.extend([if template==Template::T0{221}else{220},127,255,172]);
+        data.extend([96,2,64]);data
+    }
+    fn run(template:Template,data:&[u8],decisions:usize,work:u64)->Result<DecodedText>{
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0])?;
+        let b=Bitmap::from_packed(3,2,&[160,64])?;
+        let o=Options{width:8,height:4,default_black:false,op:ComposeOp::Or,
+            strips:1,corner:Corner::TopLeft,transposed:false,ds_offset:0,instances:3};
+        let ids=HuffmanSymbolIds::new(&[1,1])?;
+        let ints=HuffmanTextIntegers::standard(6,8,11)?;
+        let tables=HuffmanTextRefinementTables::standard([15;4])?;
+        decode_huffman_refined(data,data.len()*8,o,&[&a,&b],&ids,&ints,&tables,&Neighborhood::nominal(template),decisions,work)
+    }
+    #[test]
+    fn huffman_refined_multi_shared_gr_both_templates(){
+        for template in [Template::T0,Template::T1]{
+            let data=fixture(template);
+            let d=run(template,&data,14,40000).unwrap();
+            assert_eq!(d.bitmap.packed(),[172,67,160,64]);
+            assert_eq!((d.stats.instances,d.stats.strips,d.stats.composed_pixels),(3,2,20));
+            assert_eq!(run(template,&data,14,d.stats.work_used).unwrap(),d);
+            assert!(run(template,&data,13,40000).is_err());
+            assert!(run(template,&data,14,d.stats.work_used-1).is_err());
+        }
+    }
+    #[test]
+    fn huffman_refined_multi_truncation_and_marker(){
+        for template in [Template::T0,Template::T1]{
+            let data=fixture(template);
+            for n in 0..data.len(){assert!(run(template,&data[..n],14,40000).is_err());}
+            let mut bad=data.clone();bad[7]=0x90;
+            assert!(run(template,&bad,14,40000).is_err());
+            let mut bad=data.clone();bad[14]=0x90;
+            assert!(run(template,&bad,14,40000).is_err());
+            let mut bad=data.clone();bad.push(0);
+            assert!(run(template,&bad,14,40000).is_err());
+        }
+    }
+}
