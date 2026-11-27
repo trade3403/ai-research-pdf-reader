@@ -214,6 +214,126 @@ pub fn decode_mmr(data:&[u8],dict:&PatternDictionary,limits:Limits)->Result<Deco
         work_used:limits.work-left+composed_pixels})
 }
 
+
+/// Cumulative limits for pattern dictionaries and halftone regions in one
+/// validated embedded page. Pixel counts for dictionaries and region canvases
+/// are separate; QM decisions, work and logical packed bytes are shared.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct ExecutionLimits{
+    pub dictionaries:usize,pub regions:usize,pub patterns:u32,
+    pub pattern_pixels:u64,pub region_pixels:u64,pub grid_cells:u64,
+    pub packed_bytes:usize,pub decisions:usize,pub work:u64,
+}
+impl Default for ExecutionLimits{
+    fn default()->Self{Self{dictionaries:super::MAX_SEGMENTS,regions:super::MAX_SEGMENTS,
+        patterns:super::pattern::MAX_PATTERNS,pattern_pixels:bitmap::MAX_PIXELS,
+        region_pixels:bitmap::MAX_PIXELS,grid_cells:MAX_GRID_CELLS,
+        packed_bytes:bitmap::MAX_PACKED_BYTES,decisions:MAX_DECISIONS,work:bitmap::MAX_COMPOSE_WORK}}
+}
+#[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
+pub struct ExecutionStats{
+    pub dictionaries:usize,pub regions:usize,pub patterns:u32,
+    pub pattern_pixels:u64,pub region_pixels:u64,pub grid_cells:u64,
+    pub packed_bytes:usize,pub peak_packed_bytes:usize,pub decisions:usize,pub work_used:u64,
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct HalftoneSegment{
+    pub number:u32,pub kind:u8,pub page:u32,pub dictionary_number:u32,
+    pub decoded:DecodedHalftone,
+}
+#[derive(Debug,PartialEq,Eq)]
+pub struct HalftoneSet{
+    dictionaries:std::collections::BTreeMap<u32,PatternDictionary>,
+    pub regions:Vec<HalftoneSegment>,
+    pub stats:ExecutionStats,
+}
+impl HalftoneSet{
+    pub fn dictionary(&self,number:u32)->Option<&PatternDictionary>{self.dictionaries.get(&number)}
+}
+/// Execute all type 16 and 20/22/23 segments in original graph order.
+/// The graph is constructed internally from the exact input streams.
+/// A halftone must refer to exactly one earlier pattern dictionary.
+/// All dictionaries, including unreferenced ones, are decoded; each is
+/// stored once and borrowed by its regions. Other payloads are opaque.
+/// This does not execute retention flags or composite the page. On error
+/// no partial result escapes. Packed accounting excludes context/graph,
+/// CCITT transition metadata and allocator overhead; it is not RSS.
+pub fn execute_pdf_halftones(globals:&[u8],page:&[u8],limits:ExecutionLimits)->Result<HalftoneSet>{
+    use super::{pattern,SegmentSource};
+    if limits.dictionaries>super::MAX_SEGMENTS||limits.regions>super::MAX_SEGMENTS||
+        limits.patterns>pattern::MAX_PATTERNS||limits.pattern_pixels>bitmap::MAX_PIXELS||
+        limits.region_pixels>bitmap::MAX_PIXELS||limits.grid_cells>MAX_GRID_CELLS||
+        limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.decisions>MAX_DECISIONS||
+        limits.work>bitmap::MAX_COMPOSE_WORK{return Err(Error::Limit("JBIG2 halftone execution limits"));}
+    let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 halftone execution input"))?;
+    if input as u64>limits.work{return Err(Error::Limit("JBIG2 halftone execution work"));}
+    let graph=super::inspect_pdf_streams(globals,page)?;
+    let mut counts=(0usize,0usize);
+    let mut setup=input as u64+graph.graph.len() as u64*2;
+    // Preflight kinds/references before entropy decoding or output allocation.
+    for node in &graph.graph{
+        let seg=graph.segment(node.location).ok_or(Error::Invalid("JBIG2 halftone location"))?;
+        setup=setup.checked_add(node.dependencies.len() as u64).ok_or(Error::Limit("JBIG2 halftone execution work"))?;
+        match seg.kind{
+            16=>{
+                if !node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 pattern dictionary references"));}
+                counts.0+=1;
+            },
+            20|22|23=>{
+                if node.location.source!=SegmentSource::Page||node.dependencies.len()!=1{
+                    return Err(Error::Invalid("JBIG2 halftone dictionary reference count"));
+                }
+                let dep=graph.segment(node.dependencies[0]).ok_or(Error::Invalid("JBIG2 halftone dictionary reference"))?;
+                if dep.kind!=16{return Err(Error::Invalid("JBIG2 halftone dictionary kind"));}
+                counts.1+=1;
+            },
+            _=>{},
+        }
+    }
+    if counts.0>limits.dictionaries||counts.1>limits.regions{return Err(Error::Limit("JBIG2 halftone segment count"));}
+    if setup>limits.work{return Err(Error::Limit("JBIG2 halftone execution work"));}
+    let mut out=HalftoneSet{dictionaries:std::collections::BTreeMap::new(),regions:Vec::new(),
+        stats:ExecutionStats{work_used:setup,..ExecutionStats::default()}};
+    out.regions.try_reserve_exact(counts.1).map_err(|_|Error::Limit("JBIG2 halftone region allocation"))?;
+    for node in &graph.graph{
+        let seg=graph.segment(node.location).ok_or(Error::Invalid("JBIG2 halftone location"))?;
+        if !matches!(seg.kind,16|20|22|23){continue;}
+        let stream=match node.location.source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
+        let data=stream.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 halftone payload span"))?;
+        let stats=&mut out.stats;
+        let work=limits.work-stats.work_used;
+        let packed=limits.packed_bytes-stats.packed_bytes;
+        let decisions=limits.decisions-stats.decisions;
+        if seg.kind==16{
+            let d=pattern::decode(data,pattern::Limits{patterns:limits.patterns-stats.patterns,
+                pixels:limits.pattern_pixels-stats.pattern_pixels,packed_bytes:packed,work,decisions})?;
+            stats.peak_packed_bytes=stats.peak_packed_bytes.max(stats.packed_bytes+d.peak_packed_bytes);
+            stats.packed_bytes+=d.packed_bytes;
+            stats.patterns+=d.header.count;
+            stats.pattern_pixels+=u64::from(d.header.collective_width)*u64::from(d.header.height);
+            stats.work_used+=d.work_used;
+            if let pattern::EntropyStats::Arithmetic{decisions}=d.entropy{stats.decisions+=decisions;}
+            stats.dictionaries+=1;
+            out.dictionaries.insert(seg.number,d);
+        }else{
+            let dep=graph.segment(node.dependencies[0]).ok_or(Error::Invalid("JBIG2 halftone dictionary reference"))?;
+            let dict=out.dictionaries.get(&dep.number).ok_or(Error::Invalid("JBIG2 halftone missing dictionary"))?;
+            let d=decode(data,dict,Limits{grid_cells:limits.grid_cells-stats.grid_cells,
+                pixels:limits.region_pixels-stats.region_pixels,packed_bytes:packed,work,decisions})?;
+            stats.peak_packed_bytes=stats.peak_packed_bytes.max(stats.packed_bytes+d.peak_packed_bytes);
+            stats.packed_bytes+=d.bitmap.packed().len()+d.indices.len()*2;
+            stats.region_pixels+=u64::from(d.header.region.width)*u64::from(d.header.region.height);
+            stats.grid_cells+=u64::from(d.header.grid.width)*u64::from(d.header.grid.height);
+            stats.decisions+=d.decisions;
+            stats.work_used+=d.work_used;
+            stats.regions+=1;
+            out.regions.push(HalftoneSegment{number:seg.number,kind:seg.kind,page:seg.page,
+                dictionary_number:dep.number,decoded:d});
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -318,6 +438,89 @@ mod tests{
         data.push(0);assert!(decode(&data,&one,Limits::default()).is_err());
         assert!(decode_mmr(REGION,&one,Limits::default()).is_err());
         assert!(decode_arithmetic(MMR_REGION,&one,Limits::default()).is_err());
+    }
+
+    fn graph_seg(number:u8,kind:u8,page:u8,refs:&[u8],data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,number,kind,(refs.len() as u8)<<5];
+        v.extend(refs);v.push(page);v.extend((data.len() as u32).to_be_bytes());v.extend(data);v
+    }
+    fn graph_info(number:u8)->Vec<u8>{
+        let mut info=Vec::new();for n in [64u32,56,300,300]{info.extend(n.to_be_bytes());}
+        info.extend([0,0,0]);graph_seg(number,48,1,&[],&info)
+    }
+    fn mixed_graph()->(Vec<u8>,Vec<u8>){
+        // Synthetic graph wrapper, original Annex H entropy payloads.
+        let globals=graph_seg(1,16,0,&[],DICT);
+        let mut page=graph_info(2);
+        page.extend(graph_seg(3,20,1,&[1],REGION));
+        page.extend(graph_seg(4,22,1,&[1],MMR_REGION));
+        page.extend(graph_seg(5,16,1,&[],MMR_DICT));
+        page.extend(graph_seg(6,23,1,&[5],REGION));
+        (globals,page)
+    }
+    #[test]
+    fn halftone_graph_shared_global_and_local_dictionaries(){
+        let (g,p)=mixed_graph();let l=ExecutionLimits::default();
+        let d=execute_pdf_halftones(&g,&p,l).unwrap();
+        assert_eq!(d.regions.iter().map(|r|(r.number,r.kind,r.dictionary_number)).collect::<Vec<_>>(),
+            [(3,20,1),(4,22,1),(6,23,5)]);
+        for r in &d.regions{assert_eq!(r.decoded.bitmap.packed(),EXPECTED);}
+        assert_eq!(d.dictionary(1).unwrap().patterns(),d.dictionary(5).unwrap().patterns());
+        assert!(d.dictionary(2).is_none());
+        let a=pattern::decode(DICT,pattern::Limits::default()).unwrap();
+        let b=pattern::decode(MMR_DICT,pattern::Limits::default()).unwrap();
+        assert_eq!(d.regions[0].decoded,decode(REGION,&a,Limits::default()).unwrap());
+        assert_eq!(d.regions[1].decoded,decode(MMR_REGION,&a,Limits::default()).unwrap());
+        assert_eq!(d.regions[2].decoded,decode(REGION,&b,Limits::default()).unwrap());
+        let s=d.stats;
+        assert_eq!((s.dictionaries,s.regions,s.patterns,s.pattern_pixels,s.region_pixels,s.grid_cells,s.decisions),
+            (2,3,32,512,3456,216,832));
+        assert_eq!(s.packed_bytes,128+3*288);assert_eq!(s.peak_packed_bytes,s.packed_bytes+9);
+        assert_eq!(s.work_used,(g.len()+p.len()) as u64+6*2+3+a.work_used+b.work_used+
+            d.regions.iter().map(|r|r.decoded.work_used).sum::<u64>());
+        let exact=ExecutionLimits{dictionaries:2,regions:3,patterns:32,pattern_pixels:512,
+            region_pixels:3456,grid_cells:216,decisions:832,packed_bytes:s.peak_packed_bytes,work:s.work_used};
+        assert_eq!(execute_pdf_halftones(&g,&p,exact).unwrap(),d);
+        for cap in [ExecutionLimits{dictionaries:1,..exact},ExecutionLimits{regions:2,..exact},
+            ExecutionLimits{patterns:31,..exact},ExecutionLimits{pattern_pixels:511,..exact},
+            ExecutionLimits{region_pixels:3455,..exact},ExecutionLimits{grid_cells:215,..exact},
+            ExecutionLimits{decisions:831,..exact},ExecutionLimits{packed_bytes:s.peak_packed_bytes-1,..exact},
+            ExecutionLimits{work:s.work_used-1,..exact}]{
+            assert!(execute_pdf_halftones(&g,&p,cap).is_err());
+        }
+    }
+    #[test]
+    fn halftone_graph_invalid_dependencies_and_atomic_failure(){
+        let g=graph_seg(1,16,0,&[],DICT);let l=ExecutionLimits::default();
+        for refs in [&[][..],&[1,1][..],&[0][..]]{
+            let mut p=graph_info(2);p.extend(graph_seg(3,23,1,refs,REGION));
+            assert!(execute_pdf_halftones(&g,&p,l).is_err());
+        }
+        let wrong=graph_seg(1,53,0,&[],&[]);
+        let mut p=graph_info(2);p.extend(graph_seg(3,23,1,&[1],REGION));
+        assert!(execute_pdf_halftones(&wrong,&p,l).is_err());
+        let mut p=graph_info(2);p.extend(graph_seg(3,16,1,&[1],DICT));
+        assert!(execute_pdf_halftones(&g,&p,l).is_err());
+        let mut p=graph_info(2);p.extend(graph_seg(3,23,1,&[1],REGION));
+        p.extend(graph_seg(4,23,1,&[1],&MMR_REGION[..MMR_REGION.len()-1]));
+        assert!(execute_pdf_halftones(&g,&p,l).is_err());
+        let mut p=graph_info(2);p.extend(graph_seg(3,23,1,&[4],REGION));
+        p.extend(graph_seg(4,16,1,&[],DICT));
+        assert!(execute_pdf_halftones(&g,&p,l).is_err());
+        let mut p=graph_info(2);p.extend(graph_seg(3,16,2,&[],DICT));
+        assert!(execute_pdf_halftones(&g,&p,l).is_err());
+    }
+    #[test]
+    fn halftone_graph_empty_and_unused_pattern(){
+        let p=graph_info(2);let l=ExecutionLimits::default();
+        let empty=execute_pdf_halftones(&[],&p,l).unwrap();
+        assert_eq!((empty.stats.dictionaries,empty.stats.regions,empty.stats.packed_bytes),(0,0,0));
+        let g=graph_seg(1,16,0,&[],DICT);
+        let d=execute_pdf_halftones(&g,&p,l).unwrap();
+        assert_eq!((d.stats.dictionaries,d.stats.regions,d.stats.patterns,d.stats.decisions),(1,0,16,256));
+        assert_eq!((d.stats.packed_bytes,d.stats.peak_packed_bytes),(64,96));
+        let bad=graph_seg(1,16,0,&[],&DICT[..DICT.len()-1]);
+        assert!(execute_pdf_halftones(&bad,&p,l).is_err());
     }
     #[test]
     fn halftone_annex_h_arithmetic_shared_planes(){
