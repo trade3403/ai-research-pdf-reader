@@ -1368,3 +1368,59 @@ mod huffman_text_payload_tests{
         assert!(bind_text_tables(&s,&[&custom]).is_err()); // DS needs OOB.
     }
 }
+
+#[cfg(test)]
+mod huffman_payload_dictionary_integration_tests{
+    use super::*;
+    use super::super::dictionary::{execute_pdf_dictionaries,ExecutionLimits};
+    // Existing Annex H.1 third segment data (collective raw bitmap).
+    // Text stream below is synthetic, NOT the Annex H text segment.
+    const DICT:&[u8]=&[0,1,0,0,0,2,0,0,0,2,0xe5,0xcd,0xf8,0,0x79,0xe0,0x84,0x10,0x81,0xf0,0x82,0x10,0x86,0x10,0x79,0xf0,0,0x80];
+    fn seg(id:u8,kind:u8,page:u8,data:&[u8])->Vec<u8>{
+        let mut v=vec![0,0,0,id,kind,0,page];
+        v.extend((data.len()as u32).to_be_bytes());v.extend(data);v
+    }
+    fn payload()->Vec<u8>{
+        // One instance at origin, top left, two imported symbols.
+        let mut v=vec![0,0,0,8,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0x11,0,0,0,0,0,1];
+        let mut table=[0u8;18];table[0]=1;v.extend(table);
+        // HTDT=1, DT=1, FS=0, ID=0, DS=OOB.
+        v.extend([0,4]);v
+    }
+    #[test]
+    fn huffman_payload_annex_dictionary_join(){
+        let globals=seg(1,0,0,DICT);
+        let mut info=Vec::new();for n in [8u32,6,300,300]{info.extend(n.to_be_bytes());}
+        info.extend([0,0,0]);
+        let page=seg(2,48,1,&info);
+        let d=execute_pdf_dictionaries(&globals,&page,ExecutionLimits::default()).unwrap();
+        let a=d.symbol(1,0).unwrap();let b=d.symbol(1,1).unwrap();
+        let mut data=payload();
+        let (_,out)=decode_huffman_text_payload(&data,&[a,b],&[],160,0,40000).unwrap();
+        assert_eq!(out.bitmap.packed(),[120,132,128,128,132,120]);
+        // Flip the final symbol-ID bit, keep all other fields identical.
+        let n=data.len();data[n-1]|=0x10;
+        let (_,out)=decode_huffman_text_payload(&data,&[a,b],&[],160,0,40000).unwrap();
+        assert_eq!(out.bitmap.packed(),[120,4,124,132,132,124]);
+    }
+    #[test]
+    fn huffman_payload_refined_both_templates(){
+        use super::super::refinement::Template;
+        let a=Bitmap::from_packed(7,6,&[0,124,124,124,0,0]).unwrap();
+        let b=Bitmap::from_packed(3,2,&[160,64]).unwrap();
+        for t in [Template::T0,Template::T1]{
+            let flags=if t==Template::T0{0x0013u16}else{0x8013};
+            let mut data=vec![0,0,0,8,0,0,0,4,0,0,0,0,0,0,0,0,0];
+            data.extend(flags.to_be_bytes());data.extend(0x1540u16.to_be_bytes());
+            if t==Template::T0{data.extend([255;4]);}
+            data.extend(3u32.to_be_bytes());
+            let mut table=[0u8;18];table[0]=1;data.extend(table);
+            data.extend([0,15,28,117,70,187,255,172,215,82,144]);
+            data.extend([if t==Template::T0{221}else{220},127,255,172,96,2,64]);
+            let (_,out)=decode_huffman_text_payload(&data,&[&a,&b],&[],288,14,60000).unwrap();
+            assert_eq!(out.bitmap.packed(),[172,67,160,64]);
+            assert_eq!(decode_huffman_text_payload(&data,&[&a,&b],&[],288,14,out.stats.work_used).unwrap().1,out);
+            assert!(decode_huffman_text_payload(&data,&[&a,&b],&[],288,13,60000).is_err());
+        }
+    }
+}
