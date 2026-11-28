@@ -547,3 +547,6 @@ CI #235: 25ea27e376255a24f6eadbcf54be74bc0e697904, https://github.com/trade3403/
 
 
 CI #236 failure: f2f66a874247afd4d66026953b1b8adf3f827d26, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46086615364. All three raw logs confirm exact SHA and identical Rust E0382 at core/tests/native_joint_ligature.rs:268, partial move of design_origins followed by full positioning comparison. Test compilation failed, no full test or Release acceptance. Repair 1: borrow design_origins by reference; preserve all assertions, native fixtures and production code. Pending CI; expected 1498/platform, 4494 total. No local compile. Next C4.6 only after green.
+
+
+CI #237: bc01038b2841464baa12c7e9f528af3229fe1624, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46088357541, exact SHA all three raw logs; 1498/platform, 4494 total, zero failed/ignored; Release Ubuntu 16.11s, Windows 21.20s, macOS 8.82s. Dual-stage native contractions 127 exact; DejaVu 8 exact direction checks and 8 masked parent blocks, max error 0; Python 8 tests passed. C4.5 bounded dual-stage gate accepted.

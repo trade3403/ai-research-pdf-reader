@@ -340,3 +340,6 @@ pub use font_joint_shape::*;
 
 pub mod font_ligature_mapping;
 pub use font_ligature_mapping::*;
+
+pub mod unicode_scripts;
+pub use unicode_scripts::*;
