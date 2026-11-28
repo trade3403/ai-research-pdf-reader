@@ -361,3 +361,6 @@ pub use unicode_indic::*;
 
 pub mod indic_clusters;
 pub use indic_clusters::*;
+
+pub mod indic_reorder;
+pub use indic_reorder::*;
