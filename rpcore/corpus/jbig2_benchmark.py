@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -77,11 +78,33 @@ def render(probe, pdf, page, png):
                 "diagnostic": result.stdout[-2000:] + result.stderr[-1000:]}
     return {"status": "rendered", "engine_ms": fields.get("engine_ms")}
 
+def classic_generation_diagnostics(raw):
+    # Public fixture only: diagnostic, not a PDF parser or repair.
+    matches = list(re.finditer(rb"startxref\s+(\d{1,12})\s+%%EOF", raw[-65536:]))
+    if not matches:
+        return []
+    offset = int(matches[-1].group(1))
+    if offset >= len(raw):
+        return []
+    table = raw[offset:offset+65536]
+    if not table.startswith(b"xref"):
+        return []
+    rows = []
+    for m in re.finditer(rb"(?m)^[ \t]*(\d{1,12})[ \t]+(\d{1,12})[ \t]+([nf])[ \t]*\r?$", table.split(b"trailer",1)[0]):
+        if int(m.group(2)) > 65535:
+            rows.append({"offset":int(m.group(1)), "generation":int(m.group(2)),
+                         "kind":m.group(3).decode("ascii")})
+        if len(rows) >= 16:
+            break
+    return rows
+
 def case(probe, work, row, raw, expected):
     pdf, ref, out = (work / (row["id"] + suffix) for suffix in (".pdf", "-ref.png", "-native.png"))
     row.update(pdf_sha256=sha(raw), reference_sha256=sha(expected))
     if not raw.startswith(b"%PDF-"):
         raise ValueError("not PDF")
+    if row["kind"] == "public_synthetic":
+        row["classic_generation_diagnostics"] = classic_generation_diagnostics(raw)
     pdf.write_bytes(raw)
     ref.write_bytes(expected)
     row.update(render(probe, pdf, row["page"], out))
@@ -150,6 +173,10 @@ def main():
              "", "| Case | Kind | Status | Different pixels |", "|---|---|---|---:|"]
     for row in rows:
         lines.append(f"| {row['id']} | {row['kind']} | {row['status']} | {row.get('different_pixels','-')} |")
+    for row in rows:
+        if row["kind"] == "public_synthetic":
+            lines.append("\n" + row["id"] + ": " + row.get("diagnostic","").strip()
+                         + "; oversized classic xref generations: " + str(row.get("classic_generation_diagnostics",[])))
     (a.out/"report.md").write_text("\n".join(lines)+"\n")
     print("\n".join(lines))
     # An unavailable corpus is not successful validation. Unsupported or

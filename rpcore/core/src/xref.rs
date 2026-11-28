@@ -50,10 +50,13 @@ fn classic(bytes:&[u8], offset:usize)->Result<Section>{
         if end>u32::MAX as usize{return Err(Error::Limit("xref range"));}
         for id in first..end{
             let off=p.uint()?;
-            let generation=u16::try_from(p.uint()?).map_err(|_|Error::Invalid("generation"))?;
+            let generation=p.uint()?;
             let e=match p.word()?{
-                b"f"=>Entry::Free,
-                b"n" if off<bytes.len() && generation!=u16::MAX=>Entry::Direct{offset:off,generation},
+                // Free entries are tombstones; their generation is not used
+                // for resolution or decryption. Bound legacy five-digit values.
+                b"f" if generation<=99_999=>Entry::Free,
+                b"n" if off<bytes.len() && generation<u16::MAX as usize=>
+                    Entry::Direct{offset:off,generation:generation as u16},
                 _=>return Err(Error::Invalid("xref entry")),
             };
             put(&mut entries,id,e)?;

@@ -135,3 +135,31 @@ fn malformed_xref_and_cycle(){
         assert!(Document::open(&p).is_err());
     }
 }
+
+#[test]
+fn classic_free_generation_compatibility_keeps_tombstones(){
+    let (pdf,prev)=old_pdf();
+    for generation in [65536,99999]{
+        let mut bytes=pdf.clone();
+        let x=bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 1\n0000000000 {generation:05} f \n4 1\n0000000000 {generation:05} f \ntrailer\n<< /Size 5 /Prev {prev} >>\n").as_bytes());
+        tail(&mut bytes,x);
+        let doc=Document::open(&bytes).unwrap();
+        assert_eq!(doc.page_count().unwrap(),1);
+        assert!(doc.resolve(0,0).is_err());
+        assert!(doc.resolve(4,0).is_err());
+        assert!(doc.resolve(4,65535).is_err());
+    }
+}
+#[test]
+fn classic_free_generation_compatibility_rejects_active_overflow(){
+    let (pdf,prev)=old_pdf();
+    for (generation,flag) in [(65535,"n"),(65536,"n"),(99999,"n"),(100000,"f")]{
+        let mut bytes=pdf.clone();
+        let off=object(&mut bytes,4,0,b"77");
+        let x=bytes.len();
+        bytes.extend_from_slice(format!("xref\n4 1\n{off:010} {generation:05} {flag} \ntrailer\n<< /Size 5 /Prev {prev} >>\n").as_bytes());
+        tail(&mut bytes,x);
+        assert!(Document::open(&bytes).is_err(),"{generation} {flag}");
+    }
+}
