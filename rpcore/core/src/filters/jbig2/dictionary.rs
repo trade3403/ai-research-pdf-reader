@@ -29,6 +29,12 @@ pub struct Header{
 }
 
 pub fn parse(data:&[u8])->Result<(Header,&[u8])>{
+    parse_impl(data,false)
+}
+// PDF-only tolerance of a redundant AGGINST selector in direct Huffman
+// dictionaries. The fourth table is still resolved and checked, but the
+// direct collective bitmap decoder never reads aggregate instance counts.
+fn parse_impl(data:&[u8],allow_unused_agg_table:bool)->Result<(Header,&[u8])>{
     if data.len()>MAX_BYTES{return Err(Error::Limit("JBIG2 dictionary bytes"));}
     let f=data.get(..2).ok_or(Error::Invalid("JBIG2 dictionary flags truncated"))?;
     let f=u16::from_be_bytes([f[0],f[1]]);
@@ -39,7 +45,7 @@ pub fn parse(data:&[u8])->Result<(Header,&[u8])>{
     let template=Template::from_code(((f>>10)&3)as u8)?;
     let refinement_template=((f>>12)&1)as u8;
     if f&0xe000!=0 || (!huffman&&f&0xfc!=0)
-        || ((!huffman||!refine_aggregate)&&f&0x80!=0)
+        || ((!huffman||!refine_aggregate&&!allow_unused_agg_table)&&f&0x80!=0)
         || (huffman&&!refine_aggregate&&f&0x300!=0)
         || (huffman&&template!=Template::T0)
         || (!refine_aggregate&&refinement_template!=0){
@@ -95,11 +101,14 @@ pub struct Plan{
 /// supplies original payload slices in the exact order of segment.referred.
 /// For dictionaries, counts are structural declarations, not decoded symbols.
 pub fn plan(segment:&Segment,stream:&[u8],dependencies:&[(&Segment,&[u8])])->Result<Plan>{
+    plan_impl(segment,stream,dependencies,false)
+}
+fn plan_impl(segment:&Segment,stream:&[u8],dependencies:&[(&Segment,&[u8])],allow_unused_agg_table:bool)->Result<Plan>{
     if segment.kind!=0{return Err(Error::Invalid("JBIG2 expected dictionary segment"));}
     if dependencies.len()!=segment.referred.len(){return Err(Error::Invalid("JBIG2 dictionary dependencies"));}
     if dependencies.len()>MAX_REFS{return Err(Error::Limit("JBIG2 dictionary references"));}
     let payload=stream.get(segment.payload.clone()).ok_or(Error::Invalid("JBIG2 dictionary payload span"))?;
-    let (header,_)=parse(payload)?;
+    let (header,_)=parse_impl(payload,allow_unused_agg_table)?;
     let mut dictionaries=Vec::new();
     let mut custom=Vec::new();
     let mut imported=0u32;
@@ -111,7 +120,7 @@ pub fn plan(segment:&Segment,stream:&[u8],dependencies:&[(&Segment,&[u8])])->Res
         if dep.payload.len()!=data.len(){return Err(Error::Invalid("JBIG2 dictionary dependency payload size"));}
         match dep.kind{
             0=>{
-                let (d,_)=parse(data)?;
+                let (d,_)=parse_impl(data,allow_unused_agg_table)?;
                 imported=imported.checked_add(d.exported).ok_or(Error::Limit("JBIG2 dictionary imports"))?;
                 if imported>MAX_SYMBOLS{return Err(Error::Limit("JBIG2 dictionary imports"));}
                 dictionaries.push((id,d.exported));
@@ -252,6 +261,28 @@ mod tests{
         let plan=plan_pdf(&graph,&g,&p,SegmentLocation{source:SegmentSource::Page,index:1}).unwrap();
         assert_eq!(plan.imported,1);assert_eq!(plan.dictionaries,vec![(2,1)]);
         assert_eq!(plan.tables.unwrap().map(|t|t.source),[TableSource::Custom(1),TableSource::Custom(3),TableSource::Custom(4),TableSource::Custom(5)]);
+    }
+    #[test]
+    fn pdf_direct_huffman_redundant_agg_table_is_validated(){
+        let mut g=seg(1,53,0,&[],A);g.extend(seg(2,53,0,&[],OOB));
+        g.extend(seg(3,53,0,&[],A));g.extend(seg(4,53,0,&[],A));
+        let i=inspect(&g).unwrap();
+        let body=dict(0xfd,&[],0,0);
+        assert!(parse(&body).is_err());
+        let h=parse_impl(&body,true).unwrap().0;
+        assert!(h.huffman&&!h.refine_aggregate);
+        assert_eq!(h.data_offset,10);assert_eq!(h.selections,Some([Selection::Custom;4]));
+        let s=seg(5,0,0,&[1,2,3,4],&body);let j=inspect(&s).unwrap();
+        let deps=[(&i.segments[0],A),(&i.segments[1],OOB),(&i.segments[2],A),(&i.segments[3],A)];
+        let p=plan_impl(&j.segments[0],&s,&deps,true).unwrap();
+        assert_eq!(p.tables.unwrap().map(|t|t.source),[1,2,3,4].map(TableSource::Custom));
+        assert!(plan(&j.segments[0],&s,&deps).is_err());
+        assert!(plan_impl(&j.segments[0],&s,&deps[..3],true).is_err());
+        let mut bad=deps;bad[3].1=OOB;
+        assert!(plan_impl(&j.segments[0],&s,&bad,true).is_err());
+        for f in [0x80,0x2001,0x101,9,33,0x1001]{
+            assert!(parse_impl(&dict(f,&[],0,0),true).is_err());
+        }
     }
     #[test]
     fn dictionary_bad_dependencies_and_oob(){
@@ -1198,16 +1229,20 @@ pub fn execute_pdf_dictionaries_reclaimed_contexts(globals:&[u8],page:&[u8],limi
 }
 pub(super) fn execute_pdf_dictionaries_inspected(globals:&[u8],page:&[u8],limits:ExecutionLimits,
     enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection)->Result<DictionarySet>{
-    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,false)
+    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,false,false)
 }
 pub(super) fn execute_pdf_dictionaries_inspected_reclaimed_contexts(globals:&[u8],page:&[u8],limits:ExecutionLimits,
     enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection)->Result<DictionarySet>{
-    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,true)
+    execute_pdf_dictionaries_inspected_impl(globals,page,limits,enable_aggregation,enable_huffman_aggregation,inspected,true,false)
+}
+pub(super) fn execute_pdf_image_dictionaries(globals:&[u8],page:&[u8],limits:ExecutionLimits,
+    inspected:&super::PdfInspection)->Result<DictionarySet>{
+    execute_pdf_dictionaries_inspected_impl(globals,page,limits,true,true,inspected,true,true)
 }
 /// Compute the last actual context consumer, not the last bitmap import.
 /// The normal plan still validates the full dependency and context parameters.
 /// A header-only pass avoids decoding custom tables twice.
-fn context_consumers(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,left:&mut u64)->Result<BTreeMap<u32,usize>>{
+fn context_consumers(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,left:&mut u64,allow_unused_agg_table:bool)->Result<BTreeMap<u32,usize>>{
     let stream=|source|match source{SegmentSource::Globals=>globals,SegmentSource::Page=>page};
     let mut consumers=BTreeMap::<u32,usize>::new();
     for node in &inspected.graph{
@@ -1216,7 +1251,7 @@ fn context_consumers(globals:&[u8],page:&[u8],inspected:&super::PdfInspection,le
         if s.kind!=0{continue;}
         charge_work(left,32+node.dependencies.len() as u64)?;
         let data=stream(node.location.source).get(s.payload.clone()).ok_or(Error::Invalid("JBIG2 context payload"))?;
-        let (h,_)=parse(data)?;
+        let (h,_)=parse_impl(data,allow_unused_agg_table)?;
         if !h.context_used{continue;}
         let mut source=None;
         for &loc in &node.dependencies{
@@ -1244,7 +1279,7 @@ fn release_context(number:u32,snapshots:&mut BTreeMap<u32,BitmapContextSnapshot>
     Ok(())
 }
 fn execute_pdf_dictionaries_inspected_impl(globals:&[u8],page:&[u8],limits:ExecutionLimits,
-    enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection,reclaim_contexts:bool)->Result<DictionarySet>{
+    enable_aggregation:bool,enable_huffman_aggregation:bool,inspected:&super::PdfInspection,reclaim_contexts:bool,allow_unused_agg_table:bool)->Result<DictionarySet>{
     if limits.dictionaries>MAX_EXEC_DICTIONARIES||limits.new_symbols>MAX_SYMBOLS||
         limits.symbol_slots>MAX_EXEC_SLOTS||limits.pixels>bitmap::MAX_PIXELS||
         limits.packed_bytes>bitmap::MAX_PACKED_BYTES||limits.work>MAX_DICTIONARY_WORK||
@@ -1262,7 +1297,7 @@ fn execute_pdf_dictionaries_inspected_impl(globals:&[u8],page:&[u8],limits:Execu
     let mut huff_gr_snapshots:BTreeMap<u32,HuffmanRefinementContextSnapshot>=BTreeMap::new();
     let mut retained_entries=0usize;
     let mut consumers=if reclaim_contexts{
-        context_consumers(globals,page,inspected,&mut left)?
+        context_consumers(globals,page,inspected,&mut left,allow_unused_agg_table)?
     }else{BTreeMap::new()};
     for node in &inspected.graph{
         charge_work(&mut left,1)?;
@@ -1281,7 +1316,7 @@ fn execute_pdf_dictionaries_inspected_impl(globals:&[u8],page:&[u8],limits:Execu
             deps.push((dep,payload));
         }
         let original=stream(node.location.source);
-        let plan=plan(segment,original,&deps)?;
+        let plan=plan_impl(segment,original,&deps,allow_unused_agg_table)?;
         let new_count=set.stats.new_symbols.checked_add(plan.header.new_symbols)
             .ok_or(Error::Limit("JBIG2 executed symbols"))?;
         if new_count>limits.new_symbols{return Err(Error::Limit("JBIG2 executed symbols"));}

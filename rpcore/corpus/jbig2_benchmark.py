@@ -47,8 +47,16 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-stripe-initially-unknown-height", "bitmap-symbol", "bitmap-symbol-32bit-arithint",
          "bitmap-symbol-big-segmentid", "bitmap-symbol-context-reuse",
          "bitmap-stripe-single", "bitmap-symbol-empty", "bitmap-symbol-manyrefs",
-         "bitmap-symbol-negative-sbdsoffset", "bitmap-symbol-refine")
-KNOWN_GAPS = ()
+         "bitmap-symbol-negative-sbdsoffset", "bitmap-symbol-refine",
+         "bitmap-symbol-symbolrefine-textrefine", "bitmap-symbol-symbolrefineone",
+         "bitmap-symbol-symbolrefineone-customat", "bitmap-symbol-symbolrefineone-template1",
+         "bitmap-symbol-symbolrefineseveral", "bitmap-symbol-symhuff-texthuff",
+         "bitmap-symbol-symhuff-texthuffB10B13", "bitmap-symbol-symhuffB5B3-texthuffB7B9B12",
+         "bitmap-symbol-symhuffrefine-textrefine", "bitmap-symbol-symhuffrefine-textrefine-export",
+         "bitmap-symbol-symhuffrefineone", "bitmap-symbol-symhuffrefineseveral",
+         "bitmap-symbol-symhuffuncompressed-texthuff", "bitmap-symbol-textbottomleft",
+         "bitmap-symbol-textbottomlefttranspose")
+KNOWN_GAPS = ("bitmap-symbol-symhuffcustom-texthuffcustom",)
 EXPLORATORY_BATCH = 16
 EXPECTED_PAIRS = 107
 CAP = 16 * 1024 * 1024
@@ -405,7 +413,7 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 56 and len(set(CASES)) == 56
+    assert len(CASES) == 71 and len(set(CASES)) == 71
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
@@ -434,13 +442,13 @@ def self_test():
             assert not frozen_gate(bad)
     assert frozen_gate(rows + [{"suite":"exploratory","status":"native_rejected"}])
     assert not set(CASES)&set(KNOWN_GAPS)
-    all_entries = entries + [{"name":f"extra-{i:03d}"+s,"type":"blob"}
-                             for i in range(EXPECTED_PAIRS-len(CASES)-2)
+    all_entries = gap_entries + [{"name":f"extra-{i:03d}"+s,"type":"blob"}
+                             for i in range(EXPECTED_PAIRS-len(CASES)-2-len(KNOWN_GAPS))
                              for s in (".pdf","_expected.pdf.0.png")]
     full = inventory(all_entries)
     assert full["paired_total"] == EXPECTED_PAIRS
     assert len(full["new_cases"]) == EXPLORATORY_BATCH
-    assert full["remaining_after_batch"] == EXPECTED_PAIRS-len(CASES)-EXPLORATORY_BATCH
+    assert full["remaining_after_batch"] == EXPECTED_PAIRS-len(CASES)-EXPLORATORY_BATCH-len(KNOWN_GAPS)
     observed = [dict(id=n,suite="exploratory",status="native_rejected",
                      pdf_sha256="a"*64,reference_sha256="b"*64) for n in full["cases"]]
     assert inventory_gate(full, rows+observed)

@@ -198,7 +198,9 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
     let mut dl=limits.dictionaries;
     dl.work=dl.work.min(limits.work-setup);
     dl.packed_bytes=dl.packed_bytes.min(limits.packed_bytes-page_bytes);
-    let mut dictionaries=if reclaim{
+    let mut dictionaries=if allow_missing_hints{
+        dictionary::execute_pdf_image_dictionaries(globals,page,dl,&graph)?
+    }else if reclaim{
         dictionary::execute_pdf_dictionaries_inspected_reclaimed_contexts(globals,page,dl,true,true,&graph)?
     }else{
         dictionary::execute_pdf_dictionaries_inspected(globals,page,dl,true,true,&graph)?
@@ -619,6 +621,24 @@ mod tests{
         assert!(decode_pdf_page(&[],&p,l).is_err());
         p.extend(seg(4,49,&[],&[]));
         assert_eq!(decode_pdf_image_compatible(&[],&p,l).unwrap().bitmap,d.bitmap);
+    }
+    #[test]
+    fn pdf_image_direct_huffman_redundant_agg_table_execution(){
+        let l=Limits::default();
+        let mut g=GLOBAL.to_vec();
+        // GLOBAL is one known Annex H direct Huffman dictionary (segment 0).
+        // Add a table before the dictionary instead of referring forward.
+        let table=[0x42,0,0,0,0,0,1,1,0x10,0x49,0x23,0x81,0x80];
+        let mut body=g.split_off(11);body[1]|=0x80;
+        let mut globals=seg(0,53,&[],&table);globals[6]=0;
+        let mut dict=seg(1,0,&[0],&body);dict[7]=0;
+        globals.extend(dict);
+        let mut page=info(8,4,0);page[3]=2;
+        let d=decode_pdf_image_compatible(&globals,&page,l).unwrap();
+        assert_eq!(d.bitmap.packed(),[0;4]);
+        assert_eq!(d.stats.dictionaries.dictionaries,1);
+        assert!(decode_pdf_page(&globals,&page,l).is_err());
+        assert!(decode_pdf_image_compatible(&globals,&page,Limits{work:d.stats.work_used-1,..l}).is_err());
     }
     #[test]
     fn pdf_image_single_stripe_hint_exception_is_narrow(){
