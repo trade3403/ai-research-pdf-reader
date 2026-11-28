@@ -636,7 +636,19 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
         let Some(roots)=roots else{note("outside direct Type4 oracle");continue;};
         let deltas:Vec<_>=roots.iter().filter(|l|cls[ids[0] as usize]!=3&&eligible(ids[0],l.flags,&cls)&&eligible(ids[1],l.flags,&cls))
             .filter_map(|l|pair(l,ids[0],ids[1])).collect();
-        if deltas.len()!=1{note("no unique eligible Type4 anchor");continue;}
+        if deltas.len()!=1{
+            // Inspect coverage independently of eligibility, in both orders,
+            // across all admitted raw Type4 lookups. Distinguish absent
+            // anchors from feature selection and class/flag exclusions.
+            let all:Vec<_>=raw.iter().filter(|l|l.kind==4).collect();
+            let forward:Vec<_>=all.iter().filter_map(|l|pair(l,ids[0],ids[1]).map(|d|(l.id,d))).collect();
+            let reverse:Vec<_>=all.iter().filter_map(|l|pair(l,ids[1],ids[0]).map(|d|(l.id,d))).collect();
+            let selected:Vec<_>=roots.iter().filter_map(|l|pair(l,ids[0],ids[1]).map(|d|(l.id,d))).collect();
+            let root_flags:Vec<_>=roots.iter().map(|l|(l.id,l.flags)).collect();
+            note(&format!("ids={ids:?} classes={:?} widths={:?} eligible={} selected={selected:?} all_forward={forward:?} all_reverse={reverse:?} root_flags={root_flags:?}",
+                ids.map(|g|cls[g as usize]),ids.map(|g|nominal(bytes,g)),deltas.len()));
+            continue;
+        }
         let delta=deltas[0];
         let specs=[ShapeStageSpec{features:plan.features.clone()}];
         let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};

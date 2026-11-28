@@ -604,3 +604,6 @@ CI #254: 0148b7318a407645b0b2445c8707db76ca2fcd50, https://github.com/trade3403/
 
 
 CI #255: 855b798baae35351b936ea859a3f66541538e4e6, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46165506028, exact SHA all three raw logs; 1593/platform, 4779 total, zero failed/ignored; Release Ubuntu 10.55s, Windows 29.89s, macOS 19.61s. Reph native metrics, synthetic mask and resource regressions passed all platforms.
+
+
+CI #256: c5b21a28d47faa2cc0d53913d341b09b8de5dd36, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46168351505, exact SHA all three raw logs; 1594/platform, 4782 total, zero failed/ignored; Release Ubuntu 19.41s, Windows 26.54s, macOS 17.70s. Eight native Reph inputs all reported no unique eligible Type4 anchor; zero positive geometry cases, not evidence of failure or full compatibility.
