@@ -302,7 +302,7 @@ jobs:
 
 
   jbig2-corpus:
-    # Seventy-one frozen exact pairs, one known gap and sixteen fresh pairs; complete inventory evidence required.
+    # Eighty-eight frozen exact pairs and all nineteen remaining pairs; full inventory evidence required.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

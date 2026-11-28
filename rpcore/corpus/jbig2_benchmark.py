@@ -55,9 +55,18 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-symbol-symhuffrefine-textrefine", "bitmap-symbol-symhuffrefine-textrefine-export",
          "bitmap-symbol-symhuffrefineone", "bitmap-symbol-symhuffrefineseveral",
          "bitmap-symbol-symhuffuncompressed-texthuff", "bitmap-symbol-textbottomleft",
-         "bitmap-symbol-textbottomlefttranspose")
-KNOWN_GAPS = ("bitmap-symbol-symhuffcustom-texthuffcustom",)
-EXPLORATORY_BATCH = 16
+         "bitmap-symbol-textbottomlefttranspose",
+         "bitmap-symbol-symhuffcustom-texthuffcustom", "bitmap-symbol-textbottomright",
+         "bitmap-symbol-textbottomrighttranspose", "bitmap-symbol-textcomposite",
+         "bitmap-symbol-texthuff-runcodes32-34", "bitmap-symbol-texthuff-trailingsymbols",
+         "bitmap-symbol-texthuffrefine", "bitmap-symbol-texthuffrefineB15",
+         "bitmap-symbol-texthuffrefinecustom", "bitmap-symbol-texthuffrefinecustomdims",
+         "bitmap-symbol-texthuffrefinecustompos", "bitmap-symbol-texthuffrefinecustompos-global",
+         "bitmap-symbol-texthuffrefinecustomposdims", "bitmap-symbol-texthuffrefinecustomsize",
+         "bitmap-symbol-textrefine", "bitmap-symbol-textrefine-customat",
+         "bitmap-symbol-textrefine-negative-delta-width")
+KNOWN_GAPS = ()
+EXPLORATORY_BATCH = 19
 EXPECTED_PAIRS = 107
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
@@ -181,6 +190,25 @@ def frozen_gate(rows):
             and {r["id"] for r in frozen} == set(CASES)
             and all(r["status"] == "exact" and r.get("different_pixels") == 0
                     and r.get("pixels", 0) > 0 for r in frozen))
+
+def full_public_summary(discovery, rows):
+    # Complete evidence and pixel accuracy are deliberately separate.
+    public = [r for r in rows if r.get("suite") in ("frozen","exploratory")]
+    expected = set(CASES)|set(discovery.get("cases",[]))
+    complete = (inventory_gate(discovery,rows)
+                and discovery.get("remaining_after_batch") == 0
+                and len(expected) == EXPECTED_PAIRS
+                and len(public) == EXPECTED_PAIRS
+                and {r["id"] for r in public} == expected
+                and all(r.get("status") in {"exact","pixel_mismatch","dimension_mismatch","native_rejected"}
+                        and re.fullmatch(r"[0-9a-f]{64}",r.get("pdf_sha256") or "")
+                        and re.fullmatch(r"[0-9a-f]{64}",r.get("reference_sha256") or "")
+                        for r in public))
+    exact = sum(r.get("status") == "exact" and r.get("different_pixels") == 0
+                and r.get("pixels",0)>0 for r in public)
+    return {"expected":EXPECTED_PAIRS,"observed":len(public),
+            "exact":exact,"complete":complete,
+            "all_exact":complete and exact==EXPECTED_PAIRS}
 
 def bounded_read(path):
     with path.open("rb") as f:
@@ -413,7 +441,7 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 71 and len(set(CASES)) == 71
+    assert len(CASES) == 88 and len(set(CASES)) == 88
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
@@ -459,6 +487,18 @@ def self_test():
     assert not inventory_gate(dict(full,frozen_missing=[CASES[0]]), rows+observed)
     assert not inventory_gate(full, rows+[dict(observed[0],status="infrastructure_or_timeout")]+observed[1:])
     assert not inventory_gate(full, rows+[dict(observed[0],pdf_sha256=None)]+observed[1:])
+    frozen_evidence = [dict(r,pdf_sha256="c"*64,reference_sha256="d"*64) for r in rows]
+    public = frozen_evidence+observed
+    summary = full_public_summary(full,public)
+    assert summary == {"expected":107,"observed":107,"exact":88,"complete":True,"all_exact":False}
+    exact_observed = [dict(r,status="exact",different_pixels=0,pixels=1) for r in observed]
+    assert full_public_summary(full,frozen_evidence+exact_observed)["all_exact"]
+    assert not full_public_summary(full,public[:-1])["complete"]
+    assert not full_public_summary(full,public+public[:1])["complete"]
+    assert not full_public_summary(full,[dict(public[0],pdf_sha256="invalid")]+public[1:])["complete"]
+    assert not full_public_summary(full,[dict(public[0],status="infrastructure_or_timeout")]+public[1:])["complete"]
+    assert not full_public_summary(full,frozen_evidence+[dict(exact_observed[0],different_pixels=1)]+exact_observed[1:])["all_exact"]
+    assert not full_public_summary(dict(full,remaining_after_batch=1),public)["complete"]
 
 def main():
     p = argparse.ArgumentParser()
@@ -467,7 +507,7 @@ def main():
     p.add_argument("--local-manifest", type=Path, help="JSON list of local PDF/reference PNG pairs with SHA256 and page")
     p.add_argument("--no-public", action="store_true")
     p.add_argument("--require-exact", action="store_true", help="require all frozen public cases")
-    p.add_argument("--expand-public", action="store_true", help="discover up to sixteen further pinned paired samples plus known gaps")
+    p.add_argument("--expand-public", action="store_true", help="discover up to nineteen further pinned paired samples plus known gaps")
     a = p.parse_args()
     self_test()
     a.out.mkdir(parents=True, exist_ok=True)
@@ -523,13 +563,17 @@ def main():
                          "statuses":{status:sum(r["status"] == status for r in group)
                                      for status in sorted({r["status"] for r in group})}}
     inventory_ok = inventory_gate(discovery,rows) if a.expand_public else None
-    report = {"schema":5,"reference_revision":REV,"dpi":72,"rows":rows,
-              "frozen_exact":gate,"inventory_gate":inventory_ok,"discovery":discovery,"counts":counts}
+    full_summary = full_public_summary(discovery,rows) if a.expand_public else None
+    report = {"schema":6,"reference_revision":REV,"dpi":72,"rows":rows,
+              "frozen_exact":gate,"inventory_gate":inventory_ok,"full_public":full_summary,
+              "discovery":discovery,"counts":counts}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     lines = ["# JBIG2 differential corpus", "",
              f"Frozen exact gate: {'PASS' if gate else 'FAIL'}",
              "Exploratory discovery: " + str(discovery),
              "Inventory evidence gate: " + ("NOT REQUESTED" if inventory_ok is None else "PASS" if inventory_ok else "FAIL"),
+             "Full public evidence: " + ("NOT REQUESTED" if full_summary is None else "PASS" if full_summary["complete"] else "FAIL"),
+             "Full public exact: " + ("NOT REQUESTED" if full_summary is None else "{}/{}".format(full_summary["exact"],full_summary["expected"])),
              "Frozen exact: {}/{}".format(counts["frozen"]["exact"],len(CASES)),
              "Exploratory exact: {}/{}".format(counts["exploratory"]["exact"],counts["exploratory"]["total"]), "",
              "Public tests are synthetic SerenityOS conformance images, not scans.",
@@ -549,7 +593,7 @@ def main():
     # mismatched inputs are measured coverage gaps, not exact passes.
     if a.require_exact and not gate:
         raise SystemExit(1)
-    if a.expand_public and not inventory_ok:
+    if a.expand_public and (not inventory_ok or not full_summary["complete"]):
         raise SystemExit(1)
     if all(r["status"]=="infrastructure_or_timeout" for r in rows):
         raise SystemExit(1)
