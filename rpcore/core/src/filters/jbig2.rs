@@ -253,7 +253,9 @@ fn inspect_pdf_streams_impl(globals:&[u8],data:&[u8],optional_extensions:bool)->
     }
     if local.pages.len()!=1{return Err(Error::Invalid("JBIG2 PDF single page required"));}
     let page=local.pages[0].clone();
-    if page.striped||page.height.is_none(){return Err(Error::Unsupported("JBIG2 PDF striped page"));}
+    if page.height.is_none()||page.striped&&!optional_extensions{
+        return Err(Error::Unsupported("JBIG2 PDF striped page"));
+    }
     let global_segments=global.as_ref().map_or(&[][..],|g|g.segments.as_slice());
     let count=global_segments.len().checked_add(local.segments.len()).ok_or(Error::Limit("JBIG2 combined segments"))?;
     if count>MAX_SEGMENTS{return Err(Error::Limit("JBIG2 combined segments"));}
@@ -281,7 +283,12 @@ fn inspect_pdf_streams_impl(globals:&[u8],data:&[u8],optional_extensions:bool)->
                     }else if !opened{
                         return Err(Error::Invalid("JBIG2 PDF segment before page info"));
                     }
-                    if s.kind==50{return Err(Error::Unsupported("JBIG2 PDF stripe end"));}
+                    if s.kind==50{
+                        if !page.striped||!optional_extensions{return Err(Error::Unsupported("JBIG2 PDF stripe end"));}
+                        if s.payload.len()!=4||!s.referred.is_empty(){
+                            return Err(Error::Invalid("JBIG2 PDF stripe end layout"));
+                        }
+                    }
                     if s.kind==49{closed=true;}
                 }
                 if s.kind==51&&!opened{return Err(Error::Invalid("JBIG2 PDF EOF before page"));}

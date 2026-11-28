@@ -302,7 +302,7 @@ jobs:
 
 
   jbig2-corpus:
-    # Thirty-nine exact frozen cases, one known gap and four fresh exploratory pairs.
+    # Forty-three exact frozen cases, one known gap and four fresh exploratory pairs.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
