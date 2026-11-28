@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "source": "https://arxiv.org/pdf/1512.03385v1",
+  "coordinate_system": "normalized top-left CropBox, approximate screenshot annotations, excludes captions",
+  "cases": [
+    {
+      "id": "resnet-fig1-train",
+      "page": 1,
+      "rect": [
+        0.499,
+        0.281,
+        0.698,
+        0.383
+      ]
+    },
+    {
+      "id": "resnet-fig1-test",
+      "page": 1,
+      "rect": [
+        0.7,
+        0.281,
+        0.894,
+        0.383
+      ]
+    },
+    {
+      "id": "resnet-fig4-plain",
+      "page": 5,
+      "rect": [
+        0.135,
+        0.315,
+        0.471,
+        0.493
+      ]
+    },
+    {
+      "id": "resnet-fig4-residual",
+      "page": 5,
+      "rect": [
+        0.501,
+        0.315,
+        0.837,
+        0.493
+      ]
+    }
+  ]
+}

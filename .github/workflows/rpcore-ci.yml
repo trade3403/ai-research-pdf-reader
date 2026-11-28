@@ -1,0 +1,400 @@
+name: RPCore bootstrap CI
+on:
+  push:
+    branches: [feature/rpcore-bootstrap, main]
+    paths: ['rpcore/**', '.github/workflows/rpcore-ci.yml']
+  pull_request:
+    paths: ['rpcore/**', '.github/workflows/rpcore-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path rpcore/Cargo.toml --locked
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-${{ matrix.os }}
+          path: |
+            rpcore/target/release/rpcore
+            rpcore/target/release/rpcore.exe
+          if-no-files-found: error
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example render_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example truetype_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example cff_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example type1_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example image_demo -- rpcore/target/render-demo
+      - run: cargo run --manifest-path rpcore/Cargo.toml --release --locked --example group_demo -- rpcore/target/render-demo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-render-demo-${{ matrix.os }}
+          path: rpcore/target/render-demo/
+          if-no-files-found: error
+
+  corpus:
+    # Separate observational Linux job: routine cross-platform unit tests stay independent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe --example render_demo
+      - run: rpcore/target/release/examples/render_demo rpcore/target/corpus-smoke
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/corpus-smoke-report --local rpcore/target/corpus-smoke/rpcore-vector-demo.pdf --require-success
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/corpus-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-real-paper-corpus
+          path: |
+            rpcore/target/corpus-report/report.json
+            rpcore/target/corpus-report/report.md
+            rpcore/target/corpus-smoke-report/report.json
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/corpus-report/report.md ]; then cat rpcore/target/corpus-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-fonts:
+    # Optional explicit font assets, never bundled into RPCore release artifacts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fonts-urw-base35
+      - run: |
+          mkdir -p rpcore/target/font-report
+          dpkg-query -W fonts-urw-base35 > rpcore/target/font-report/font-package.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/font-report/font-sha256.txt
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: python3 rpcore/corpus/run.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/font-report --font-dir /usr/share/fonts/opentype/urw-base35
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-explicit-font-corpus
+          path: rpcore/target/font-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/font-report/report.md ]; then cat rpcore/target/font-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-visual:
+    # Reference engine and Pillow are test-only dependencies. Never packaged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends poppler-utils python3-pil fonts-urw-base35
+      - run: /usr/bin/python3 rpcore/corpus/test_visual.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe --example render_demo
+      - run: |
+          rpcore/target/release/examples/render_demo rpcore/target/visual-smoke
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-smoke-report --local rpcore/target/visual-smoke/rpcore-vector-demo.pdf --save-images
+      - run: |
+          mkdir -p rpcore/target/visual-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-report --font-dir /usr/share/fonts/opentype/urw-base35
+      - if: always()
+        run: |
+          mkdir -p rpcore/target/visual-72dpi-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-72dpi-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-72dpi-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --jpx-inventory
+      - if: always()
+        run: |
+          mkdir -p rpcore/target/visual-fine-72dpi-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-fine-72dpi-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-fine-72dpi-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-fine-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --text-aa 4
+      - if: always()
+        run: |
+          mkdir -p rpcore/target/visual-grid-72dpi-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-grid-72dpi-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-grid-72dpi-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-grid-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --text-aa 4 --text-grid
+      - if: always()
+        run: |
+          mkdir -p rpcore/target/visual-area-72dpi-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/visual-area-72dpi-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/visual-area-72dpi-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/visual.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/visual-area-72dpi-report --font-dir /usr/share/fonts/opentype/urw-base35 --dpi 72 --text-aa 4 --text-area
+      # Independent encrypted PDFs: fixture writer and oracle are CI-only.
+      - run: |
+          python3 -m venv rpcore/target/encryption-venv
+          rpcore/target/encryption-venv/bin/python -m pip install pypdf==5.9.0 cryptography==46.0.4
+          cargo build --manifest-path rpcore/Cargo.toml --locked --release --example encryption_probe
+          rpcore/target/encryption-venv/bin/python rpcore/corpus/encryption_benchmark.py --probe rpcore/target/release/examples/encryption_probe --font-dir /usr/share/fonts/opentype/urw-base35 --out rpcore/target/encryption-report
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-visual-comparison
+          path: |
+            rpcore/target/visual-report/
+            rpcore/target/visual-smoke-report/
+            rpcore/target/visual-72dpi-report/
+            rpcore/target/visual-fine-72dpi-report/
+            rpcore/target/visual-grid-72dpi-report/
+            rpcore/target/visual-area-72dpi-report/
+            rpcore/target/encryption-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/visual-report/report.md ]; then cat rpcore/target/visual-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/visual-72dpi-report/report.md ]; then cat rpcore/target/visual-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/visual-fine-72dpi-report/report.md ]; then cat rpcore/target/visual-fine-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/visual-grid-72dpi-report/report.md ]; then cat rpcore/target/visual-grid-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/visual-area-72dpi-report/report.md ]; then cat rpcore/target/visual-area-72dpi-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-formulas:
+    # Frozen four-case regression gate plus separately scored exploratory cases.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fonts-urw-base35
+      - run: python3 rpcore/corpus/test_formula_benchmark.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: |
+          mkdir -p rpcore/target/formula-report
+          dpkg-query -W fonts-urw-base35 > rpcore/target/formula-report/font-package.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/formula-report/font-sha256.txt
+          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report --font-dir /usr/share/fonts/opentype/urw-base35 --require-exact
+      - if: success() || failure()
+        run: |
+          python3 rpcore/corpus/formula_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/formula-report/extended --font-dir /usr/share/fonts/opentype/urw-base35 --cases rpcore/corpus/formulas_extended.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-real-paper-formulas
+          path: rpcore/target/formula-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/formula-report/report.md ]; then cat rpcore/target/formula-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/formula-report/extended/report.md ]; then cat rpcore/target/formula-report/extended/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  corpus-charts:
+    # Numerical chart crops and original synthetic comparison images.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends poppler-utils python3-pil fonts-urw-base35
+      - run: /usr/bin/python3 rpcore/corpus/test_chart_benchmark.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: |
+          mkdir -p rpcore/target/chart-report
+          dpkg-query -W fonts-urw-base35 poppler-utils python3-pil > rpcore/target/chart-report/test-package-versions.txt
+          sha256sum /usr/share/fonts/opentype/urw-base35/*.otf > rpcore/target/chart-report/font-sha256.txt
+          /usr/bin/python3 rpcore/corpus/chart_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --font-dir /usr/share/fonts/opentype/urw-base35 --out rpcore/target/chart-report
+      - if: success() || failure()
+        run: /usr/bin/python3 rpcore/corpus/color_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/chart-report/colors
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-chart-visual-comparison
+          path: rpcore/target/chart-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/chart-report/report.md ]; then cat rpcore/target/chart-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/chart-report/colors/report.md ]; then cat rpcore/target/chart-report/colors/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  icc-reference:
+    # Little CMS is a CI-only oracle, never linked or packaged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2
+      - run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --example icc_probe
+      - run: |
+          mkdir -p rpcore/target/icc-report
+          dpkg-query -W liblcms2-2 > rpcore/target/icc-report/reference-version.txt
+          python3 rpcore/corpus/icc_reference.py --probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-report
+          python3 rpcore/corpus/icc_mpe_reference.py --probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-report/mpe
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-icc-reference
+          path: rpcore/target/icc-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/icc-report/report.md ]; then cat rpcore/target/icc-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-report/mpe/report.md ]; then cat rpcore/target/icc-report/mpe/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  icc-render:
+    # End-to-end embedded ICC gate; LCMS, Poppler and Pillow are CI-only.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends liblcms2-2 poppler-utils python3-pil libgs-common colord-data
+      - run: cargo build --manifest-path rpcore/Cargo.toml --locked --release --example corpus_probe --example icc_probe
+      - run: |
+          mkdir -p rpcore/target/icc-render-report
+          dpkg-query -W liblcms2-2 poppler-utils python3-pil libgs-common colord-data > rpcore/target/icc-render-report/reference-versions.txt
+          /usr/bin/python3 rpcore/corpus/icc_render_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --icc-probe rpcore/target/release/examples/icc_probe --out rpcore/target/icc-render-report
+      - if: success() || failure()
+        run: |
+          /usr/bin/python3 rpcore/corpus/icc_print_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/print-profiles --swop /usr/share/color/icc/ghostscript/default_cmyk.icc --fogra /usr/share/color/icc/colord/FOGRA40L_SC_paper.icc
+      - if: success() || failure()
+        run: |
+          /usr/bin/python3 rpcore/corpus/icc_registry_benchmark.py --probe rpcore/target/release/examples/corpus_probe --reference /usr/bin/pdftoppm --out rpcore/target/icc-render-report/registry --icc-probe rpcore/target/release/examples/icc_probe --require-mab
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-icc-render-comparison
+          path: rpcore/target/icc-render-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/icc-render-report/report.md ]; then cat rpcore/target/icc-render-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-render-report/print-profiles/report.md ]; then cat rpcore/target/icc-render-report/print-profiles/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f rpcore/target/icc-render-report/registry/report.md ]; then cat rpcore/target/icc-render-report/registry/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  perf-pdfium:
+    # Observational paired baseline; reference engine stays in a test-only venv.
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          python3 -m venv rpcore/target/pdfium-perf-venv
+          rpcore/target/pdfium-perf-venv/bin/python -m pip install --only-binary=:all: pypdfium2==5.8.0 Pillow==12.3.0
+          rpcore/target/pdfium-perf-venv/bin/python rpcore/corpus/pdfium_performance.py --self-test
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example perf_probe --example render_demo --example truetype_demo --example image_demo
+      - run: |
+          mkdir -p rpcore/target/pdfium-performance
+          rustc -Vv > rpcore/target/pdfium-performance/rust-version.txt
+          rpcore/target/pdfium-perf-venv/bin/python -m pip freeze > rpcore/target/pdfium-performance/reference-versions.txt
+          rpcore/target/release/examples/render_demo rpcore/target/perf-fixtures
+          rpcore/target/release/examples/truetype_demo rpcore/target/perf-fixtures
+          rpcore/target/release/examples/image_demo rpcore/target/perf-fixtures
+          rpcore/target/pdfium-perf-venv/bin/python rpcore/corpus/pdfium_performance.py --probe rpcore/target/release/examples/perf_probe --fixtures rpcore/target/perf-fixtures --out rpcore/target/pdfium-performance --commit "$GITHUB_SHA"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-pdfium-performance
+          path: rpcore/target/pdfium-performance/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/pdfium-performance/report.md ]; then cat rpcore/target/pdfium-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+
+  jbig2-performance:
+    # Observational native raw decode and exact-quality paired page rendering.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          python3 -m venv rpcore/target/jbig2-perf-venv
+          rpcore/target/jbig2-perf-venv/bin/python -m pip install --only-binary=:all: pypdfium2==5.8.0 Pillow==12.3.0
+          python3 rpcore/fuzz/seed.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --features fuzzing --example jbig2_perf_probe --example perf_probe
+      - run: cargo test --manifest-path rpcore/Cargo.toml --release --locked mq_paired_renorm_performance -- --nocapture
+        env:
+          RPCORE_MQ_BENCH: '1'
+      - run: cargo test --manifest-path rpcore/Cargo.toml --release --locked separable_sampling_paired_performance -- --nocapture
+        env:
+          RPCORE_SAMPLE_BENCH: '1'
+      - run: |
+          mkdir -p rpcore/target/jbig2-performance
+          rustc -Vv > rpcore/target/jbig2-performance/rust-version.txt
+          rpcore/target/jbig2-perf-venv/bin/python -m pip freeze > rpcore/target/jbig2-performance/reference-versions.txt
+          rpcore/target/jbig2-perf-venv/bin/python rpcore/corpus/jbig2_performance.py --probe rpcore/target/release/examples/perf_probe --raw-probe rpcore/target/release/examples/jbig2_perf_probe --seeds rpcore/fuzz/corpus/jbig2_page --out rpcore/target/jbig2-performance --commit "$GITHUB_SHA"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-jbig2-performance
+          path: rpcore/target/jbig2-performance/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/jbig2-performance/report.md ]; then cat rpcore/target/jbig2-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  jbig2-corpus:
+    # All 107 pinned pairs are mandatory exact regressions; full inventory evidence required.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
+      - run: /usr/bin/python3 rpcore/corpus/jbig2_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/jbig2-report --require-exact --expand-public
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-jbig2-differential
+          path: rpcore/target/jbig2-report/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/jbig2-report/report.md ]; then cat rpcore/target/jbig2-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  jbig2-fuzz:
+    # Development-only libFuzzer + ASan, three independently bounded campaigns.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Build the CLI with a compatible stable compiler; nightly is only
+      # needed to instrument the target, not to compile cargo-fuzz itself.
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - run: cargo +1.85.1 install cargo-fuzz --version 0.12.0 --locked
+      - uses: dtolnay/rust-toolchain@nightly
+      - working-directory: rpcore
+        run: python3 fuzz/seed.py
+      - working-directory: rpcore
+        run: |
+          mkdir -p target/jbig2-fuzz-report
+          rustc +1.85.1 -Vv > target/jbig2-fuzz-report/cli-build-rust-version.txt
+          rustc +nightly -Vv > target/jbig2-fuzz-report/rust-version.txt
+          cargo fuzz --version > target/jbig2-fuzz-report/cargo-fuzz-version.txt
+          set -o pipefail
+          # Each campaign starts with the same three original seeds, not
+          # the evolved corpus from the previous random seed.
+          mkdir -p target/jbig2-fuzz-corpora
+          for seed in 12345 67890 314159; do
+            corpus="$PWD/target/jbig2-fuzz-corpora/seed-$seed"
+            mkdir -p "$corpus"
+            cp fuzz/corpus/jbig2_page/annex-h-* "$corpus/"
+            log="target/jbig2-fuzz-report/seed-$seed.log"
+            cargo +nightly fuzz run jbig2_page "$corpus" -- -runs=50000 -max_total_time=120 -max_len=4096 -timeout=5 -rss_limit_mb=1024 -seed="$seed" 2>&1 | tee "$log"
+            # A successful exit due to the wall-time cap is not full
+            # execution of the requested 50,000-run campaign.
+            grep -E '^Done 50000 runs in ' "$log"
+            grep -E '^#50000[[:space:]]+DONE[[:space:]]+cov:' "$log" | tee -a target/jbig2-fuzz-report/completed.txt
+          done
+          test "$(wc -l < target/jbig2-fuzz-report/completed.txt)" -eq 3
+          python3 fuzz/report.py --report target/jbig2-fuzz-report --commit "$GITHUB_SHA"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-jbig2-fuzz
+          path: |
+            rpcore/target/jbig2-fuzz-report/
+            rpcore/fuzz/artifacts/jbig2_page/
+          if-no-files-found: warn

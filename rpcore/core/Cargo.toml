@@ -1,0 +1,17 @@
+[package]
+name = "rpcore"
+version = "0.1.0"
+edition = "2021"
+description = "Independent PDF parser bootstrap"
+[lib]
+path = "src/lib.rs"
+[[bin]]
+name = "rpcore"
+path = "src/main.rs"
+
+[features]
+fuzzing = []
+
+[[example]]
+name = "jbig2_perf_probe"
+required-features = ["fuzzing"]

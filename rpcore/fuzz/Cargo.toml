@@ -1,0 +1,20 @@
+[package]
+name = "rpcore-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+[package.metadata]
+cargo-fuzz = true
+[dependencies]
+libfuzzer-sys = "=0.4.10"
+rpcore = { path = "../core", features = ["fuzzing"] }
+[[bin]]
+name = "jbig2_page"
+path = "fuzz_targets/jbig2_page.rs"
+test = false
+doc = false
+bench = false
+[workspace]
+members = ["."]
+[profile.release]
+overflow-checks = true
