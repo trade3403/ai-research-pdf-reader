@@ -63,6 +63,11 @@ jobs:
         run: |
           cat target/native-joint-ligature.txt
           grep -Fx 'DEJAVU_JOINT_REFERENCE cases=4 direction_checks=8 nonzero_direction_checks=8 max_absolute_error=0' target/native-joint-ligature.txt
+      - name: Report retained Arabic native scope
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cat target/arabic-native-scope.txt
+          test "$(wc -l < target/arabic-native-scope.txt)" -eq 49
       - name: Build
         run: cargo +stable build --locked --workspace --release
       - name: HarfBuzz external GPOS reference (test only)

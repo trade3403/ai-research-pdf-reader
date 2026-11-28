@@ -355,3 +355,6 @@ pub use unicode_joining::*;
 
 pub mod font_arabic_forms;
 pub use font_arabic_forms::*;
+
+pub mod unicode_indic;
+pub use unicode_indic::*;

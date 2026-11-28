@@ -574,3 +574,6 @@ CI #244: e4a9f7a2977812cce2de7b1fd07b88b2b283ce67, https://github.com/trade3403/
 
 
 CI #245: 12610bda67f456f681a2e967fcb753ce1eeef504, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46102392578, exact SHA all three raw logs; 1544/platform, 4632 total, zero failed/ignored; Release Ubuntu 12.80s, Windows 27.05s, macOS 21.20s. Native staged pair and positive two-lookup chain tests passed all platforms; Linux native/Python gates passed. Exact diagnostic counts not printed in captured passing-test logs.
+
+
+CI #246: 817d17b3f9548cccf5efa55ede7fd92d0a2ff084, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46104108976, exact SHA all three raw logs; 1546/platform, 4638 total, zero failed/ignored; Release Ubuntu 10.72s, Windows 25.62s, macOS 19.73s. Retained Arabic scope test and positive Ubuntu DejaVu logical mark-base oracle passed; Linux historical native and Python gates passed. Scope report was neither emitted nor uploaded, so exact retained-font positive/unsupported counts remain unverified.
