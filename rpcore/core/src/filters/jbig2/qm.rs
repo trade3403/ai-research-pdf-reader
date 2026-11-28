@@ -47,6 +47,7 @@ impl<'a> Decoder<'a>{
     }
     /// The caller supplies the context and a finite total decision budget.
     /// Normative marker fill is allowed within that budget.
+    #[inline]
     pub fn decode(&mut self,cx:&mut Context)->Result<u8>{
         let bit=self.inner.decode(&mut cx.0).map_err(|e|match e{
             Error::Limit(_)=>Error::Limit("JBIG2 QM decisions"),

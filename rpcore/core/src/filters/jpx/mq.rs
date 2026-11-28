@@ -47,12 +47,19 @@ impl<'a> Decoder<'a>{
             else{self.c=self.c.wrapping_add(u32::from(next)<<8);self.ct=8;}
         }
     }
+    // The exchange equations always leave 0 < A <= 0xffff.
+    // Shift to the next normalization or byte boundary, whichever comes
+    // first. BYTEIN must observe C at exactly the same boundary as before.
+    #[inline]
     fn renorm(&mut self){
         while self.a<0x8000{
             if self.ct==0{self.byte_in();}
-            self.a<<=1;self.c<<=1;self.ct-=1;
+            let needed=self.a.leading_zeros()-16;
+            let n=needed.min(u32::from(self.ct));
+            self.a<<=n;self.c<<=n;self.ct-=n as u8;
         }
     }
+    #[inline]
     pub fn decode(&mut self,cx:&mut Context)->Result<u8>{
         if self.left==0{return Err(Error::Limit("JPX MQ symbols"));}
         self.left-=1;
@@ -79,6 +86,72 @@ impl<'a> Decoder<'a>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    // Previous scalar normalization, retained only as a test oracle.
+    fn scalar_renorm(d:&mut Decoder<'_>){
+        while d.a<0x8000{
+            if d.ct==0{d.byte_in();}
+            d.a<<=1;d.c<<=1;d.ct-=1;
+        }
+    }
+    fn equal_registers(a:&Decoder<'_>,b:&Decoder<'_>){
+        assert_eq!((a.a,a.c,a.ct,a.pos,a.left,a.virtual_input),
+                   (b.a,b.c,b.ct,b.pos,b.left,b.virtual_input));
+    }
+    #[test]fn batched_renorm_all_intervals_and_byte_boundaries(){
+        let streams:[&[u8];5]=[&[0,0x12,0x34],&[255,0x8f,0xff,0xac],&[255,0xac],
+            &[0x78,255,0x90],&[0]];
+        for data in streams{
+            for a in 1..0x8000u32{
+                for ct in 0..=8u8{
+                    // Sweep every non-normalized interval, every bit count,
+                    // varied code-register patterns and real/virtual bytes.
+                    let c=a.wrapping_mul(0x9e3779b9)^u32::from(ct).wrapping_mul(0x1234567);
+                    let pos=(a as usize)%data.len();
+                    let mut x=Decoder{data,pos,a,c,ct,left:17,virtual_input:false};
+                    let mut y=Decoder{data,pos,a,c,ct,left:17,virtual_input:false};
+                    x.renorm();scalar_renorm(&mut y);equal_registers(&x,&y);
+                }
+            }
+        }
+    }
+    #[test]fn batched_renorm_decision_trace_matches_scalar(){
+        // Independently execute the exchange equations with the scalar
+        // renormalizer, checking bits, probability states and all registers.
+        fn scalar_decode(d:&mut Decoder<'_>,cx:&mut Context)->Result<u8>{
+            if d.left==0{return Err(Error::Limit("JPX MQ symbols"));}
+            d.left-=1;
+            let (qe,nm,nl,sw)=STATES[usize::from(cx.state)];
+            d.a-=qe;let m=cx.mps;let bit;
+            if d.c>>16<qe{
+                if d.a<qe{bit=m;cx.state=nm;}
+                else{bit=m^1;cx.state=nl;if sw{cx.mps^=1;}}
+                d.a=qe;scalar_renorm(d);
+            }else{
+                d.c-=qe<<16;
+                if d.a>=0x8000{return Ok(m);}
+                if d.a<qe{bit=m^1;cx.state=nl;if sw{cx.mps^=1;}}
+                else{bit=m;cx.state=nm;}
+                scalar_renorm(d);
+            }
+            Ok(bit)
+        }
+        let streams:[&[u8];4]=[&[0,0,0],&[255,0x8f,0,255,0xac],&[255,0xac],&[0x12,0x34,0x56,0x78]];
+        for data in streams{
+            let mut x=Decoder::new(data,4096).unwrap();
+            let mut y=Decoder::new(data,4096).unwrap();
+            let mut a:Vec<_>=(0..47).flat_map(|s|(0..2).map(move|m|Context::new(s,m).unwrap())).collect();
+            let mut b=a.clone();let mut rng=0x12345678u32;
+            for _ in 0..4096{
+                rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);
+                let i=(rng as usize)%a.len();
+                assert_eq!(x.decode(&mut a[i]),scalar_decode(&mut y,&mut b[i]));
+                assert_eq!(a[i],b[i]);equal_registers(&x,&y);
+            }
+            assert!(x.decode(&mut a[0]).is_err());
+            assert!(scalar_decode(&mut y,&mut b[0]).is_err());
+            assert_eq!(a,b);equal_registers(&x,&y);
+        }
+    }
     #[test]fn table_integrity(){
         assert_eq!(STATES.len(),47);
         for &(q,m,l,_) in &STATES{assert!(q>0&&q<=0x5601&&m<47&&l<47);}
