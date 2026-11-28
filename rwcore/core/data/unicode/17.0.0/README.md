@@ -16,3 +16,5 @@ explicit code points. Default Unknown is separate. The native parser
 uses the Script property, not block ranges. Full ScriptExtensions,
 aliases, general category, joining, normalization, bidi and script
 resolution are not included in this snapshot integration.
+
+C4.6c adds byte-identical official ScriptExtensions.txt (98b8d0fb06e5ed7c3c2f20e0202f6cccf8a984e4) and PropertyValueAliases.txt (b92662eda2867baed56e55440e5187d52c1cb341) from the same upstream directory and version, under the retained Unicode-3.0 LICENSE. 206 explicit extension ranges / 669 code points; 176 sc alias records. Contextual script resolution remains separate.

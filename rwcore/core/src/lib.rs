@@ -343,3 +343,6 @@ pub use font_ligature_mapping::*;
 
 pub mod unicode_scripts;
 pub use unicode_scripts::*;
+
+pub mod unicode_script_extensions;
+pub use unicode_script_extensions::*;
