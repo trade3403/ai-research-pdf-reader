@@ -96,6 +96,42 @@ const FONTS:[(&str,&[u8]);9]=[
     ("Noto Sans Devanagari",include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf")),
     ("Padauk",include_bytes!("fixtures/padauk/Padauk-Regular.ttf")),
 ];
+
+// Test-only isolate an explicit native root under a synthetic DFLT feature.
+// Preserve the entire native LookupList suffix byte-for-byte, including
+// original indices and all relative offsets; no lookup body is rewritten.
+// This deliberately tests explicit lookup execution, not native LangSys selection.
+fn isolated_layout(native:&[u8],tag:[u8;4],root:Option<u16>)->Vec<u8>{
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,0xffff,u16::from(root.is_some())]{w(&mut b,v);}
+    if root.is_some(){w(&mut b,0);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,u16::from(root.is_some()));
+    if let Some(id)=root{b.extend(tag);for v in [8,0,1,id]{w(&mut b,v);}}
+    let at=b.len();set(&mut b,8,at);b.extend_from_slice(&native[u(native,8)..]);b
+}
+fn isolated_dual(sb:&[u8],pb:&[u8],sroot:u16,proot:Option<u16>,r:&SourceRun,m:&FontMetrics<'_>,
+    n:u32,gd:&Gdef,flow:GposHorizontalFlow,trace:bool,edits:&[FeatureMaskOverride])->DualStageShapeResult{
+    let s=isolated_layout(sb,*b"liga",Some(sroot));
+    let p=isolated_layout(pb,*b"mark",proot);
+    let sl=parse_gsub_layout(&s,Default::default()).unwrap();
+    let pl=parse_gpos_layout(&p,Default::default()).unwrap();
+    let sp=build_gsub_base_plan(&sl,*b"DFLT",None,&[*b"liga"],Default::default()).unwrap().unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"DFLT",None,&[*b"mark"],Default::default()).unwrap().unwrap();
+    let gs=compile_gsub_plan_program(&s,&sp,n,Some(gd),Default::default()).unwrap();
+    let gp=compile_gpos_plan_program(&p,&pp,n,Some(gd),Default::default()).unwrap();
+    assert_eq!(gs.roots(),&[sroot]);assert!(gp.roots().iter().copied().eq(proot));
+    let ss=[ShapeStageSpec{features:vec![0]}];
+    let ps=if proot.is_some(){&ss[..]}else{&[][..]};
+    let sm=ScalarFeatureMasks::build(&sp,r.scalars().len(),&[],Default::default()).unwrap();
+    let pm=GposScalarFeatureMasks::build(&pp,r.scalars().len(),edits,Default::default()).unwrap();
+    execute_dual_stage_joint_shape(&gs,&gp,r,m,&[],&sm,&ss,flow,Default::default(),Default::default(),
+        if trace{Some((gd,Default::default()))}else{None},
+        JointPositionStages{masks:&pm,specs:ps,limits:Default::default()}).unwrap()
+}
+
 // counts: direct rules, eligible Unicode contraction candidates, tested
 // contractions, raw output/Type5 parent intersections, admitted attachment
 // rows, exact attachment rows, nonzero attachment rows.
@@ -140,6 +176,11 @@ fn check(font:&[u8])->[usize;7]{
                 assert_eq!(out.substitution.expansion.execution.glyphs,vec![*parent]);
                 assert_eq!(out.provenance.glyphs()[0].sources(),(0..seq.len()).collect::<Vec<_>>().as_slice());
                 assert_eq!(out.design_advances,vec![(nominal(font,*parent),0)]);
+                let dual=isolated_dual(sb,pb,s.id,None,&r,&m,n,&gd,GposHorizontalFlow::LeftToRight,false,&[]);
+                assert_eq!(dual.staged.shaped.substitution,out.substitution);
+                assert_eq!(dual.staged.shaped.provenance,out.provenance);
+                assert_eq!(dual.staged.shaped.design_advances,vec![(nominal(font,*parent),0)]);
+                assert_eq!(dual.staged.shaped.positioning,out.positioning);
                 counts[2]+=1;
             }
             for (p,(parents,marks)) in pl.iter().zip(&mark_inventory){
@@ -219,6 +260,20 @@ fn dejavu_positive(font:&[u8])->[usize;3]{
                 assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
                 let o=out.positioning.design_origins;let adjust=out.positioning.adjustments[1].design;
                 assert_eq!((o[1].0+adjust.x_placement,o[1].1+adjust.y_placement),(o[0].0+delta.0,o[0].1+delta.1));
+                let dual=isolated_dual(sb,pb,s.id,Some(p.id),&r,&m,n,&gd,flow,true,&[]).staged.shaped;
+                assert_eq!(dual.substitution,out.substitution);
+                assert_eq!(dual.design_advances,out.design_advances);
+                assert_eq!(dual.provenance.glyphs()[0].ligature_lineage().unwrap().components(),want.as_slice());
+                assert_eq!(dual.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+                assert_eq!(dual.positioning,out.positioning);
+                // Disable only the second contributing scalar of the
+                // ligature in GPOS. GSUB still contracts; parent intersection
+                // must block the otherwise valid native component attachment.
+                let index=if component==0{2}else{1};
+                let edit=[FeatureMaskOverride{feature:0,start:index,end:index+1,enabled:false}];
+                let masked=isolated_dual(sb,pb,s.id,Some(p.id),&r,&m,n,&gd,flow,true,&edit).staged.shaped;
+                assert_eq!(masked.substitution,out.substitution);
+                assert_eq!(masked.positioning.edges,vec![None,None]);
                 counts[1]+=1;counts[2]+=1;
             }
         }
@@ -232,10 +287,12 @@ fn dejavu_positive(font:&[u8])->[usize;3]{
         report+=&format!("{name}: {c:?}\n");
     }
     report+=&format!("TOTAL {total:?}\n");
+    report+=&format!("DUAL_STAGE_NATIVE_CONTRACTIONS exact={}\n",total[2]);
     report+=&format!("combined_positive_evidence={}\n",total[6]>0);
     if let Some(path)=std::env::var_os("RWCORE_DEJAVU_REFERENCE"){
         let bytes=std::fs::read(path).expect("read supplemental DejaVu font");
         let c=dejavu_positive(&bytes);
+        report+=&format!("DUAL_STAGE_DEJAVU_REFERENCE exact={} masked_parent_blocked={} max_absolute_error=0\n",c[1],c[1]);
         report+=&format!("DEJAVU_JOINT_REFERENCE cases={} direction_checks={} nonzero_direction_checks={} max_absolute_error=0\n",c[0],c[1],c[2]);
     }else{
         report+="DEJAVU_JOINT_REFERENCE not_requested (supplemental Linux gate)\n";
@@ -247,4 +304,26 @@ fn dejavu_positive(font:&[u8])->[usize;3]{
     assert_eq!(total[4],total[5]);
     // No fabricated positive Type5 claim when direct Unicode intersection
     // is empty. The report explicitly distinguishes this from parity.
+}
+
+#[test]fn isolated_native_layout_preserves_lookup_bytes_and_root_indices(){
+    for (_,font) in FONTS{
+        for (tag,feature) in [(b"GSUB",*b"liga"),(b"GPOS",*b"mark")]{
+            let Some(native)=table(font,tag) else{continue;};
+            let list=u(native,8);let count=u(native,list);
+            for root in [None,if count>0{Some((count-1) as u16)}else{None}]{
+                let b=isolated_layout(native,feature,root);
+                assert_eq!(&b[u(&b,8)..],&native[list..]);
+                if tag==b"GSUB"{
+                    let l=parse_gsub_layout(&b,Default::default()).unwrap();
+                    let p=build_gsub_base_plan(&l,*b"DFLT",None,&[feature],Default::default()).unwrap().unwrap();
+                    assert!(p.lookups.iter().map(|x|x.index).eq(root));
+                }else{
+                    let l=parse_gpos_layout(&b,Default::default()).unwrap();
+                    let p=build_gpos_base_plan(&l,*b"DFLT",None,&[feature],Default::default()).unwrap().unwrap();
+                    assert!(p.lookups.iter().map(|x|x.index).eq(root));
+                }
+            }
+        }
+    }
 }
