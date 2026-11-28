@@ -234,6 +234,14 @@ fn page_kind(kind:u8)->bool{
 /// not executed, and opaque segment payload semantics are not validated.
 /// An omitted End-of-Page/End-of-File is permitted for embedded streams.
 pub fn inspect_pdf_streams(globals:&[u8],data:&[u8])->Result<PdfInspection>{
+    inspect_pdf_streams_impl(globals,data,false)
+}
+// Only the image executor opts in. Optional extensions can describe page
+// information but cannot supply decoded pixels, dictionaries or contexts.
+pub(super) fn inspect_pdf_image_streams(globals:&[u8],data:&[u8])->Result<PdfInspection>{
+    inspect_pdf_streams_impl(globals,data,true)
+}
+fn inspect_pdf_streams_impl(globals:&[u8],data:&[u8],optional_extensions:bool)->Result<PdfInspection>{
     if globals.len().checked_add(data.len()).ok_or(Error::Limit("JBIG2 combined input"))?>MAX_BYTES{
         return Err(Error::Limit("JBIG2 combined input"));
     }
@@ -278,6 +286,19 @@ pub fn inspect_pdf_streams(globals:&[u8],data:&[u8])->Result<PdfInspection>{
                 }
                 if s.kind==51&&!opened{return Err(Error::Invalid("JBIG2 PDF EOF before page"));}
             }
+            let optional_extension=optional_extensions&&s.kind==62;
+            if optional_extension{
+                let stream=match source{SegmentSource::Globals=>globals,SegmentSource::Page=>data};
+                let body=stream.get(s.payload.clone()).ok_or(Error::Invalid("JBIG2 extension span"))?;
+                // T.88 7.4.14: bits 29/30/31 are reserved/dependent/necessary.
+                // Ignore opaque optional metadata for rendering only.
+                let bytes=body.get(..4).ok_or(Error::Invalid("JBIG2 extension header"))?;
+                let kind=u32::from_be_bytes([bytes[0],bytes[1],bytes[2],bytes[3]]);
+                if kind&0x8000_0000!=0{
+                    if kind&0x2000_0000==0{return Err(Error::Invalid("JBIG2 extension necessary flags"));}
+                    return Err(Error::Unsupported("JBIG2 necessary extension"));
+                }
+            }
             refs=refs.checked_add(s.referred.len()).ok_or(Error::Limit("JBIG2 combined references"))?;
             if refs>MAX_TOTAL_REFS{return Err(Error::Limit("JBIG2 combined references"));}
             let mut dependencies=Vec::with_capacity(s.referred.len());
@@ -286,8 +307,11 @@ pub fn inspect_pdf_streams(globals:&[u8],data:&[u8])->Result<PdfInspection>{
                 if target_page!=0&&target_page!=s.page{
                     return Err(Error::Invalid("JBIG2 PDF reference page mismatch"));
                 }
-                if matches!(target_kind,48|49|50|51){
+                if matches!(target_kind,48|49|50|51)&&!(optional_extension&&target_kind==48&&target_page==s.page){
                     return Err(Error::Invalid("JBIG2 PDF reference to page control"));
+                }
+                if optional_extensions&&target_kind==62&&!optional_extension{
+                    return Err(Error::Invalid("JBIG2 PDF reference to ignored extension"));
                 }
                 dependencies.push(target);
             }

@@ -197,3 +197,6 @@ CI #729 run 46109707871, perf job 140870288420: 25/29 eligible; render 3.06–31
 
 
 CI #733 run 46113753685, perf job 140882828270: 25/29 eligible; render 3.71–25.27% of PDFium; vector max 4.89%, text max 12.66%, JPEG max 25.27%. Four low-DPI JPEG exclusions. Inspect vector/text/image 419.99/544.25/405.79%; text extraction fresh/warm 182.17/200.78%. Shared-runner observation, no causal attribution or production RSS verification; targets unchanged.
+
+
+CI #735 run 46115835659, perf job 140889341541: 25/29 eligible; render 4.00–33.76% of PDFium; vector max 5.81%, text max 15.62%, JPEG max 33.76%. Four low-DPI JPEG exclusions. Inspect vector/text/image 373.93/512.06/357.66%; text extraction fresh/warm 209.57/200.99%. Shared-runner observation, no causal attribution or production RSS verification; targets unchanged.

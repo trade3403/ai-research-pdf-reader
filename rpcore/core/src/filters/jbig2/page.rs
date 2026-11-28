@@ -94,7 +94,8 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
     }
     let input=globals.len().checked_add(page.len()).ok_or(Error::Limit("JBIG2 page input"))?;
     if input as u64>limits.work{return Err(Error::Limit("JBIG2 page work"));}
-    let graph=super::inspect_pdf_streams(globals,page)?;
+    let graph=if allow_missing_hints{super::inspect_pdf_image_streams(globals,page)?}
+        else{super::inspect_pdf_streams(globals,page)?};
     let info=graph.page.clone();
     if info.flags&128!=0{return Err(Error::Invalid("JBIG2 page reserved flag"));}
     let height=info.height.ok_or(Error::Unsupported("JBIG2 page unknown height"))?;
@@ -110,6 +111,7 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
         setup+=node.dependencies.len() as u64;
         match seg.kind{
             0|53|48|49|51=>{},
+            62 if allow_missing_hints=>{}, // optional metadata already validated by graph
             16=>{
                 if !node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 pattern references"));}
             },
@@ -470,15 +472,55 @@ mod tests{
         multi.extend(seg(3,49,&[],&[]));multi.extend(second);
         assert!(matches!(decode_pdf_image_compatible(&[],&multi,l),
             Err(Error::Invalid("JBIG2 PDF single page required"))));
-        for kind in [52,62]{
-            let mut unsupported=p.clone();
-            unsupported.extend(seg(3,kind,&[],&[]));
-            assert!(matches!(decode_pdf_image_compatible(&[],&unsupported,l),
-                Err(Error::Unsupported("JBIG2 page segment execution kind"))));
-        }
+        let mut unsupported=p.clone();
+        unsupported.extend(seg(3,52,&[],&[]));
+        assert!(matches!(decode_pdf_image_compatible(&[],&unsupported,l),
+            Err(Error::Unsupported("JBIG2 page segment execution kind"))));
+        let mut short=p.clone();short.extend(seg(3,62,&[],&[]));
+        assert!(matches!(decode_pdf_image_compatible(&[],&short,l),
+            Err(Error::Invalid("JBIG2 extension header"))));
         let mut closed=p;closed.extend(seg(3,49,&[],&[]));
         closed.extend(seg(4,39,&[],&white(8,4,0,0,0)));
         assert!(matches!(decode_pdf_image_compatible(&[],&closed,l),
+            Err(Error::Invalid("JBIG2 PDF segment after page end"))));
+    }
+    #[test]
+    fn pdf_image_optional_extensions_preserve_pixels_and_dependencies(){
+        let l=Limits::default();
+        let mut p=info(8,4,4);
+        p.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        let a=decode_pdf_image_compatible(&[],&p,l).unwrap();
+        let mut ext=p.clone();
+        ext.extend(seg(3,62,&[],&[0x20,0,0,0,b'A',0,b'B',0,0]));
+        ext.extend(seg(4,62,&[1,2],&[0x20,0,0,2,0,65,0,0,0,66,0,0,0,0]));
+        ext.extend(seg(5,62,&[4],&[0x40,0,0,1,0xff]));
+        let b=decode_pdf_image_compatible(&[],&ext,l).unwrap();
+        assert_eq!(a.bitmap,b.bitmap);assert_eq!(a.stats.region_pixels,b.stats.region_pixels);
+        assert_eq!(a.stats.decisions,b.stats.decisions);
+        assert!(b.stats.work_used>a.stats.work_used);
+        assert!(decode_pdf_image_compatible(&[],&ext,Limits{work:b.stats.work_used-1,..l}).is_err());
+        assert!(decode_pdf_page(&[],&ext,l).is_err());
+        let mut consume=ext;consume.extend(seg(6,39,&[5],&white(8,4,0,0,0)));
+        assert!(matches!(decode_pdf_image_compatible(&[],&consume,l),
+            Err(Error::Invalid("JBIG2 PDF reference to ignored extension"))));
+    }
+    #[test]
+    fn pdf_image_extension_rejects_necessary_and_bad_references(){
+        let l=Limits::default();let p=info(8,4,0);
+        for (body,error) in [([0xa0,0,0,0],Error::Unsupported("JBIG2 necessary extension")),
+                            ([0x80,0,0,0],Error::Invalid("JBIG2 extension necessary flags"))]{
+            let mut bad=p.clone();bad.extend(seg(2,62,&[],&body));
+            assert_eq!(decode_pdf_image_compatible(&[],&bad,l).unwrap_err(),error);
+        }
+        for n in 0..4{
+            let mut bad=p.clone();bad.extend(seg(2,62,&[],&[0;4][..n]));
+            assert!(matches!(decode_pdf_image_compatible(&[],&bad,l),Err(Error::Invalid("JBIG2 extension header"))));
+        }
+        let mut dangling=p.clone();dangling.extend(seg(3,62,&[2],&[0;4]));
+        assert!(matches!(decode_pdf_image_compatible(&[],&dangling,l),
+            Err(Error::Invalid("JBIG2 PDF unresolved reference"))));
+        let mut after=p;after.extend(seg(2,49,&[],&[]));after.extend(seg(3,62,&[1],&[0;4]));
+        assert!(matches!(decode_pdf_image_compatible(&[],&after,l),
             Err(Error::Invalid("JBIG2 PDF segment after page end"))));
     }
     #[test]

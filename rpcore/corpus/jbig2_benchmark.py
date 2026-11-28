@@ -39,8 +39,10 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-halftone-template1", "bitmap-halftone-template2",
          "bitmap-halftone-template3", "bitmap-mmr",
          "bitmap-randomaccess", "bitmap-refine", "bitmap-refine-customat",
-         "bitmap-refine-customat-tpgron")
-KNOWN_GAPS = ("bitmap-initially-unknown-size", "bitmap-p32-eof")
+         "bitmap-refine-customat-tpgron", "bitmap-initially-unknown-size",
+         "bitmap-refine-lossless", "bitmap-refine-page", "bitmap-refine-page-subrect",
+         "bitmap-refine-refine")
+KNOWN_GAPS = ("bitmap-p32-eof",)
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
 Image.MAX_IMAGE_PIXELS = PIXELS
@@ -371,7 +373,7 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 34 and len(set(CASES)) == 34
+    assert len(CASES) == 39 and len(set(CASES)) == 39
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
