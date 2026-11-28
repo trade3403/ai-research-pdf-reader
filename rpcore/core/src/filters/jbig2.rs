@@ -101,9 +101,17 @@ fn segment(c:&mut Cursor<'_>,total_refs:&mut usize)->Result<Segment>{
     }
     let page=if flags&64!=0{c.u32()?}else{u32::from(c.byte()?)};
     let len=c.u32()?;
-    if len==u32::MAX{return Err(Error::Unsupported("JBIG2 indeterminate segment length"));}
     let end=c.pos;
-    c.take(len as usize)?;
+    if len==u32::MAX{
+        // T.88 7.2.7: only immediate generic region (type 38).
+        // Arithmetic termination is unambiguous after the adaptive header;
+        // MMR's separate boundary semantics remain unsupported.
+        if flags&63!=38{return Err(Error::Unsupported("JBIG2 indeterminate segment length"));}
+        let (_,_,used)=generic::parse_indeterminate(&c.data[end..])?;
+        c.take(used)?;
+    }else{
+        c.take(len as usize)?;
+    }
     Ok(Segment{number,kind:flags&63,deferred_non_retain:flags&128!=0,
         retention,referred,page,header:start..end,payload:end..c.pos})
 }

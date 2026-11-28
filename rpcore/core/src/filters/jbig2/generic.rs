@@ -95,6 +95,38 @@ pub fn parse(data:&[u8])->Result<(GenericHeader,&[u8])>{
     Ok((GenericHeader{region,coding:Coding::Arithmetic{neighborhood,typical_prediction:typical}},&rest[count*2..]))
 }
 
+/// T.88 7.2.7 and 7.4.6: bounded immediate generic arithmetic segment
+/// extent. The header height is an upper bound; the trailer gives the actual
+/// encoded rows. Scan only after the adaptive header, respecting byte
+/// stuffing. Return payload including FF AC but excluding the row count.
+/// This subset requires a finite, nonzero declared height and actual rows.
+pub(crate) fn parse_indeterminate(data:&[u8])->Result<(GenericHeader,&[u8],usize)>{
+    let (mut h,payload)=parse(data)?;
+    if matches!(h.coding,Coding::Mmr){
+        return Err(Error::Unsupported("JBIG2 indeterminate MMR length"));
+    }
+    let marker=payload.windows(2).position(|p|p[0]==255&&p[1]>0x8f)
+        .ok_or(Error::Invalid("JBIG2 indeterminate missing marker"))?;
+    if payload[marker+1]!=0xac{
+        return Err(Error::Invalid("JBIG2 indeterminate unexpected marker"));
+    }
+    let end=marker+2;
+    let count=payload.get(end..end+4).ok_or(Error::Invalid("JBIG2 indeterminate row count"))?;
+    let rows=u32::from_be_bytes([count[0],count[1],count[2],count[3]]);
+    if rows==0||rows>h.region.height{
+        return Err(Error::Invalid("JBIG2 indeterminate actual rows"));
+    }
+    h.region.height=rows;
+    let used=data.len()-payload.len()+end+4;
+    Ok((h,&payload[..end],used))
+}
+pub(crate) fn parse_segment(data:&[u8],indeterminate:bool)->Result<(GenericHeader,&[u8])>{
+    if !indeterminate{return parse(data);}
+    let (h,p,used)=parse_indeterminate(data)?;
+    if used!=data.len(){return Err(Error::Invalid("JBIG2 indeterminate segment span"));}
+    Ok((h,p))
+}
+
 /// Maximum conservative per-region work units (neighbor reads, pixel writes
 /// and optional row prediction decisions). This is not a wall-time estimate.
 pub const MAX_GENERIC_WORK:u64=100_000_000;
@@ -188,6 +220,9 @@ pub struct DecodedRegion{
 /// decoder and does not apply page-level combination-operator overrides.
 pub fn decode_region(data:&[u8],work_limit:u64)->Result<DecodedRegion>{
     let (header,payload)=parse(data)?;
+    decode_region_body(header,payload,work_limit)
+}
+pub(crate) fn decode_region_body(header:GenericHeader,payload:&[u8],work_limit:u64)->Result<DecodedRegion>{
     let limit=work_limit.min(MAX_GENERIC_WORK);
     if matches!(&header.coding,Coding::Mmr){
         let r=header.region;
@@ -361,6 +396,24 @@ mod tests{
         assert!(matches!(decode_arithmetic(&mmr,MAX_GENERIC_WORK),Err(Error::Unsupported(_))));
     }
 
+    #[test]fn generic_indeterminate_actual_rows_and_extent(){
+        let known=fixture(13,8,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac");
+        let mut wire=known.clone();wire[4..8].copy_from_slice(&10u32.to_be_bytes());
+        wire.extend(8u32.to_be_bytes());
+        let n=wire.len();wire.extend([0,1,2]);
+        let (h,p,used)=parse_indeterminate(&wire).unwrap();
+        assert_eq!(used,n);assert_eq!(h.region.height,8);
+        assert_eq!(decode_region_body(h,p,MAX_GENERIC_WORK).unwrap(),decode_region(&known,MAX_GENERIC_WORK).unwrap());
+        assert!(parse_segment(&wire,true).is_err());
+        for k in 0..n{assert!(parse_indeterminate(&wire[..k]).is_err());}
+        for rows in [0u32,11,u32::MAX]{
+            let mut bad=wire[..n].to_vec();bad[n-4..].copy_from_slice(&rows.to_be_bytes());
+            assert!(parse_indeterminate(&bad).is_err());
+        }
+        let mut bad=wire[..n].to_vec();bad[n-5]=0xad;
+        assert!(parse_indeterminate(&bad).is_err());
+        assert!(matches!(parse_indeterminate(&fixture(13,8,1,&[],"000000000008")),Err(Error::Unsupported(_))));
+    }
     #[test]fn generic_dispatch_arithmetic_reference(){
         let body=fixture(13,8,0,&[3,255,253,255,2,254,254,254],"c8bddaa7e0696a8f21c215feff7fffac");
         let a=decode_arithmetic(&body,MAX_GENERIC_WORK).unwrap();

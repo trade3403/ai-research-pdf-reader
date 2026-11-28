@@ -117,6 +117,11 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
                 count+=1;
                 let data=page.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 page region span"))?;
                 let (region,_)=bitmap::parse_region(data)?;
+                if page.get(seg.header.end-4..seg.header.end)==Some(&[255u8;4][..]){
+                    // Inspection plus the effective-header scan are bounded
+                    // by the segment bytes, in addition to entropy work.
+                    setup+=data.len() as u64*2;
+                }
                 let intermediate=matches!(seg.kind,4|20|36|40);
                 let refined=matches!(seg.kind,40|42|43);
                 if !allow_missing_hints&&intermediate&&info.flags&32==0{return Err(Error::Invalid("JBIG2 page auxiliary flag"));}
@@ -198,7 +203,11 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
             }else{patterns.insert(seg.number,d);}
             continue;
         }
-        let (region,_)=bitmap::parse_region(data)?;
+        let generic_data=if matches!(seg.kind,36|38|39){
+            let unknown=stream.get(seg.header.end-4..seg.header.end)==Some(&[255u8;4][..]);
+            Some(generic::parse_segment(data,unknown)?)
+        }else{None};
+        let region=if let Some((h,_))=&generic_data{h.region}else{bitmap::parse_region(data)?.0};
         let pixels=u64::from(region.width)*u64::from(region.height);
         if pixels>limits.region_pixels-stats.region_pixels{return Err(Error::Limit("JBIG2 page region pixels"));}
         let image=match seg.kind{
@@ -222,13 +231,13 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
                 stats.grid_cells+=u64::from(d.header.grid.width)*u64::from(d.header.grid.height);d.bitmap
             },
             36|38|39=>{
-                let (h,payload)=generic::parse(data)?;
+                let (h,payload)=generic_data.ok_or(Error::Invalid("JBIG2 page generic header"))?;
                 let len=packed(region.width,region.height);
                 // MMR conversion holds source and destination at once.
-                let (scratch,overhead,bound)=match h.coding{
+                let (scratch,overhead,bound)=match &h.coding{
                     generic::Coding::Mmr=>(len*2,0,None),
                     generic::Coding::Arithmetic{neighborhood,typical_prediction}=>{
-                        let rows=if typical_prediction{u64::from(region.height)}else{0};
+                        let rows=if *typical_prediction{u64::from(region.height)}else{0};
                         let upper=pixels+rows;
                         if upper>decisions as u64{return Err(Error::Limit("JBIG2 page generic decisions bound"));}
                         (len,neighborhood.template().context_count() as u64,
@@ -237,7 +246,7 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
                 };
                 if scratch>available{return Err(Error::Limit("JBIG2 page generic packed budget"));}
                 let remaining=work.checked_sub(overhead).ok_or(Error::Limit("JBIG2 page generic work"))?;
-                let d=generic::decode_region(data,remaining)?;
+                let d=generic::decode_region_body(h,payload,remaining)?;
                 let cost=match d.stats{
                     generic::DecodeStats::Arithmetic{decisions,..}=>{
                         stats.decisions+=decisions;
@@ -471,6 +480,28 @@ mod tests{
         closed.extend(seg(4,39,&[],&white(8,4,0,0,0)));
         assert!(matches!(decode_pdf_image_compatible(&[],&closed,l),
             Err(Error::Invalid("JBIG2 PDF segment after page end"))));
+    }
+    #[test]
+    fn page_indeterminate_arithmetic_generic_rows_and_budgets(){
+        let mut body=Vec::new();for n in [13u32,8,0,0]{body.extend(n.to_be_bytes());}
+        body.extend([0,0,3,255,253,255,2,254,254,254]);
+        body.extend([0xc8,0xbd,0xda,0xa7,0xe0,0x69,0x6a,0x8f,0x21,0xc2,0x15,0xfe,0xff,0x7f,0xff,0xac]);
+        let mut known=info(13,8,0);known.extend(seg(2,38,&[],&body));
+        known.extend(seg(3,49,&[],&[]));
+        let l=Limits::default();
+        let a=decode_pdf_image_compatible(&[],&known,l).unwrap();
+        body[4..8].copy_from_slice(&10u32.to_be_bytes());body.extend(8u32.to_be_bytes());
+        let mut unknown=seg(2,38,&[],&body);unknown[7..11].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut p=info(13,8,0);p.extend(&unknown);p.extend(seg(3,49,&[],&[]));
+        let b=decode_pdf_image_compatible(&[],&p,l).unwrap();
+        assert_eq!(a.bitmap,b.bitmap);assert_eq!(b.stats.region_pixels,104);
+        assert_eq!(b.stats.decisions,104);
+        assert_eq!(b.bitmap.packed(),[0x91,0x30,0xe0,0xe0,0,0,0xe0,0xe0,0x91,0x30,0x4a,0x50,0xaa,0xa8,0x5b,0x48]);
+        assert!(decode_pdf_image_compatible(&[],&p,Limits{region_pixels:104,decisions:104,..l}).is_ok());
+        assert!(matches!(decode_pdf_image_compatible(&[],&p,Limits{region_pixels:103,..l}),Err(Error::Limit(_))));
+        assert!(matches!(decode_pdf_image_compatible(&[],&p,Limits{decisions:103,..l}),Err(Error::Limit(_))));
+        let mut wrong=info(13,8,0);unknown[4]=39;wrong.extend(unknown);
+        assert!(matches!(decode_pdf_image_compatible(&[],&wrong,l),Err(Error::Unsupported("JBIG2 indeterminate segment length"))));
     }
     #[test]
     fn page_mixed_direct_regions_exact_pixels(){
