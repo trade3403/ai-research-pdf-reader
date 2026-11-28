@@ -633,10 +633,38 @@ impl Surface{
         }}Ok(())
     }
 }
+// Construct the 2x2 rectangular page coverage directly by packed pixel rows.
+fn rectangular_page_clip(w:usize,h:usize,sx:usize,sy:usize)->Vec<u8>{
+    let mut clip=vec![0;w*h];
+    let full_x=sx/2;
+    for y in 0..(sy/2+sy%2){
+        let row=&mut clip[y*w..(y+1)*w];
+        let mask=if y<sy/2{15}else{3};
+        row[..full_x].fill(mask);
+        if sx%2!=0{row[full_x]=mask&5;}
+    }
+    clip
+}
+#[cfg(test)]
+#[test]
+fn rectangular_page_clip_matches_sample_oracle(){
+    for w in 1..=12{
+        for h in 1..=9{
+            for sx in 0..=w*2{
+                for sy in 0..=h*2{
+                    let mut expected=vec![0u8;w*h];
+                    for y in 0..sy{for x in 0..sx{
+                        expected[y/2*w+x/2]|=1<<((y%2)*2+x%2);
+                    }}
+                    assert_eq!(rectangular_page_clip(w,h,sx,sy),expected);
+                }
+            }
+        }
+    }
+}
 fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>,text_quality:TextQuality,degree:crate::icc::AdaptationDegree)->Result<SubstitutedBitmap>{
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
-    let mut clip=vec![0u8;w*h];
-    for y in 0..span_bound(exact_h,h*2){for x in 0..span_bound(exact_w,w*2){clip[y/2*w+x/2]|=1<<((y%2)*2+x%2);}}
+    let clip=rectangular_page_clip(w,h,span_bound(exact_w,w*2),span_bound(exact_h,h*2));
     let clip=Arc::new(Coverage{x:0,y:0,w,h,data:clip});
     let mut s=Surface{w,h,text_quality,region:Region{x:0,y:0,w,h},samples:vec![255;w*h*12],clip:Arc::clone(&clip),stack:Vec::new(),budget:Budget::default(),fill_alpha:1.,stroke_alpha:1.,stencil:[0;3],blend_mode:BlendMode::Normal,alpha:None,groups:Vec::new(),soft_mask:None,mask_bytes:0,mask_clip:None,page_clip:clip,image_cache:BTreeMap::new(),image_cache_bytes:0,icc_cache:images::IccCache::default()};
     s.icc_cache.degree=degree;
