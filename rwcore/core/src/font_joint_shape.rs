@@ -422,3 +422,92 @@ fn shape_font_face_arabic_forms_inner(face:&FontFace<'_>,text:&str,o:FaceShapeOp
         })?;
     Ok(ArabicFaceShapeResult{joining,face:DualStageFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped}})
 }
+
+/// Restricted Indic joint result. GSUB counters and trace describe the
+/// logical substitution stage; staged.shaped.substitution glyphs and
+/// glyph_masks are aligned to the final reordered physical occurrences.
+/// logical_glyphs retains the actual pre-reorder GSUB output.
+#[derive(Debug)]
+pub struct IndicJointShapeResult{
+    pub logical_glyphs:Vec<u16>,
+    pub reorder:IndicGlyphReorderResult,
+    pub shaped:DualStageShapeResult,
+}
+#[derive(Debug,Clone,Copy)]
+pub struct IndicJointRequest<'a>{
+    pub text:&'a str,pub properties:&'a IndicProperties,
+    pub scripts:&'a UnicodeScriptProperties,pub reorder:IndicGlyphReorderLimits,
+}
+/// Explicit logical GSUB stages, restricted prebase permutation, then
+/// independently masked GPOS. This is an opt-in pipeline, not the full
+/// dev2 feature schedule. Caller is responsible for feature suitability
+/// and same-face identity. Complex clusters remain unsupported.
+pub fn execute_indic_joint_shape(
+    gsub:&CompiledGsubProgram<'_>,gpos:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,choices:&[GsubAlternateSelection],
+    masks:&ScalarFeatureMasks,specs:&[ShapeStageSpec],flow:GposHorizontalFlow,
+    limits:JointShapeLimits,stages:JointStageLimits,
+    ligatures:Option<(&Gdef,JointLigatureLimits)>,position:JointPositionStages<'_>,
+    indic:IndicJointRequest<'_>,
+)->Result<IndicJointShapeResult,Error>{
+    let sl=joint_preflight(gsub,gpos,run,metrics,limits,ligatures)?;
+    let (schedule,result,blocked_inputs,trace)=if let Some((_,l))=ligatures{
+        execute_staged_gsub_with_ligature_trace(gsub,run,choices,masks,specs,stages.schedule,
+            sl,limits.provenance,stages.max_mask_work,l.trace)?
+    }else{
+        execute_staged_gsub_traced(gsub,run,choices,masks,specs,stages.schedule,
+            sl,limits.provenance,stages.max_mask_work)?
+    };
+    let MaskedGsubResult{mut execution,mut provenance,glyph_masks,skipped_roots,mask_work}=result;
+    let n=provenance.glyphs().len();
+    if execution.expansion.execution.glyphs.len()!=n||glyph_masks.len()!=n||
+        provenance.glyphs().iter().zip(&execution.expansion.execution.glyphs).any(|(g,id)|g.glyph_id!=*id){
+        return Err(Error::Invalid("Indic joint logical alignment"));
+    }
+    let reorder=reorder_devanagari_glyphs(indic.text,run,&mut provenance,indic.properties,indic.scripts,indic.reorder)?;
+    let projection_cost=n.checked_add(provenance.reference_count()).ok_or(Error::Limit("Indic joint mask work"))?;
+    let left=stages.max_mask_work.checked_sub(mask_work).ok_or(Error::Limit("Indic joint mask work"))?;
+    let final_masks=masks.project(&provenance,left)?;
+    let mask_work=mask_work.checked_add(projection_cost).ok_or(Error::Limit("Indic joint mask work"))?;
+    let mut ids=Vec::new();reserve(&mut ids,n)?;
+    for (i,&old) in reorder.order.iter().enumerate(){
+        if final_masks[i]!=glyph_masks[old]{return Err(Error::Invalid("Indic joint mask alignment"));}
+        ids.push(provenance.glyphs()[i].glyph_id);
+    }
+    let logical_glyphs=std::mem::replace(&mut execution.expansion.execution.glyphs,ids);
+    let (shaped,positioning_schedule)=finish_joint_shape_inner(gpos,metrics,execution,provenance,
+        flow,limits,ligatures,Some(position))?;
+    let staged=StagedJointShapeResult{shaped,schedule,trace,glyph_masks:final_masks,skipped_roots,blocked_inputs,mask_work};
+    Ok(IndicJointShapeResult{logical_glyphs,reorder,shaped:DualStageShapeResult{staged,
+        positioning_schedule:positioning_schedule.ok_or(Error::Invalid("Indic joint positioning schedule"))?}})
+}
+#[derive(Debug)]
+pub struct IndicFaceShapeResult{
+    pub source:SourceRun,pub substitution_plan:GsubPlan,pub positioning_plan:GposPlan,
+    pub units_per_em:u16,pub shaped:IndicJointShapeResult,
+}
+/// Same-face restricted Indic pipeline with explicit per-table stages.
+/// Accepts only Devanagari script tags, not a generic Indic shaper.
+/// No implicit pre-GSUB feature selection or final font-specific matra
+/// positioning is claimed. The caller must select suitable features.
+pub fn shape_font_face_indic_simple(
+    face:&FontFace<'_>,o:FaceShapeOptions<'_>,l:FaceShapeLimits,
+    substitution:FaceStageRequest<'_>,positioning:FaceStageRequest<'_>,
+    ligatures:Option<JointLigatureLimits>,indic:IndicJointRequest<'_>,
+)->Result<IndicFaceShapeResult,Error>{
+    if !matches!(&o.script,b"deva"|b"dev2"){return Err(Error::Unsupported("Indic joint script"));}
+    let (source,substitution_plan,positioning_plan,units_per_em,shaped)=
+        shape_font_face_execute(face,indic.text,o,l,ligatures,|gs,gp,source,metrics,gd|{
+            let sm=ScalarFeatureMasks::build(gs.validated_plan().ok_or(Error::Invalid("Indic joint GSUB plan"))?,
+                source.scalars().len(),substitution.overrides,substitution.masks)?;
+            let pm=GposScalarFeatureMasks::build(gp.validated_plan().ok_or(Error::Invalid("Indic joint GPOS plan"))?,
+                source.scalars().len(),positioning.overrides,positioning.masks)?;
+            let traced=match ligatures{
+                Some(ll)=>Some((gd.ok_or(Error::Unsupported("face shape missing GDEF"))?,ll)),
+                None=>None,
+            };
+            execute_indic_joint_shape(gs,gp,source,metrics,o.alternates,&sm,substitution.specs,o.flow,l.joint,
+                substitution.stages,traced,JointPositionStages{masks:&pm,specs:positioning.specs,limits:positioning.stages},indic)
+        })?;
+    Ok(IndicFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
+}

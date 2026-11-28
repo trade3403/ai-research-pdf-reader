@@ -413,3 +413,112 @@ fn dual_edit_run(sb:&[u8],pb:&[u8],r:&SourceRun,m:&FontMetrics<'_>,n:u32,
         assert!(y.positioning.edges.iter().all(Option::is_none));
     }
 }
+
+const INDIC_FONT:&[u8]=include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf");
+fn indic_inputs(text:&str)->(SourceRun,FontMetrics<'static>,u32){
+    let f=parse_font(INDIC_FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+    (map_source_run(text,&cmap,false,Default::default()).unwrap(),parse_font_metrics(face,Default::default()).unwrap(),u32::from(cmap.glyph_count()))
+}
+fn indic_edit_run(sb:&[u8],pb:&[u8],text:&str,r:&SourceRun,m:&FontMetrics<'_>,n:u32,
+    se:&[FeatureMaskOverride],pe:&[FeatureMaskOverride],flow:GposHorizontalFlow,
+    stages:JointStageLimits,position_work:usize,reorder:IndicGlyphReorderLimits)->Result<IndicJointShapeResult,Error>{
+    let sl=parse_gsub_layout(sb,Default::default())?;let pl=parse_gpos_layout(pb,Default::default())?;
+    let sp=build_gsub_base_plan(&sl,*b"DFLT",None,&[*b"liga"],Default::default())?.unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"DFLT",None,&[*b"kern"],Default::default())?.unwrap();
+    let gs=compile_gsub_plan_program(sb,&sp,n,None,Default::default())?;
+    let gp=compile_gpos_plan_program(pb,&pp,n,None,Default::default())?;
+    let sm=ScalarFeatureMasks::build(&sp,r.scalars().len(),se,Default::default())?;
+    let pm=GposScalarFeatureMasks::build(&pp,r.scalars().len(),pe,Default::default())?;
+    let ss=[ShapeStageSpec{features:vec![0]}];
+    execute_indic_joint_shape(&gs,&gp,r,m,&[],&sm,&ss,flow,Default::default(),stages,None,
+        JointPositionStages{masks:&pm,specs:&ss,limits:JointStageLimits{max_mask_work:position_work,..Default::default()}},
+        IndicJointRequest{text,properties:&bundled_indic_properties()?,scripts:&bundled_script_properties()?,reorder})
+}
+#[test]fn indic_joint_expansion_reorder_final_metrics_and_masks(){
+    let t="कि";let (r,m,n)=indic_inputs(t);let a=r.glyphs()[0].glyph_id;let matra=r.glyphs()[1].glyph_id;
+    let sb=dual_one_feature(*b"liga",2,0,&[1,8,1,14,1,1,matra,2,11,12]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,9,1,2,11,12]);
+    for flow in [LTR,RTL]{
+        let x=indic_edit_run(&sb,&pb,t,&r,&m,n,&[dual_disable(0,0,1)],&[],flow,Default::default(),100,Default::default()).unwrap();
+        let out=&x.shaped.staged.shaped;
+        assert_eq!(x.logical_glyphs,vec![a,11,12]);
+        assert_eq!(x.reorder.order,vec![1,2,0]);assert_eq!(x.reorder.inverse,vec![2,0,1]);
+        assert_eq!(out.substitution.expansion.execution.glyphs,vec![11,12,a]);
+        assert_eq!(x.shaped.staged.glyph_masks,vec![1,1,0]);
+        assert_eq!(out.provenance.glyphs().iter().map(|g|g.sources()[0]).collect::<Vec<_>>(),vec![1,1,0]);
+        let widths=[11,12,a].map(|id|i32::from(m.glyph(id).unwrap().advance_width));
+        assert_eq!(out.design_advances,widths.map(|w|(w,0)).to_vec());
+        assert_eq!(out.positioning.adjustments.iter().map(|a|a.design.x_advance).collect::<Vec<_>>(),
+            vec![9,9,if a==11||a==12{9}else{0}]);
+        let mut pen=0;
+        for ((w,adj),origin) in out.design_advances.iter().zip(&out.positioning.adjustments).zip(&out.positioning.design_origins){
+            let advance=w.0+adj.design.x_advance;if flow==RTL{pen-=advance;}assert_eq!(*origin,(pen,0));if flow==LTR{pen+=advance;}
+        }
+        let y=indic_edit_run(&sb,&pb,t,&r,&m,n,&[dual_disable(0,0,1)],&[dual_disable(0,1,2)],flow,Default::default(),100,Default::default()).unwrap();
+        assert_eq!(y.shaped.staged.shaped.positioning.adjustments[0].design.x_advance,0);
+        assert_eq!(y.shaped.staged.shaped.positioning.adjustments[1].design.x_advance,0);
+        assert_eq!(y.shaped.staged.shaped.substitution,out.substitution);
+    }
+}
+#[test]fn indic_joint_contracted_base_retains_sources(){
+    let t="क़ि";let (r,m,n)=indic_inputs(t);let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;let matra=r.glyphs()[2].glyph_id;
+    let sb=dual_one_feature(*b"liga",4,0,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,10,1,1,20]);
+    let x=indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[dual_disable(0,1,2)],LTR,Default::default(),100,Default::default()).unwrap();
+    assert_eq!(x.logical_glyphs,vec![20,matra]);assert_eq!(x.reorder.order,vec![1,0]);
+    let out=&x.shaped.staged.shaped;
+    assert_eq!(out.substitution.expansion.execution.glyphs,vec![matra,20]);
+    assert_eq!(out.provenance.glyphs()[1].sources(),&[0,1]);
+    assert_eq!(out.positioning.adjustments[1].design.x_advance,0);
+    let y=indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,Default::default(),100,Default::default()).unwrap();
+    assert_eq!(y.shaped.staged.shaped.positioning.adjustments[1].design.x_advance,10);
+}
+#[test]fn indic_joint_reject_mixed_and_deferred(){
+    let t="कि";let (r,m,n)=indic_inputs(t);let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let sb=dual_one_feature(*b"liga",4,0,&[1,8,1,14,1,1,a,1,4,20,2,b]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,10,1,1,20]);
+    let before=r.clone();
+    assert!(matches!(indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,Default::default(),100,Default::default()),Err(Error::Unsupported(_))));
+    assert_eq!(r,before);
+    let (r,m,n)=indic_inputs("क्षि");
+    assert!(matches!(indic_edit_run(&sb,&pb,"क्षि",&r,&m,n,&[],&[],LTR,Default::default(),100,Default::default()),Err(Error::Unsupported(_))));
+}
+#[test]fn indic_joint_projection_and_reorder_budgets(){
+    let t="कि";let (r,m,n)=indic_inputs(t);let a=r.glyphs()[0].glyph_id;let b=r.glyphs()[1].glyph_id;
+    let sb=dual_one_feature(*b"liga",2,0,&[1,8,1,14,1,1,b,2,11,12]);
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,9,1,1,a]);
+    let x=indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,Default::default(),100,Default::default()).unwrap();
+    let work=x.shaped.staged.mask_work;
+    assert!(matches!(indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,JointStageLimits{max_mask_work:work-1,..Default::default()},100,Default::default()),Err(Error::Limit(_))));
+    assert!(matches!(indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,Default::default(),5,Default::default()),Err(Error::Limit(_))));
+    assert!(matches!(indic_edit_run(&sb,&pb,t,&r,&m,n,&[],&[],LTR,Default::default(),100,
+        IndicGlyphReorderLimits{max_glyphs:2,..Default::default()}),Err(Error::Limit(_))));
+}
+#[test]fn indic_same_face_dev2_native_nukt_selection(){
+    let f=parse_font(INDIC_FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let sl=parse_gsub_layout(face.table(*b"GSUB").unwrap(),Default::default()).unwrap();
+    let pl=parse_gpos_layout(face.table(*b"GPOS").unwrap(),Default::default()).unwrap();
+    let tags=[*b"nukt"];let sp=build_gsub_base_plan(&sl,*b"dev2",None,&tags,Default::default()).unwrap().unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"dev2",None,&[],Default::default()).unwrap().unwrap();
+    assert_eq!(sp.script,*b"dev2");assert!(sp.unavailable_tags.is_empty()&&!sp.lookups.is_empty());
+    let ss=if sp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:sp.features.clone()}]};
+    let ps=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+    let req=|specs|FaceStageRequest{specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+    let t="क़ि";let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&tags,
+        positioning_tags:&[],alternates:&[],flow:LTR,allow_missing_glyphs:false,require_requested_features:true};
+    let properties=bundled_indic_properties().unwrap();let scripts=bundled_script_properties().unwrap();
+    let x=shape_font_face_indic_simple(face,o,Default::default(),req(&ss),req(&ps),None,
+        IndicJointRequest{text:t,properties:&properties,scripts:&scripts,reorder:Default::default()}).unwrap();
+    let baseline=shape_font_face(face,t,o,Default::default()).unwrap();
+    assert_eq!(x.shaped.logical_glyphs,baseline.shaped.substitution.expansion.execution.glyphs);
+    let out=&x.shaped.shaped.staged.shaped;
+    let expected:Vec<_>=baseline.shaped.provenance.glyphs().iter().filter(|g|g.sources()==&[2])
+        .chain(baseline.shaped.provenance.glyphs().iter().filter(|g|g.sources()!=&[2])).cloned().collect();
+    assert_eq!(out.provenance.glyphs(),expected.as_slice());
+    assert_eq!(out.provenance.glyphs()[0].sources(),&[2]);
+    let metrics=parse_font_metrics(face,Default::default()).unwrap();
+    for (g,w) in out.provenance.glyphs().iter().zip(&out.design_advances){
+        assert_eq!(*w,(i32::from(metrics.glyph(g.glyph_id).unwrap().advance_width),0));
+    }
+}
