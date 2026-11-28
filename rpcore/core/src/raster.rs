@@ -652,6 +652,34 @@ impl Surface{
         // Bounds above guarantee these subsamples lie in the clip rectangle.
         // Hoist row addressing and choose the opaque nearest path once per image.
         if direct&&!img.interpolate&&!img.stencil&&img.alpha.is_none(){
+            // For a separable inverse, compute each coordinate once. Retain
+            // Matrix::point validation; if an axis coordinate cannot be
+            // validated, fall back to the original clipped sample order.
+            if inv.0[1]==0.&&inv.0[2]==0.&&(x1-x0)+(y1-y0)<=131072{
+                let xs:Result<Vec<_>>=(x0..x1).map(|x|inv.point([(x as f64+0.5)*0.5,0.]).map(|p|p[0])).collect();
+                let ys:Result<Vec<_>>=(y0..y1).map(|y|inv.point([0.,(y as f64+0.5)*0.5]).map(|p|p[1])).collect();
+                if let (Ok(xs),Ok(ys))=(xs,ys){
+                    for (dy,&v) in ys.iter().enumerate(){
+                        if !(0.0..1.0).contains(&v){continue;}
+                        let y=y0+dy;
+                        let row=(y/2-self.clip.y)*self.clip.w;
+                        let dest=y/2*self.w*12;
+                        let sy=(y%2)*2;
+                        for (dx,&u) in xs.iter().enumerate(){
+                            if !(0.0..1.0).contains(&u){continue;}
+                            let x=x0+dx;
+                            let sx=sy+x%2;
+                            if self.clip.data[row+x/2-self.clip.x]&(1<<sx)==0{continue;}
+                            let color=img.opaque_nearest(u,1.-v);
+                            let offset=dest+x/2*12+sx*3;
+                            self.samples[offset..offset+3].copy_from_slice(&color);
+                        }
+                    }
+                    #[cfg(feature="fuzzing")]
+                    image_profile_end(started,1);
+                    return Ok(());
+                }
+            }
             for y in y0..y1{
                 let row=(y/2-self.clip.y)*self.clip.w;
                 let dest=y/2*self.w*12;
@@ -688,6 +716,21 @@ impl Surface{
         image_profile_end(started,1);
         Ok(())
     }
+}
+#[cfg(test)]
+#[test]
+fn separable_image_coordinates_match_matrix(){
+    for a in [-2.,-0.125,0.125,1.,3.]{for d in [-3.,-0.25,0.25,2.]{
+        for e in [-1.,0.,0.125]{for f in [-0.5,0.,1.]{
+            let m=Matrix([a,0.,0.,d,e,f]);
+            for x in 0..32{for y in 0..24{
+                let px=(x as f64+0.5)*0.5;
+                let py=(y as f64+0.5)*0.5;
+                let full=m.point([px,py]).unwrap();
+                assert_eq!(full,[m.point([px,0.]).unwrap()[0],m.point([0.,py]).unwrap()[1]]);
+            }}
+        }}
+    }}
 }
 // Construct the 2x2 rectangular page coverage directly by packed pixel rows.
 fn rectangular_page_clip(w:usize,h:usize,sx:usize,sy:usize)->Vec<u8>{
