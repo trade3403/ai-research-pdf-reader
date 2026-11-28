@@ -64,9 +64,18 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-symbol-texthuffrefinecustompos", "bitmap-symbol-texthuffrefinecustompos-global",
          "bitmap-symbol-texthuffrefinecustomposdims", "bitmap-symbol-texthuffrefinecustomsize",
          "bitmap-symbol-textrefine", "bitmap-symbol-textrefine-customat",
-         "bitmap-symbol-textrefine-negative-delta-width")
+         "bitmap-symbol-textrefine-negative-delta-width",
+         "bitmap-symbol-texttopright", "bitmap-symbol-texttoprighttranspose",
+         "bitmap-symbol-texttranspose", "bitmap-template1",
+         "bitmap-template1-customat", "bitmap-template1-customat-tpgdon",
+         "bitmap-template1-tpgdon", "bitmap-template2", "bitmap-template2-customat",
+         "bitmap-template2-customat-tpgdon", "bitmap-template2-tpgdon",
+         "bitmap-template3", "bitmap-template3-customat",
+         "bitmap-template3-customat-tpgdon", "bitmap-template3-tpgdon",
+         "bitmap-tpgdon", "bitmap-trailing-7fff-stripped",
+         "bitmap-trailing-7fff-stripped-harder", "bitmap-trailing-7fff-stripped-harder-refine")
 KNOWN_GAPS = ()
-EXPLORATORY_BATCH = 19
+EXPLORATORY_BATCH = 0
 EXPECTED_PAIRS = 107
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
@@ -441,20 +450,21 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 88 and len(set(CASES)) == 88
+    assert len(CASES) == EXPECTED_PAIRS == 107 and len(set(CASES)) == 107
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
                    for s in (".pdf","_expected.pdf.0.png"))
-    assert expanded_cases(entries) == ["a","z"]
+    assert expanded_cases(entries) == []
+    assert expanded_cases(entries,2) == ["a","z"]
     assert expanded_cases(entries,1) == ["a"]
     inv = inventory(entries)
     assert inv["paired_total"] == len(CASES)+2 and inv["frozen_missing"] == []
-    assert inv["remaining_total"] == 2 and inv["remaining_after_batch"] == 0
+    assert inv["remaining_total"] == 2 and inv["remaining_after_batch"] == 2
     assert inventory([])["frozen_missing"] == sorted(CASES)
     gap_entries = entries + [{"name":n+s,"type":"blob"} for n in KNOWN_GAPS for s in (".pdf","_expected.pdf.0.png")]
     inv = inventory(gap_entries)
-    assert inv["cases"] == list(KNOWN_GAPS)+["a","z"] and inv["remaining_after_batch"] == 0
+    assert inv["cases"] == [] and inv["remaining_after_batch"] == 2
     rows = [{"suite":"frozen","id":n,"status":"exact","different_pixels":0,"pixels":1}
             for n in CASES]
     assert frozen_gate(rows)
@@ -470,35 +480,32 @@ def self_test():
             assert not frozen_gate(bad)
     assert frozen_gate(rows + [{"suite":"exploratory","status":"native_rejected"}])
     assert not set(CASES)&set(KNOWN_GAPS)
-    all_entries = gap_entries + [{"name":f"extra-{i:03d}"+s,"type":"blob"}
-                             for i in range(EXPECTED_PAIRS-len(CASES)-2-len(KNOWN_GAPS))
-                             for s in (".pdf","_expected.pdf.0.png")]
+    all_entries = [{"name":n+s,"type":"blob"} for n in CASES
+                   for s in (".pdf","_expected.pdf.0.png")]
     full = inventory(all_entries)
     assert full["paired_total"] == EXPECTED_PAIRS
-    assert len(full["new_cases"]) == EXPLORATORY_BATCH
-    assert full["remaining_after_batch"] == EXPECTED_PAIRS-len(CASES)-EXPLORATORY_BATCH-len(KNOWN_GAPS)
-    observed = [dict(id=n,suite="exploratory",status="native_rejected",
-                     pdf_sha256="a"*64,reference_sha256="b"*64) for n in full["cases"]]
-    assert inventory_gate(full, rows+observed)
-    assert not inventory_gate(full, rows+observed[:-1])
-    assert not inventory_gate(full, rows+observed+observed[:1])
-    assert not inventory_gate(dict(full,status="failed"), rows+observed)
-    assert not inventory_gate(dict(full,paired_total=EXPECTED_PAIRS-1), rows+observed)
-    assert not inventory_gate(dict(full,frozen_missing=[CASES[0]]), rows+observed)
-    assert not inventory_gate(full, rows+[dict(observed[0],status="infrastructure_or_timeout")]+observed[1:])
-    assert not inventory_gate(full, rows+[dict(observed[0],pdf_sha256=None)]+observed[1:])
-    frozen_evidence = [dict(r,pdf_sha256="c"*64,reference_sha256="d"*64) for r in rows]
-    public = frozen_evidence+observed
-    summary = full_public_summary(full,public)
-    assert summary == {"expected":107,"observed":107,"exact":88,"complete":True,"all_exact":False}
-    exact_observed = [dict(r,status="exact",different_pixels=0,pixels=1) for r in observed]
-    assert full_public_summary(full,frozen_evidence+exact_observed)["all_exact"]
+    assert full["cases"] == [] and full["remaining_after_batch"] == 0
+    assert inventory_gate(full,rows)
+    assert not inventory_gate(full,rows+[{"id":"unexpected","suite":"exploratory","status":"exact"}])
+    assert not inventory_gate(dict(full,status="failed"),rows)
+    assert not inventory_gate(dict(full,paired_total=EXPECTED_PAIRS-1),rows)
+    assert not inventory_gate(dict(full,frozen_missing=[CASES[0]]),rows)
+    assert not inventory_gate(inventory(entries),rows)
+    public = [dict(r,pdf_sha256="c"*64,reference_sha256="d"*64) for r in rows]
+    assert full_public_summary(full,public) == {
+        "expected":107,"observed":107,"exact":107,"complete":True,"all_exact":True}
     assert not full_public_summary(full,public[:-1])["complete"]
     assert not full_public_summary(full,public+public[:1])["complete"]
     assert not full_public_summary(full,[dict(public[0],pdf_sha256="invalid")]+public[1:])["complete"]
     assert not full_public_summary(full,[dict(public[0],status="infrastructure_or_timeout")]+public[1:])["complete"]
-    assert not full_public_summary(full,frozen_evidence+[dict(exact_observed[0],different_pixels=1)]+exact_observed[1:])["all_exact"]
     assert not full_public_summary(dict(full,remaining_after_batch=1),public)["complete"]
+    for change in ({"status":"native_rejected"},{"status":"pixel_mismatch","different_pixels":1},
+                   {"different_pixels":1},{"pixels":0}):
+        bad = [dict(public[0],**change)]+public[1:]
+        assert full_public_summary(full,bad)["complete"]
+        assert not full_public_summary(full,bad)["all_exact"]
+        assert not frozen_gate(bad)
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -507,7 +514,7 @@ def main():
     p.add_argument("--local-manifest", type=Path, help="JSON list of local PDF/reference PNG pairs with SHA256 and page")
     p.add_argument("--no-public", action="store_true")
     p.add_argument("--require-exact", action="store_true", help="require all frozen public cases")
-    p.add_argument("--expand-public", action="store_true", help="discover up to nineteen further pinned paired samples plus known gaps")
+    p.add_argument("--expand-public", action="store_true", help="verify the complete pinned public inventory (no exploratory pairs remain)")
     a = p.parse_args()
     self_test()
     a.out.mkdir(parents=True, exist_ok=True)
@@ -564,7 +571,7 @@ def main():
                                      for status in sorted({r["status"] for r in group})}}
     inventory_ok = inventory_gate(discovery,rows) if a.expand_public else None
     full_summary = full_public_summary(discovery,rows) if a.expand_public else None
-    report = {"schema":6,"reference_revision":REV,"dpi":72,"rows":rows,
+    report = {"schema":7,"reference_revision":REV,"dpi":72,"rows":rows,
               "frozen_exact":gate,"inventory_gate":inventory_ok,"full_public":full_summary,
               "discovery":discovery,"counts":counts}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
@@ -593,7 +600,7 @@ def main():
     # mismatched inputs are measured coverage gaps, not exact passes.
     if a.require_exact and not gate:
         raise SystemExit(1)
-    if a.expand_public and (not inventory_ok or not full_summary["complete"]):
+    if a.expand_public and (not inventory_ok or not full_summary["all_exact"]):
         raise SystemExit(1)
     if all(r["status"]=="infrastructure_or_timeout" for r in rows):
         raise SystemExit(1)
