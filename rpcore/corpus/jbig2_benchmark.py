@@ -34,7 +34,9 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-halftone-10bpp", "bitmap-halftone-10bpp-mmr",
          "bitmap-halftone-composite", "bitmap-halftone-grid",
          "bitmap-halftone-refine", "bitmap-halftone-skip-dummy",
-         "bitmap-halftone-skip-grid", "bitmap-halftone-skip-grid-template1")
+         "bitmap-halftone-skip-grid", "bitmap-halftone-skip-grid-template1",
+         "bitmap-halftone-skip-grid-template2", "bitmap-halftone-skip-grid-template3",
+         "bitmap-halftone-template1", "bitmap-halftone-template2")
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
 Image.MAX_IMAGE_PIXELS = PIXELS
@@ -74,17 +76,26 @@ def fetch(name):
         raise ValueError("download limit")
     return raw
 
-def expanded_cases(entries, limit=4):
+def paired_cases(entries):
     # Only simple filenames with a matching page-1 reference at the same
     # immutable revision. Never follow nested paths or directory entries.
     names = {e["name"] for e in entries
              if isinstance(e, dict) and e.get("type") == "blob"
              and isinstance(e.get("name"), str)
              and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", e["name"])}
-    candidates = sorted(n[:-4] for n in names if n.endswith(".pdf")
-                        and n[:-4] not in CASES
-                        and n[:-4] + "_expected.pdf.0.png" in names)
-    return candidates[:limit]
+    return sorted(n[:-4] for n in names if n.endswith(".pdf")
+                  and n[:-4] + "_expected.pdf.0.png" in names)
+
+def expanded_cases(entries, limit=4):
+    return [n for n in paired_cases(entries) if n not in CASES][:limit]
+
+def inventory(entries):
+    pairs = paired_cases(entries)
+    missing = sorted(set(CASES) - set(pairs))
+    remaining = [n for n in pairs if n not in CASES]
+    return {"status":"ok", "cases":remaining[:4], "paired_total":len(pairs),
+            "frozen_missing":missing, "remaining_total":len(remaining),
+            "remaining_after_batch":max(0,len(remaining)-4)}
 
 def discover():
     raw = fetch_bounded(BASE + "?format=JSON", 1024 * 1024)
@@ -93,7 +104,7 @@ def discover():
     listing = json.loads(raw[5:])
     if not isinstance(listing, dict) or not isinstance(listing.get("entries"), list):
         raise ValueError("invalid gitiles directory entries")
-    return expanded_cases(listing["entries"])
+    return inventory(listing["entries"])
 
 def frozen_gate(rows):
     frozen = [r for r in rows if r.get("suite") == "frozen"]
@@ -214,13 +225,17 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 24 and len(set(CASES)) == 24
+    assert len(CASES) == 28 and len(set(CASES)) == 28
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
                    for s in (".pdf","_expected.pdf.0.png"))
     assert expanded_cases(entries) == ["a","z"]
     assert expanded_cases(entries,1) == ["a"]
+    inv = inventory(entries)
+    assert inv["paired_total"] == len(CASES)+2 and inv["frozen_missing"] == []
+    assert inv["remaining_total"] == 2 and inv["remaining_after_batch"] == 0
+    assert inventory([])["frozen_missing"] == sorted(CASES)
     rows = [{"suite":"frozen","id":n,"status":"exact","different_pixels":0,"pixels":1}
             for n in CASES]
     assert frozen_gate(rows)
@@ -253,8 +268,7 @@ def main():
         p.error("public options require public corpus")
     if a.expand_public:
         try:
-            extras = discover()
-            discovery = {"status":"ok","cases":extras}
+            discovery = discover()
         except (OSError, ValueError) as e:
             discovery = {"status":"failed","cases":[],"diagnostic":str(e)}
     with tempfile.TemporaryDirectory(prefix="rpcore-jbig2-") as tmp:

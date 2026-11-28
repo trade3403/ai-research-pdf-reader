@@ -424,6 +424,55 @@ mod tests{
         p.extend(seg(6,39,&[],&white(8,4,16,17,4)));p.extend(seg(7,49,&[],&[]));p
     }
     #[test]
+    fn pdf_image_supported_lifecycle_and_striped_boundary(){
+        let l=Limits::default();
+        let mut p=info(8,4,0);
+        p.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        let a=decode_pdf_image_compatible(&[],&p,l).unwrap();
+        assert_eq!(a.bitmap.packed(),[0;4]);
+        let mut ended=p.clone();
+        ended.extend(seg(3,49,&[],&[]));
+        assert_eq!(decode_pdf_image_compatible(&[],&ended,l).unwrap().bitmap,a.bitmap);
+        for height in [4,u32::MAX]{
+            let mut stripe=info(8,height,0);
+            stripe[28..30].copy_from_slice(&0x8004u16.to_be_bytes());
+            stripe.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+            stripe.extend(seg(3,50,&[],&3u32.to_be_bytes()));
+            assert!(matches!(decode_pdf_image_compatible(&[],&stripe,l),
+                Err(Error::Unsupported("JBIG2 PDF striped page"))));
+        }
+        let mut unknown=info(8,u32::MAX,0);
+        unknown.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        assert!(matches!(decode_pdf_image_compatible(&[],&unknown,l),
+            Err(Error::Invalid("JBIG2 unknown unstriped height"))));
+        let mut stripe_end=p;
+        stripe_end.extend(seg(3,50,&[],&3u32.to_be_bytes()));
+        assert!(matches!(decode_pdf_image_compatible(&[],&stripe_end,l),
+            Err(Error::Unsupported("JBIG2 PDF stripe end"))));
+    }
+    #[test]
+    fn pdf_image_multiple_pages_and_unsupported_extensions_fail_closed(){
+        let l=Limits::default();
+        let mut p=info(8,4,0);
+        p.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        let mut second=info(8,4,0);
+        second[3]=4;second[6]=2;
+        let mut multi=p.clone();
+        multi.extend(seg(3,49,&[],&[]));multi.extend(second);
+        assert!(matches!(decode_pdf_image_compatible(&[],&multi,l),
+            Err(Error::Invalid("JBIG2 PDF single page required"))));
+        for kind in [52,62]{
+            let mut unsupported=p.clone();
+            unsupported.extend(seg(3,kind,&[],&[]));
+            assert!(matches!(decode_pdf_image_compatible(&[],&unsupported,l),
+                Err(Error::Unsupported("JBIG2 page segment execution kind"))));
+        }
+        let mut closed=p;closed.extend(seg(3,49,&[],&[]));
+        closed.extend(seg(4,39,&[],&white(8,4,0,0,0)));
+        assert!(matches!(decode_pdf_image_compatible(&[],&closed,l),
+            Err(Error::Invalid("JBIG2 PDF segment after page end"))));
+    }
+    #[test]
     fn page_mixed_direct_regions_exact_pixels(){
         let p=mixed();let l=Limits::default();let d=decode_pdf_page(GLOBAL,&p,l).unwrap();
         assert_eq!((d.bitmap.width(),d.bitmap.height()),(64,56));
