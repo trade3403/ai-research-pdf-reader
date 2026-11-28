@@ -36,7 +36,9 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-halftone-refine", "bitmap-halftone-skip-dummy",
          "bitmap-halftone-skip-grid", "bitmap-halftone-skip-grid-template1",
          "bitmap-halftone-skip-grid-template2", "bitmap-halftone-skip-grid-template3",
-         "bitmap-halftone-template1", "bitmap-halftone-template2")
+         "bitmap-halftone-template1", "bitmap-halftone-template2",
+         "bitmap-halftone-template3", "bitmap-mmr")
+KNOWN_GAPS = ("bitmap-initially-unknown-size", "bitmap-p32-eof")
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
 Image.MAX_IMAGE_PIXELS = PIXELS
@@ -87,15 +89,18 @@ def paired_cases(entries):
                   and n[:-4] + "_expected.pdf.0.png" in names)
 
 def expanded_cases(entries, limit=4):
-    return [n for n in paired_cases(entries) if n not in CASES][:limit]
+    return [n for n in paired_cases(entries) if n not in CASES and n not in KNOWN_GAPS][:limit]
 
 def inventory(entries):
     pairs = paired_cases(entries)
     missing = sorted(set(CASES) - set(pairs))
     remaining = [n for n in pairs if n not in CASES]
-    return {"status":"ok", "cases":remaining[:4], "paired_total":len(pairs),
+    gaps = [n for n in KNOWN_GAPS if n in pairs]
+    new = expanded_cases(entries)
+    return {"status":"ok", "cases":gaps+new, "paired_total":len(pairs),
             "frozen_missing":missing, "remaining_total":len(remaining),
-            "remaining_after_batch":max(0,len(remaining)-4)}
+            "known_gaps":gaps, "new_cases":new,
+            "remaining_after_batch":len(remaining)-len(gaps)-len(new)}
 
 def discover():
     raw = fetch_bounded(BASE + "?format=JSON", 1024 * 1024)
@@ -172,6 +177,108 @@ def classic_generation_diagnostics(raw):
             break
     return rows
 
+# Diagnostics only for simple public fixtures; never used for native decoding.
+# Stop rather than guessing an indeterminate length or a wrapped stream.
+def segment_headers(data):
+    pos = 0
+    rows = []
+    seen = {}
+    def take(n):
+        nonlocal pos
+        if n > len(data)-pos:
+            raise ValueError("truncated segment field")
+        out = data[pos:pos+n]
+        pos += n
+        return out
+    def uint(n):
+        return int.from_bytes(take(n),"big")
+    try:
+        while pos < len(data) and len(rows) < 64:
+            start = pos
+            number, flags, first = uint(4), uint(1), uint(1)
+            count = first >> 5
+            if count == 7:
+                count = ((first & 31)<<24) | uint(3)
+                if count > 4096:
+                    raise ValueError("reference count cap")
+                take((count+8)//8)
+            elif count > 4:
+                raise ValueError("reserved reference count")
+            width = 1 if number <= 256 else 2 if number <= 65536 else 4
+            refs = [uint(width) for _ in range(count)]
+            page = uint(4 if flags & 64 else 1)
+            length = uint(4)
+            row = dict(offset=start, number=number, kind=flags&63, page=page,
+                       length=length, refs=refs[:32], ref_count=count,
+                       local_ref_kinds=[seen.get(n) for n in refs[:32]])
+            rows.append(row)
+            seen[number] = flags&63
+            if length == 0xffffffff:
+                row["prefix_hex"] = data[pos:pos+40].hex()
+                row["tail_hex"] = data[-32:].hex()
+                return {"status":"indeterminate_length","segments":rows}
+            if length > len(data)-pos:
+                raise ValueError("segment payload truncated")
+            if flags&63 in (48,50):
+                row["control_payload_hex"] = data[pos:pos+19].hex()[:min(length,19)*2]
+            pos += length
+        return {"status":"complete" if pos == len(data) else "segment_cap","segments":rows}
+    except ValueError as e:
+        return {"status":"stopped","reason":str(e),"segments":rows}
+
+def jbig2_stream_diagnostics(raw):
+    # Deliberately limited to direct single-filter JBIG2 streams and raw
+    # streams in public synthetic PDFs. Use direct Length; no marker search
+    # through entropy data. Global candidates are labeled, not assumed.
+    result = []
+    pattern = rb"(?m)^[ \t]*(\d{1,10})[ \t]+(\d{1,5})[ \t]+obj\b"
+    for m in re.finditer(pattern,raw):
+        if len(result) >= 16:
+            break
+        header = raw[m.end():m.end()+8192]
+        end = re.search(rb"\bstream(?:\r\n|\n|\r)",header)
+        if not end or b"endobj" in header[:end.start()]:
+            continue
+        dictionary = header[:end.start()]
+        if b"<<" not in dictionary:
+            continue
+        length = re.search(rb"/Length\s+(\d{1,9})(?![\d])",dictionary)
+        if not length or re.match(rb"\s+\d+\s+R\b",dictionary[length.end():]):
+            continue
+        size = int(length.group(1))
+        pos = m.end()+end.end()
+        if size > CAP or pos+size > len(raw):
+            continue
+        if not re.match(rb"\s*endstream\b",raw[pos+size:pos+size+32]):
+            continue
+        jb = bool(re.search(rb"/Filter\s*(?:/JBIG2Decode\b|\[\s*/JBIG2Decode\s*\])",dictionary))
+        if not jb and b"/Filter" in dictionary:
+            continue
+        data = raw[pos:pos+size]
+        # Raw stream candidates require a plausible first segment header.
+        if not jb and (len(data)<11 or data[4]&63 not in (0,16,48,53)):
+            continue
+        result.append(dict(object=int(m.group(1)),role="jbig2_image" if jb else "raw_candidate",
+                           bytes=size,**segment_headers(data)))
+    return result
+
+def diagnostic_self_test():
+    def seg(n,k,refs,body,length=None):
+        return (n.to_bytes(4,"big")+bytes([k,len(refs)<<5])+bytes(refs)+b"\x01"
+                +(len(body) if length is None else length).to_bytes(4,"big")+body)
+    a=seg(1,48,[],bytes(19))
+    b=seg(2,39,[1],b"x")
+    c=seg(3,39,[],b"abc",0xffffffff)
+    rows=segment_headers(a+b+c)
+    assert rows["status"]=="indeterminate_length"
+    assert rows["segments"][1]["local_ref_kinds"]==[48]
+    assert rows["segments"][2]["prefix_hex"]=="616263"
+    assert segment_headers(a+b[:-1])["status"]=="stopped"
+    raw=(b"%PDF-1.4\n7 0 obj\n<< /Filter /JBIG2Decode /Length "+str(len(a+b+c)).encode()
+         +b" >>\nstream\n"+a+b+c+b"\nendstream\nendobj\n")
+    assert jbig2_stream_diagnostics(raw)[0]["segments"]==rows["segments"]
+    assert not jbig2_stream_diagnostics(raw.replace(b"/Length ",b"/Length 9 0 R /Other "))
+
 def case(probe, work, row, raw, expected):
     pdf, ref, out = (work / (row["id"] + suffix) for suffix in (".pdf", "-ref.png", "-native.png"))
     row.update(pdf_sha256=sha(raw), reference_sha256=sha(expected))
@@ -184,6 +291,8 @@ def case(probe, work, row, raw, expected):
     row.update(render(probe, pdf, row["page"], out))
     if row["status"] == "rendered":
         row.update(compare(pixels(out), pixels(ref)))
+    if row["kind"] == "public_synthetic" and row["status"] == "native_rejected":
+        row["jbig2_stream_diagnostics"] = jbig2_stream_diagnostics(raw)
     return row
 
 def retry_self_test():
@@ -214,6 +323,7 @@ def retry_self_test():
 
 def self_test():
     retry_self_test()
+    diagnostic_self_test()
     a = Image.new("RGB", (2, 1), "white")
     b = a.copy()
     assert compare(a,b)["status"] == "exact"
@@ -225,7 +335,7 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 28 and len(set(CASES)) == 28
+    assert len(CASES) == 30 and len(set(CASES)) == 30
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
@@ -236,6 +346,9 @@ def self_test():
     assert inv["paired_total"] == len(CASES)+2 and inv["frozen_missing"] == []
     assert inv["remaining_total"] == 2 and inv["remaining_after_batch"] == 0
     assert inventory([])["frozen_missing"] == sorted(CASES)
+    gap_entries = entries + [{"name":n+s,"type":"blob"} for n in KNOWN_GAPS for s in (".pdf","_expected.pdf.0.png")]
+    inv = inventory(gap_entries)
+    assert inv["cases"] == list(KNOWN_GAPS)+["a","z"] and inv["remaining_after_batch"] == 0
     rows = [{"suite":"frozen","id":n,"status":"exact","different_pixels":0,"pixels":1}
             for n in CASES]
     assert frozen_gate(rows)
@@ -313,7 +426,7 @@ def main():
         counts[suite] = {"total":len(group),"exact":sum(r["status"] == "exact" for r in group),
                          "statuses":{status:sum(r["status"] == status for r in group)
                                      for status in sorted({r["status"] for r in group})}}
-    report = {"schema":3,"reference_revision":REV,"dpi":72,"rows":rows,
+    report = {"schema":4,"reference_revision":REV,"dpi":72,"rows":rows,
               "frozen_exact":gate,"discovery":discovery,"counts":counts}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     lines = ["# JBIG2 differential corpus", "",
@@ -330,6 +443,8 @@ def main():
         if row["kind"] == "public_synthetic":
             lines.append("\n" + row["id"] + ": " + row.get("diagnostic","").strip()
                          + "; oversized classic xref generations: " + str(row.get("classic_generation_diagnostics",[])))
+            if "jbig2_stream_diagnostics" in row:
+                lines.append("  JBIG2 stream diagnostics: " + json.dumps(row["jbig2_stream_diagnostics"]))
     (a.out/"report.md").write_text("\n".join(lines)+"\n")
     print("\n".join(lines))
     # An unavailable corpus is not successful validation. Unsupported or
