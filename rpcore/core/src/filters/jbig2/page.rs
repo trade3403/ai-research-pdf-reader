@@ -855,6 +855,78 @@ mod annex_h_full_page_tests{
         assert!(decode_pdf_page_reclaimed(GLOBAL3,PAGE1,Limits::default()).is_err());
         assert!(decode_pdf_page_reclaimed(&[],PAGE2,Limits::default()).is_err());
     }
+    // Deterministic mutation regression, not a substitute for long-running
+    // coverage-guided fuzzing. Keep caps small even if a header is corrupted.
+    fn mutation_limits()->Limits{
+        Limits{page_pixels:4096,region_pixels:8192,regions:32,
+            packed_bytes:32768,work:200000,decisions:32768,
+            text_slots:128,text_instances:256,huffman_bits:32768,
+            patterns:64,pattern_pixels:8192,grid_cells:256,..Limits::default()}
+    }
+    fn check_mutated_page(g:&[u8],p:&[u8],l:Limits)->bool{
+        // The test intentionally does not catch panics: a decoder panic
+        // must fail CI. Repeat both success and rejection for determinism.
+        let a=decode_pdf_image_compatible(g,p,l);
+        let b=decode_pdf_image_compatible(g,p,l);
+        match (a,b){
+            (Ok(a),Ok(b))=>{
+                assert_eq!(a,b);
+                let w=a.bitmap.width();let h=a.bitmap.height();
+                assert_eq!(a.info.width,w);assert_eq!(a.info.height,Some(h));
+                assert!(w>0&&h>0&&u64::from(w)*u64::from(h)<=l.page_pixels);
+                assert_eq!(a.bitmap.packed().len(),packed(w,h));
+                assert_eq!(a.stats.retained_packed_bytes,a.bitmap.packed().len());
+                assert!(a.stats.retained_packed_bytes<=l.packed_bytes);
+                assert!(a.stats.work_used<=l.work);
+                assert!(a.stats.region_pixels<=l.region_pixels);
+                assert!(a.stats.decisions<=l.decisions);
+                assert!(a.stats.huffman_bits<=l.huffman_bits);
+                true
+            }
+            (Err(a),Err(b))=>{assert_eq!(format!("{a:?}"),format!("{b:?}"));false}
+            _=>panic!("non-deterministic JBIG2 mutation result"),
+        }
+    }
+    #[test]
+    fn annex_h_truncation_mutations_are_bounded_and_deterministic(){
+        let l=mutation_limits();let(mut accepted,mut rejected)=(0,0);
+        for (g,p) in [(GLOBAL1,PAGE1),(GLOBAL1,PAGE2),(GLOBAL3,PAGE3)]{
+            assert!(check_mutated_page(g,p,l));
+            for n in 0..p.len(){
+                if check_mutated_page(g,&p[..n],l){accepted+=1;}else{rejected+=1;}
+            }
+            for n in 0..g.len(){
+                if check_mutated_page(&g[..n],p,l){accepted+=1;}else{rejected+=1;}
+            }
+        }
+        // Complete segment prefixes can be valid embedded pages.
+        assert!(accepted>0&&rejected>0);
+        assert_eq!(accepted+rejected,2*GLOBAL1.len()+GLOBAL3.len()+PAGE1.len()+PAGE2.len()+PAGE3.len());
+    }
+    #[test]
+    fn annex_h_bit_mutations_are_bounded_and_deterministic(){
+        let l=mutation_limits();let(mut count,mut rejected)=(0,0);
+        for (g,p) in [(GLOBAL1,PAGE1),(GLOBAL1,PAGE2),(GLOBAL3,PAGE3)]{
+            assert!(check_mutated_page(g,p,l));
+            for target in [false,true]{
+                let original=if target{p}else{g};
+                let mut bytes=original.to_vec();
+                for i in 0..bytes.len(){
+                    // Two deterministic bit flips per byte, covering high
+                    // header bits and low arithmetic/Huffman bits.
+                    for mask in [1u8,128]{
+                        bytes[i]^=mask;
+                        let ok=if target{check_mutated_page(g,&bytes,l)}else{check_mutated_page(&bytes,p,l)};
+                        count+=1;if !ok{rejected+=1;}
+                        bytes[i]^=mask;
+                    }
+                }
+                assert_eq!(bytes.as_slice(),original);
+            }
+        }
+        assert!(rejected>0);
+        assert_eq!(count,2*(2*GLOBAL1.len()+GLOBAL3.len()+PAGE1.len()+PAGE2.len()+PAGE3.len()));
+    }
     #[test]
     fn annex_h_original_sequential_file_structure(){
         let mut file=b"\x97JB2\r\n\x1a\n".to_vec();
