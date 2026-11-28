@@ -302,9 +302,9 @@ jobs:
 
 
   jbig2-corpus:
-    # Four exact frozen cases plus independent exploratory coverage; not scan certification.
+    # Eight exact frozen cases plus independent exploratory coverage; not scan certification.
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

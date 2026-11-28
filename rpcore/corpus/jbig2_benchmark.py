@@ -19,7 +19,10 @@ REV = "e64acd24f00d365c3f7c60e9c4eff16ce2d71f5d"
 BASE = f"https://pdfium.googlesource.com/pdfium_tests/+/{REV}/third_party/jbig2/"
 CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-symbol-symbolrefine-textrefine-export",
-         "bitmap-symbol-symhuff-texthuff-runcodes32-34")
+         "bitmap-symbol-symhuff-texthuff-runcodes32-34",
+         "bitmap", "bitmap-composite-and-xnor",
+         "bitmap-composite-and-xnor-halftone",
+         "bitmap-composite-and-xnor-refine")
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
 Image.MAX_IMAGE_PIXELS = PIXELS
@@ -155,6 +158,11 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
+    assert len(CASES) == 8 and len(set(CASES)) == 8
+    # Every frozen case, including the promoted refinement case, is excluded
+    # from discovery, even if the listing contains its matching reference.
+    entries.extend({"name": n+s, "type": "blob"} for n in CASES
+                   for s in (".pdf","_expected.pdf.0.png"))
     assert expanded_cases(entries) == ["a","z"]
     assert expanded_cases(entries,1) == ["a"]
     rows = [{"suite":"frozen","id":n,"status":"exact","different_pixels":0,"pixels":1}
@@ -163,6 +171,13 @@ def self_test():
     assert not frozen_gate(rows[:-1])
     assert not frozen_gate(rows + rows[:1])
     assert not frozen_gate([dict(r,status="native_rejected") for r in rows])
+    for i in range(len(rows)):
+        for change in ({"status":"pixel_mismatch","different_pixels":1},
+                       {"status":"infrastructure_or_timeout"},
+                       {"pixels":0}, {"different_pixels":1}):
+            bad = list(rows)
+            bad[i] = dict(bad[i], **change)
+            assert not frozen_gate(bad)
     assert frozen_gate(rows + [{"suite":"exploratory","status":"native_rejected"}])
 
 def main():
@@ -171,7 +186,7 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--local-manifest", type=Path, help="JSON list of local PDF/reference PNG pairs with SHA256 and page")
     p.add_argument("--no-public", action="store_true")
-    p.add_argument("--require-exact", action="store_true", help="require all four frozen public cases")
+    p.add_argument("--require-exact", action="store_true", help="require all frozen public cases")
     p.add_argument("--expand-public", action="store_true", help="discover up to four further pinned paired samples")
     a = p.parse_args()
     self_test()
@@ -222,12 +237,20 @@ def main():
     if not rows:
         raise ValueError("no corpus cases")
     gate = frozen_gate(rows)
-    report = {"schema":2,"reference_revision":REV,"dpi":72,"rows":rows,
-              "frozen_exact":gate,"discovery":discovery}
+    counts = {}
+    for suite in ("frozen","exploratory","local"):
+        group = [r for r in rows if r.get("suite","local") == suite]
+        counts[suite] = {"total":len(group),"exact":sum(r["status"] == "exact" for r in group),
+                         "statuses":{status:sum(r["status"] == status for r in group)
+                                     for status in sorted({r["status"] for r in group})}}
+    report = {"schema":3,"reference_revision":REV,"dpi":72,"rows":rows,
+              "frozen_exact":gate,"discovery":discovery,"counts":counts}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     lines = ["# JBIG2 differential corpus", "",
              f"Frozen exact gate: {'PASS' if gate else 'FAIL'}",
-             "Exploratory discovery: " + str(discovery), "",
+             "Exploratory discovery: " + str(discovery),
+             "Frozen exact: {}/{}".format(counts["frozen"]["exact"],len(CASES)),
+             "Exploratory exact: {}/{}".format(counts["exploratory"]["exact"],counts["exploratory"]["total"]), "",
              "Public tests are synthetic SerenityOS conformance images, not scans.",
              "Exact matches, mismatches, native rejection and infrastructure failures are distinct.",
              "", "| Case | Suite | Kind | Status | Different pixels |", "|---|---|---|---|---:|"]
