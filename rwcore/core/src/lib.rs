@@ -367,3 +367,6 @@ pub use indic_reorder::*;
 
 pub mod indic_glyph_reorder;
 pub use indic_glyph_reorder::*;
+
+pub mod indic_feature_probe;
+pub use indic_feature_probe::*;
