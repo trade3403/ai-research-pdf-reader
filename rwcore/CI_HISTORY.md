@@ -613,3 +613,6 @@ CI #257: bec91c11a1607835979167ce49cd474fc85d694d, https://github.com/trade3403/
 
 
 CI #258: 2eaed311645e8932044d288361eff69b3caf8e05, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46176893061, exact SHA three raw logs; 1595/platform, 4785 total, zero failed/ignored; Release Ubuntu 17.11s, Windows 16.70s, macOS 20.09s. Native owner abvm selected with seven roots, zero geometry cases under prior single-root restriction.
+
+
+CI #259: aa2042bded1ce78388caf8dbbbc6e5f14aea49e5, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46179764727, exact SHA three raw logs; 1595/platform, 4785 total, zero failed/ignored; Release Ubuntu 10.27s, Windows 27.98s, macOS 15.41s. Native abvm outside direct Type4 oracle, zero positive cases; retain unresolved full native Reph attachment scope.

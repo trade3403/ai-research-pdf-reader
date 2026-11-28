@@ -573,3 +573,49 @@ pub fn shape_font_face_isolated_reph_after_base(
         })?;
     Ok(RephFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
 }
+
+
+/// Isolated bare consonant + virama + consonant Half contraction.
+/// Preserve logical occurrence order; no implicit complex Indic shaping.
+pub fn execute_isolated_half_joint(
+    layout:&GsubLayout,gs:&CompiledGsubProgram<'_>,gp:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,indic:IndicJointRequest<'_>,
+    flow:GposHorizontalFlow,limits:JointShapeLimits,mut probe:IndicProbeLimits,
+    position:JointPositionStages<'_>,
+)->Result<JointShapeResult,Error>{
+    probe.gsub=joint_preflight(gs,gp,run,metrics,limits,None)?;
+    probe.provenance=limits.provenance;
+    if run.scalars().len()!=3{return Err(Error::Unsupported("Indic half joint scope"));}
+    let x=probe_devanagari_feature(layout,gs,run,indic.text,indic.properties,indic.scripts,
+        IndicProbeKind::Half,0,probe)?;
+    let c=x.candidate;
+    if (c.scalar_start,c.scalar_end,c.base_candidate)!=(0,2,2)||
+        x.evidence!=IndicFeatureEvidence::WholeRangeContraction{
+        return Err(Error::Unsupported("Indic half joint contraction"));
+    }
+    let MaskedGsubResult{execution,provenance,..}=x.result;
+    let g=provenance.glyphs();
+    if g.len()!=2||g[0].sources()!=[0,1]||g[1].sources()!=[2]||
+        g[1].glyph_id!=run.glyphs()[2].glyph_id{
+        return Err(Error::Invalid("Indic half joint provenance"));
+    }
+    Ok(finish_joint_shape_inner(gp,metrics,execution,provenance,flow,limits,None,Some(position))?.0)
+}
+/// Same-face isolated half feature with independent explicit GPOS stages.
+pub fn shape_font_face_isolated_half(
+    face:&FontFace<'_>,o:FaceShapeOptions<'_>,l:FaceShapeLimits,
+    positioning:FaceStageRequest<'_>,indic:IndicJointRequest<'_>,probe:IndicProbeLimits,
+)->Result<FaceShapeResult,Error>{
+    if !matches!(&o.script,b"deva"|b"dev2")||o.substitution_tags!=&[*b"half"]||
+        !o.alternates.is_empty(){return Err(Error::Unsupported("Half joint feature scope"));}
+    let (source,substitution_plan,positioning_plan,units_per_em,shaped)=
+        shape_font_face_execute(face,indic.text,o,l,None,|gs,gp,run,metrics,_|{
+            let sb=face.table(*b"GSUB").ok_or(Error::Unsupported("face shape missing GSUB"))?;
+            let layout=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
+            let pm=GposScalarFeatureMasks::build(gp.validated_plan().ok_or(Error::Invalid("Half joint GPOS plan"))?,
+                run.scalars().len(),positioning.overrides,positioning.masks)?;
+            execute_isolated_half_joint(&layout,gs,gp,run,metrics,indic,o.flow,l.joint,probe,
+                JointPositionStages{masks:&pm,specs:positioning.specs,limits:positioning.stages})
+        })?;
+    Ok(FaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
+}

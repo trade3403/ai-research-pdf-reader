@@ -609,3 +609,30 @@ fn reph_joint_oracle(t:&str,pe:&[FeatureMaskOverride],flow:GposHorizontalFlow,
     assert!(matches!(reph_joint_oracle(t,&[],LTR,Default::default(),Default::default(),4),Err(Error::Limit(_))));
     assert!(reph_joint_oracle(t,&[],LTR,Default::default(),Default::default(),100).is_ok());
 }
+
+
+#[test]fn half_joint_native_contraction_metrics(){
+    let f=parse_font(INDIC_FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let properties=bundled_indic_properties().unwrap();let scripts=bundled_script_properties().unwrap();
+    let pl=parse_gpos_layout(face.table(*b"GPOS").unwrap(),Default::default()).unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"dev2",None,&[],Default::default()).unwrap().unwrap();
+    let ps=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+    let position=FaceStageRequest{specs:&ps,overrides:&[],masks:Default::default(),stages:Default::default()};
+    let metrics=parse_font_metrics(face,Default::default()).unwrap();
+    for flow in [LTR,RTL]{
+        let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&[*b"half"],
+            positioning_tags:&[],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+        let x=shape_font_face_isolated_half(face,o,Default::default(),position,
+            IndicJointRequest{text:"क्त",properties:&properties,scripts:&scripts,reorder:Default::default()},
+            Default::default()).unwrap().shaped;
+        assert_eq!(x.substitution.expansion.execution.glyphs,vec![232,71]);
+        assert_eq!(x.provenance.glyphs()[0].sources(),&[0,1]);
+        assert_eq!(x.provenance.glyphs()[1].sources(),&[2]);
+        for (g,w) in x.provenance.glyphs().iter().zip(&x.design_advances){
+            assert_eq!(*w,(i32::from(metrics.glyph(g.glyph_id).unwrap().advance_width),0));
+        }
+        assert!(matches!(shape_font_face_isolated_half(face,o,Default::default(),position,
+            IndicJointRequest{text:"क्ति",properties:&properties,scripts:&scripts,reorder:Default::default()},
+            Default::default()),Err(Error::Unsupported(_))));
+    }
+}
