@@ -571,3 +571,6 @@ CI #243: 5c3a217ff83dbf9f44d4cdea4d2e0bc27d675b8c, https://github.com/trade3403/
 
 
 CI #244: e4a9f7a2977812cce2de7b1fd07b88b2b283ce67, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46100612332, exact SHA all three raw logs; 1542/platform, 4626 total, zero failed/ignored; Release Ubuntu 16.40s, Windows 16.25s, macOS 29.43s. Ubuntu supplemental DejaVu logical lam/alef component geometry (8 direction checks), mask suppression, independent stage partition/limits and previous native/Python gates passed. Other platforms conditionally return from supplemental font tests.
+
+
+CI #245: 12610bda67f456f681a2e967fcb753ce1eeef504, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46102392578, exact SHA all three raw logs; 1544/platform, 4632 total, zero failed/ignored; Release Ubuntu 12.80s, Windows 27.05s, macOS 21.20s. Native staged pair and positive two-lookup chain tests passed all platforms; Linux native/Python gates passed. Exact diagnostic counts not printed in captured passing-test logs.

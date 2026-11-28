@@ -487,3 +487,126 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
     assert!(checks>0,"native staged chain positive evidence required");
     eprintln!("NATIVE_STAGED_CHAIN_REFERENCE checks={checks}");
 }
+
+// Native LangSys diagnostic: do not force arbitrary glyph IDs into the
+// ledger. Start from actual logical Arabic input; retain explicit reasons
+// when the restricted four-form profile or raw oracle cannot cover a font.
+#[test]fn retained_arabic_logical_native_feature_scope(){
+    let data=bundled_joining_types().unwrap();
+    let stags=[*b"isol",*b"init",*b"medi",*b"fina"];
+    let mut report=String::from("font,input,profile,scope\n");
+    let mut attempted=0usize;
+    for (name,bytes) in &FONTS[..2]{
+        let font=parse_font(bytes,Default::default()).unwrap();let face=font.face(0).unwrap();
+        let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+        let pb=face.table(*b"GPOS").unwrap();let pl=parse_gpos_layout(pb,Default::default()).unwrap();
+        let raw=lookups(pb);let cls=classes(face.table(*b"GDEF"),cmap.glyph_count() as usize);
+        for t in ["بب","بت","تب","مم","ببَ","بتَ","تبَ","ممَ"]{
+            for tags in [&[*b"curs"][..],&[*b"mark"][..],&[*b"curs",*b"mark"][..]]{
+                attempted+=1;
+                let profile=tags.iter().map(|x|std::str::from_utf8(x).unwrap()).collect::<Vec<_>>().join("+");
+                let mut note=|reason:&str|report.push_str(&format!("{name},{t},{profile},{reason}\n"));
+                if t.chars().any(|c|cmap.glyph_for_char(c).unwrap().is_none()){note("missing cmap");continue;}
+                let Some(plan)=build_gpos_base_plan(&pl,*b"arab",None,tags,Default::default()).unwrap()else{
+                    note("missing GPOS language");continue;};
+                if !plan.unavailable_tags.is_empty(){note("missing GPOS tag");continue;}
+                let options=FaceShapeOptions{script:*b"arab",language:None,substitution_tags:&stags,
+                    positioning_tags:&[],alternates:&[],flow:GposHorizontalFlow::RightToLeft,
+                    allow_missing_glyphs:false,require_requested_features:false};
+                let base=match shape_font_face_arabic_forms(face,t,options,Default::default(),&data,
+                    Default::default(),Default::default(),Default::default(),None){
+                    Ok(x)=>x,Err(Error::Unsupported(reason))=>{note(&format!("unsupported GSUB: {reason}"));continue;},
+                    Err(e)=>panic!("unexpected GSUB {name} {t}: {e:?}"),
+                };
+                let g=&base.face.shaped.staged.shaped.substitution.expansion.execution.glyphs;
+                if g.len()!=t.chars().count(){note("non one-to-one GSUB outside oracle");continue;}
+                let roots:Option<Vec<_>>=plan.lookups.iter().map(|r|raw.iter().find(|l|l.id==r.index)).collect();
+                let Some(roots)=roots else{note("GPOS roots outside direct Type3/4 oracle");continue;};
+                // Require a three-scalar run with precisely one cursive and/or
+                // mark match, or an eligible two-scalar cursive pair.
+                let mut curs=Vec::new();let mut marks=Vec::new();
+                for l in roots{
+                    if g.len()==3{
+                        let ids=[g[0],g[1],g[2]];
+                        if l.kind==3{for (a,b,d) in cursive_matches(l,&ids,&cls){curs.push((a,b,d,l.flags));}}
+                        else{marks.extend(mark_matches(l,&ids,&cls));}
+                    }else if l.kind==3&&eligible(g[0],l.flags,&cls)&&eligible(g[1],l.flags,&cls){
+                        if let Some(d)=pair(l,g[0],g[1]){curs.push((0,1,d,l.flags));}
+                    }
+                }
+                if curs.len()>1||marks.len()>1||curs.is_empty()&&marks.is_empty(){
+                    note("no unique direct anchor chain");continue;
+                }
+                if curs.iter().any(|&(a,b,_,_)|(a,b)!=(0,1))||
+                    marks.iter().any(|&(a,b,_)|(a,b)!=(1,2)){
+                    note("anchor topology outside oracle");continue;
+                }
+                let mut specs=Vec::new();
+                for &tag in tags{
+                    let ids:Vec<_>=plan.features.iter().copied().filter(|&id|pl.features[id as usize].tag==tag).collect();
+                    if !ids.is_empty(){specs.push(ShapeStageSpec{features:ids});}
+                }
+                if specs.iter().map(|s|s.features.len()).sum::<usize>()!=plan.features.len(){
+                    note("required feature outside partition");continue;
+                }
+                let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+                let result=match shape_font_face_arabic_forms_staged(face,t,FaceShapeOptions{positioning_tags:tags,..options},
+                    Default::default(),&data,Default::default(),req,None){
+                    Ok(x)=>x,Err(Error::Unsupported(reason))=>{note(&format!("unsupported GPOS: {reason}"));continue;},
+                    Err(e)=>panic!("unexpected GPOS {name} {t}: {e:?}"),
+                };
+                let r=&result.face.shaped.staged.shaped;
+                assert_eq!(&r.substitution.expansion.execution.glyphs,g);
+                assert_eq!(r.design_advances,g.iter().map(|&id|(nominal(bytes,id),0)).collect::<Vec<_>>());
+                let world=|i:usize|{let o=r.positioning.design_origins[i];let a=r.positioning.adjustments[i].design;
+                    (o.0+a.x_placement,o.1+a.y_placement)};
+                for (a,b,d,flags) in curs{
+                    let (child,parent,delta)=if flags&1!=0{(a,b,(-d.0,-d.1))}else{(b,a,d)};
+                    assert_eq!(r.positioning.edges[child],Some(GposAttachmentEdge{parent,design_delta:delta,pixel_delta:(0,0)}));
+                    assert_eq!(diff(world(b),world(a)),d);
+                }
+                for (a,b,d) in marks{
+                    assert_eq!(r.positioning.edges[b],Some(GposAttachmentEdge{parent:a,design_delta:d,pixel_delta:(0,0)}));
+                    assert_eq!(diff(world(b),world(a)),d);
+                }
+                note("exact admitted anchor geometry");
+            }
+        }
+    }
+    assert_eq!(attempted,48);
+    // This is a coverage diagnostic. A zero intersection must not be
+    // described as positive same-face cursive evidence.
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/arabic-native-scope.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,&report).unwrap();
+    eprintln!("{report}");
+}
+#[test]fn dejavu_logical_arabic_mark_base_native_oracle(){
+    let Some(path)=std::env::var_os("RWCORE_DEJAVU_REFERENCE")else{return;};
+    let bytes=std::fs::read(path).unwrap();let font=parse_font(&bytes,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();let gid=|ch|cmap.glyph_for_char(ch).unwrap().unwrap();
+    let pb=face.table(*b"GPOS").unwrap();let pl=parse_gpos_layout(pb,Default::default()).unwrap();
+    let plan=build_gpos_base_plan(&pl,*b"arab",None,&[*b"mark"],Default::default()).unwrap().unwrap();
+    let raw=lookups(pb);let cls=classes(face.table(*b"GDEF"),cmap.glyph_count() as usize);
+    let data=bundled_joining_types().unwrap();let mut checks=0;
+    let tags=[*b"init",*b"fina",*b"medi"];
+    let specs=[ShapeStageSpec{features:plan.features.clone()}];
+    for ch in ['\u{64b}','\u{64e}']{
+        let ids=[gid('\u{fe91}'),gid('\u{fe90}'),gid(ch)];
+        let deltas:Vec<_>=raw.iter().filter(|l|l.kind==4&&plan.lookups.iter().any(|r|r.index==l.id))
+            .flat_map(|l|mark_matches(l,&ids,&cls)).filter(|&(a,b,_)|(a,b)==(1,2)).collect();
+        if deltas.len()!=1{continue;}
+        let delta=deltas[0].2;
+        for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+            let t=format!("بب{ch}");let o=FaceShapeOptions{script:*b"arab",language:None,substitution_tags:&tags,
+                positioning_tags:&[*b"mark"],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+            let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+            let x=shape_font_face_arabic_forms_staged(face,&t,o,Default::default(),&data,Default::default(),req,Some(Default::default())).unwrap();
+            let r=&x.face.shaped.staged.shaped;
+            assert_eq!(r.substitution.expansion.execution.glyphs,ids.to_vec());
+            assert_eq!(r.positioning.edges[2],Some(GposAttachmentEdge{parent:1,design_delta:delta,pixel_delta:(0,0)}));
+            let world=|i:usize|{let o=r.positioning.design_origins[i];let a=r.positioning.adjustments[i].design;(o.0+a.x_placement,o.1+a.y_placement)};
+            assert_eq!(diff(world(2),world(1)),delta);checks+=1;
+        }
+    }
+    assert!(checks>0,"positive logical Arabic mark-base native oracle required");
+}
