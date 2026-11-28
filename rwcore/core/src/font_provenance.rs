@@ -188,3 +188,28 @@ impl ProvenanceLedger {
         self.glyphs=next;self.refs=refs;self.work=work;self.trace=trace;Ok(())
     }
 }
+
+impl ProvenanceLedger{
+    /// Atomically permute physical glyph occurrences: order[new] = old.
+    /// Logical source sets, lineage occurrence IDs, component order and
+    /// trace statistics remain unchanged. No glyph is copied or removed.
+    /// Charge four units per glyph against the cumulative ledger budget.
+    pub fn reorder(&mut self,order:&[usize])->Result<(),Error>{
+        let n=self.glyphs.len();
+        if order.len()!=n{return Err(Error::Invalid("provenance reorder length"));}
+        let work=self.budget(n,self.refs,mul(n,4)?)?;
+        let mut inverse=Vec::new();reserve(&mut inverse,n)?;inverse.resize(n,usize::MAX);
+        for (new,&old) in order.iter().enumerate(){
+            let slot=inverse.get_mut(old).ok_or(Error::Invalid("provenance reorder index"))?;
+            if *slot!=usize::MAX{return Err(Error::Invalid("provenance reorder duplicate"));}
+            *slot=new;
+        }
+        // No fallible operations after permutation validation.
+        for i in 0..n{
+            while inverse[i]!=i{
+                let j=inverse[i];self.glyphs.swap(i,j);inverse.swap(i,j);
+            }
+        }
+        self.work=work;Ok(())
+    }
+}

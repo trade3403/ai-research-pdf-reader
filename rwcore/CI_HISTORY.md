@@ -583,3 +583,6 @@ CI #247: d43b8c44491bf4cd134799a4e35f93b861d4eed3, https://github.com/trade3403/
 
 
 CI #248: 637f214a21a54f0e0f38f21f67909229e6a98a8f, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46107521926, exact SHA all three raw logs; 1560/platform, 4680 total, zero failed/ignored; Release Ubuntu 16.91s, Windows 26.22s, macOS 8.95s. Devanagari cluster state machine and historical native/Python gates passed.
+
+
+CI #249: 38455354925e8b755e803f44d1699523a6661707, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46109215806, exact SHA all three raw logs; 1568/platform, 4704 total, zero failed/ignored; Release Ubuntu 13.19s, Windows 35.58s, macOS 22.78s. Devanagari provisional reorder planner, native and Python gates passed.

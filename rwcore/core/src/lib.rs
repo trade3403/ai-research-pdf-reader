@@ -364,3 +364,6 @@ pub use indic_clusters::*;
 
 pub mod indic_reorder;
 pub use indic_reorder::*;
+
+pub mod indic_glyph_reorder;
+pub use indic_glyph_reorder::*;
