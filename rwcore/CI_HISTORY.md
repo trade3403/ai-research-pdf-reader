@@ -568,3 +568,6 @@ CI #242: 0bebff9d6138cc50f353f6cd70ff1fef83eee1b9, https://github.com/trade3403/
 
 
 CI #243: 5c3a217ff83dbf9f44d4cdea4d2e0bc27d675b8c, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46098932696, exact SHA all three raw logs; 1540/platform, 4620 total, zero failed/ignored; Release Ubuntu 12.82s, Windows 15.97s, macOS 30.43s. Ubuntu supplemental native Arabic beh-form cmap oracle and prior native/Python gates passed. Other platforms conditionally return from supplemental font test.
+
+
+CI #244: e4a9f7a2977812cce2de7b1fd07b88b2b283ce67, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46100612332, exact SHA all three raw logs; 1542/platform, 4626 total, zero failed/ignored; Release Ubuntu 16.40s, Windows 16.25s, macOS 29.43s. Ubuntu supplemental DejaVu logical lam/alef component geometry (8 direction checks), mask suppression, independent stage partition/limits and previous native/Python gates passed. Other platforms conditionally return from supplemental font tests.

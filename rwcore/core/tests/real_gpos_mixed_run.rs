@@ -356,3 +356,134 @@ fn check_chain(font:&[u8],p:&CompiledGposProgram<'_>,glyphs:[u16;3],cd:Point,md:
     }
     assert!(total>0,"no native two-lookup chain samples");
 }
+
+// Test-only plan envelope retaining the original native LookupList,
+// indices and lookup bodies. The roots are deliberately isolated from
+// native LangSys selection to make the independent geometry oracle exact.
+fn staged_native_layout(native:&[u8],roots:[u16;2])->Vec<u8>{
+    fn w(b:&mut Vec<u8>,v:u16){b.extend(v.to_be_bytes());}
+    fn set(b:&mut [u8],at:usize,v:usize){b[at..at+2].copy_from_slice(&(v as u16).to_be_bytes());}
+    let mut b=vec![0,1,0,0,0,0,0,0,0,0];
+    let at=b.len();set(&mut b,4,at);w(&mut b,1);b.extend(b"DFLT");w(&mut b,8);
+    for v in [4,0,0,0xffff,2,0,1]{w(&mut b,v);}
+    let at=b.len();set(&mut b,6,at);w(&mut b,2);
+    b.extend(b"curs");w(&mut b,14);b.extend(b"mark");w(&mut b,20);
+    for id in roots{for v in [0,1,id]{w(&mut b,v);}}
+    let at=b.len();set(&mut b,8,at);b.extend_from_slice(&native[u(native,8)..]);b
+}
+fn native_ledger(font:&[u8],ids:&[u16])->ProvenanceLedger{
+    let f=parse_font(font,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+    let r=map_source_run(&"A".repeat(ids.len()),&cmap,true,Default::default()).unwrap();
+    let mut p=ProvenanceLedger::from_run(&r,u32::from(cmap.glyph_count()),Default::default()).unwrap();
+    for (i,&g) in ids.iter().enumerate(){p.expand(i,&[g]).unwrap();}
+    p
+}
+fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],adv:&[Point],
+    edits:&[FeatureMaskOverride],flow:GposHorizontalFlow)->GposCursiveRun{
+    let n=ids.len();let masks=GposScalarFeatureMasks::build(p.validated_plan().unwrap(),n,edits,Default::default()).unwrap();
+    let specs=[ShapeStageSpec{features:vec![0]},ShapeStageSpec{features:vec![1]}];
+    let (schedule,out)=execute_staged_gpos_joint(p,ledger,&masks,&specs,Default::default(),100,
+        ids,&vec![GposRunAdjustment::default();n],adv,&vec![(0,0);n],&vec![GposLigatureSource::Unmapped;n],
+        GposRunMode::DesignOnly,flow,Default::default(),Default::default(),false).unwrap();
+    assert_eq!(schedule.stages().len(),2);out
+}
+#[test]fn native_staged_cursive_and_mark_pair_oracles(){
+    let mut counts=[0usize;3];
+    for (_,font) in FONTS{
+        let Some(b)=table(font,b"GPOS") else{continue;};
+        let n=u(table(font,b"maxp").unwrap(),4);
+        let gd=table(font,b"GDEF");let cls=classes(gd,n);
+        let gdef=gd.map(|x|parse_gdef(x,n as u32,Default::default()).unwrap());
+        let ls=lookups(b);
+        for l in &ls{
+            let cases=samples(l,&cls);if cases.is_empty(){continue;}
+            // Same root in two independently masked features. Only one
+            // stage may execute, so repeated attachment is not assumed.
+            let wrapped=staged_native_layout(b,[l.id,l.id]);
+            let layout=parse_gpos_layout(&wrapped,Default::default()).unwrap();
+            let plan=build_gpos_base_plan(&layout,*b"DFLT",None,&[*b"curs",*b"mark"],Default::default()).unwrap().unwrap();
+            let p=compile_gpos_plan_program(&wrapped,&plan,n as u32,gdef.as_ref(),Default::default()).unwrap();
+            for (a,z,delta) in cases{
+                let ids=[a,z];let ledger=native_ledger(font,&ids);
+                let adv=[(nominal(font,a),0),(nominal(font,z),0)];
+                for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                    let (orig,adj,child,edge)=reference_pair([adv[0].0,adv[1].0],delta,l.kind,l.flags,flow);
+                    for disabled in [0u16,1]{
+                        let out=stage_native(&p,&ledger,&ids,&adv,&[FeatureMaskOverride{feature:disabled,start:0,end:2,enabled:false}],flow);
+                        assert_eq!(out.design_origins,orig.to_vec());
+                        assert_eq!(out.adjustments.iter().map(|a|a.design).collect::<Vec<_>>(),adj.to_vec());
+                        assert_eq!(out.edges[child],Some(GposAttachmentEdge{parent:1-child,design_delta:edge,pixel_delta:(0,0)}));
+                        assert!(out.edges[1-child].is_none());
+                        counts[usize::from(l.kind==4)]+=1;
+                    }
+                    let edits=[FeatureMaskOverride{feature:0,start:1,end:2,enabled:false},FeatureMaskOverride{feature:1,start:1,end:2,enabled:false}];
+                    let out=stage_native(&p,&ledger,&ids,&adv,&edits,flow);
+                    assert!(out.edges.iter().all(Option::is_none));
+                    assert_eq!(out.adjustments,vec![GposRunAdjustment::default();2]);counts[2]+=1;
+                }
+            }
+        }
+    }
+    assert!(counts.iter().all(|&x|x>0),"native staged positive and blocked evidence: {counts:?}");
+    eprintln!("NATIVE_STAGED_PAIR_REFERENCE {counts:?}");
+}
+#[test]fn native_staged_cursive_then_mark_attachment_chain(){
+    let mut checks=0;
+    for (_,font) in FONTS{
+        let Some(b)=table(font,b"GPOS") else{continue;};
+        let n=u(table(font,b"maxp").unwrap(),4);
+        let gd=table(font,b"GDEF");let cls=classes(gd,n);
+        let gdef=gd.map(|x|parse_gdef(x,n as u32,Default::default()).unwrap());
+        let ls=lookups(b);
+        for c in ls.iter().filter(|l|l.kind==3){
+            for m in ls.iter().filter(|l|l.kind==4){
+                // Same bounded raw native candidate search as the admitted
+                // legacy chain oracle. Require exactly two expected edges.
+                let mut candidate=None;
+                'search:for cs in &c.subs{
+                    let cov=coverage(cs,u(cs,2));
+                    for ms in &m.subs{
+                        let bases=coverage(ms,u(ms,4));let marks=coverage(ms,u(ms,2));
+                        for &z in cov.iter().filter(|g|bases.binary_search(g).is_ok()).take(32){
+                            if cls[z as usize]==3{continue;}
+                            for &a in cov.iter().take(32){
+                                if !eligible(a,c.flags,&cls)||!eligible(z,c.flags,&cls){continue;}
+                                let Some(cd)=pair(c,a,z)else{continue;};
+                                for &mark in marks.iter().take(32){
+                                    if !eligible(z,m.flags,&cls)||!eligible(mark,m.flags,&cls){continue;}
+                                    let Some(md)=pair(m,z,mark)else{continue;};
+                                    let ids=[a,z,mark];
+                                    if cursive_matches(c,&ids,&cls)==vec![(0,1,cd)]&&mark_matches(m,&ids,&cls)==vec![(1,2,md)]{
+                                        candidate=Some((ids,cd,md));break 'search;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let Some((ids,delta,md))=candidate else{continue;};
+                let ledger=native_ledger(font,&ids);let adv=ids.map(|g|(nominal(font,g),0));
+                let wrapped=staged_native_layout(b,[c.id,m.id]);
+                let layout=parse_gpos_layout(&wrapped,Default::default()).unwrap();
+                let plan=build_gpos_base_plan(&layout,*b"DFLT",None,&[*b"curs",*b"mark"],Default::default()).unwrap().unwrap();
+                let p=compile_gpos_plan_program(&wrapped,&plan,n as u32,gdef.as_ref(),Default::default()).unwrap();
+                for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                    let out=stage_native(&p,&ledger,&ids,&adv,&[],flow);
+                    let child=if c.flags&1!=0{0}else{1};
+                    let edge=if child==0{(-delta.0,-delta.1)}else{delta};
+                    assert_eq!(out.edges[child],Some(GposAttachmentEdge{parent:1-child,design_delta:edge,pixel_delta:(0,0)}));
+                    assert_eq!(out.edges[2],Some(GposAttachmentEdge{parent:1,design_delta:md,pixel_delta:(0,0)}));
+                    let world=|i:usize|{let o=out.design_origins[i];let v=out.adjustments[i].design;(o.0+v.x_placement,o.1+v.y_placement)};
+                    assert_eq!(diff(world(1),world(0)),delta);
+                    assert_eq!(diff(world(2),world(1)),md);
+                    let blocked=stage_native(&p,&ledger,&ids,&adv,&[FeatureMaskOverride{feature:0,start:0,end:3,enabled:false}],flow);
+                    assert!(blocked.edges[0].is_none()&&blocked.edges[1].is_none());
+                    assert_eq!(blocked.edges[2],out.edges[2]);checks+=1;
+                }
+            }
+        }
+    }
+    assert!(checks>0,"native staged chain positive evidence required");
+    eprintln!("NATIVE_STAGED_CHAIN_REFERENCE checks={checks}");
+}
