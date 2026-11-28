@@ -141,13 +141,18 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
     let default_op=ComposeOp::from_code((info.flags>>3)&3)?;
     let override_allowed=info.flags&64!=0;
     let mut count=0usize;
+    let mut eos_count=0usize;
+    let mut final_eos=0u32;
     let mut setup=input as u64+graph.graph.len() as u64*2+area+recovery_work;
     for node in &graph.graph{
         let seg=graph.segment(node.location).ok_or(Error::Invalid("JBIG2 page segment"))?;
         setup+=node.dependencies.len() as u64;
         match seg.kind{
             0|53|48|49|51=>{},
-            50 if info.striped=>{},
+            50 if info.striped=>{
+                eos_count+=1;
+                final_eos=stripe_end(page.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 stripe span"))?)?;
+            },
             62 if allow_missing_hints=>{}, // optional metadata already validated by graph
             16=>{
                 if !node.dependencies.is_empty(){return Err(Error::Invalid("JBIG2 pattern references"));}
@@ -182,6 +187,13 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
             _=>return Err(Error::Unsupported("JBIG2 page segment execution kind")),
         }
     }
+    // Compatibility for a known-height, single explicitly closed stripe:
+    // some encoders store its inclusive last row as the maximum size.
+    // Never enlarge the page or admit a second stripe under this exception.
+    let stripe_limit=if allow_missing_hints&&info.striped&&!recovered_height&&eos_count==1&&
+        final_eos==height&&u32::from(info.max_stripe_size)+1==height{
+        height
+    }else{u32::from(info.max_stripe_size)};
     if count>limits.regions||setup>limits.work{return Err(Error::Limit("JBIG2 page count or work"));}
     let mut dl=limits.dictionaries;
     dl.work=dl.work.min(limits.work-setup);
@@ -228,7 +240,7 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
         if seg.kind==50{
             let body=page.get(seg.payload.clone()).ok_or(Error::Invalid("JBIG2 stripe span"))?;
             let end=stripe_end(body)?;
-            if end<=stripe_start||end>height||end-stripe_start>u32::from(info.max_stripe_size)||stripe_written_end>end{
+            if end<=stripe_start||end>height||end-stripe_start>stripe_limit||stripe_written_end>end{
                 return Err(Error::Invalid("JBIG2 stripe end row"));
             }
             stripe_start=end;stripe_written_end=end;
@@ -267,7 +279,7 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
         }
         if info.striped&&!matches!(seg.kind,4|20|36|40)&&region.x<info.width&&region.y<height{
             let end=region.y.saturating_add(region.height).min(height);
-            if region.y<stripe_start||end-stripe_start>u32::from(info.max_stripe_size){
+            if region.y<stripe_start||end-stripe_start>stripe_limit{
                 return Err(Error::Invalid("JBIG2 region crosses stripe boundary"));
             }
             stripe_written_end=stripe_written_end.max(end);
@@ -389,7 +401,7 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allo
     }
     // Known-height embedded streams may omit a final stripe marker;
     // any remaining implicit stripe must still fit the declared maximum.
-    if info.striped&&height-stripe_start>u32::from(info.max_stripe_size){
+    if info.striped&&height-stripe_start>stripe_limit{
         return Err(Error::Invalid("JBIG2 unfinished stripe"));
     }
     if !auxiliary.is_empty(){return Err(Error::Invalid("JBIG2 unconsumed auxiliary buffers"));}
@@ -588,6 +600,46 @@ mod tests{
         let mut oversized=p;oversized.extend(seg(2,39,&[],&white(8,3,0,0,0)));
         oversized.extend(seg(3,50,&[],&1u32.to_be_bytes()));
         assert!(decode_pdf_image_compatible(&[],&oversized,l).is_err());
+    }
+    #[test]
+    fn pdf_image_single_stripe_inclusive_hint_compatibility(){
+        let l=Limits::default();
+        let mut p=striped_info(8,4,4,3);
+        p.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        p.extend(seg(3,50,&[],&3u32.to_be_bytes()));
+        let d=decode_pdf_image_compatible(&[],&p,l).unwrap();
+        assert_eq!(d.info.height,Some(4));
+        assert_eq!(d.info.max_stripe_size,3);
+        assert_eq!(d.bitmap.packed(),[255;4]);
+        assert_eq!(d.stats.region_pixels,32);
+        let mut normal=p.clone();normal[28..30].copy_from_slice(&0x8004u16.to_be_bytes());
+        assert_eq!(decode_pdf_image_compatible(&[],&normal,l).unwrap().bitmap,d.bitmap);
+        assert!(decode_pdf_image_compatible(&[],&p,Limits{page_pixels:31,..l}).is_err());
+        assert!(decode_pdf_image_compatible(&[],&p,Limits{work:d.stats.work_used-1,..l}).is_err());
+        assert!(decode_pdf_page(&[],&p,l).is_err());
+        p.extend(seg(4,49,&[],&[]));
+        assert_eq!(decode_pdf_image_compatible(&[],&p,l).unwrap().bitmap,d.bitmap);
+    }
+    #[test]
+    fn pdf_image_single_stripe_hint_exception_is_narrow(){
+        let l=Limits::default();
+        let mut p=striped_info(8,4,0,3);
+        p.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        assert!(decode_pdf_image_compatible(&[],&p,l).is_err());
+        let mut early=p.clone();early.extend(seg(3,50,&[],&2u32.to_be_bytes()));
+        assert!(decode_pdf_image_compatible(&[],&early,l).is_err());
+        p.extend(seg(3,50,&[],&3u32.to_be_bytes()));
+        let mut wider=p.clone();wider[28..30].copy_from_slice(&0x8002u16.to_be_bytes());
+        assert!(decode_pdf_image_compatible(&[],&wider,l).is_err());
+        let mut unknown=p.clone();unknown[15..19].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(decode_pdf_image_compatible(&[],&unknown,l).is_err());
+        let mut two=striped_info(8,4,0,3);
+        two.extend(seg(2,39,&[],&white(8,4,0,0,0)));
+        two.extend(seg(3,50,&[],&2u32.to_be_bytes()));
+        two.extend(seg(4,50,&[],&3u32.to_be_bytes()));
+        assert!(decode_pdf_image_compatible(&[],&two,l).is_err());
+        p.extend(seg(4,39,&[],&white(8,1,0,3,0)));
+        assert!(decode_pdf_image_compatible(&[],&p,l).is_err());
     }
     #[test]
     fn pdf_image_stripes_reject_invalid_extent_and_revisit(){
