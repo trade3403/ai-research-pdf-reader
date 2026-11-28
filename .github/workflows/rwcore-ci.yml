@@ -78,6 +78,11 @@ jobs:
         run: |
           cat target/reph-native-scope.txt
           test "$(grep -c '^REPH_NATIVE_SCOPE ' target/reph-native-scope.txt)" -eq 8
+      - name: Report native Reph feature owner
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cat target/reph-native-owner.txt
+          test "$(grep -c '^REPH_OWNER_CHECKS ' target/reph-native-owner.txt)" -eq 1
       - name: Build
         run: cargo +stable build --locked --workspace --release
       - name: HarfBuzz external GPOS reference (test only)

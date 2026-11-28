@@ -671,3 +671,54 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,&report).unwrap();
     assert_eq!(report.lines().count(),8);
 }
+
+
+#[test]fn native_reph_feature_owner_anchor_acceptance(){
+    let bytes=include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf");
+    let f=parse_font(bytes,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let p=bundled_indic_properties().unwrap();let s=bundled_script_properties().unwrap();
+    let pb=face.table(*b"GPOS").unwrap();let pl=parse_gpos_layout(pb,Default::default()).unwrap();
+    let raw=lookups(pb);let lookup=raw.iter().find(|l|l.id==11&&l.kind==4).unwrap();
+    let fl=u(pb,6);let mut tags=Vec::new();
+    for i in 0..u(pb,fl){
+        let at=fl+2+6*i;let tag:[u8;4]=pb[at..at+4].try_into().unwrap();
+        let ft=fl+u(pb,at+4);
+        if (0..u(pb,ft+2)).any(|j|u(pb,ft+4+2*j)==11)&&!tags.contains(&tag){tags.push(tag);}
+    }
+    assert!(!tags.is_empty(),"native lookup 11 must have an owning feature");
+    let mut report=String::new();let mut checks=0;
+    for tag in tags{
+        let name=std::str::from_utf8(&tag).unwrap();
+        let plan=build_gpos_base_plan(&pl,*b"dev2",None,&[tag],Default::default()).unwrap().unwrap();
+        if !plan.unavailable_tags.is_empty()||!plan.lookups.iter().any(|r|r.index==11){
+            report.push_str(&format!("REPH_OWNER {name} not selected by dev2 default\n"));continue;
+        }
+        // Only a single direct lookup is admitted for exact isolated geometry.
+        if plan.lookups.len()!=1{
+            report.push_str(&format!("REPH_OWNER {name} selected with {} roots\n",plan.lookups.len()));continue;
+        }
+        let specs=[ShapeStageSpec{features:plan.features.clone()}];
+        let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+        for t in ["र्क","र्ग","र्त","र्द","र्न","र्म","र्य","र्व"]{
+            let (probe,_)=plan_font_face_isolated_reph(face,t,&p,&s,*b"dev2",None,Default::default(),Default::default()).unwrap();
+            let old=&probe.result.execution.expansion.execution.glyphs;
+            let ids=[old[1],old[0]];let delta=pair(lookup,ids[0],ids[1]).unwrap();
+            for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&[*b"rphf"],
+                    positioning_tags:&[tag],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+                let x=shape_font_face_isolated_reph_after_base(face,o,Default::default(),req,
+                    IndicJointRequest{text:t,properties:&p,scripts:&s,reorder:Default::default()},Default::default()).unwrap();
+                let out=x.shaped.shaped;
+                assert_eq!(out.substitution.expansion.execution.glyphs,ids.to_vec());
+                assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+                let world=|i:usize|{let o=out.positioning.design_origins[i];let a=out.positioning.adjustments[i].design;
+                    (o.0+a.x_placement,o.1+a.y_placement)};
+                assert_eq!(diff(world(1),world(0)),delta);checks+=1;
+            }
+        }
+        report.push_str(&format!("REPH_OWNER {name} exact single-root geometry\n"));
+    }
+    report.push_str(&format!("REPH_OWNER_CHECKS {checks}\n"));
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/reph-native-owner.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,report).unwrap();
+}
