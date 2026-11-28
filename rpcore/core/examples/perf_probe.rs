@@ -34,6 +34,8 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
             let ns=t.elapsed().as_nanos();
             #[cfg(feature="fuzzing")]
             println!("viewport_ns={}\ndisplay_list_ns={}\nraster_ns={}",stages[0],stages[1],stages[2]);
+            #[cfg(feature="fuzzing")]
+            println!("image_decode_ns={}\nimage_sampling_ns={}\nresolve_ns={}",stages[3],stages[4],stages[5]);
             if bmp.missing_text{return Err("strict render missing text".into());}
             // RGB normalization and file output outside timed operation.
             let mut rgb=Vec::with_capacity(bmp.width*bmp.height*3);

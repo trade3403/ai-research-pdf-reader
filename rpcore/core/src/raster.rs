@@ -404,6 +404,18 @@ struct GroupLayer{
     samples:Vec<u8>,alpha:Option<Vec<f32>>,opacity:f64,blend:BlendMode,stack_depth:usize,
     coverage:Option<Vec<f32>>,knockout:bool,soft_mask:Option<Arc<Vec<u8>>>,
 }
+#[cfg(feature="fuzzing")]
+thread_local! {
+    static IMAGE_PROFILE: std::cell::Cell<Option<[u128;4]>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(feature="fuzzing")]
+fn image_profile_start()->Option<std::time::Instant>{
+    IMAGE_PROFILE.with(|p|p.get().map(|_|std::time::Instant::now()))
+}
+#[cfg(feature="fuzzing")]
+fn image_profile_end(start:Option<std::time::Instant>,index:usize){
+    if let Some(t)=start{IMAGE_PROFILE.with(|p|{if let Some(mut v)=p.get(){v[index]+=t.elapsed().as_nanos();p.set(Some(v));}});}
+}
 struct Surface{w:usize,h:usize,text_quality:TextQuality,region:Region,samples:Vec<u8>,clip:Arc<Coverage>,stack:Vec<(Arc<Coverage>,f64,f64,BlendMode,Option<Arc<Vec<u8>>>)>,budget:Budget,fill_alpha:f64,stroke_alpha:f64,stencil:[u8;3],blend_mode:BlendMode,alpha:Option<Vec<f32>>,groups:Vec<GroupLayer>,soft_mask:Option<Arc<Vec<u8>>>,mask_bytes:usize,mask_clip:Option<Arc<Coverage>>,page_clip:Arc<Coverage>,image_cache:BTreeMap<((u32,u16),crate::icc::RenderingIntent),Arc<images::Image>>,image_cache_bytes:usize,icc_cache:images::IccCache}
 impl Surface{
     fn local_index(&self,page_sample:usize)->Option<usize>{
@@ -603,6 +615,8 @@ impl Surface{
         Ok(())
     }
     fn image(&mut self,doc:&Document<'_>,id:(u32,u16),m:Matrix,intent:crate::icc::RenderingIntent)->Result<()>{
+        #[cfg(feature="fuzzing")]
+        let started=image_profile_start();
         self.budget.stage="raster work (image decode)";
         let img=if let Some(img)=self.image_cache.get(&(id,intent)){Arc::clone(img)}else{
             let img=Arc::new(images::load(doc,id,&mut self.budget,&mut self.icc_cache,intent)?);
@@ -613,6 +627,10 @@ impl Surface{
             }
             img
         };
+        #[cfg(feature="fuzzing")]
+        image_profile_end(started,0);
+        #[cfg(feature="fuzzing")]
+        let started=image_profile_start();
         self.budget.stage="raster work (image sampling)";
         let inv=inverse(m)?;
         let corners=[m.point([0.,0.])?,m.point([1.,0.])?,m.point([0.,1.])?,m.point([1.,1.])?];
@@ -620,7 +638,11 @@ impl Surface{
         let hi=|axis:usize|corners.iter().map(|p|p[axis]).fold(f64::NEG_INFINITY,f64::max);
         let (x0,x1)=(span_bound(lo(0),self.w*2).max(self.clip.x*2),span_bound(hi(0),self.w*2).min((self.clip.x+self.clip.w)*2));
         let (y0,y1)=(span_bound(lo(1),self.h*2).max(self.clip.y*2),span_bound(hi(1),self.h*2).min((self.clip.y+self.clip.h)*2));
-        if x0>=x1||y0>=y1{return Ok(());}
+        if x0>=x1||y0>=y1{
+            #[cfg(feature="fuzzing")]
+            image_profile_end(started,1);
+            return Ok(());
+        }
         self.budget.charge((x1-x0)*(y1-y0)*if img.interpolate{4}else{1})?;
         // Only the root opaque normal surface has an identity sample index
         // and no group coverage or mask bookkeeping.
@@ -640,7 +662,10 @@ impl Surface{
             }else{
                 self.blend(offset,color,alpha);
             }
-        }}Ok(())
+        }}
+        #[cfg(feature="fuzzing")]
+        image_profile_end(started,1);
+        Ok(())
     }
 }
 // Construct the 2x2 rectangular page coverage directly by packed pixel rows.
@@ -760,7 +785,11 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
         }
     }
     if !s.stack.is_empty()||!s.groups.is_empty()||s.alpha.is_some(){return Err(Error::Invalid("unbalanced raster stack"));}
+    #[cfg(feature="fuzzing")]
+    let started=image_profile_start();
     let rgba=resolve_rgba(&s.samples);
+    #[cfg(feature="fuzzing")]
+    image_profile_end(started,2);
     let mut icc_profiles=list.icc_profiles.clone();
     icc_profiles.extend(s.icc_cache.diagnostics);
     Ok(SubstitutedBitmap{bitmap:Bitmap{width:w,height:h,rgba,missing_text},substituted_fonts:text.substituted_fonts(),icc_profiles})
@@ -774,7 +803,7 @@ impl Document<'_>{
     }
     /// Development-only stage timing, with the same strict render path.
     #[cfg(feature="fuzzing")]
-    pub fn render_page_profiled(&self,page:&PageInfo,options:Options,content_limit:usize)->Result<(Bitmap,[u128;3])>{
+    pub fn render_page_profiled(&self,page:&PageInfo,options:Options,content_limit:usize)->Result<(Bitmap,[u128;6])>{
         let t=std::time::Instant::now();
         viewport(page,options.scale)?;
         let viewport_ns=t.elapsed().as_nanos();
@@ -782,8 +811,11 @@ impl Document<'_>{
         let list=self.page_display_list(page,content_limit)?;
         let display_ns=t.elapsed().as_nanos();
         let t=std::time::Instant::now();
-        let bitmap=render(self,page,&list,options,None,TextQuality::Standard,crate::icc::AdaptationDegree::default())?.bitmap;
-        Ok((bitmap,[viewport_ns,display_ns,t.elapsed().as_nanos()]))
+        IMAGE_PROFILE.with(|p|p.set(Some([0;4])));
+        let result=render(self,page,&list,options,None,TextQuality::Standard,crate::icc::AdaptationDegree::default());
+        let raster_ns=t.elapsed().as_nanos();
+        let parts=IMAGE_PROFILE.with(|p|p.replace(None)).unwrap_or([0;4]);
+        Ok((result?.bitmap,[viewport_ns,display_ns,raster_ns,parts[0],parts[1],parts[2]]))
     }
     /// Explicit substitute outlines; caller must provide appropriately licensed,
     /// compatible font programs. Pixel equivalence to original fonts is not promised.

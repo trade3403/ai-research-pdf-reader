@@ -42,7 +42,7 @@ def main():
     import pypdfium2 as pdfium
     import pypdfium2_raw
     out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
-    report={"schema":2,"commit":a.commit,"reference_revision":corpus.REV,
+    report={"schema":3,"commit":a.commit,"reference_revision":corpus.REV,
         "rpcore_probe_sha256":corpus.sha(Path(a.probe).read_bytes()),
         "raw_probe_sha256":corpus.sha(Path(a.raw_probe).read_bytes()),
         "pdfium_binding":metadata.version("pypdfium2"),"pdfium_version":str(pdfium.PDFIUM_INFO),
@@ -113,6 +113,14 @@ def main():
                         stages=[int(f[k]) for k in stage_names]
                         if min(stages)<0 or sum(stages)>int(f["elapsed_ns"]):
                             raise ValueError("invalid stage timings "+name)
+                    inner_names=("image_decode_ns","image_sampling_ns","resolve_ns")
+                    for t in row["trials"]:
+                        f=t["rpcore"]
+                        inner=[int(f[k]) for k in inner_names]
+                        if min(inner)<0 or sum(inner)>int(f["raster_ns"]):
+                            raise ValueError("invalid raster substage timings "+name)
+                    row["raster_parts"]={k:paired.summarize([int(t["rpcore"][k]) for t in measured]) for k in inner_names}
+                    print("JBIG2 raster parts",name,mode,*(f"{k}={row['raster_parts'][k]['median_ns']}" for k in inner_names),flush=True)
                     row["native_stages"]={k:paired.summarize([int(t["rpcore"][k]) for t in measured]) for k in stage_names}
                     print("JBIG2 stages",name,mode,*(f"{k}={row['native_stages'][k]['median_ns']}" for k in stage_names),flush=True)
                 if row["eligible"]:
