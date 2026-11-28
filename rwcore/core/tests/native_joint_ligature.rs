@@ -258,7 +258,7 @@ fn dejavu_positive(font:&[u8])->[usize;3]{
                 assert_eq!(history.components(),want.as_slice());
                 assert_eq!(out.design_advances,vec![(nominal(font,parent),0),(nominal(font,mark),0)]);
                 assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
-                let o=out.positioning.design_origins;let adjust=out.positioning.adjustments[1].design;
+                let o=&out.positioning.design_origins;let adjust=out.positioning.adjustments[1].design;
                 assert_eq!((o[1].0+adjust.x_placement,o[1].1+adjust.y_placement),(o[0].0+delta.0,o[0].1+delta.1));
                 let dual=isolated_dual(sb,pb,s.id,Some(p.id),&r,&m,n,&gd,flow,true,&[]).staged.shaped;
                 assert_eq!(dual.substitution,out.substitution);
