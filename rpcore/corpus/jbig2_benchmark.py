@@ -39,6 +39,37 @@ def fetch(name):
         raise ValueError("download limit")
     return raw
 
+def expanded_cases(entries, limit=4):
+    # Only simple filenames with a matching page-1 reference at the same
+    # immutable revision. Never follow nested paths or directory entries.
+    names = {e["name"] for e in entries
+             if isinstance(e, dict) and e.get("type") == "blob"
+             and isinstance(e.get("name"), str)
+             and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", e["name"])}
+    candidates = sorted(n[:-4] for n in names if n.endswith(".pdf")
+                        and n[:-4] not in CASES
+                        and n[:-4] + "_expected.pdf.0.png" in names)
+    return candidates[:limit]
+
+def discover():
+    req = urllib.request.Request(BASE + "?format=JSON",
+                                 headers={"User-Agent": "RPCore-test-corpus/1"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024 or not raw.startswith(b")]}'\n"):
+        raise ValueError("invalid gitiles directory response")
+    listing = json.loads(raw[5:])
+    if not isinstance(listing, dict) or not isinstance(listing.get("entries"), list):
+        raise ValueError("invalid gitiles directory entries")
+    return expanded_cases(listing["entries"])
+
+def frozen_gate(rows):
+    frozen = [r for r in rows if r.get("suite") == "frozen"]
+    return (len(frozen) == len(CASES)
+            and {r["id"] for r in frozen} == set(CASES)
+            and all(r["status"] == "exact" and r.get("different_pixels") == 0
+                    and r.get("pixels", 0) > 0 for r in frozen))
+
 def bounded_read(path):
     with path.open("rb") as f:
         data = f.read(CAP + 1)
@@ -120,6 +151,19 @@ def self_test():
     m = compare(a,b)
     assert m["different_pixels"] == 1 and m["rgb_mae"] == 127.5
     assert compare(a,Image.new("RGB",(1,1)))["status"] == "dimension_mismatch"
+    entries = [{"name": n, "type": "blob"} for n in
+               ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
+                "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
+                CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
+    assert expanded_cases(entries) == ["a","z"]
+    assert expanded_cases(entries,1) == ["a"]
+    rows = [{"suite":"frozen","id":n,"status":"exact","different_pixels":0,"pixels":1}
+            for n in CASES]
+    assert frozen_gate(rows)
+    assert not frozen_gate(rows[:-1])
+    assert not frozen_gate(rows + rows[:1])
+    assert not frozen_gate([dict(r,status="native_rejected") for r in rows])
+    assert frozen_gate(rows + [{"suite":"exploratory","status":"native_rejected"}])
 
 def main():
     p = argparse.ArgumentParser()
@@ -127,16 +171,28 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--local-manifest", type=Path, help="JSON list of local PDF/reference PNG pairs with SHA256 and page")
     p.add_argument("--no-public", action="store_true")
+    p.add_argument("--require-exact", action="store_true", help="require all four frozen public cases")
+    p.add_argument("--expand-public", action="store_true", help="discover up to four further pinned paired samples")
     a = p.parse_args()
     self_test()
     a.out.mkdir(parents=True, exist_ok=True)
     rows = []
+    discovery = {"status":"not_requested","cases":[]}
+    if a.no_public and (a.require_exact or a.expand_public):
+        p.error("public options require public corpus")
+    if a.expand_public:
+        try:
+            extras = discover()
+            discovery = {"status":"ok","cases":extras}
+        except (OSError, ValueError) as e:
+            discovery = {"status":"failed","cases":[],"diagnostic":str(e)}
     with tempfile.TemporaryDirectory(prefix="rpcore-jbig2-") as tmp:
         work = Path(tmp)
         if not a.no_public:
-            for name in CASES:
+            for name in (*CASES, *discovery["cases"]):
                 row = {"id": name, "source": BASE + name + ".pdf",
-                       "kind": "public_synthetic", "page": 1}
+                       "kind": "public_synthetic", "page": 1,
+                       "suite": "frozen" if name in CASES else "exploratory"}
                 try:
                     raw = fetch(name + ".pdf")
                     expected = fetch(name + "_expected.pdf.0.png")
@@ -165,14 +221,18 @@ def main():
                 rows.append(row)
     if not rows:
         raise ValueError("no corpus cases")
-    report = {"schema":1,"reference_revision":REV,"dpi":72,"rows":rows}
+    gate = frozen_gate(rows)
+    report = {"schema":2,"reference_revision":REV,"dpi":72,"rows":rows,
+              "frozen_exact":gate,"discovery":discovery}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
-    lines = ["# JBIG2 differential corpus (observational)", "",
+    lines = ["# JBIG2 differential corpus", "",
+             f"Frozen exact gate: {'PASS' if gate else 'FAIL'}",
+             "Exploratory discovery: " + str(discovery), "",
              "Public tests are synthetic SerenityOS conformance images, not scans.",
              "Exact matches, mismatches, native rejection and infrastructure failures are distinct.",
-             "", "| Case | Kind | Status | Different pixels |", "|---|---|---|---:|"]
+             "", "| Case | Suite | Kind | Status | Different pixels |", "|---|---|---|---|---:|"]
     for row in rows:
-        lines.append(f"| {row['id']} | {row['kind']} | {row['status']} | {row.get('different_pixels','-')} |")
+        lines.append(f"| {row['id']} | {row.get('suite','local')} | {row['kind']} | {row['status']} | {row.get('different_pixels','-')} |")
     for row in rows:
         if row["kind"] == "public_synthetic":
             lines.append("\n" + row["id"] + ": " + row.get("diagnostic","").strip()
@@ -181,6 +241,8 @@ def main():
     print("\n".join(lines))
     # An unavailable corpus is not successful validation. Unsupported or
     # mismatched inputs are measured coverage gaps, not exact passes.
+    if a.require_exact and not gate:
+        raise SystemExit(1)
     if all(r["status"]=="infrastructure_or_timeout" for r in rows):
         raise SystemExit(1)
 

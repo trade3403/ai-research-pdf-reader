@@ -302,15 +302,15 @@ jobs:
 
 
   jbig2-corpus:
-    # Pinned external conformance images; exploratory coverage, not a scan certification.
+    # Four exact frozen cases plus independent exploratory coverage; not scan certification.
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
       - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --example corpus_probe
-      - run: /usr/bin/python3 rpcore/corpus/jbig2_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/jbig2-report
+      - run: /usr/bin/python3 rpcore/corpus/jbig2_benchmark.py --probe rpcore/target/release/examples/corpus_probe --out rpcore/target/jbig2-report --require-exact --expand-public
       - if: always()
         uses: actions/upload-artifact@v4
         with:
