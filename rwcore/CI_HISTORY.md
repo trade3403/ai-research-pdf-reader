@@ -598,3 +598,6 @@ CI #252: 766c3de23675093c31b91c6250d1893d0e8b57ce, https://github.com/trade3403/
 
 
 CI #253: 9b393d0496709af2d80a738df5009014a943181a, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46115734057, exact SHA in three raw logs; 1590/platform, 4770 total, zero failed/ignored; Release Ubuntu 16.38s, Windows 27.22s, macOS 21.09s. Native probe report Reph [506,56] and Half [232,71], both WholeRangeContraction.
+
+
+CI #254: 0148b7318a407645b0b2445c8707db76ca2fcd50, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46162664212, exact SHA in all three raw logs; 1591/platform, 4773 total, zero failed/ignored; Release Ubuntu 12.52s, Windows 28.58s, macOS 16.94s. Native after-base metrics and provenance test passed all platforms.

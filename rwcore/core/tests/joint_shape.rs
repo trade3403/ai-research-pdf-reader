@@ -552,3 +552,60 @@ fn indic_edit_run(sb:&[u8],pb:&[u8],text:&str,r:&SourceRun,m:&FontMetrics<'_>,n:
             Default::default()),Err(Error::Unsupported(_))));
     }
 }
+
+
+// Synthetic positioning oracle over the retained font's nominal glyphs.
+// The GSUB fixture deliberately contracts only the RA/virama prefix.
+fn reph_joint_oracle(t:&str,pe:&[FeatureMaskOverride],flow:GposHorizontalFlow,
+    limits:JointShapeLimits,probe:IndicProbeLimits,position_work:usize)->Result<RephJointShapeResult,Error>{
+    let (r,m,n)=indic_inputs(t);
+    let a=r.glyphs()[0].glyph_id;let h=r.glyphs()[1].glyph_id;
+    let mut sb=dual_one_feature(*b"rphf",4,0,&[1,8,1,14,1,1,a,1,4,20,2,h]);
+    // Replace the fixture's sole script tag; the other table is independent.
+    sb[12..16].copy_from_slice(b"dev2");
+    let pb=dual_one_feature(*b"kern",1,0,&[1,8,4,10,1,1,20]);
+    let sl=parse_gsub_layout(&sb,Default::default())?;
+    let pl=parse_gpos_layout(&pb,Default::default())?;
+    let sp=build_gsub_base_plan(&sl,*b"dev2",None,&[*b"rphf"],Default::default())?.unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"DFLT",None,&[*b"kern"],Default::default())?.unwrap();
+    let gs=compile_gsub_plan_program(&sb,&sp,n,None,Default::default())?;
+    let gp=compile_gpos_plan_program(&pb,&pp,n,None,Default::default())?;
+    let pm=GposScalarFeatureMasks::build(&pp,r.scalars().len(),pe,Default::default())?;
+    let ps=[ShapeStageSpec{features:vec![0]}];
+    execute_isolated_reph_joint(&sl,&gs,&gp,&r,&m,
+        IndicJointRequest{text:t,properties:&bundled_indic_properties()?,scripts:&bundled_script_properties()?,reorder:Default::default()},
+        flow,limits,probe,JointPositionStages{masks:&pm,specs:&ps,
+            limits:JointStageLimits{max_mask_work:position_work,..Default::default()}})
+}
+#[test]fn reph_joint_position_mask_oracle_both_flows(){
+    let t="र्क";let (r,m,_)=indic_inputs(t);let base=r.glyphs()[2].glyph_id;
+    assert_ne!(base,20);
+    for flow in [LTR,RTL]{
+        for (overrides,delta) in [(vec![],10),(vec![dual_disable(0,0,1)],0),
+            (vec![dual_disable(0,1,2)],0),(vec![dual_disable(0,2,3)],10)]{
+            let x=reph_joint_oracle(t,&overrides,flow,Default::default(),Default::default(),100).unwrap();
+            assert_eq!(x.logical_glyphs,vec![20,base]);
+            assert_eq!(x.glyph_masks,vec![0,1]);
+            let out=x.shaped;
+            assert_eq!(out.substitution.expansion.execution.glyphs,vec![base,20]);
+            assert_eq!(out.provenance.glyphs()[0].sources(),&[2]);
+            assert_eq!(out.provenance.glyphs()[1].sources(),&[0,1]);
+            assert_eq!(out.positioning.adjustments.iter().map(|a|a.design.x_advance).collect::<Vec<_>>(),vec![0,delta]);
+            let b=i32::from(m.glyph(base).unwrap().advance_width);
+            let w=i32::from(m.glyph(20).unwrap().advance_width);
+            assert_eq!(out.design_advances,vec![(b,0),(w,0)]);
+            assert_eq!(out.positioning.design_origins,if flow==LTR{vec![(0,0),(b,0)]}else{vec![(-b,0),(-b-w-delta,0)]});
+        }
+    }
+}
+#[test]fn reph_joint_resource_gates(){
+    let t="र्क";
+    assert!(matches!(reph_joint_oracle(t,&[],LTR,JointShapeLimits{max_output_glyphs:2,..Default::default()},
+        Default::default(),100),Err(Error::Limit(_))));
+    assert!(matches!(reph_joint_oracle(t,&[],LTR,Default::default(),
+        IndicProbeLimits{max_evidence_work:0,..Default::default()},100),Err(Error::Limit(_))));
+    assert!(matches!(reph_joint_oracle(t,&[],LTR,Default::default(),
+        IndicProbeLimits{stages:JointStageLimits{max_mask_work:0,..Default::default()},..Default::default()},100),Err(Error::Limit(_))));
+    assert!(matches!(reph_joint_oracle(t,&[],LTR,Default::default(),Default::default(),4),Err(Error::Limit(_))));
+    assert!(reph_joint_oracle(t,&[],LTR,Default::default(),Default::default(),100).is_ok());
+}
