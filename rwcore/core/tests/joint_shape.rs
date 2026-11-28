@@ -522,3 +522,33 @@ fn indic_edit_run(sb:&[u8],pb:&[u8],text:&str,r:&SourceRun,m:&FontMetrics<'_>,n:
         assert_eq!(*w,(i32::from(metrics.glyph(g.glyph_id).unwrap().advance_width),0));
     }
 }
+
+
+#[test]fn reph_joint_native_after_base_metrics_and_provenance(){
+    let f=parse_font(INDIC_FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let properties=bundled_indic_properties().unwrap();let scripts=bundled_script_properties().unwrap();
+    let pl=parse_gpos_layout(face.table(*b"GPOS").unwrap(),Default::default()).unwrap();
+    let pp=build_gpos_base_plan(&pl,*b"dev2",None,&[],Default::default()).unwrap().unwrap();
+    let ps=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+    let position=FaceStageRequest{specs:&ps,overrides:&[],masks:Default::default(),stages:Default::default()};
+    let metrics=parse_font_metrics(face,Default::default()).unwrap();
+    for flow in [LTR,RTL]{
+        let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&[*b"rphf"],
+            positioning_tags:&[],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+        let x=shape_font_face_isolated_reph_after_base(face,o,Default::default(),position,
+            IndicJointRequest{text:"र्क",properties:&properties,scripts:&scripts,reorder:Default::default()},
+            Default::default()).unwrap().shaped;
+        assert_eq!(x.logical_glyphs,vec![506,56]);
+        assert_eq!(x.placement.order,vec![1,0]);
+        assert_eq!(x.shaped.substitution.expansion.execution.glyphs,vec![56,506]);
+        assert_eq!(x.glyph_masks,vec![0,1]);
+        assert_eq!(x.shaped.provenance.glyphs()[0].sources(),&[2]);
+        assert_eq!(x.shaped.provenance.glyphs()[1].sources(),&[0,1]);
+        for (g,w) in x.shaped.provenance.glyphs().iter().zip(&x.shaped.design_advances){
+            assert_eq!(*w,(i32::from(metrics.glyph(g.glyph_id).unwrap().advance_width),0));
+        }
+        assert!(matches!(shape_font_face_isolated_reph_after_base(face,o,Default::default(),position,
+            IndicJointRequest{text:"र्कि",properties:&properties,scripts:&scripts,reorder:Default::default()},
+            Default::default()),Err(Error::Unsupported(_))));
+    }
+}

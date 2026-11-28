@@ -511,3 +511,65 @@ pub fn shape_font_face_indic_simple(
         })?;
     Ok(IndicFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
 }
+
+
+/// Explicit after-base policy for one bare Devanagari Reph cluster.
+/// Probe and positioning run once; no implicit full Indic schedule.
+#[derive(Debug)]
+pub struct RephJointShapeResult{
+    pub logical_glyphs:Vec<u16>,
+    pub placement:IndicRephPlacement,
+    pub glyph_masks:Vec<u64>,
+    pub shaped:JointShapeResult,
+    pub positioning_schedule:ShapeStageSchedule,
+}
+pub fn execute_isolated_reph_joint(
+    layout:&GsubLayout,gs:&CompiledGsubProgram<'_>,gp:&CompiledGposProgram<'_>,
+    run:&SourceRun,metrics:&FontMetrics<'_>,indic:IndicJointRequest<'_>,
+    flow:GposHorizontalFlow,limits:JointShapeLimits,mut probe:IndicProbeLimits,
+    position:JointPositionStages<'_>,
+)->Result<RephJointShapeResult,Error>{
+    // Joint caps apply before the probe; joint budgets are authoritative.
+    probe.gsub=joint_preflight(gs,gp,run,metrics,limits,None)?;
+    probe.provenance=limits.provenance;
+    let (x,placement)=plan_isolated_reph_after_base(layout,gs,run,indic.text,
+        indic.properties,indic.scripts,probe)?;
+    let MaskedGsubResult{mut execution,mut provenance,glyph_masks,mask_work,..}=x.result;
+    provenance.reorder(&placement.order)?;
+    let left=probe.stages.max_mask_work.checked_sub(mask_work)
+        .ok_or(Error::Limit("Reph joint mask work"))?;
+    let final_masks=x.masks.project(&provenance,left)?;
+    let mut ids=Vec::new();reserve(&mut ids,2)?;
+    for (i,&old) in placement.order.iter().enumerate(){
+        if final_masks[i]!=glyph_masks[old]{return Err(Error::Invalid("Reph joint mask alignment"));}
+        ids.push(provenance.glyphs()[i].glyph_id);
+    }
+    let logical_glyphs=std::mem::replace(&mut execution.expansion.execution.glyphs,ids);
+    let (shaped,schedule)=finish_joint_shape_inner(gp,metrics,execution,provenance,flow,limits,None,Some(position))?;
+    Ok(RephJointShapeResult{logical_glyphs,placement,glyph_masks:final_masks,shaped,
+        positioning_schedule:schedule.ok_or(Error::Invalid("Reph joint positioning schedule"))?})
+}
+#[derive(Debug)]
+pub struct RephFaceShapeResult{
+    pub source:SourceRun,pub substitution_plan:GsubPlan,pub positioning_plan:GposPlan,
+    pub units_per_em:u16,pub shaped:RephJointShapeResult,
+}
+/// Same-face wrapper with explicit isolated rphf and caller-selected GPOS.
+/// After-base is a product policy, not a font-confirmed final placement.
+pub fn shape_font_face_isolated_reph_after_base(
+    face:&FontFace<'_>,o:FaceShapeOptions<'_>,l:FaceShapeLimits,
+    positioning:FaceStageRequest<'_>,indic:IndicJointRequest<'_>,probe:IndicProbeLimits,
+)->Result<RephFaceShapeResult,Error>{
+    if !matches!(&o.script,b"deva"|b"dev2")||o.substitution_tags!=&[*b"rphf"]||
+        !o.alternates.is_empty(){return Err(Error::Unsupported("Reph joint feature scope"));}
+    let (source,substitution_plan,positioning_plan,units_per_em,shaped)=
+        shape_font_face_execute(face,indic.text,o,l,None,|gs,gp,run,metrics,_|{
+            let sb=face.table(*b"GSUB").ok_or(Error::Unsupported("face shape missing GSUB"))?;
+            let layout=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
+            let pm=GposScalarFeatureMasks::build(gp.validated_plan().ok_or(Error::Invalid("Reph joint GPOS plan"))?,
+                run.scalars().len(),positioning.overrides,positioning.masks)?;
+            execute_isolated_reph_joint(&layout,gs,gp,run,metrics,indic,o.flow,l.joint,probe,
+                JointPositionStages{masks:&pm,specs:positioning.specs,limits:positioning.stages})
+        })?;
+    Ok(RephFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
+}

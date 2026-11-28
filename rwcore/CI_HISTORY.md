@@ -595,3 +595,6 @@ CI #251: 648f6d04730e6bd8976c4bc24f78f08de8222289, https://github.com/trade3403/
 
 
 CI #252: 766c3de23675093c31b91c6250d1893d0e8b57ce, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46114211556, exact SHA all three raw logs; 1587/platform, 4761 total, zero failed/ignored; Release Ubuntu 16.61s, Windows 28.12s, macOS 20.86s. Six Indic feature-probe tests and previous native/Python gates passed. Native rphf/half outcome details were captured by Rust test harness and not visible in successful logs.
+
+
+CI #253: 9b393d0496709af2d80a738df5009014a943181a, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46115734057, exact SHA in three raw logs; 1590/platform, 4770 total, zero failed/ignored; Release Ubuntu 16.38s, Windows 27.22s, macOS 21.09s. Native probe report Reph [506,56] and Half [232,71], both WholeRangeContraction.
