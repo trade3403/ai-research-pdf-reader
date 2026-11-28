@@ -302,7 +302,7 @@ jobs:
 
 
   jbig2-corpus:
-    # Sixteen exact frozen cases plus independent exploratory coverage; not scan certification.
+    # Twenty exact frozen cases plus independent exploratory coverage; not scan certification.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -322,9 +322,9 @@ jobs:
           if [ -f rpcore/target/jbig2-report/report.md ]; then cat rpcore/target/jbig2-report/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
   jbig2-fuzz:
-    # Development-only libFuzzer + ASan, independently bounded CI smoke run.
+    # Development-only libFuzzer + ASan, three independently bounded campaigns.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       # Build the CLI with a compatible stable compiler; nightly is only
@@ -341,7 +341,21 @@ jobs:
           rustc +nightly -Vv > target/jbig2-fuzz-report/rust-version.txt
           cargo fuzz --version > target/jbig2-fuzz-report/cargo-fuzz-version.txt
           set -o pipefail
-          cargo +nightly fuzz run jbig2_page -- -runs=5000 -max_total_time=90 -max_len=4096 -timeout=5 -rss_limit_mb=1024 -seed=12345 2>&1 | tee target/jbig2-fuzz-report/run.log
+          # Each campaign starts with the same three original seeds, not
+          # the evolved corpus from the previous random seed.
+          mkdir -p target/jbig2-fuzz-corpora
+          for seed in 12345 67890 314159; do
+            corpus="$PWD/target/jbig2-fuzz-corpora/seed-$seed"
+            mkdir -p "$corpus"
+            cp fuzz/corpus/jbig2_page/annex-h-* "$corpus/"
+            log="target/jbig2-fuzz-report/seed-$seed.log"
+            cargo +nightly fuzz run jbig2_page "$corpus" -- -runs=50000 -max_total_time=120 -max_len=4096 -timeout=5 -rss_limit_mb=1024 -seed="$seed" 2>&1 | tee "$log"
+            # A successful exit due to the wall-time cap is not full
+            # execution of the requested 50,000-run campaign.
+            grep -E '^Done 50000 runs in ' "$log"
+            grep -E '^#50000[[:space:]]+DONE[[:space:]]+cov:' "$log" | tee -a target/jbig2-fuzz-report/completed.txt
+          done
+          test "$(wc -l < target/jbig2-fuzz-report/completed.txt)" -eq 3
       - if: always()
         uses: actions/upload-artifact@v4
         with:
