@@ -662,6 +662,40 @@ fn rectangular_page_clip_matches_sample_oracle(){
         }
     }
 }
+// Resolve the four RGB subsamples with the original integer rounding.
+fn resolve_rgba(samples:&[u8])->Vec<u8>{
+    let mut rgba=Vec::with_capacity(samples.len()/3);
+    for p in samples.chunks_exact(12){
+        rgba.extend_from_slice(&[
+            ((u16::from(p[0])+u16::from(p[3])+u16::from(p[6])+u16::from(p[9])+2)>>2) as u8,
+            ((u16::from(p[1])+u16::from(p[4])+u16::from(p[7])+u16::from(p[10])+2)>>2) as u8,
+            ((u16::from(p[2])+u16::from(p[5])+u16::from(p[8])+u16::from(p[11])+2)>>2) as u8,
+            255,
+        ]);
+    }
+    rgba
+}
+#[cfg(test)]
+#[test]
+fn resolve_rgba_matches_scalar_rounding(){
+    let mut samples=vec![0;12*4096];
+    let mut rng=0x12345678u32;
+    for b in &mut samples{
+        rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);
+        *b=(rng>>24) as u8;
+    }
+    samples.extend_from_slice(&[255;12]);
+    samples.extend_from_slice(&[0;12]);
+    let mut expected=Vec::new();
+    for p in samples.chunks_exact(12){
+        for c in 0..3{
+            expected.push(((u16::from(p[c])+u16::from(p[c+3])+u16::from(p[c+6])+u16::from(p[c+9])+2)/4) as u8);
+        }
+        expected.push(255);
+    }
+    assert_eq!(resolve_rgba(&samples),expected);
+    assert!(resolve_rgba(&[]).is_empty());
+}
 fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substitutes:Option<&StandardFontSet>,text_quality:TextQuality,degree:crate::icc::AdaptationDegree)->Result<SubstitutedBitmap>{
     let (view,w,h,exact_w,exact_h)=viewport(page,opt.scale)?;
     let clip=rectangular_page_clip(w,h,span_bound(exact_w,w*2),span_bound(exact_h,h*2));
@@ -716,11 +750,7 @@ fn render(doc:&Document<'_>,page:&PageInfo,list:&DisplayList,opt:Options,substit
         }
     }
     if !s.stack.is_empty()||!s.groups.is_empty()||s.alpha.is_some(){return Err(Error::Invalid("unbalanced raster stack"));}
-    let mut rgba=Vec::with_capacity(w*h*4);
-    for samples in s.samples.chunks_exact(12){
-        for c in 0..3{rgba.push(((u16::from(samples[c])+u16::from(samples[c+3])+u16::from(samples[c+6])+u16::from(samples[c+9])+2)/4) as u8);}
-        rgba.push(255);
-    }
+    let rgba=resolve_rgba(&s.samples);
     let mut icc_profiles=list.icc_profiles.clone();
     icc_profiles.extend(s.icc_cache.diagnostics);
     Ok(SubstitutedBitmap{bitmap:Bitmap{width:w,height:h,rgba,missing_text},substituted_fonts:text.substituted_fonts(),icc_profiles})
