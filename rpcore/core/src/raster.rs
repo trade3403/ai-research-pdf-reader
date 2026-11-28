@@ -622,6 +622,11 @@ impl Surface{
         let (y0,y1)=(span_bound(lo(1),self.h*2).max(self.clip.y*2),span_bound(hi(1),self.h*2).min((self.clip.y+self.clip.h)*2));
         if x0>=x1||y0>=y1{return Ok(());}
         self.budget.charge((x1-x0)*(y1-y0)*if img.interpolate{4}else{1})?;
+        // Only the root opaque normal surface has an identity sample index
+        // and no group coverage or mask bookkeeping.
+        let direct=self.groups.is_empty()&&self.alpha.is_none()&&self.soft_mask.is_none()
+            &&self.blend_mode==BlendMode::Normal&&self.fill_alpha==1.
+            &&self.region.x==0&&self.region.y==0&&self.region.w==self.w&&self.region.h==self.h;
         for y in y0..y1{for x in x0..x1{
             let i=y/2*self.w+x/2;let s=(y%2)*2+x%2;
             if self.clip.at(x/2,y/2)&(1<<s)==0{continue;}
@@ -629,7 +634,12 @@ impl Surface{
             if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
             let (color,alpha)=img.sample(u,1.-v,self.stencil);
             let alpha=alpha*self.fill_alpha;
-            self.blend(i*12+s*3,color,alpha);
+            let offset=i*12+s*3;
+            if direct&&alpha==1.{
+                self.samples[offset..offset+3].copy_from_slice(&color);
+            }else{
+                self.blend(offset,color,alpha);
+            }
         }}Ok(())
     }
 }
