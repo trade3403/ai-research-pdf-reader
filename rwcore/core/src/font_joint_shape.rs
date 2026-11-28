@@ -386,6 +386,21 @@ pub fn shape_font_face_arabic_forms(face:&FontFace<'_>,text:&str,o:FaceShapeOpti
     l:FaceShapeLimits,data:&UnicodeJoiningTypes,forms:ArabicFormLimits,
     positioning_masks:FeatureMaskLimits,positioning_stages:JointStageLimits,
     ligatures:Option<JointLigatureLimits>)->Result<ArabicFaceShapeResult,Error>{
+    shape_font_face_arabic_forms_inner(face,text,o,l,data,forms,positioning_masks,positioning_stages,ligatures,None)
+}
+/// Same Arabic joining analysis, with an explicit independent GPOS feature
+/// partition and scalar overrides. GPOS never inherits Arabic GSUB bits.
+/// Attachment state is retained across positioning stages by the joint core.
+pub fn shape_font_face_arabic_forms_staged(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,
+    l:FaceShapeLimits,data:&UnicodeJoiningTypes,forms:ArabicFormLimits,
+    positioning:FaceStageRequest<'_>,ligatures:Option<JointLigatureLimits>)->Result<ArabicFaceShapeResult,Error>{
+    shape_font_face_arabic_forms_inner(face,text,o,l,data,forms,positioning.masks,positioning.stages,
+        ligatures,Some(positioning))
+}
+fn shape_font_face_arabic_forms_inner(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,
+    l:FaceShapeLimits,data:&UnicodeJoiningTypes,forms:ArabicFormLimits,
+    positioning_masks:FeatureMaskLimits,positioning_stages:JointStageLimits,
+    ligatures:Option<JointLigatureLimits>,positioning:Option<FaceStageRequest<'_>>)->Result<ArabicFaceShapeResult,Error>{
     if o.script!=*b"arab"{return Err(Error::Unsupported("Arabic form script"));}
     let (source,substitution_plan,positioning_plan,units_per_em,(joining,shaped))=
         shape_font_face_execute(face,text,o,l,ligatures,|gs,gp,source,metrics,gd|{
@@ -393,14 +408,16 @@ pub fn shape_font_face_arabic_forms(face:&FontFace<'_>,text:&str,o:FaceShapeOpti
             let layout=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
             let f=build_arabic_form_plan(&layout,gs,source,text,data,forms)?;
             let pp=gp.validated_plan().ok_or(Error::Invalid("joint GPOS plan"))?;
-            let pm=GposScalarFeatureMasks::build(pp,source.scalars().len(),&[],positioning_masks)?;
-            let specs=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+            let overrides=positioning.map_or(&[][..],|p|p.overrides);
+            let pm=GposScalarFeatureMasks::build(pp,source.scalars().len(),overrides,positioning_masks)?;
+            let default_specs=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+            let specs=positioning.map_or(default_specs.as_slice(),|p|p.specs);
             let traced=match ligatures{
                 Some(ll)=>Some((gd.ok_or(Error::Unsupported("face shape missing GDEF"))?,ll)),
                 None=>None,
             };
             let shaped=execute_dual_stage_joint_shape(gs,gp,source,metrics,o.alternates,&f.masks,&f.specs,
-                o.flow,l.joint,forms.stages,traced,JointPositionStages{masks:&pm,specs:&specs,limits:positioning_stages})?;
+                o.flow,l.joint,forms.stages,traced,JointPositionStages{masks:&pm,specs,limits:positioning_stages})?;
             Ok((f.joining,shaped))
         })?;
     Ok(ArabicFaceShapeResult{joining,face:DualStageFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped}})

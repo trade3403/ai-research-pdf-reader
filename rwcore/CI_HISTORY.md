@@ -565,3 +565,6 @@ CI #241: 817d30d97b600a2839a29b9a41b16e756035bf90, https://github.com/trade3403/
 
 
 CI #242: 0bebff9d6138cc50f353f6cd70ff1fef83eee1b9, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46097049151, exact SHA all three raw logs; 1534/platform, 4602 total, zero failed/ignored; Release Ubuntu 12.65s, Windows 27.00s, macOS 17.62s. Joining_Type exhaustive scalar reference passed on all three platforms; Linux native and Python gates passed.
+
+
+CI #243: 5c3a217ff83dbf9f44d4cdea4d2e0bc27d675b8c, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46098932696, exact SHA all three raw logs; 1540/platform, 4620 total, zero failed/ignored; Release Ubuntu 12.82s, Windows 15.97s, macOS 30.43s. Ubuntu supplemental native Arabic beh-form cmap oracle and prior native/Python gates passed. Other platforms conditionally return from supplemental font test.

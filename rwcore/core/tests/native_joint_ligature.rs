@@ -327,3 +327,78 @@ fn dejavu_positive(font:&[u8])->[usize;3]{
         }
     }
 }
+
+// Start from logical Arabic letters rather than presentation-form input.
+// The expected ligature ID comes from cmap and anchor deltas from raw GPOS5.
+// The original feature selection is retained (not a synthetic DFLT plan).
+#[test]fn arabic_native_logical_lam_alef_component_geometry(){
+    let Some(path)=std::env::var_os("RWCORE_DEJAVU_REFERENCE")else{return;};
+    let bytes=std::fs::read(path).unwrap();let font=parse_font(&bytes,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let cmap=parse_unicode_cmap(face,Default::default()).unwrap();
+    let gid=|ch|cmap.glyph_for_char(ch).unwrap().unwrap();
+    let parent=gid('\u{fefb}');let pb=table(&bytes,b"GPOS").unwrap();
+    let layout=parse_gpos_layout(pb,Default::default()).unwrap();
+    let plan=build_gpos_base_plan(&layout,*b"arab",None,&[*b"mark"],Default::default()).unwrap().unwrap();
+    let roots=lookups(pb,5,9);let data=bundled_joining_types().unwrap();
+    let tags=[*b"init",*b"medi",*b"fina",*b"rlig"];
+    let specs=[ShapeStageSpec{features:plan.features.clone()}];
+    let mut checked=0;
+    for ch in ['\u{64b}','\u{64e}']{
+        let mark=gid(ch);
+        let p=roots.iter().find(|p|plan.lookups.iter().any(|r|r.index==p.id)&&
+            (0..2).all(|i|mark_pair(p,parent,mark,i).is_some_and(|(k,_)|k==2))).expect("native mark feature Type5");
+        let deltas=[mark_pair(p,parent,mark,0).unwrap().1,mark_pair(p,parent,mark,1).unwrap().1];
+        assert_ne!(deltas[0],deltas[1]);
+        for (text,component) in [(format!("ل{ch}ا"),0usize),(format!("لا{ch}"),1usize)]{
+            let want=if component==0{vec![vec![0],vec![2]]}else{vec![vec![0],vec![1]]};
+            let delta=deltas[component];assert_ne!(delta,(0,0));
+            for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+                let o=FaceShapeOptions{script:*b"arab",language:None,substitution_tags:&tags,positioning_tags:&[*b"mark"],
+                    alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+                let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+                let x=shape_font_face_arabic_forms_staged(face,&text,o,Default::default(),&data,Default::default(),
+                    req,Some(Default::default())).unwrap();
+                let r=&x.face.shaped.staged.shaped;
+                assert_eq!(r.substitution.expansion.execution.glyphs,vec![parent,mark]);
+                assert_eq!(r.provenance.glyphs()[0].ligature_lineage().unwrap().components(),want.as_slice());
+                assert_eq!(r.design_advances,vec![(nominal(&bytes,parent),0),(nominal(&bytes,mark),0)]);
+                assert_eq!(r.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+                let a=r.positioning.adjustments[1].design;let origins=&r.positioning.design_origins;
+                assert_eq!((origins[1].0+a.x_placement,origins[1].1+a.y_placement),(origins[0].0+delta.0,origins[0].1+delta.1));
+                let old=shape_font_face_arabic_forms(face,&text,o,Default::default(),&data,Default::default(),
+                    Default::default(),Default::default(),Some(Default::default())).unwrap();
+                assert_eq!(old.face.shaped.staged.shaped.positioning,r.positioning);
+                let index=if component==0{2}else{1};
+                let edits:Vec<_>=plan.features.iter().map(|&feature|FeatureMaskOverride{
+                    feature,start:index,end:index+1,enabled:false}).collect();
+                let masked=shape_font_face_arabic_forms_staged(face,&text,o,Default::default(),&data,Default::default(),
+                    FaceStageRequest{overrides:&edits,..req},Some(Default::default())).unwrap();
+                assert_eq!(masked.face.shaped.staged.shaped.substitution,r.substitution);
+                assert!(masked.face.shaped.staged.shaped.positioning.edges.iter().all(Option::is_none));
+                checked+=1;
+            }
+        }
+    }
+    assert_eq!(checked,8);
+}
+#[test]fn arabic_native_position_stage_partition_and_limits(){
+    let Some(path)=std::env::var_os("RWCORE_DEJAVU_REFERENCE")else{return;};
+    let bytes=std::fs::read(path).unwrap();let font=parse_font(&bytes,Default::default()).unwrap();let face=font.face(0).unwrap();
+    let pb=face.table(*b"GPOS").unwrap();let layout=parse_gpos_layout(pb,Default::default()).unwrap();
+    let tags=[*b"kern",*b"mark"];let stags=[*b"init",*b"fina",*b"rlig"];
+    let plan=build_gpos_base_plan(&layout,*b"arab",None,&tags,Default::default()).unwrap().unwrap();
+    let specs:Vec<_>=tags.iter().map(|&tag|ShapeStageSpec{features:plan.features.iter().copied()
+        .filter(|&id|layout.features[id as usize].tag==tag).collect()}).collect();
+    assert!(specs.iter().all(|s|!s.features.is_empty()));
+    let o=FaceShapeOptions{script:*b"arab",language:None,substitution_tags:&stags,positioning_tags:&tags,
+        alternates:&[],flow:GposHorizontalFlow::RightToLeft,allow_missing_glyphs:false,require_requested_features:true};
+    let data=bundled_joining_types().unwrap();
+    let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+    let r=shape_font_face_arabic_forms_staged(face,"لا",o,Default::default(),&data,Default::default(),req,Some(Default::default())).unwrap();
+    assert_eq!(r.face.shaped.positioning_schedule.stages().len(),2);
+    assert_eq!(r.face.shaped.staged.shaped.provenance.glyphs()[0].sources(),&[0,1]);
+    assert!(matches!(shape_font_face_arabic_forms_staged(face,"لا",o,Default::default(),&data,Default::default(),
+        FaceStageRequest{specs:&specs[..1],..req},Some(Default::default())),Err(Error::Invalid(_))));
+    assert!(matches!(shape_font_face_arabic_forms_staged(face,"لا",o,Default::default(),&data,Default::default(),
+        FaceStageRequest{stages:JointStageLimits{max_mask_work:0,..Default::default()},..req},Some(Default::default())),Err(Error::Limit(_))));
+}
