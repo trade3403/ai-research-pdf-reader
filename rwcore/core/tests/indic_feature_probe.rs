@@ -72,10 +72,50 @@ fn probe(b:&[u8],tag:[u8;4],r:&SourceRun,n:u32,t:&str,kind:K,i:usize,l:IndicProb
 #[test]fn indic_probe_retained_native_dev2(){
     let f=parse_font(FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
     let p=bundled_indic_properties().unwrap();let s=bundled_script_properties().unwrap();
+    let mut report=String::new();
     for (t,k) in [("र्क",K::Reph),("क्त",K::Half)]{
         let x=probe_font_face_devanagari(face,t,&p,&s,*b"dev2",None,k,0,Default::default(),Default::default()).unwrap();
         assert_eq!(x.candidate.kind,k);assert_eq!(x.masks.scalar_masks(),&[1,1,0]);
         assert_eq!(x.result.provenance.glyphs().last().unwrap().sources(),&[2]);
-        eprintln!("INDIC_NATIVE_PROBE {t} {k:?} {:?}",x.evidence);
+        report.push_str(&format!("INDIC_NATIVE_PROBE {t} {k:?} {:?} ids={:?}\n",x.evidence,x.result.execution.expansion.execution.glyphs));
     }
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/indic-native-probe.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,report).unwrap();
+}
+
+fn placement(b:&[u8],t:&str)->Result<(IndicProbeResult,IndicRephPlacement),Error>{
+    let (r,n)=source(t);let layout=parse_gsub_layout(b,Default::default())?;
+    let plan=build_gsub_base_plan(&layout,*b"dev2",None,&[*b"rphf"],Default::default())?.unwrap();
+    let program=compile_gsub_plan_program(b,&plan,n,None,Default::default())?;
+    plan_isolated_reph_after_base(&layout,&program,&r,t,&bundled_indic_properties()?,&bundled_script_properties()?,Default::default())
+}
+#[test]fn indic_reph_placement_actual_prefix_and_base(){
+    let (r,_)=source("र्क");let a=r.glyphs()[0].glyph_id;let h=r.glyphs()[1].glyph_id;
+    let b=fixture(*b"rphf",4,&[1,8,1,14,1,1,a,1,4,20,2,h]);
+    let (x,p)=placement(&b,"र्क").unwrap();
+    assert_eq!(p.order,vec![1,0]);assert_eq!(p.inverse,vec![1,0]);
+    assert_eq!((p.reph_glyph,p.base_glyph),(0,1));
+    let mut ledger=x.result.provenance;let before=ledger.glyphs().to_vec();
+    ledger.reorder(&p.order).unwrap();assert_eq!(ledger.glyphs(),&[before[1].clone(),before[0].clone()]);
+    assert_eq!(ledger.glyphs()[0].sources(),&[2]);assert_eq!(ledger.glyphs()[1].sources(),&[0,1]);
+}
+#[test]fn indic_reph_placement_reject_noncontraction_and_complex(){
+    let (r,_)=source("र्क");let a=r.glyphs()[0].glyph_id;let h=r.glyphs()[1].glyph_id;
+    let single=fixture(*b"rphf",1,&[2,8,1,20,1,1,a]);
+    assert!(matches!(placement(&single,"र्क"),Err(Error::Unsupported(_))));
+    let b=fixture(*b"rphf",4,&[1,8,1,14,1,1,a,1,4,20,2,h]);
+    for t in ["र्कि","र्क्त","र्क र्क"]{
+        assert!(matches!(placement(&b,t),Err(Error::Unsupported(_))),"{t}");
+    }
+}
+#[test]fn indic_native_reph_placement_evidence_gate(){
+    let f=parse_font(FONT,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let p=bundled_indic_properties().unwrap();let s=bundled_script_properties().unwrap();
+    let x=probe_font_face_devanagari(face,"र्क",&p,&s,*b"dev2",None,K::Reph,0,Default::default(),Default::default()).unwrap();
+    let y=plan_font_face_isolated_reph(face,"र्क",&p,&s,*b"dev2",None,Default::default(),Default::default());
+    if x.evidence==E::WholeRangeContraction{
+        let (result,placement)=y.unwrap();
+        assert_eq!(placement.order,vec![1,0]);
+        assert_eq!(result.result.execution,x.result.execution);
+    }else{assert!(matches!(y,Err(Error::Unsupported(_))));}
 }

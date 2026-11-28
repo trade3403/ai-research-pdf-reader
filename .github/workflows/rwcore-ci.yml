@@ -68,6 +68,11 @@ jobs:
         run: |
           cat target/arabic-native-scope.txt
           test "$(wc -l < target/arabic-native-scope.txt)" -eq 49
+      - name: Report native Indic feature probe
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cat target/indic-native-probe.txt
+          test "$(grep -c '^INDIC_NATIVE_PROBE ' target/indic-native-probe.txt)" -eq 2
       - name: Build
         run: cargo +stable build --locked --workspace --release
       - name: HarfBuzz external GPOS reference (test only)

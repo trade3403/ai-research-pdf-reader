@@ -153,3 +153,53 @@ pub fn probe_font_face_devanagari(face:&FontFace<'_>,text:&str,p:&IndicPropertie
     let program=compile_gsub_plan_program(b,&plan,n,gd.as_ref(),face_limits.substitution_program)?;
     probe_devanagari_feature(&layout,&program,&run,text,p,s,kind,candidate_index,l)
 }
+
+/// A restricted reph placement candidate, not a font-confirmed final
+/// position. The caller explicitly chooses the after-base policy.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct IndicRephPlacement{
+    pub reph_glyph:usize,pub base_glyph:usize,
+    /// New occurrence -> old occurrence, preserving all other occurrences.
+    pub order:Vec<usize>,pub inverse:Vec<usize>,
+}
+/// Execute isolated rphf on a single bare RA+virama+consonant cluster.
+/// A whole-prefix contraction and exact untouched base are prerequisites.
+/// No matra, nukta, further consonants, join controls or other clusters
+/// are admitted. Return a candidate permutation, not an applied edit.
+/// No claim that the font requires after-base placement is made.
+pub fn plan_isolated_reph_after_base(layout:&GsubLayout,program:&CompiledGsubProgram<'_>,
+    run:&SourceRun,text:&str,p:&IndicProperties,s:&UnicodeScriptProperties,
+    l:IndicProbeLimits)->Result<(IndicProbeResult,IndicRephPlacement),Error>{
+    let x=probe_devanagari_feature(layout,program,run,text,p,s,IndicProbeKind::Reph,0,l)?;
+    let placement=isolated_reph_placement(&x,run)?;
+    Ok((x,placement))
+}
+fn isolated_reph_placement(x:&IndicProbeResult,run:&SourceRun)->Result<IndicRephPlacement,Error>{
+    let c=x.candidate;
+    if run.scalars().len()!=3||c.kind!=IndicProbeKind::Reph||
+        (c.scalar_start,c.scalar_end,c.base_candidate)!=(0,2,2){
+        return Err(Error::Unsupported("Indic reph placement scope"));
+    }
+    if x.evidence!=IndicFeatureEvidence::WholeRangeContraction{
+        return Err(Error::Unsupported("Indic reph placement contraction"));
+    }
+    let g=x.result.provenance.glyphs();
+    let ids=&x.result.execution.expansion.execution.glyphs;
+    if g.len()!=2||ids.len()!=2||g[0].sources()!=[0,1]||g[1].sources()!=[2]||
+        g[1].glyph_id!=run.glyphs()[2].glyph_id||
+        g.iter().zip(ids).any(|(g,id)|g.glyph_id!=*id){
+        return Err(Error::Invalid("Indic reph placement provenance"));
+    }
+    Ok(IndicRephPlacement{reph_glyph:0,base_glyph:1,order:vec![1,0],inverse:vec![1,0]})
+}
+/// Same immutable face, native feature only. Reuses the isolated probe
+/// contract; does not apply the returned order or execute GPOS.
+pub fn plan_font_face_isolated_reph(face:&FontFace<'_>,text:&str,p:&IndicProperties,s:&UnicodeScriptProperties,
+    script:[u8;4],language:Option<[u8;4]>,face_limits:FaceShapeLimits,l:IndicProbeLimits)
+    ->Result<(IndicProbeResult,IndicRephPlacement),Error>{
+    let x=probe_font_face_devanagari(face,text,p,s,script,language,IndicProbeKind::Reph,0,face_limits,l)?;
+    let cmap=parse_unicode_cmap(face,face_limits.cmap)?;
+    let run=map_source_run(text,&cmap,false,face_limits.source)?;
+    let placement=isolated_reph_placement(&x,&run)?;
+    Ok((x,placement))
+}
