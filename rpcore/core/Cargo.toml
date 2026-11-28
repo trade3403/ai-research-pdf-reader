@@ -8,3 +8,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "rpcore"
 path = "src/main.rs"
+
+[features]
+fuzzing = []

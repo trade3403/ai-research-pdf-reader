@@ -70,6 +70,13 @@ pub fn decode_pdf_page_reclaimed(globals:&[u8],page:&[u8],limits:Limits)->Result
 pub(crate) fn decode_pdf_image_compatible(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
     decode_pdf_page_impl(globals,page,limits,true,true)
 }
+/// Test-only entry to exercise the actual PDF XObject page path with
+/// libFuzzer instrumentation. Not part of the default release API.
+#[cfg(feature="fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_pdf_image(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
+    decode_pdf_image_compatible(globals,page,limits)
+}
 fn record_release(stats:&mut Stats,r:dictionary::Reclaimed){
     stats.released_symbol_dictionaries+=r.dictionaries;
     stats.released_symbol_bitmaps+=r.bitmaps;stats.released_symbol_bytes+=r.bytes;
