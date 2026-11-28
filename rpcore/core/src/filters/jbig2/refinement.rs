@@ -78,9 +78,32 @@ impl Neighborhood{
         Ok(cx)
     }
 }
+#[inline]
 fn sample(image:&Bitmap,x:i128,y:i128)->bool{
-    let (Ok(x),Ok(y))=(u32::try_from(x),u32::try_from(y))else{return false;};
-    image.get(x,y).unwrap_or(false)
+    // Reject outside coordinates before narrowing; direct packed lookup
+    // uses the canonical MSB-first row layout and never reads padding.
+    if x<0||y<0||x>=i128::from(image.width())||y>=i128::from(image.height()){return false;}
+    let x=x as usize;let y=y as usize;
+    image.packed()[y*image.stride()+x/8]&(0x80u8>>(x%8))!=0
+}
+#[cfg(test)]
+#[test]
+fn refinement_packed_sample_matches_checked_get(){
+    for w in [1u32,7,8,9,15,16,17,31,33]{
+        for h in [1u32,3,8]{
+            let mut b=Bitmap::new(w,h,false).unwrap();
+            for y in 0..h{for x in 0..w{b.set(x,y,(x*13+y*7)%5<2).unwrap();}}
+            for y in -2..i128::from(h)+2{for x in -2..i128::from(w)+2{
+                let expected=match (u32::try_from(x),u32::try_from(y)){
+                    (Ok(x),Ok(y))=>b.get(x,y).unwrap_or(false),_=>false,
+                };
+                assert_eq!(sample(&b,x,y),expected);
+            }}
+            for v in [i128::MIN,i128::MAX,i64::MIN as i128,i64::MAX as i128]{
+                assert!(!sample(&b,v,0));assert!(!sample(&b,0,v));
+            }
+        }
+    }
 }
 /// Figure 16: prediction is possible iff all nine reference pixels agree.
 /// Uses the complete fixed 3x3 neighborhood, independent of template and AT.
