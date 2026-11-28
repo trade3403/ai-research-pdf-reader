@@ -559,3 +559,6 @@ CI #239: fd1b08385408005dc26e9ffd6a7835b9ff2a0edf, https://github.com/trade3403/
 
 
 CI #240: 82ea9b94e96681dc3cf535b96548056a0f33d178, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46093629006, exact SHA all three raw logs; 1518/platform, 4554 total, zero failed/ignored; Release Ubuntu 16.83s, Windows 25.53s, macOS 18.66s. Full 1112064 scalar ScriptExtensions reference passed on all platforms, Linux native and Python gates passed.
+
+
+CI #241: 817d30d97b600a2839a29b9a41b16e756035bf90, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46095280418, exact SHA all three raw logs; 1526/platform, 4578 total, zero failed/ignored; Release Ubuntu 15.75s, Windows 22.69s, macOS 21.74s. Contextual script regressions and Linux native/Python gates passed.

@@ -18,3 +18,5 @@ aliases, general category, joining, normalization, bidi and script
 resolution are not included in this snapshot integration.
 
 C4.6c adds byte-identical official ScriptExtensions.txt (98b8d0fb06e5ed7c3c2f20e0202f6cccf8a984e4) and PropertyValueAliases.txt (b92662eda2867baed56e55440e5187d52c1cb341) from the same upstream directory and version, under the retained Unicode-3.0 LICENSE. 206 explicit extension ranges / 669 code points; 176 sc alias records. Contextual script resolution remains separate.
+
+C4.6e: DerivedJoiningType.txt copied unchanged from upstream unicodetools/data/ucd/17.0.0/extracted/DerivedJoiningType.txt; Git blob 9e6aa70d0da1ef6a7a480924cc1ea7b4e8407a33 matches upstream; canonical https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedJoiningType.txt. 542 explicit ranges; 3004 explicit code points, C=7 D=615 R=153 L=5 T=2224; default U. Retained Unicode-3.0 license applies. Basic logical Arabic joining forms only.

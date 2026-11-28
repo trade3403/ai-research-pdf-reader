@@ -349,3 +349,6 @@ pub use unicode_script_extensions::*;
 
 pub mod unicode_script_resolve;
 pub use unicode_script_resolve::*;
+
+pub mod unicode_joining;
+pub use unicode_joining::*;
