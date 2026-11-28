@@ -1,0 +1,2 @@
+# Alegreya Sans Regular
+Original unmodified upstream Google Fonts fixture: https://github.com/google/fonts/tree/main/ofl/alegreyasans . Font blob 2c9b0c50cd08e872a68d3b11587a40d59efc4fb9, 263804 bytes; original OFL.txt blob 93a573fab019d94171bad70205a71d5de9e843e8. 2109 glyphs. Test-only use: direct GSUB type 3 alternate mappings extracted independently from SFNT directory, LookupList, Coverage and AlternateSet bytes. 165 mappings, 417 candidates. No rendering, variable-font or full shaping claim.

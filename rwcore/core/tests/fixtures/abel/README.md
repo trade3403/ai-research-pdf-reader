@@ -1,0 +1,2 @@
+# Abel Regular fixture
+Original upstream https://github.com/google/fonts/tree/main/ofl/abel , unmodified 35220-byte binary, Git blob f621a1273d78878b129ac93be7b93c2837ed5810. License blob d67c839261b0dfff0452c6290b03b29d13ce854d (SIL OFL 1.1). Independent JS SFNT/cmap4/hmtx extraction produced the five nominal metric fixtures. Test-only grayscale oracle shares parsed paths; no independent outline extraction for Abel yet.
