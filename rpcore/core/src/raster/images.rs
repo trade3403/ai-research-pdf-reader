@@ -483,6 +483,15 @@ pub(super) fn load(doc:&Document<'_>,id:(u32,u16),budget:&mut Budget,cache:&mut 
     Ok(Image{w,h,rgb:out,alpha,stencil:false,interpolate})
 }
 impl Image{
+    // Caller guarantees nearest, non-stencil, no alpha. Preserve the exact
+    // coordinate conversion and edge clamp used by the general sampler.
+    #[inline]
+    pub(super) fn opaque_nearest(&self,u:f64,v:f64)->[u8;3]{
+        let x=((u*self.w as f64).floor()as usize).min(self.w-1);
+        let y=((v*self.h as f64).floor()as usize).min(self.h-1);
+        let p=(y*self.w+x)*3;
+        [self.rgb[p],self.rgb[p+1],self.rgb[p+2]]
+    }
     pub(super) fn sample(&self,u:f64,v:f64,stencil:[u8;3])->([u8;3],f64){
         let pixel=|x:usize,y:usize|{
             let p=y*self.w+x;let color=if self.stencil{stencil}else{[self.rgb[p*3],self.rgb[p*3+1],self.rgb[p*3+2]]};
@@ -931,4 +940,16 @@ mod jpx_pdf_tests{
             assert_eq!(p,[want,want,want,255],"pixel {i}");
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn opaque_nearest_matches_general_sampler(){
+    for w in 1..=9usize{for h in 1..=7usize{
+        let img=Image{w,h,rgb:(0..w*h*3).map(|n|(n*73+19) as u8).collect(),alpha:None,stencil:false,interpolate:false};
+        for x in 0..=64{for y in 0..=64{
+            let u=x as f64/64.;let v=y as f64/64.;
+            assert_eq!((img.opaque_nearest(u,v),1.),img.sample(u,v,[7,9,11]));
+        }}
+    }}
 }

@@ -649,6 +649,27 @@ impl Surface{
         let direct=self.groups.is_empty()&&self.alpha.is_none()&&self.soft_mask.is_none()
             &&self.blend_mode==BlendMode::Normal&&self.fill_alpha==1.
             &&self.region.x==0&&self.region.y==0&&self.region.w==self.w&&self.region.h==self.h;
+        // Bounds above guarantee these subsamples lie in the clip rectangle.
+        // Hoist row addressing and choose the opaque nearest path once per image.
+        if direct&&!img.interpolate&&!img.stencil&&img.alpha.is_none(){
+            for y in y0..y1{
+                let row=(y/2-self.clip.y)*self.clip.w;
+                let dest=y/2*self.w*12;
+                let sy=(y%2)*2;
+                for x in x0..x1{
+                    let sx=sy+x%2;
+                    if self.clip.data[row+x/2-self.clip.x]&(1<<sx)==0{continue;}
+                    let [u,v]=inv.point([(x as f64+0.5)*0.5,(y as f64+0.5)*0.5])?;
+                    if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
+                    let color=img.opaque_nearest(u,1.-v);
+                    let offset=dest+x/2*12+sx*3;
+                    self.samples[offset..offset+3].copy_from_slice(&color);
+                }
+            }
+            #[cfg(feature="fuzzing")]
+            image_profile_end(started,1);
+            return Ok(());
+        }
         for y in y0..y1{for x in x0..x1{
             let i=y/2*self.w+x/2;let s=(y%2)*2+x%2;
             if self.clip.at(x/2,y/2)&(1<<s)==0{continue;}
