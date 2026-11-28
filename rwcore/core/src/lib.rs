@@ -358,3 +358,6 @@ pub use font_arabic_forms::*;
 
 pub mod unicode_indic;
 pub use unicode_indic::*;
+
+pub mod indic_clusters;
+pub use indic_clusters::*;

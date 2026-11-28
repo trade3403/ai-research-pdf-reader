@@ -577,3 +577,6 @@ CI #245: 12610bda67f456f681a2e967fcb753ce1eeef504, https://github.com/trade3403/
 
 
 CI #246: 817d17b3f9548cccf5efa55ede7fd92d0a2ff084, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46104108976, exact SHA all three raw logs; 1546/platform, 4638 total, zero failed/ignored; Release Ubuntu 10.72s, Windows 25.62s, macOS 19.73s. Retained Arabic scope test and positive Ubuntu DejaVu logical mark-base oracle passed; Linux historical native and Python gates passed. Scope report was neither emitted nor uploaded, so exact retained-font positive/unsupported counts remain unverified.
+
+
+CI #247: d43b8c44491bf4cd134799a4e35f93b861d4eed3, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46105830676, exact SHA all three raw logs; 1552/platform, 4656 total, zero failed/ignored; Release Ubuntu 12.41s, Windows 16.48s, macOS 19.68s. Both Indic exhaustive 1112064 scalar reference tests passed on all platforms; Linux historical native and Python gates passed. Arabic scope report: 48 attempts, 2 exact Aref Ruqaa logical cursive cases (meem pair and meem pair with fatha), 6 no unique direct anchor chain, 40 outside direct Type3/4 oracle (16 Aref, 24 Nastaliq). Exclusions are not demonstrated production failures; full Arabic complex feature/mark coverage remains open.
