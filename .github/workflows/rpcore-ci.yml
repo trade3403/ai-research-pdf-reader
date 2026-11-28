@@ -313,6 +313,9 @@ jobs:
           rpcore/target/jbig2-perf-venv/bin/python -m pip install --only-binary=:all: pypdfium2==5.8.0 Pillow==12.3.0
           python3 rpcore/fuzz/seed.py
       - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --features fuzzing --example jbig2_perf_probe --example perf_probe
+      - run: cargo test --manifest-path rpcore/Cargo.toml --release --locked mq_paired_renorm_performance -- --nocapture
+        env:
+          RPCORE_MQ_BENCH: '1'
       - run: |
           mkdir -p rpcore/target/jbig2-performance
           rustc -Vv > rpcore/target/jbig2-performance/rust-version.txt

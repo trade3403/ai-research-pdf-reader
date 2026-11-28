@@ -152,6 +152,40 @@ mod tests{
             assert_eq!(a,b);equal_registers(&x,&y);
         }
     }
+    // Observational, paired release microbenchmark; no timing assertion.
+    #[test]fn mq_paired_renorm_performance(){
+        if std::env::var_os("RPCORE_MQ_BENCH").is_none(){return;}
+        use std::{hint::black_box,time::Instant};
+        fn run(data:&[u8],scalar:bool)->(u128,u64){
+            let start=Instant::now();
+            let mut hash=0u64;
+            for repeat in 0..32u32{
+                for a in 1..0x8000u32{
+                    let ct=((a+repeat)%9) as u8;
+                    let mut d=Decoder{data,pos:(a as usize)%data.len(),a,c:a.wrapping_mul(0x9e3779b9)^repeat,ct,left:17,virtual_input:false};
+                    if scalar{scalar_renorm(black_box(&mut d));}
+                    else{black_box(&mut d).renorm();}
+                    hash=hash.rotate_left(7)^u64::from(d.c)^u64::from(d.a)
+                        ^((d.pos as u64)<<32)^((d.ct as u64)<<48)^((d.virtual_input as u64)<<56);
+                }
+            }
+            (start.elapsed().as_nanos(),black_box(hash))
+        }
+        let streams:[&[u8];3]=[&[0,0x12,0x34,0x56],&[255,0x8f,0,255,0xac],&[255]];
+        for (index,data) in streams.into_iter().enumerate(){
+            let mut fast=Vec::new();let mut slow=Vec::new();
+            for i in 0..9{
+                let (x,y)=if i%2==0{let x=run(data,false);let y=run(data,true);(x,y)}
+                    else{let y=run(data,true);let x=run(data,false);(x,y)};
+                assert_eq!(x.1,y.1);
+                if i>0{fast.push(x.0);slow.push(y.0);}
+            }
+            fast.sort_unstable();slow.sort_unstable();
+            let f=(fast[3]+fast[4])/2;let s=(slow[3]+slow[4])/2;
+            assert!(f>0&&s>0);
+            println!("MQ paired stream {index}: batched_ns {f} scalar_ns {s} speedup {:.4} trials 8 intervals_per_trial 1048544",s as f64/f as f64);
+        }
+    }
     #[test]fn table_integrity(){
         assert_eq!(STATES.len(),47);
         for &(q,m,l,_) in &STATES{assert!(q>0&&q<=0x5601&&m<47&&l<47);}
