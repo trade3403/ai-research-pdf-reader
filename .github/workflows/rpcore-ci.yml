@@ -327,17 +327,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # Build the CLI with a compatible stable compiler; nightly is only
+      # needed to instrument the target, not to compile cargo-fuzz itself.
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - run: cargo +1.85.1 install cargo-fuzz --version 0.12.0 --locked
       - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo install cargo-fuzz --version 0.12.0 --locked
       - working-directory: rpcore
         run: python3 fuzz/seed.py
       - working-directory: rpcore
         run: |
           mkdir -p target/jbig2-fuzz-report
-          rustc -Vv > target/jbig2-fuzz-report/rust-version.txt
+          rustc +1.85.1 -Vv > target/jbig2-fuzz-report/cli-build-rust-version.txt
+          rustc +nightly -Vv > target/jbig2-fuzz-report/rust-version.txt
           cargo fuzz --version > target/jbig2-fuzz-report/cargo-fuzz-version.txt
           set -o pipefail
-          cargo fuzz run jbig2_page -- -runs=5000 -max_total_time=90 -max_len=4096 -timeout=5 -rss_limit_mb=1024 -seed=12345 2>&1 | tee target/jbig2-fuzz-report/run.log
+          cargo +nightly fuzz run jbig2_page -- -runs=5000 -max_total_time=90 -max_len=4096 -timeout=5 -rss_limit_mb=1024 -seed=12345 2>&1 | tee target/jbig2-fuzz-report/run.log
       - if: always()
         uses: actions/upload-artifact@v4
         with:
