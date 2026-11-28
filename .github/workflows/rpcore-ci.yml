@@ -302,7 +302,7 @@ jobs:
 
 
   jbig2-corpus:
-    # Twenty exact frozen cases plus independent exploratory coverage; not scan certification.
+    # Twenty-four exact frozen cases plus independent exploratory coverage; not scan certification.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -356,6 +356,7 @@ jobs:
             grep -E '^#50000[[:space:]]+DONE[[:space:]]+cov:' "$log" | tee -a target/jbig2-fuzz-report/completed.txt
           done
           test "$(wc -l < target/jbig2-fuzz-report/completed.txt)" -eq 3
+          python3 fuzz/report.py --report target/jbig2-fuzz-report --commit "$GITHUB_SHA"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

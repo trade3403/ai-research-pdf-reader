@@ -23,3 +23,9 @@ within its 120s limit, with ASan, overflow checks, 4096-byte inputs,
 libFuzzer DONE and completed-run records, not merely a zero exit status.
 Per-seed logs and crash artifacts are retained. Coverage counters overlap
 across seeds and must not be summed or called percentage coverage.
+
+## Structured completion evidence
+`report.py` verifies each of the three original log files, checks seed count,
+run completion, coverage counters, elapsed time, ending RSS and error markers,
+and emits commit-bound summary.json with SHA-256 hashes of the logs.
+The report is not a formal security certificate or a production RSS benchmark.
