@@ -45,8 +45,12 @@ CASES = ("bitmap-halftone-global", "bitmap-symbol-global",
          "bitmap-refine-template1", "bitmap-refine-template1-tpgron", "bitmap-refine-tpgron",
          "bitmap-stripe", "bitmap-stripe-last-implicit", "bitmap-stripe-single-no-end-of-stripe",
          "bitmap-stripe-initially-unknown-height", "bitmap-symbol", "bitmap-symbol-32bit-arithint",
-         "bitmap-symbol-big-segmentid", "bitmap-symbol-context-reuse")
-KNOWN_GAPS = ("bitmap-stripe-single",)
+         "bitmap-symbol-big-segmentid", "bitmap-symbol-context-reuse",
+         "bitmap-stripe-single", "bitmap-symbol-empty", "bitmap-symbol-manyrefs",
+         "bitmap-symbol-negative-sbdsoffset", "bitmap-symbol-refine")
+KNOWN_GAPS = ()
+EXPLORATORY_BATCH = 16
+EXPECTED_PAIRS = 107
 CAP = 16 * 1024 * 1024
 PIXELS = 4_000_000
 Image.MAX_IMAGE_PIXELS = PIXELS
@@ -119,7 +123,7 @@ def paired_cases(entries):
     return sorted(n[:-4] for n in names if n.endswith(".pdf")
                   and n[:-4] + "_expected.pdf.0.png" in names)
 
-def expanded_cases(entries, limit=4):
+def expanded_cases(entries, limit=EXPLORATORY_BATCH):
     return [n for n in paired_cases(entries) if n not in CASES and n not in KNOWN_GAPS][:limit]
 
 def inventory(entries):
@@ -141,6 +145,27 @@ def discover():
     if not isinstance(listing, dict) or not isinstance(listing.get("entries"), list):
         raise ValueError("invalid gitiles directory entries")
     return inventory(listing["entries"])
+
+def inventory_gate(discovery, rows):
+    # A successful exploratory audit requires actual evidence for every
+    # scheduled name. Native rejections and pixel differences are legitimate
+    # observed outcomes, but missing downloads or a changed listing are not.
+    if discovery.get("status") != "ok" or discovery.get("paired_total") != EXPECTED_PAIRS:
+        return False
+    if discovery.get("frozen_missing") or discovery.get("remaining_total") != EXPECTED_PAIRS-len(CASES):
+        return False
+    names = discovery.get("cases", [])
+    gaps = discovery.get("known_gaps", [])
+    fresh = discovery.get("new_cases", [])
+    if (names != gaps+fresh or len(names) != len(set(names)) or set(names)&set(CASES)
+            or set(gaps) != set(KNOWN_GAPS) or set(fresh)&set(KNOWN_GAPS)
+            or len(fresh) != min(EXPLORATORY_BATCH, EXPECTED_PAIRS-len(CASES)-len(gaps))
+            or discovery.get("remaining_after_batch") != EXPECTED_PAIRS-len(CASES)-len(names)):
+        return False
+    observed = [r for r in rows if r.get("suite") == "exploratory"]
+    return (len(observed) == len(names) and {r["id"] for r in observed} == set(names)
+            and all(r.get("status") in {"exact","pixel_mismatch","dimension_mismatch","native_rejected"}
+                    and r.get("pdf_sha256") and r.get("reference_sha256") for r in observed))
 
 def frozen_gate(rows):
     frozen = [r for r in rows if r.get("suite") == "frozen"]
@@ -252,6 +277,9 @@ def segment_headers(data):
                 raise ValueError("segment payload truncated")
             if flags&63 in (48,50):
                 row["control_payload_hex"] = data[pos:pos+19].hex()[:min(length,19)*2]
+            if flags&63 in (0,4,6,7,16,20,22,23,36,38,39,40,42,43,53,62):
+                # Fixed, bounded prefix only; this does not interpret entropy.
+                row["body_prefix_hex"] = data[pos:pos+min(length,40)].hex()
             pos += length
         return {"status":"complete" if pos == len(data) else "segment_cap","segments":rows}
     except ValueError as e:
@@ -322,7 +350,7 @@ def case(probe, work, row, raw, expected):
     row.update(render(probe, pdf, row["page"], out))
     if row["status"] == "rendered":
         row.update(compare(pixels(out), pixels(ref)))
-    if row["kind"] == "public_synthetic" and row["status"] == "native_rejected":
+    if row["kind"] == "public_synthetic" and row["status"] in ("native_rejected","pixel_mismatch","dimension_mismatch"):
         row["jbig2_stream_diagnostics"] = jbig2_stream_diagnostics(raw)
     return row
 
@@ -377,7 +405,7 @@ def self_test():
                ("z.pdf","z_expected.pdf.0.png","a.pdf","a_expected.pdf.0.png",
                 "unpaired.pdf","../bad.pdf","../bad_expected.pdf.0.png",
                 CASES[0]+".pdf",CASES[0]+"_expected.pdf.0.png")]
-    assert len(CASES) == 51 and len(set(CASES)) == 51
+    assert len(CASES) == 56 and len(set(CASES)) == 56
     # Every frozen case, including the promoted refinement case, is excluded
     # from discovery, even if the listing contains its matching reference.
     entries.extend({"name": n+s, "type": "blob"} for n in CASES
@@ -405,6 +433,24 @@ def self_test():
             bad[i] = dict(bad[i], **change)
             assert not frozen_gate(bad)
     assert frozen_gate(rows + [{"suite":"exploratory","status":"native_rejected"}])
+    assert not set(CASES)&set(KNOWN_GAPS)
+    all_entries = entries + [{"name":f"extra-{i:03d}"+s,"type":"blob"}
+                             for i in range(EXPECTED_PAIRS-len(CASES)-2)
+                             for s in (".pdf","_expected.pdf.0.png")]
+    full = inventory(all_entries)
+    assert full["paired_total"] == EXPECTED_PAIRS
+    assert len(full["new_cases"]) == EXPLORATORY_BATCH
+    assert full["remaining_after_batch"] == EXPECTED_PAIRS-len(CASES)-EXPLORATORY_BATCH
+    observed = [dict(id=n,suite="exploratory",status="native_rejected",
+                     pdf_sha256="a"*64,reference_sha256="b"*64) for n in full["cases"]]
+    assert inventory_gate(full, rows+observed)
+    assert not inventory_gate(full, rows+observed[:-1])
+    assert not inventory_gate(full, rows+observed+observed[:1])
+    assert not inventory_gate(dict(full,status="failed"), rows+observed)
+    assert not inventory_gate(dict(full,paired_total=EXPECTED_PAIRS-1), rows+observed)
+    assert not inventory_gate(dict(full,frozen_missing=[CASES[0]]), rows+observed)
+    assert not inventory_gate(full, rows+[dict(observed[0],status="infrastructure_or_timeout")]+observed[1:])
+    assert not inventory_gate(full, rows+[dict(observed[0],pdf_sha256=None)]+observed[1:])
 
 def main():
     p = argparse.ArgumentParser()
@@ -413,7 +459,7 @@ def main():
     p.add_argument("--local-manifest", type=Path, help="JSON list of local PDF/reference PNG pairs with SHA256 and page")
     p.add_argument("--no-public", action="store_true")
     p.add_argument("--require-exact", action="store_true", help="require all frozen public cases")
-    p.add_argument("--expand-public", action="store_true", help="discover up to four further pinned paired samples")
+    p.add_argument("--expand-public", action="store_true", help="discover up to sixteen further pinned paired samples plus known gaps")
     a = p.parse_args()
     self_test()
     a.out.mkdir(parents=True, exist_ok=True)
@@ -468,12 +514,14 @@ def main():
         counts[suite] = {"total":len(group),"exact":sum(r["status"] == "exact" for r in group),
                          "statuses":{status:sum(r["status"] == status for r in group)
                                      for status in sorted({r["status"] for r in group})}}
-    report = {"schema":4,"reference_revision":REV,"dpi":72,"rows":rows,
-              "frozen_exact":gate,"discovery":discovery,"counts":counts}
+    inventory_ok = inventory_gate(discovery,rows) if a.expand_public else None
+    report = {"schema":5,"reference_revision":REV,"dpi":72,"rows":rows,
+              "frozen_exact":gate,"inventory_gate":inventory_ok,"discovery":discovery,"counts":counts}
     (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     lines = ["# JBIG2 differential corpus", "",
              f"Frozen exact gate: {'PASS' if gate else 'FAIL'}",
              "Exploratory discovery: " + str(discovery),
+             "Inventory evidence gate: " + ("NOT REQUESTED" if inventory_ok is None else "PASS" if inventory_ok else "FAIL"),
              "Frozen exact: {}/{}".format(counts["frozen"]["exact"],len(CASES)),
              "Exploratory exact: {}/{}".format(counts["exploratory"]["exact"],counts["exploratory"]["total"]), "",
              "Public tests are synthetic SerenityOS conformance images, not scans.",
@@ -492,6 +540,8 @@ def main():
     # An unavailable corpus is not successful validation. Unsupported or
     # mismatched inputs are measured coverage gaps, not exact passes.
     if a.require_exact and not gate:
+        raise SystemExit(1)
+    if a.expand_public and not inventory_ok:
         raise SystemExit(1)
     if all(r["status"]=="infrastructure_or_timeout" for r in rows):
         raise SystemExit(1)
