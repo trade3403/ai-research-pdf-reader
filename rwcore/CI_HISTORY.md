@@ -550,3 +550,6 @@ CI #236 failure: f2f66a874247afd4d66026953b1b8adf3f827d26, https://github.com/tr
 
 
 CI #237: bc01038b2841464baa12c7e9f528af3229fe1624, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46088357541, exact SHA all three raw logs; 1498/platform, 4494 total, zero failed/ignored; Release Ubuntu 16.11s, Windows 21.20s, macOS 8.82s. Dual-stage native contractions 127 exact; DejaVu 8 exact direction checks and 8 masked parent blocks, max error 0; Python 8 tests passed. C4.5 bounded dual-stage gate accepted.
+
+
+CI #238: c4637603b7a73f935866730c5de26cde2cb9e05b, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46090195945, exact SHA all three raw logs; 1506/platform, 4518 total, zero failed/ignored; Release Ubuntu 13.15s, Windows 27.32s, macOS 19.10s. Dual-stage native 127 contractions, 8 exact and 8 blocked DejaVu direction checks; Python 8 tests passed.

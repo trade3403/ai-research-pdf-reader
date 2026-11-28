@@ -106,3 +106,13 @@ pub fn raw_script_spans<'a>(text:&str,scripts:&'a UnicodeScripts,l:crate::Source
     }
     Ok(out)
 }
+
+/// The bundled, immutable Unicode Script property snapshot.
+pub const UNICODE_SCRIPT_VERSION:&str="17.0.0";
+pub const BUNDLED_UNICODE_SCRIPTS:&str=include_str!("../data/unicode/17.0.0/Scripts.txt");
+/// Parse the bundled full Script property dataset using the same native
+/// bounded parser as external snapshots. Call once and reuse the index.
+/// No runtime filesystem access, external engine or network required.
+pub fn bundled_unicode_scripts()->Result<UnicodeScripts,Error>{
+    parse_unicode_scripts(BUNDLED_UNICODE_SCRIPTS,ScriptDataLimits::default())
+}
