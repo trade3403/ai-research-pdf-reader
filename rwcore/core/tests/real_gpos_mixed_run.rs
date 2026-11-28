@@ -693,16 +693,24 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
         if !plan.unavailable_tags.is_empty()||!plan.lookups.iter().any(|r|r.index==11){
             report.push_str(&format!("REPH_OWNER {name} not selected by dev2 default\n"));continue;
         }
-        // Only a single direct lookup is admitted for exact isolated geometry.
-        if plan.lookups.len()!=1{
-            report.push_str(&format!("REPH_OWNER {name} selected with {} roots\n",plan.lookups.len()));continue;
-        }
+        // Admit only direct Type4 roots with independently verified unique
+        // applicable pair. Keep the complete native feature, not a rewritten table.
+        let roots:Option<Vec<_>>=plan.lookups.iter().map(|r|raw.iter().find(|l|l.id==r.index&&l.kind==4)).collect();
+        let Some(roots)=roots else{
+            report.push_str(&format!("REPH_OWNER {name} outside direct Type4 oracle\n"));continue;
+        };
+        let cls=classes(face.table(*b"GDEF"),u(table(bytes,b"maxp").unwrap(),4));
         let specs=[ShapeStageSpec{features:plan.features.clone()}];
         let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
         for t in ["र्क","र्ग","र्त","र्द","र्न","र्म","र्य","र्व"]{
             let (probe,_)=plan_font_face_isolated_reph(face,t,&p,&s,*b"dev2",None,Default::default(),Default::default()).unwrap();
             let old=&probe.result.execution.expansion.execution.glyphs;
             let ids=[old[1],old[0]];let delta=pair(lookup,ids[0],ids[1]).unwrap();
+            let hits:Vec<_>=roots.iter().filter(|l|cls[ids[0] as usize]!=3&&eligible(ids[0],l.flags,&cls)&&eligible(ids[1],l.flags,&cls))
+                .filter_map(|l|pair(l,ids[0],ids[1]).map(|d|(l.id,d))).collect();
+            if hits!=vec![(11,delta)]{
+                report.push_str(&format!("REPH_OWNER {name} {t} ambiguous anchors {hits:?}\n"));continue;
+            }
             for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
                 let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&[*b"rphf"],
                     positioning_tags:&[tag],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
@@ -716,7 +724,7 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
                 assert_eq!(diff(world(1),world(0)),delta);checks+=1;
             }
         }
-        report.push_str(&format!("REPH_OWNER {name} exact single-root geometry\n"));
+        report.push_str(&format!("REPH_OWNER {name} admitted multi-root geometry\n"));
     }
     report.push_str(&format!("REPH_OWNER_CHECKS {checks}\n"));
     let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/reph-native-owner.txt");

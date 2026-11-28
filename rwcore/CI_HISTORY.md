@@ -610,3 +610,6 @@ CI #256: c5b21a28d47faa2cc0d53913d341b09b8de5dd36, https://github.com/trade3403/
 
 
 CI #257: bec91c11a1607835979167ce49cd474fc85d694d, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46171193458, exact SHA three raw logs; 1594/platform, 4782 total, zero failed/ignored; Release Ubuntu 17.33s, Windows 29.96s, macOS 16.65s. Eight native pairs all have raw forward lookup 11 anchors, no reverse anchors; Reph glyph 506 GDEF class 3 width zero. Selected mark roots 21..28 exclude 11.
+
+
+CI #258: 2eaed311645e8932044d288361eff69b3caf8e05, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46176893061, exact SHA three raw logs; 1595/platform, 4785 total, zero failed/ignored; Release Ubuntu 17.11s, Windows 16.70s, macOS 20.09s. Native owner abvm selected with seven roots, zero geometry cases under prior single-root restriction.
