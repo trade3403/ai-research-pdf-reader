@@ -27,8 +27,13 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
             let opt=Options{scale:f64::from(dpi)/72.,allow_missing_text:false};
             if a[3]=="warm"{black_box(doc.render_page(p,opt,MAX_CONTENT_BYTES)?);}
             let t=Instant::now();
+            #[cfg(feature="fuzzing")]
+            let (bmp,stages)=black_box(doc.render_page_profiled(p,opt,MAX_CONTENT_BYTES)?);
+            #[cfg(not(feature="fuzzing"))]
             let bmp=black_box(doc.render_page(p,opt,MAX_CONTENT_BYTES)?);
             let ns=t.elapsed().as_nanos();
+            #[cfg(feature="fuzzing")]
+            println!("viewport_ns={}\ndisplay_list_ns={}\nraster_ns={}",stages[0],stages[1],stages[2]);
             if bmp.missing_text{return Err("strict render missing text".into());}
             // RGB normalization and file output outside timed operation.
             let mut rgb=Vec::with_capacity(bmp.width*bmp.height*3);

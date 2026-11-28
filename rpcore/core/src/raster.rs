@@ -704,6 +704,19 @@ impl Document<'_>{
         let list=self.page_display_list(page,content_limit)?;
         Ok(render(self,page,&list,options,None,TextQuality::Standard,crate::icc::AdaptationDegree::default())?.bitmap)
     }
+    /// Development-only stage timing, with the same strict render path.
+    #[cfg(feature="fuzzing")]
+    pub fn render_page_profiled(&self,page:&PageInfo,options:Options,content_limit:usize)->Result<(Bitmap,[u128;3])>{
+        let t=std::time::Instant::now();
+        viewport(page,options.scale)?;
+        let viewport_ns=t.elapsed().as_nanos();
+        let t=std::time::Instant::now();
+        let list=self.page_display_list(page,content_limit)?;
+        let display_ns=t.elapsed().as_nanos();
+        let t=std::time::Instant::now();
+        let bitmap=render(self,page,&list,options,None,TextQuality::Standard,crate::icc::AdaptationDegree::default())?.bitmap;
+        Ok((bitmap,[viewport_ns,display_ns,t.elapsed().as_nanos()]))
+    }
     /// Explicit substitute outlines; caller must provide appropriately licensed,
     /// compatible font programs. Pixel equivalence to original fonts is not promised.
     pub fn render_page_with_standard_fonts(&self,page:&PageInfo,options:Options,content_limit:usize,fonts:&StandardFontSet)->Result<SubstitutedBitmap>{

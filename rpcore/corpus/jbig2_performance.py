@@ -42,7 +42,7 @@ def main():
     import pypdfium2 as pdfium
     import pypdfium2_raw
     out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
-    report={"schema":1,"commit":a.commit,"reference_revision":corpus.REV,
+    report={"schema":2,"commit":a.commit,"reference_revision":corpus.REV,
         "rpcore_probe_sha256":corpus.sha(Path(a.probe).read_bytes()),
         "raw_probe_sha256":corpus.sha(Path(a.raw_probe).read_bytes()),
         "pdfium_binding":metadata.version("pypdfium2"),"pdfium_version":str(pdfium.PDFIUM_INFO),
@@ -106,6 +106,15 @@ def main():
                         row[e]={**paired.summarize([t[e]["elapsed_ns"] for t in measured]),
                                 "open":paired.summarize([t[e]["open_ns"] for t in measured]),
                                 "peak_process_rss_kib":max(t[e]["peak_process_rss_kib"] for t in measured)}
+                if row["native_exact"]:
+                    stage_names=("viewport_ns","display_list_ns","raster_ns")
+                    for t in row["trials"]:
+                        f=t["rpcore"]
+                        stages=[int(f[k]) for k in stage_names]
+                        if min(stages)<0 or sum(stages)>int(f["elapsed_ns"]):
+                            raise ValueError("invalid stage timings "+name)
+                    row["native_stages"]={k:paired.summarize([int(t["rpcore"][k]) for t in measured]) for k in stage_names}
+                    print("JBIG2 stages",name,mode,*(f"{k}={row['native_stages'][k]['median_ns']}" for k in stage_names),flush=True)
                 if row["eligible"]:
                     row["relative_throughput_pct"]=100*row["pdfium"]["median_ns"]/row["rpcore"]["median_ns"]
                 report["pages"].append(row)
