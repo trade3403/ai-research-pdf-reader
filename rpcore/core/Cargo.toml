@@ -11,3 +11,7 @@ path = "src/main.rs"
 
 [features]
 fuzzing = []
+
+[[example]]
+name = "jbig2_perf_probe"
+required-features = ["fuzzing"]

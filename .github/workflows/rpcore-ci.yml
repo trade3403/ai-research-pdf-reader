@@ -301,6 +301,33 @@ jobs:
           if [ -f rpcore/target/pdfium-performance/report.md ]; then cat rpcore/target/pdfium-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
 
 
+  jbig2-performance:
+    # Observational native raw decode and exact-quality paired page rendering.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          python3 -m venv rpcore/target/jbig2-perf-venv
+          rpcore/target/jbig2-perf-venv/bin/python -m pip install --only-binary=:all: pypdfium2==5.8.0 Pillow==12.3.0
+          python3 rpcore/fuzz/seed.py
+      - run: cargo build --manifest-path rpcore/Cargo.toml --release --locked --features fuzzing --example jbig2_perf_probe --example perf_probe
+      - run: |
+          mkdir -p rpcore/target/jbig2-performance
+          rustc -Vv > rpcore/target/jbig2-performance/rust-version.txt
+          rpcore/target/jbig2-perf-venv/bin/python -m pip freeze > rpcore/target/jbig2-performance/reference-versions.txt
+          rpcore/target/jbig2-perf-venv/bin/python rpcore/corpus/jbig2_performance.py --probe rpcore/target/release/examples/perf_probe --raw-probe rpcore/target/release/examples/jbig2_perf_probe --seeds rpcore/fuzz/corpus/jbig2_page --out rpcore/target/jbig2-performance --commit "$GITHUB_SHA"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpcore-jbig2-performance
+          path: rpcore/target/jbig2-performance/
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          if [ -f rpcore/target/jbig2-performance/report.md ]; then cat rpcore/target/jbig2-performance/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
   jbig2-corpus:
     # All 107 pinned pairs are mandatory exact regressions; full inventory evidence required.
     runs-on: ubuntu-latest

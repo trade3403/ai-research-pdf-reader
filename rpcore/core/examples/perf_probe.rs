@@ -5,7 +5,7 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
     let a:Vec<String>=std::env::args().skip(1).collect();
     if a.len()!=5{return Err("usage: perf_probe FILE inspect|render|text DPI cold|warm OUTPUT".into());}
     let dpi:u32=a[2].parse()?;
-    if ![96,150,200,300].contains(&dpi)||!matches!(a[3].as_str(),"cold"|"warm"){return Err("invalid benchmark parameters".into());}
+    if ![72,96,150,200,300].contains(&dpi)||!matches!(a[3].as_str(),"cold"|"warm"){return Err("invalid benchmark parameters".into());}
     let mut bytes=Vec::new();
     std::fs::File::open(&a[0])?.take((rpcore::MAX_BYTES+1)as u64).read_to_end(&mut bytes)?;
     if bytes.len()>rpcore::MAX_BYTES{return Err("input limit".into());}
