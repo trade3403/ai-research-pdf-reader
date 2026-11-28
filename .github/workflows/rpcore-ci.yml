@@ -316,6 +316,9 @@ jobs:
       - run: cargo test --manifest-path rpcore/Cargo.toml --release --locked mq_paired_renorm_performance -- --nocapture
         env:
           RPCORE_MQ_BENCH: '1'
+      - run: cargo test --manifest-path rpcore/Cargo.toml --release --locked separable_sampling_paired_performance -- --nocapture
+        env:
+          RPCORE_SAMPLE_BENCH: '1'
       - run: |
           mkdir -p rpcore/target/jbig2-performance
           rustc -Vv > rpcore/target/jbig2-performance/rust-version.txt

@@ -655,30 +655,10 @@ impl Surface{
             // For a separable inverse, compute each coordinate once. Retain
             // Matrix::point validation; if an axis coordinate cannot be
             // validated, fall back to the original clipped sample order.
-            if inv.0[1]==0.&&inv.0[2]==0.&&(x1-x0)+(y1-y0)<=131072{
-                let xs:Result<Vec<_>>=(x0..x1).map(|x|inv.point([(x as f64+0.5)*0.5,0.]).map(|p|p[0])).collect();
-                let ys:Result<Vec<_>>=(y0..y1).map(|y|inv.point([0.,(y as f64+0.5)*0.5]).map(|p|p[1])).collect();
-                if let (Ok(xs),Ok(ys))=(xs,ys){
-                    for (dy,&v) in ys.iter().enumerate(){
-                        if !(0.0..1.0).contains(&v){continue;}
-                        let y=y0+dy;
-                        let row=(y/2-self.clip.y)*self.clip.w;
-                        let dest=y/2*self.w*12;
-                        let sy=(y%2)*2;
-                        for (dx,&u) in xs.iter().enumerate(){
-                            if !(0.0..1.0).contains(&u){continue;}
-                            let x=x0+dx;
-                            let sx=sy+x%2;
-                            if self.clip.data[row+x/2-self.clip.x]&(1<<sx)==0{continue;}
-                            let color=img.opaque_nearest(u,1.-v);
-                            let offset=dest+x/2*12+sx*3;
-                            self.samples[offset..offset+3].copy_from_slice(&color);
-                        }
-                    }
-                    #[cfg(feature="fuzzing")]
-                    image_profile_end(started,1);
-                    return Ok(());
-                }
+            if sample_separable(&img,inv,&self.clip,&mut self.samples,self.w,x0,x1,y0,y1){
+                #[cfg(feature="fuzzing")]
+                image_profile_end(started,1);
+                return Ok(());
             }
             for y in y0..y1{
                 let row=(y/2-self.clip.y)*self.clip.w;
@@ -731,6 +711,82 @@ fn separable_image_coordinates_match_matrix(){
             }}
         }}
     }}
+}
+// Returns false when the bounded separable kernel is not applicable.
+fn sample_separable(img:&images::Image,inv:Matrix,clip:&Coverage,samples:&mut [u8],w:usize,x0:usize,x1:usize,y0:usize,y1:usize)->bool{
+    if inv.0[1]!=0.||inv.0[2]!=0.||(x1-x0)+(y1-y0)>131072{return false;}
+    let xs:Result<Vec<_>>=(x0..x1).map(|x|inv.point([(x as f64+0.5)*0.5,0.]).map(|p|p[0])).collect();
+    let ys:Result<Vec<_>>=(y0..y1).map(|y|inv.point([0.,(y as f64+0.5)*0.5]).map(|p|p[1])).collect();
+    let (Ok(xs),Ok(ys))=(xs,ys) else{return false;};
+    for (dy,&v) in ys.iter().enumerate(){
+        if !(0.0..1.0).contains(&v){continue;}
+        let y=y0+dy;
+        let row=(y/2-clip.y)*clip.w;
+        let dest=y/2*w*12;
+        let sy=(y%2)*2;
+        for (dx,&u) in xs.iter().enumerate(){
+            if !(0.0..1.0).contains(&u){continue;}
+            let x=x0+dx;
+            let sx=sy+x%2;
+            if clip.data[row+x/2-clip.x]&(1<<sx)==0{continue;}
+            let color=img.opaque_nearest(u,1.-v);
+            let offset=dest+x/2*12+sx*3;
+            samples[offset..offset+3].copy_from_slice(&color);
+        }
+    }
+    true
+}
+#[cfg(test)]
+fn sample_scalar_reference(img:&images::Image,inv:Matrix,clip:&Coverage,samples:&mut [u8],w:usize,x0:usize,x1:usize,y0:usize,y1:usize)->Result<()>{
+    for y in y0..y1{for x in x0..x1{
+        let s=(y%2)*2+x%2;
+        if clip.at(x/2,y/2)&(1<<s)==0{continue;}
+        let [u,v]=inv.point([(x as f64+0.5)*0.5,(y as f64+0.5)*0.5])?;
+        if !(0.0..1.0).contains(&u)||!(0.0..1.0).contains(&v){continue;}
+        let (color,alpha)=img.sample(u,1.-v,[0;3]);
+        assert_eq!(alpha,1.);
+        let offset=(y/2*w+x/2)*12+s*3;
+        samples[offset..offset+3].copy_from_slice(&color);
+    }}
+    Ok(())
+}
+#[cfg(test)]
+#[test]
+fn separable_sampling_matches_scalar_pixels(){
+    let w=23;let h=17;
+    let img=images::Image{w:13,h:11,rgb:(0..13*11*3).map(|i|(i*73+29) as u8).collect(),alpha:None,stencil:false,interpolate:false};
+    let clip=Coverage{x:2,y:1,w:19,h:15,data:(0..19*15).map(|i|((i*7+3)%16) as u8).collect()};
+    for a in [-0.08,0.04,0.11]{for d in [-0.12,0.06,0.15]{for e in [-0.2,0.,1.]{for f in [-0.3,0.2,1.]{
+        let inv=Matrix([a,0.,0.,d,e,f]);
+        let mut x=vec![123;w*h*12];let mut y=x.clone();
+        assert!(sample_separable(&img,inv,&clip,&mut x,w,5,41,3,31));
+        sample_scalar_reference(&img,inv,&clip,&mut y,w,5,41,3,31).unwrap();
+        assert_eq!(x,y);
+    }}}}
+}
+#[cfg(test)]
+#[test]
+fn separable_sampling_paired_performance(){
+    if std::env::var_os("RPCORE_SAMPLE_BENCH").is_none(){return;}
+    use std::{hint::black_box,time::Instant};
+    let w=1024;let h=768;
+    let img=images::Image{w:399,h:400,rgb:(0..399*400*3).map(|i|(i*73+29) as u8).collect(),alpha:None,stencil:false,interpolate:false};
+    let clip=Coverage{x:0,y:0,w,h,data:vec![15;w*h]};
+    let inv=Matrix([1./w as f64,0.,0.,-1./h as f64,0.,1.]);
+    let mut a=vec![255;w*h*12];let mut b=a.clone();
+    let mut fast=Vec::new();let mut slow=Vec::new();
+    for i in 0..9{
+        a.fill(255);b.fill(255);
+        let mut run_fast=||{let t=Instant::now();assert!(sample_separable(&img,inv,&clip,black_box(&mut a),w,0,w*2,0,h*2));t.elapsed().as_nanos()};
+        let mut run_slow=||{let t=Instant::now();sample_scalar_reference(&img,inv,&clip,black_box(&mut b),w,0,w*2,0,h*2).unwrap();t.elapsed().as_nanos()};
+        let (f,s)=if i%2==0{(run_fast(),run_slow())}else{let s=run_slow();(run_fast(),s)};
+        assert_eq!(a,b);
+        if i>0{fast.push(f);slow.push(s);}
+    }
+    fast.sort_unstable();slow.sort_unstable();
+    let f=(fast[3]+fast[4])/2;let s=(slow[3]+slow[4])/2;
+    assert!(f>0&&s>0);
+    println!("Image sampling paired: separable_ns {f} scalar_ns {s} speedup {:.4} trials 8 subsamples {}",s as f64/f as f64,w*h*4);
 }
 // Construct the 2x2 rectangular page coverage directly by packed pixel rows.
 fn rectangular_page_clip(w:usize,h:usize,sx:usize,sy:usize)->Vec<u8>{
