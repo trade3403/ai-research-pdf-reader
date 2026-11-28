@@ -610,3 +610,52 @@ fn stage_native(p:&CompiledGposProgram<'_>,ledger:&ProvenanceLedger,ids:&[u16],a
     }
     assert!(checks>0,"positive logical Arabic mark-base native oracle required");
 }
+
+
+// Native Reph scope: exact raw Type4 anchor oracle only for a unique
+// eligible attachment in the actual selected LangSys. Do not manufacture
+// positive coverage by substituting a different glyph or lookup.
+#[test]fn native_devanagari_reph_attachment_scope(){
+    let bytes=include_bytes!("fixtures/notosansdevanagari/NotoSansDevanagari[wdth,wght].ttf");
+    let f=parse_font(bytes,Default::default()).unwrap();let face=f.face(0).unwrap();
+    let p=bundled_indic_properties().unwrap();let s=bundled_script_properties().unwrap();
+    let pb=face.table(*b"GPOS").unwrap();let pl=parse_gpos_layout(pb,Default::default()).unwrap();
+    let raw=lookups(pb);let cls=classes(face.table(*b"GDEF"),u(table(bytes,b"maxp").unwrap(),4));
+    let mut report=String::new();
+    for t in ["र्क","र्ग","र्त","र्द","र्न","र्म","र्य","र्व"]{
+        let mut note=|reason:&str|report.push_str(&format!("REPH_NATIVE_SCOPE {t} {reason}\n"));
+        let probe=match plan_font_face_isolated_reph(face,t,&p,&s,*b"dev2",None,Default::default(),Default::default()){
+            Ok(x)=>x,Err(Error::Unsupported(reason))=>{note(reason);continue;},
+            Err(e)=>panic!("unexpected native Reph probe {t}: {e:?}"),
+        };
+        let old=&probe.0.result.execution.expansion.execution.glyphs;
+        let ids=[old[1],old[0]];
+        let plan=build_gpos_base_plan(&pl,*b"dev2",None,&[*b"mark"],Default::default()).unwrap().unwrap();
+        if !plan.unavailable_tags.is_empty(){note("missing mark feature");continue;}
+        let roots:Option<Vec<_>>=plan.lookups.iter().map(|r|raw.iter().find(|l|l.id==r.index&&l.kind==4)).collect();
+        let Some(roots)=roots else{note("outside direct Type4 oracle");continue;};
+        let deltas:Vec<_>=roots.iter().filter(|l|cls[ids[0] as usize]!=3&&eligible(ids[0],l.flags,&cls)&&eligible(ids[1],l.flags,&cls))
+            .filter_map(|l|pair(l,ids[0],ids[1])).collect();
+        if deltas.len()!=1{note("no unique eligible Type4 anchor");continue;}
+        let delta=deltas[0];
+        let specs=[ShapeStageSpec{features:plan.features.clone()}];
+        let req=FaceStageRequest{specs:&specs,overrides:&[],masks:Default::default(),stages:Default::default()};
+        for flow in [GposHorizontalFlow::LeftToRight,GposHorizontalFlow::RightToLeft]{
+            let o=FaceShapeOptions{script:*b"dev2",language:None,substitution_tags:&[*b"rphf"],
+                positioning_tags:&[*b"mark"],alternates:&[],flow,allow_missing_glyphs:false,require_requested_features:true};
+            let x=shape_font_face_isolated_reph_after_base(face,o,Default::default(),req,
+                IndicJointRequest{text:t,properties:&p,scripts:&s,reorder:Default::default()},Default::default()).unwrap();
+            let out=x.shaped.shaped;
+            assert_eq!(out.substitution.expansion.execution.glyphs,ids.to_vec());
+            assert_eq!(out.design_advances,ids.map(|g|(nominal(bytes,g),0)).to_vec());
+            assert_eq!(out.positioning.edges[1],Some(GposAttachmentEdge{parent:0,design_delta:delta,pixel_delta:(0,0)}));
+            let world=|i:usize|{let o=out.positioning.design_origins[i];let a=out.positioning.adjustments[i].design;
+                (o.0+a.x_placement,o.1+a.y_placement)};
+            assert_eq!(diff(world(1),world(0)),delta);
+        }
+        note("exact admitted anchor geometry both flows");
+    }
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/reph-native-scope.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,&report).unwrap();
+    assert_eq!(report.lines().count(),8);
+}

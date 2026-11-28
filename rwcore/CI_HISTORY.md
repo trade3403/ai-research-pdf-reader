@@ -601,3 +601,6 @@ CI #253: 9b393d0496709af2d80a738df5009014a943181a, https://github.com/trade3403/
 
 
 CI #254: 0148b7318a407645b0b2445c8707db76ca2fcd50, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46162664212, exact SHA in all three raw logs; 1591/platform, 4773 total, zero failed/ignored; Release Ubuntu 12.52s, Windows 28.58s, macOS 16.94s. Native after-base metrics and provenance test passed all platforms.
+
+
+CI #255: 855b798baae35351b936ea859a3f66541538e4e6, https://github.com/trade3403/ai-research-pdf-reader/actions/runs/46165506028, exact SHA all three raw logs; 1593/platform, 4779 total, zero failed/ignored; Release Ubuntu 10.55s, Windows 29.89s, macOS 19.61s. Reph native metrics, synthetic mask and resource regressions passed all platforms.
