@@ -352,3 +352,6 @@ pub use unicode_script_resolve::*;
 
 pub mod unicode_joining;
 pub use unicode_joining::*;
+
+pub mod font_arabic_forms;
+pub use font_arabic_forms::*;

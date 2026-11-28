@@ -372,3 +372,36 @@ pub fn shape_font_face_dual_stage(
         })?;
     Ok(DualStageFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped})
 }
+
+/// Basic Arabic four-form result with exact original scalar decisions.
+#[derive(Debug)]
+pub struct ArabicFaceShapeResult{
+    pub joining:Vec<JoiningScalar>,
+    pub face:DualStageFaceShapeResult,
+}
+/// Explicit caller-selected features from the same immutable face.
+/// All selected GPOS features use a single independently masked stage.
+/// No bidi, normalization, script segmentation or complete Arabic profile.
+pub fn shape_font_face_arabic_forms(face:&FontFace<'_>,text:&str,o:FaceShapeOptions<'_>,
+    l:FaceShapeLimits,data:&UnicodeJoiningTypes,forms:ArabicFormLimits,
+    positioning_masks:FeatureMaskLimits,positioning_stages:JointStageLimits,
+    ligatures:Option<JointLigatureLimits>)->Result<ArabicFaceShapeResult,Error>{
+    if o.script!=*b"arab"{return Err(Error::Unsupported("Arabic form script"));}
+    let (source,substitution_plan,positioning_plan,units_per_em,(joining,shaped))=
+        shape_font_face_execute(face,text,o,l,ligatures,|gs,gp,source,metrics,gd|{
+            let sb=face.table(*b"GSUB").ok_or(Error::Unsupported("face shape missing GSUB"))?;
+            let layout=parse_gsub_layout(sb,l.substitution_program.compile.layout)?;
+            let f=build_arabic_form_plan(&layout,gs,source,text,data,forms)?;
+            let pp=gp.validated_plan().ok_or(Error::Invalid("joint GPOS plan"))?;
+            let pm=GposScalarFeatureMasks::build(pp,source.scalars().len(),&[],positioning_masks)?;
+            let specs=if pp.features.is_empty(){vec![]}else{vec![ShapeStageSpec{features:pp.features.clone()}]};
+            let traced=match ligatures{
+                Some(ll)=>Some((gd.ok_or(Error::Unsupported("face shape missing GDEF"))?,ll)),
+                None=>None,
+            };
+            let shaped=execute_dual_stage_joint_shape(gs,gp,source,metrics,o.alternates,&f.masks,&f.specs,
+                o.flow,l.joint,forms.stages,traced,JointPositionStages{masks:&pm,specs:&specs,limits:positioning_stages})?;
+            Ok((f.joining,shaped))
+        })?;
+    Ok(ArabicFaceShapeResult{joining,face:DualStageFaceShapeResult{source,substitution_plan,positioning_plan,units_per_em,shaped}})
+}
