@@ -178,12 +178,7 @@ fn decode_arithmetic_body(header:GenericHeader,payload:&[u8],work_limit:u64)->Re
             ltp^=sltp;
             if ltp{
                 copied_rows+=1;
-                if y!=0{
-                    for x in 0..r.width{
-                        let bit=image.sample(i64::from(x),i64::from(y)-1);
-                        image.set(x,y,bit)?;
-                    }
-                }
+                if y!=0{image.copy_previous_row(y)?;}
                 continue;
             }
         }

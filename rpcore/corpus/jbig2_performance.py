@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import sys
+import subprocess
 import tempfile
 from PIL import Image
 import jbig2_benchmark as corpus
@@ -69,6 +70,16 @@ def main():
                      throughput_mpix_s=w*h*1000/fields["elapsed_ns"],**fields)
             report["raw"].append(row)
             print("JBIG2 raw",name,"median_ns",fields["elapsed_ns"],"rss_kib",fields["peak_process_rss_kib"],flush=True)
+        proc=subprocess.run([a.raw_probe,"--compose"],text=True,capture_output=True,timeout=60,check=True)
+        fields=dict(line.split("=",1) for line in proc.stdout.splitlines() if "=" in line)
+        kernels=[]
+        for x in (0,3):
+            f=int(fields[f"compose_x{x}_packed_ns"]);s=int(fields[f"compose_x{x}_scalar_ns"])
+            if min(f,s)<=0:
+                raise ValueError("invalid composition kernel timing")
+            kernels.append({"x":x,"packed_ns":f,"scalar_ns":s,"speedup":s/f})
+            print("JBIG2 compose",x,"packed_ns",f,"scalar_ns",s,"speedup",s/f,flush=True)
+        report["compose_kernels"]=kernels
         for name in CASES:
             raw=corpus.fetch(name+".pdf");ref=corpus.fetch(name+"_expected.pdf.0.png")
             file=tmp/"input.pdf";file.write_bytes(raw)

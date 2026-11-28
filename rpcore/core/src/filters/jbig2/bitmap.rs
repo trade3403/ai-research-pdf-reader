@@ -92,6 +92,13 @@ impl Bitmap{
         if black{self.bytes[i]|=m;}else{self.bytes[i]&=!m;}
         Ok(())
     }
+    /// Copy a completed previous row, including canonical zero padding.
+    pub(super) fn copy_previous_row(&mut self,y:u32)->Result<()>{
+        if y==0||y>=self.height{return Err(Error::Invalid("JBIG2 previous row coordinate"));}
+        let end=y as usize*self.stride;
+        self.bytes.copy_within(end-self.stride..end,end);
+        Ok(())
+    }
     /// Combine only pixels inside both images. Negative placement is
     /// supported for future symbol/region positioning; i128 intersections
     /// avoid overflow even for extreme caller coordinates.
@@ -104,14 +111,47 @@ impl Bitmap{
         if left>=right||top>=bottom{return Ok(());}
         let count=(right-left)as u64*(bottom-top)as u64;
         budget.charge(count)?;
+        // Convert the clipped rectangle once. All indices below are inside
+        // their respective rows; a full destination byte covers eight valid
+        // source pixels, including the next source byte if unaligned.
+        let left=left as usize;let right=right as usize;
+        let sx0=(left as i128-x)as usize;
+        let head_end=left.div_ceil(8).saturating_mul(8).min(right);
+        let body_end=(right/8*8).max(head_end);
         for dy in top..bottom{
-            for dx in left..right{
-                let (sx,sy)=((dx-x)as u32,(dy-y)as u32);
-                let (dx,dy)=(dx as u32,dy as u32);
-                let s=src.get(sx,sy).ok_or(Error::Invalid("JBIG2 source intersection"))?;
-                let d=self.get(dx,dy).ok_or(Error::Invalid("JBIG2 destination intersection"))?;
-                self.set(dx,dy,op.apply(d,s))?;
+            let sy=(dy-y)as usize;
+            let s=&src.bytes[sy*src.stride..(sy+1)*src.stride];
+            let dy=dy as usize;
+            let d=&mut self.bytes[dy*self.stride..(dy+1)*self.stride];
+            let edge=|d:&mut [u8],dx:usize|{
+                let sx=sx0+dx-left;
+                let sm=0x80u8>>(sx%8);let dm=0x80u8>>(dx%8);
+                let bit=op.apply(d[dx/8]&dm!=0,s[sx/8]&sm!=0);
+                if bit{d[dx/8]|=dm;}else{d[dx/8]&=!dm;}
+            };
+            for dx in left..head_end{edge(d,dx);}
+            let n=(body_end-head_end)/8;
+            if n!=0{
+                let sx=sx0+head_end-left;let start=sx/8;let shift=sx%8;
+                let dest=&mut d[head_end/8..head_end/8+n];
+                if shift==0{
+                    let source=&s[start..start+n];
+                    match op{
+                        ComposeOp::Replace=>dest.copy_from_slice(source),
+                        ComposeOp::Or=>dest.iter_mut().zip(source).for_each(|(d,&s)|*d|=s),
+                        ComposeOp::And=>dest.iter_mut().zip(source).for_each(|(d,&s)|*d&=s),
+                        ComposeOp::Xor=>dest.iter_mut().zip(source).for_each(|(d,&s)|*d^=s),
+                        ComposeOp::Xnor=>dest.iter_mut().zip(source).for_each(|(d,&s)|*d=!(*d^s)),
+                    }
+                }else{
+                    for (d,pair) in dest.iter_mut().zip(s[start..start+n+1].windows(2)){
+                        let v=(pair[0]<<shift)|(pair[1]>>(8-shift));
+                        *d=match op{ComposeOp::Or=>*d|v,ComposeOp::And=>*d&v,
+                            ComposeOp::Xor=>*d^v,ComposeOp::Xnor=>!(*d^v),ComposeOp::Replace=>v};
+                    }
+                }
             }
+            for dx in body_end..right{edge(d,dx);}
         }
         Ok(())
     }
@@ -223,6 +263,54 @@ mod tests{
         assert_eq!(budget.remaining(),14);assert!(d.packed().iter().all(|&b|b==0));
         d.compose(&s,8,3,ComposeOp::Or,&mut budget).unwrap();
         assert_eq!(d.get(8,3),Some(true));assert_eq!(budget.remaining(),13);
+    }
+    #[test]fn bitmap_packed_compose_matches_scalar_all_alignments(){
+        let mut rng=0x12345678u32;
+        let mut bytes=|n:usize|->Vec<u8>{(0..n).map(|_|{
+            rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);(rng>>24)as u8
+        }).collect()};
+        for sw in [1u32,7,8,9,15,16,17,23,24,25,31,32,33,65]{
+            for dw in [1u32,8,9,16,17,31,32,33,64,67]{
+                let src=Bitmap::from_packed(sw,3,&bytes((sw as usize).div_ceil(8)*3)).unwrap();
+                let initial=bytes((dw as usize).div_ceil(8)*4);
+                for op in [ComposeOp::Or,ComposeOp::And,ComposeOp::Xor,ComposeOp::Xnor,ComposeOp::Replace]{
+                    for x in -(sw as i64)-1..=dw as i64+1{
+                        for y in [-3i64,-1,0,2,4]{
+                            let mut a=Bitmap::from_packed(dw,4,&initial).unwrap();
+                            let mut want=Bitmap::from_packed(dw,4,&initial).unwrap();
+                            let mut count=0;
+                            for dy in 0..4{
+                                for dx in 0..dw{
+                                    let sx=i64::from(dx)-x;let sy=i64::from(dy)-y;
+                                    if (0..i64::from(sw)).contains(&sx)&&(0..3).contains(&sy){
+                                        let v=op.apply(want.get(dx,dy).unwrap(),src.sample(sx,sy));
+                                        want.set(dx,dy,v).unwrap();count+=1;
+                                    }
+                                }
+                            }
+                            let mut budget=ComposeBudget::new(count).unwrap();
+                            a.compose(&src,x,y,op,&mut budget).unwrap();
+                            assert_eq!(a,want,"{sw} {dw} {x} {y} {op:?}");
+                            assert_eq!(budget.remaining(),0);
+                            if count>0{
+                                let mut a=Bitmap::from_packed(dw,4,&initial).unwrap();
+                                let mut budget=ComposeBudget::new(count-1).unwrap();
+                                assert!(a.compose(&src,x,y,op,&mut budget).is_err());
+                                assert_eq!(a,Bitmap::from_packed(dw,4,&initial).unwrap());
+                                assert_eq!(budget.remaining(),count-1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]fn bitmap_previous_row_copies_padding_and_rejects_bounds(){
+        let mut b=Bitmap::from_packed(9,3,&[0xa5,0xff,0,0,0x55,0x7f]).unwrap();
+        assert!(b.copy_previous_row(0).is_err());
+        assert!(b.copy_previous_row(3).is_err());
+        b.copy_previous_row(1).unwrap();b.copy_previous_row(2).unwrap();
+        assert_eq!(b.packed(),[0xa5,0x80,0xa5,0x80,0xa5,0x80]);
     }
     #[test]fn bitmap_region_integration(){
         let s=Bitmap::new(3,2,true).unwrap();let mut d=Bitmap::new(8,4,false).unwrap();
