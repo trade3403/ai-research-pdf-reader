@@ -49,11 +49,31 @@ def sha(data):
 # Retry only transient transport errors; never retry malformed content,
 # permanent HTTP failures, or relax the exact frozen gate.
 RETRY_HTTP = {408, 429, 500, 502, 503, 504}
+def rate_limit_delay(header, attempt):
+    # Respect delta seconds and HTTP dates, with bounded waits. An invalid
+    # header falls back to exponential rate-limit backoff.
+    from email.utils import parsedate_to_datetime
+    fallback = min(60, 8 * 2 ** attempt)
+    if header is None:
+        return fallback
+    try:
+        seconds = int(header)
+    except (TypeError, ValueError):
+        try:
+            seconds = int(parsedate_to_datetime(header).timestamp() - time.time()) + 1
+        except (TypeError, ValueError, OverflowError, OSError, AttributeError):
+            return fallback
+    return min(60, max(fallback, seconds))
+
 def fetch_bounded(url, limit, opener=None, sleeper=None):
+    real_request = opener is None
     opener = urllib.request.urlopen if opener is None else opener
     sleeper = time.sleep if sleeper is None else sleeper
     req = urllib.request.Request(url, headers={"User-Agent": "RPCore-test-corpus/1"})
-    for attempt in range(3):
+    # Pace even successful requests to avoid bursts against the public server.
+    if real_request:
+        sleeper(0.75)
+    for attempt in range(5):
         try:
             with opener(req, timeout=20) as response:
                 data = response.read(limit + 1)
@@ -61,14 +81,17 @@ def fetch_bounded(url, limit, opener=None, sleeper=None):
                 raise ValueError("bounded response limit")
             return data
         except urllib.error.HTTPError as exc:
-            if exc.code not in RETRY_HTTP or attempt == 2:
+            last = 4 if exc.code == 429 else 2
+            if exc.code not in RETRY_HTTP or attempt >= last:
                 raise
+            delay = rate_limit_delay(exc.headers.get("Retry-After") if exc.headers else None, attempt) if exc.code == 429 else 2 ** attempt
             exc.close()
         except (urllib.error.URLError, TimeoutError, ConnectionError):
-            if attempt == 2:
+            if attempt >= 2:
                 raise
-        print(f"Transient corpus download failure; retry {attempt+1}/2: {url}", flush=True)
-        sleeper(2 ** attempt)
+            delay = 2 ** attempt
+        print(f"Transient corpus download failure; retry {attempt+1} after {delay}s: {url}", flush=True)
+        sleeper(delay)
 
 def fetch(name):
     url = BASE + name + "?format=TEXT"
@@ -298,16 +321,27 @@ def case(probe, work, row, raw, expected):
 def retry_self_test():
     import io
     from unittest.mock import Mock
-    def http(code):
-        return urllib.error.HTTPError("https://example.invalid", code, "test", {}, io.BytesIO())
+    def http(code, headers=None):
+        return urllib.error.HTTPError("https://example.invalid", code, "test", headers or {}, io.BytesIO())
     url = "https://example.invalid"
     pause = Mock()
     opener = Mock(side_effect=[http(503), urllib.error.URLError("test"), io.BytesIO(b"ok")])
     assert fetch_bounded(url, 2, opener, pause) == b"ok"
     assert opener.call_count == 3
     assert [call.args for call in pause.call_args_list] == [(1,), (2,)]
+    pause = Mock()
+    opener = Mock(side_effect=[http(429, {"Retry-After":"12"}), http(429),
+                               http(429, {"Retry-After":"99999"}), http(429), io.BytesIO(b"ok")])
+    assert fetch_bounded(url, 2, opener, pause) == b"ok"
+    assert opener.call_count == 5
+    assert [call.args for call in pause.call_args_list] == [(12,), (16,), (60,), (60,)]
+    assert rate_limit_delay("bad", 0) == 8
+    assert rate_limit_delay("-5", 0) == 8
+    assert rate_limit_delay("Thu, 01 Jan 1970 00:00:00 GMT", 0) == 8
+    assert rate_limit_delay("Fri, 01 Jan 2100 00:00:00 GMT", 0) == 60
     for errors, count, expected in [
         ([http(404)], 1, urllib.error.HTTPError),
+        ([http(429) for _ in range(5)], 5, urllib.error.HTTPError),
         ([http(503), http(503), http(503)], 3, urllib.error.HTTPError),
         ([io.BytesIO(b"too long")], 1, ValueError),
     ]:
