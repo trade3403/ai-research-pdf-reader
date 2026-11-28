@@ -253,7 +253,7 @@ fn inspect_pdf_streams_impl(globals:&[u8],data:&[u8],optional_extensions:bool)->
     }
     if local.pages.len()!=1{return Err(Error::Invalid("JBIG2 PDF single page required"));}
     let page=local.pages[0].clone();
-    if page.height.is_none()||page.striped&&!optional_extensions{
+    if page.striped&&!optional_extensions{
         return Err(Error::Unsupported("JBIG2 PDF striped page"));
     }
     let global_segments=global.as_ref().map_or(&[][..],|g|g.segments.as_slice());
