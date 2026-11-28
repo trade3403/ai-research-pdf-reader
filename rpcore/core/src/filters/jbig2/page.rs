@@ -53,7 +53,7 @@ fn packed(w:u32,h:u32)->usize{(w as usize).div_ceil(8)*h as usize}
 /// including mandatory REPLACE for page-reference refinement.
 /// No caller-supplied graph. Unknown/unsupported kinds fail before decoding.
 pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
-    decode_pdf_page_impl(globals,page,limits,false)
+    decode_pdf_page_impl(globals,page,limits,false,false)
 }
 /// Opt-in physical reclamation after the final actual consumer in the
 /// immutable inspected page graph. No cross-image cache or changes to
@@ -61,14 +61,21 @@ pub fn decode_pdf_page(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPa
 /// retains all bitmap imports until the dictionary pass completes; dead
 /// GB/GR context snapshots are released during that pass.
 pub fn decode_pdf_page_reclaimed(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
-    decode_pdf_page_impl(globals,page,limits,true)
+    decode_pdf_page_impl(globals,page,limits,true,false)
+}
+/// PDF XObject compatibility: some deployed encoders omit the auxiliary
+/// and refinement resource hints. Allocate only from the inspected segment
+/// graph, not these hints. All dependencies, operators, region identity,
+/// consumption rules and resource caps remain identical to the strict API.
+pub(crate) fn decode_pdf_image_compatible(globals:&[u8],page:&[u8],limits:Limits)->Result<DecodedPage>{
+    decode_pdf_page_impl(globals,page,limits,true,true)
 }
 fn record_release(stats:&mut Stats,r:dictionary::Reclaimed){
     stats.released_symbol_dictionaries+=r.dictionaries;
     stats.released_symbol_bitmaps+=r.bitmaps;stats.released_symbol_bytes+=r.bytes;
     stats.retained_packed_bytes-=r.bytes;
 }
-fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool)->Result<DecodedPage>{
+fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool,allow_missing_hints:bool)->Result<DecodedPage>{
     if limits.regions>super::MAX_SEGMENTS||limits.page_pixels>bitmap::MAX_PIXELS||
         limits.region_pixels>bitmap::MAX_PIXELS||limits.patterns>pattern::MAX_PATTERNS||
         limits.pattern_pixels>bitmap::MAX_PIXELS||limits.grid_cells>halftone::MAX_GRID_CELLS||
@@ -105,8 +112,8 @@ fn decode_pdf_page_impl(globals:&[u8],page:&[u8],limits:Limits,reclaim:bool)->Re
                 let (region,_)=bitmap::parse_region(data)?;
                 let intermediate=matches!(seg.kind,4|20|36|40);
                 let refined=matches!(seg.kind,40|42|43);
-                if intermediate&&info.flags&32==0{return Err(Error::Invalid("JBIG2 page auxiliary flag"));}
-                if refined&&info.flags&2==0{return Err(Error::Invalid("JBIG2 page refinement flag"));}
+                if !allow_missing_hints&&intermediate&&info.flags&32==0{return Err(Error::Invalid("JBIG2 page auxiliary flag"));}
+                if !allow_missing_hints&&refined&&info.flags&2==0{return Err(Error::Invalid("JBIG2 page refinement flag"));}
                 let page_reference=refined&&node.dependencies.is_empty();
                 if page_reference{
                     if intermediate||region.op!=ComposeOp::Replace{return Err(Error::Invalid("JBIG2 page refinement reference"));}
@@ -497,6 +504,46 @@ mod tests{
             let mut bad=p.clone();bad[27]=flags;
             assert!(decode_pdf_page(&[],&bad,Limits::default()).is_err());
         }
+    }
+    #[test]
+    fn pdf_image_missing_resource_hints_preserves_pixels_and_limits(){
+        let l=Limits::default();
+        let mut p=info(7,6,0x22);
+        p.extend(seg(2,36,&[],&source_region(0,0)));
+        let r=refine_body(7,6,0,0,0,0,&[255;4],&[192,34,140,221,147,255,172]);
+        p.extend(seg(3,43,&[2],&r));
+        let strict=decode_pdf_page_reclaimed(&[],&p,l).unwrap();
+        for flags in [0,2,32]{
+            let mut sample=p.clone();sample[27]=flags;
+            assert!(decode_pdf_page(&[],&sample,l).is_err());
+            assert!(decode_pdf_page_reclaimed(&[],&sample,l).is_err());
+            let d=decode_pdf_image_compatible(&[],&sample,l).unwrap();
+            assert_eq!(d.bitmap,strict.bitmap);
+            assert_eq!(d.stats,strict.stats);
+            assert_eq!(d.info.flags,flags);
+            assert_eq!(d.bitmap.packed(),[170,56,56,198,170,84]);
+            assert!(decode_pdf_image_compatible(&[],&sample,Limits{packed_bytes:17,..l}).is_err());
+            assert!(decode_pdf_image_compatible(&[],&sample,Limits{work:d.stats.work_used-1,..l}).is_err());
+        }
+    }
+    #[test]
+    fn pdf_image_missing_resource_hints_does_not_relax_graph_or_operator(){
+        let l=Limits::default();
+        let mut p=info(7,6,0);
+        p.extend(seg(2,36,&[],&source_region(0,0)));
+        assert!(decode_pdf_image_compatible(&[],&p,l).is_err()); // dangling
+        let r=refine_body(7,6,0,0,0,0,&[255;4],&[192,34,140,221,147,255,172]);
+        let mut wrong=p.clone();wrong.extend(seg(3,43,&[1],&r));
+        assert!(decode_pdf_image_compatible(&[],&wrong,l).is_err());
+        let mut op=r.clone();op[16]=2;
+        let mut bad=p.clone();bad.extend(seg(3,43,&[2],&op));
+        assert!(decode_pdf_image_compatible(&[],&bad,l).is_err());
+        p.extend(seg(3,43,&[2],&r));
+        p.extend(seg(4,43,&[2],&r));
+        assert!(decode_pdf_image_compatible(&[],&p,l).is_err()); // stale
+        let mut reserved=info(7,6,128);
+        reserved.extend(seg(2,39,&[],&source_region(0,0)));
+        assert!(decode_pdf_image_compatible(&[],&reserved,l).is_err());
     }
     #[test]
     fn page_current_crop_refinement_order_and_budget(){

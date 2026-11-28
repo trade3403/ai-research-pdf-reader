@@ -389,7 +389,7 @@ fn load_jbig2(doc:&Document<'_>,dict:&Dict,data:&[u8],w:usize,h:usize,
     let mut limits=page::Limits::default();
     limits.page_pixels=(w*h) as u64;
     limits.work=limits.work.min(super::MAX_WORK.saturating_sub(budget.work) as u64);
-    let decoded=page::decode_pdf_page_reclaimed(&globals,&payload,limits)?;
+    let decoded=page::decode_pdf_image_compatible(&globals,&payload,limits)?;
     budget.charge(usize::try_from(decoded.stats.work_used).map_err(|_|Error::Limit("JBIG2 raster work"))?)?;
     let bitmap=decoded.bitmap;
     if (bitmap.width() as usize,bitmap.height() as usize)!=(w,h){
